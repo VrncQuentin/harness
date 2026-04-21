@@ -88,7 +88,7 @@ func TestStart_ServerStarts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("could not connect to UI server: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}

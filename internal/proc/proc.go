@@ -243,7 +243,7 @@ func (m *Manager) checkHealth(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("proc: health GET %s: %w", m.healthURL, err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= 300 {
 		return fmt.Errorf("proc: health check returned status %d", resp.StatusCode)

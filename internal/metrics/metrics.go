@@ -38,12 +38,12 @@ func Open(path string) (Store, error) {
 	}
 
 	if err := db.Ping(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("metrics: ping %s: %w", path, err)
 	}
 
 	if err := migrate(db); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 
@@ -100,7 +100,7 @@ func (s *sqliteStore) Query(name string, from, to time.Time) ([]DataPoint, error
 	if err != nil {
 		return nil, fmt.Errorf("metrics: query %s: %w", name, err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var pts []DataPoint
 	for rows.Next() {
