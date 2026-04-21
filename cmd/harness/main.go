@@ -42,7 +42,7 @@ func main() {
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 
 	// Step 3: Start UI server — must succeed before we proceed.
-	uiServer := ui.NewServer(3000)
+	uiServer := ui.NewServer(3000, binDir)
 	if err := uiServer.Start(rootCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "harness: UI server failed to start: %v\n", err)
 		os.Exit(1)
@@ -51,11 +51,35 @@ func main() {
 	// Step 4: Open browser if configured (default true until config says otherwise).
 	openBrowser := true
 
-	// Step 5: Load config.
+	// Step 5: Load config. validateStartup re-runs this whenever Retry is clicked
+	// or the config editor saves a new file. Process managers still bind to the
+	// initial config for this binary run; model/embedder/port changes require
+	// restarting the harness.
 	cfg, cfgErr := config.Load(binDir)
 	if cfgErr != nil {
 		uiServer.AddStartupError(fmt.Errorf("config error: %w (expected at %s)", cfgErr, config.ConfigPath(binDir)))
 	}
+
+	uiServer.SetRetry(func() {
+		uiServer.ClearStartupErrors()
+		newCfg, err := config.Load(binDir)
+		if err != nil {
+			uiServer.AddStartupError(fmt.Errorf("config error: %w (expected at %s)", err, config.ConfigPath(binDir)))
+			return
+		}
+		if _, err := os.Stat(newCfg.Model.ModelPath); os.IsNotExist(err) {
+			uiServer.AddStartupError(fmt.Errorf("model file not found: %s", newCfg.Model.ModelPath))
+		}
+		if _, err := os.Stat(newCfg.Model.Binary); os.IsNotExist(err) {
+			uiServer.AddStartupError(fmt.Errorf("llama-server binary not found: %s", newCfg.Model.Binary))
+		}
+		if _, err := os.Stat(newCfg.Embedder.Binary); os.IsNotExist(err) {
+			uiServer.AddStartupError(fmt.Errorf("embedder binary not found: %s", newCfg.Embedder.Binary))
+		}
+		if _, err := os.Stat(newCfg.Embedder.ModelPath); os.IsNotExist(err) {
+			uiServer.AddStartupError(fmt.Errorf("embedder model file not found: %s", newCfg.Embedder.ModelPath))
+		}
+	})
 
 	if cfg != nil {
 		openBrowser = cfg.UI.OpenOnStart

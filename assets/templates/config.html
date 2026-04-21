@@ -1,0 +1,181 @@
+{{define "title"}}Config{{end}}
+{{define "content"}}
+<h1 class="page-title">Configuration</h1>
+
+{{if .FirstRun}}
+<div class="alert alert-info">
+  <div class="alert-head">
+    <h2>First run</h2>
+    <p class="alert-sub">No <code>config.toml</code> was found. Fill in the required paths below and save to get started.</p>
+  </div>
+</div>
+{{end}}
+
+{{if .Saved}}
+<div class="alert alert-ok">
+  <div class="alert-head">
+    <h2>Saved</h2>
+    <p class="alert-sub">Configuration written. Restart the harness to apply changes to running processes (model, embedder, ports).</p>
+  </div>
+</div>
+{{end}}
+
+{{if .ValidationErr}}
+<div class="alert alert-warn">
+  <div class="alert-head">
+    <h2>Validation error</h2>
+    <p class="alert-sub">{{.ValidationErr}}</p>
+  </div>
+</div>
+{{end}}
+
+{{if .SaveErr}}
+<div class="alert alert-err">
+  <div class="alert-head">
+    <h2>Could not save</h2>
+    <p class="alert-sub">{{.SaveErr}}</p>
+  </div>
+</div>
+{{end}}
+
+<form method="post" action="/config" class="cfg-form" autocomplete="off">
+  <fieldset class="cfg-section">
+    <legend>Model (llama-server)</legend>
+    <div class="fg">
+      <label for="model_binary">Binary path <span class="req">*</span></label>
+      <input type="text" id="model_binary" name="model_binary" value="{{.Config.Model.Binary}}" placeholder="C:\path\to\llama-server.exe" required>
+    </div>
+    <div class="fg">
+      <label for="model_path">Model file <span class="req">*</span></label>
+      <input type="text" id="model_path" name="model_path" value="{{.Config.Model.ModelPath}}" placeholder="C:\path\to\model.gguf" required>
+    </div>
+    <div class="fg-row">
+      <div class="fg">
+        <label for="model_ctx_size">Context size</label>
+        <input type="number" id="model_ctx_size" name="model_ctx_size" value="{{.Config.Model.CtxSize}}" min="512">
+      </div>
+      <div class="fg">
+        <label for="model_gpu_layers">GPU layers</label>
+        <input type="number" id="model_gpu_layers" name="model_gpu_layers" value="{{.Config.Model.GPULayers}}" min="0">
+      </div>
+      <div class="fg">
+        <label for="model_n_parallel">Parallel</label>
+        <input type="number" id="model_n_parallel" name="model_n_parallel" value="{{.Config.Model.NParallel}}" min="1">
+      </div>
+      <div class="fg">
+        <label for="model_port">Port</label>
+        <input type="number" id="model_port" name="model_port" value="{{.Config.Model.Port}}" min="1" max="65535">
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="cfg-section">
+    <legend>Embedder</legend>
+    <div class="fg">
+      <label for="embed_binary">Binary path <span class="req">*</span></label>
+      <input type="text" id="embed_binary" name="embed_binary" value="{{.Config.Embedder.Binary}}" placeholder="C:\path\to\nomic-embed-server.exe" required>
+    </div>
+    <div class="fg">
+      <label for="embed_path">Model file <span class="req">*</span></label>
+      <input type="text" id="embed_path" name="embed_path" value="{{.Config.Embedder.ModelPath}}" placeholder="C:\path\to\nomic-embed-text.gguf" required>
+    </div>
+    <div class="fg">
+      <label for="embed_port">Port</label>
+      <input type="number" id="embed_port" name="embed_port" value="{{.Config.Embedder.Port}}" min="1" max="65535">
+    </div>
+  </fieldset>
+
+  <fieldset class="cfg-section">
+    <legend>Memory</legend>
+    <div class="fg">
+      <label for="memory_repo">Repository path</label>
+      <input type="text" id="memory_repo" name="memory_repo" value="{{.Config.Memory.RepoPath}}" placeholder="C:\path\to\memory">
+      <p class="fg-hint">Existing git repo containing <code>global/</code>, <code>agents/</code>, <code>index/</code>, and <code>runtime/</code>.</p>
+    </div>
+  </fieldset>
+
+  <fieldset class="cfg-section">
+    <legend>UI</legend>
+    <div class="fg-row">
+      <div class="fg">
+        <label for="ui_port">Port</label>
+        <input type="number" id="ui_port" name="ui_port" value="{{.Config.UI.Port}}" min="1" max="65535">
+      </div>
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="ui_open_on_start" name="ui_open_on_start" {{if .Config.UI.OpenOnStart}}checked{{end}}>
+          <span>Open browser on start</span>
+        </label>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="cfg-section">
+    <legend>API (OpenAI-compatible)</legend>
+    <div class="fg-row">
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="api_enabled" name="api_enabled" {{if .Config.API.Enabled}}checked{{end}}>
+          <span>Enabled</span>
+        </label>
+      </div>
+      <div class="fg">
+        <label for="api_port">Port</label>
+        <input type="number" id="api_port" name="api_port" value="{{.Config.API.Port}}" min="1" max="65535">
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="cfg-section">
+    <legend>Prompt assembly</legend>
+    <div class="fg-row">
+      <div class="fg">
+        <label for="prompt_ctx_size">Context size</label>
+        <input type="number" id="prompt_ctx_size" name="prompt_ctx_size" value="{{.Config.Prompt.CtxSize}}" min="512">
+      </div>
+      <div class="fg">
+        <label for="prompt_memory_budget">Memory token budget</label>
+        <input type="number" id="prompt_memory_budget" name="prompt_memory_budget" value="{{.Config.Prompt.MemoryTokenBudget}}" min="0">
+      </div>
+      <div class="fg">
+        <label for="prompt_conversation_reserve">Conversation reserve</label>
+        <input type="number" id="prompt_conversation_reserve" name="prompt_conversation_reserve" value="{{.Config.Prompt.ConversationReserve}}" min="0">
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="cfg-section">
+    <legend>Queue</legend>
+    <div class="fg-row">
+      <div class="fg">
+        <label for="queue_max_depth">Max depth</label>
+        <input type="number" id="queue_max_depth" name="queue_max_depth" value="{{.Config.Queue.MaxDepth}}" min="1">
+      </div>
+      <div class="fg">
+        <label for="queue_wal_path">WAL path</label>
+        <input type="text" id="queue_wal_path" name="queue_wal_path" value="{{.Config.Queue.WALPath}}" placeholder="queue.wal">
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="cfg-section">
+    <legend>Metrics</legend>
+    <div class="fg-row">
+      <div class="fg">
+        <label for="metrics_db_path">Database path</label>
+        <input type="text" id="metrics_db_path" name="metrics_db_path" value="{{.Config.Metrics.DBPath}}" placeholder="metrics.db">
+      </div>
+      <div class="fg">
+        <label for="metrics_retention_days">Retention (days)</label>
+        <input type="number" id="metrics_retention_days" name="metrics_retention_days" value="{{.Config.Metrics.RetentionDays}}" min="1">
+      </div>
+    </div>
+  </fieldset>
+
+  <div class="cfg-actions">
+    <button type="submit" class="btn btn-primary">Save config</button>
+    <a href="/" class="btn btn-ghost">Cancel</a>
+  </div>
+  <p class="cfg-note">Required fields are marked <span class="req">*</span>. Changes to model, embedder, and port settings take effect on the next harness restart.</p>
+</form>
+{{end}}
