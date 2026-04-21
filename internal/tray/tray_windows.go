@@ -51,7 +51,7 @@ func Run(uiURL string, onQuit func()) {
 
 // onReady configures the tray icon and menu.
 func onReady(uiURL string, onQuit func()) {
-	systray.SetIcon(iconPNG)
+	systray.SetIcon(iconICO)
 	systray.SetTitle("Harness")
 	systray.SetTooltip("Local AI Inference Harness")
 
