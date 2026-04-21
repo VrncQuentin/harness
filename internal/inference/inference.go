@@ -87,7 +87,7 @@ func (c *implClient) Health(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("inference: health check: %w", err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= 300 {
 		return fmt.Errorf("inference: health check returned %d", resp.StatusCode)
@@ -120,14 +120,14 @@ func (c *implClient) Complete(ctx context.Context, req CompletionRequest) (<-cha
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("inference: unexpected status %d: %s", resp.StatusCode, string(b))
 	}
 
 	ch := make(chan Token, 64)
 	go func() {
 		defer close(ch)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		readSSE(ctx, resp.Body, ch)
 	}()
 

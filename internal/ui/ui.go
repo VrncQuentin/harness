@@ -179,7 +179,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			fmt.Fprintf(w, "data: %s\n\n", msg)
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", msg)
 			flusher.Flush()
 		case <-ticker.C:
 			s.sendState(ch)
@@ -225,7 +225,7 @@ type ssePayload struct {
 }
 
 func stateToPayload(s stateSnapshot) ssePayload {
-	var errs []string
+	errs := make([]string, 0, len(s.StartupErrors))
 	for _, e := range s.StartupErrors {
 		errs = append(errs, e.Error())
 	}

@@ -12,7 +12,7 @@ func TestOpenAndRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	if err := store.Record("queue_depth", 3.0, map[string]string{"host": "local"}); err != nil {
 		t.Fatalf("record: %v", err)
@@ -25,7 +25,7 @@ func TestQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	before := time.Now().Add(-time.Second)
 
@@ -52,13 +52,13 @@ func TestQuery_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	pts, err := store.Query("nonexistent", time.Now().Add(-time.Hour), time.Now())
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	if pts != nil && len(pts) != 0 {
+	if len(pts) != 0 {
 		t.Errorf("expected empty result, got %v", pts)
 	}
 }
@@ -69,7 +69,7 @@ func TestRecord_WithTags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	tags := map[string]string{"process": "llama-server", "status": "healthy"}
 	if err := store.Record("process_health", 1.0, tags); err != nil {

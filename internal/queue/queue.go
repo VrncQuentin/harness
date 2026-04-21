@@ -77,7 +77,7 @@ func (q *Queue) Stop() {
 	q.wg.Wait()
 	if q.walFile != nil {
 		q.walMu.Lock()
-		q.walFile.Close()
+		_ = q.walFile.Close()
 		q.walMu.Unlock()
 	}
 }
