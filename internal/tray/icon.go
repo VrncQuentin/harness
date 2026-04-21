@@ -1,6 +1,5 @@
 package tray
 
-import _ "embed"
+import "github.com/vrnc/harness/assets"
 
-//go:embed icon.png
-var iconPNG []byte
+var iconPNG = assets.IconPNG
