@@ -11,14 +11,14 @@ import (
 
 // Config is the top-level configuration structure for the harness.
 type Config struct {
-	Model   ModelConfig   `toml:"model"`
+	Model    ModelConfig    `toml:"model"`
 	Embedder EmbedderConfig `toml:"embedder"`
-	Memory  MemoryConfig  `toml:"memory"`
-	UI      UIConfig      `toml:"ui"`
-	API     APIConfig     `toml:"api"`
-	Prompt  PromptConfig  `toml:"prompt"`
-	Queue   QueueConfig   `toml:"queue"`
-	Metrics MetricsConfig `toml:"metrics"`
+	Memory   MemoryConfig   `toml:"memory"`
+	UI       UIConfig       `toml:"ui"`
+	API      APIConfig      `toml:"api"`
+	Prompt   PromptConfig   `toml:"prompt"`
+	Queue    QueueConfig    `toml:"queue"`
+	Metrics  MetricsConfig  `toml:"metrics"`
 }
 
 // ModelConfig holds llama-server configuration.

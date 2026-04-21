@@ -197,8 +197,8 @@ func recordMetrics(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			store.Record("uptime_seconds", time.Since(start).Seconds(), nil)  //nolint:errcheck
-			store.Record("queue_depth", float64(q.Depth()), nil)              //nolint:errcheck
+			store.Record("uptime_seconds", time.Since(start).Seconds(), nil) //nolint:errcheck
+			store.Record("queue_depth", float64(q.Depth()), nil)             //nolint:errcheck
 
 			if llamaMgr != nil {
 				st := llamaMgr.Status()
@@ -206,7 +206,7 @@ func recordMetrics(
 				if st.Healthy {
 					h = 1.0
 				}
-				store.Record("process_health", h, map[string]string{"process": "llama-server"})    //nolint:errcheck
+				store.Record("process_health", h, map[string]string{"process": "llama-server"})                       //nolint:errcheck
 				store.Record("restart_count", float64(st.RestartCount), map[string]string{"process": "llama-server"}) //nolint:errcheck
 			}
 			if embedMgr != nil {
@@ -215,7 +215,7 @@ func recordMetrics(
 				if st.Healthy {
 					h = 1.0
 				}
-				store.Record("process_health", h, map[string]string{"process": "embedder"})    //nolint:errcheck
+				store.Record("process_health", h, map[string]string{"process": "embedder"})                       //nolint:errcheck
 				store.Record("restart_count", float64(st.RestartCount), map[string]string{"process": "embedder"}) //nolint:errcheck
 			}
 		}
