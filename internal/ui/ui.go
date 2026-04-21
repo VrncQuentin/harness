@@ -3,7 +3,6 @@ package ui
 
 import (
 	"context"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -11,10 +10,9 @@ import (
 	"net/http"
 	"sync"
 	"time"
-)
 
-//go:embed templates/status.html
-var templateFS embed.FS
+	"github.com/vrnc/harness/assets"
+)
 
 // ProcessStatus is the UI-facing status of a managed process.
 type ProcessStatus struct {
@@ -54,7 +52,7 @@ func NewServer(port int) *Server {
 		port:  port,
 		state: &State{StartTime: time.Now()},
 	}
-	s.tmpl = template.Must(template.ParseFS(templateFS, "templates/status.html"))
+	s.tmpl = template.Must(template.ParseFS(assets.TemplateFS, "templates/status.html"))
 	return s
 }
 
