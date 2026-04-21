@@ -17,18 +17,17 @@ import (
 	"github.com/vrnc/harness/internal/queue"
 	"github.com/vrnc/harness/internal/tray"
 	"github.com/vrnc/harness/internal/ui"
+	"github.com/vrnc/harness/pkg/httpclient"
 )
 
 func main() {
 	// Step 1: Acquire single-instance mutex (Windows only).
-	// If another instance is already running, exit silently.
 	first, err := tray.AcquireSingleInstance()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "harness: single-instance check failed: %v\n", err)
 		os.Exit(1)
 	}
 	if !first {
-		// Second instance — exit silently.
 		os.Exit(0)
 	}
 
@@ -42,33 +41,28 @@ func main() {
 	// Root context — cancelled when tray quit is triggered.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 
-	// Step 3: Start UI server — always succeeds, runs before config is loaded.
+	// Step 3: Start UI server — must succeed before we proceed.
 	uiServer := ui.NewServer(3000)
 	if err := uiServer.Start(rootCtx); err != nil {
-		// Should never happen, but if it does, still continue.
-		fmt.Fprintf(os.Stderr, "harness: UI server error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "harness: UI server failed to start: %v\n", err)
+		os.Exit(1)
 	}
 
-	// Step 4: Open browser if configured (we do this after UI is up).
-	// We attempt it regardless of config; config may disable it.
-	openBrowser := true // default until we load config
+	// Step 4: Open browser if configured (default true until config says otherwise).
+	openBrowser := true
 
 	// Step 5: Load config.
 	cfg, cfgErr := config.Load(binDir)
 	if cfgErr != nil {
-		uiServer.AddStartupError(fmt.Sprintf("Config error: %s (expected at %s)",
-			cfgErr.Error(), config.ConfigPath(binDir)))
+		uiServer.AddStartupError(fmt.Errorf("config error: %w (expected at %s)", cfgErr, config.ConfigPath(binDir)))
 	}
 
-	if cfg != nil && cfg.UI.OpenOnStart {
-		openBrowser = true
-	} else if cfg != nil {
+	if cfg != nil {
 		openBrowser = cfg.UI.OpenOnStart
 	}
 
 	if openBrowser {
 		go func() {
-			// Small delay to let the server bind before opening the browser.
 			time.Sleep(200 * time.Millisecond)
 			exec.Command("cmd", "/c", "start", "http://localhost:3000").Run() //nolint:errcheck
 		}()
@@ -82,16 +76,12 @@ func main() {
 	var reqQueue *queue.Queue
 
 	if cfg != nil {
-		// Validate model file exists.
+		// Validate model file and binary exist.
 		if _, err := os.Stat(cfg.Model.ModelPath); os.IsNotExist(err) {
-			uiServer.AddStartupError(fmt.Sprintf(
-				"Model file not found: %s", cfg.Model.ModelPath))
+			uiServer.AddStartupError(fmt.Errorf("model file not found: %s", cfg.Model.ModelPath))
 		}
-
-		// Validate llama-server binary.
 		if _, err := os.Stat(cfg.Model.Binary); os.IsNotExist(err) {
-			uiServer.AddStartupError(fmt.Sprintf(
-				"llama-server binary not found: %s", cfg.Model.Binary))
+			uiServer.AddStartupError(fmt.Errorf("llama-server binary not found: %s", cfg.Model.Binary))
 		}
 
 		// Step 6: Start process manager for llama-server.
@@ -104,13 +94,15 @@ func main() {
 					cfg.Model.CtxSize,
 					cfg.Model.GPULayers,
 					cfg.Model.NParallel,
+					cfg.Model.Port,
 				)
 			},
-			HealthURL:   "http://127.0.0.1:8081/health",
+			HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Model.Port),
 			Events:      events,
 			CheckPeriod: 5 * time.Second,
+			HTTPClient:  httpclient.New(),
 		})
-		llamaMgr.Start(rootCtx)
+		go llamaMgr.Run(rootCtx)
 
 		// Step 7: Start process manager for embedder sidecar.
 		embedMgr = proc.NewManager(proc.ManagerConfig{
@@ -119,13 +111,15 @@ func main() {
 				return proc.EmbedderArgs(
 					cfg.Embedder.Binary,
 					cfg.Embedder.ModelPath,
+					cfg.Embedder.Port,
 				)
 			},
-			HealthURL:   "http://127.0.0.1:8082/health",
+			HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Embedder.Port),
 			Events:      events,
 			CheckPeriod: 5 * time.Second,
+			HTTPClient:  httpclient.New(),
 		})
-		embedMgr.Start(rootCtx)
+		go embedMgr.Run(rootCtx)
 
 		// Open metrics store.
 		dbPath := cfg.Metrics.DBPath
@@ -134,22 +128,25 @@ func main() {
 		}
 		ms, err := metrics.Open(dbPath)
 		if err != nil {
-			uiServer.AddStartupError(fmt.Sprintf("Metrics DB error: %v", err))
+			uiServer.AddStartupError(fmt.Errorf("metrics DB error: %w", err))
 		} else {
 			metricsStore = ms
 		}
 
 		// Build inference client and queue.
-		inferClient := inference.NewClient("http://127.0.0.1:8081")
+		inferClient := inference.NewClient(
+			fmt.Sprintf("http://127.0.0.1:%d", cfg.Model.Port),
+			httpclient.NewStreaming(),
+		)
 		walPath := cfg.Queue.WALPath
 		reqQueue = queue.New(cfg.Queue.MaxDepth, walPath, inferClient)
 		if err := reqQueue.Start(rootCtx); err != nil {
-			uiServer.AddStartupError(fmt.Sprintf("Queue WAL error: %v", err))
+			uiServer.AddStartupError(fmt.Errorf("queue WAL error: %w", err))
 		}
 
 		// Step 8: Metrics recording goroutine.
 		if metricsStore != nil {
-			go recordMetrics(rootCtx, metricsStore, llamaMgr, embedMgr, reqQueue, cfg.Queue.MaxDepth)
+			go recordMetrics(rootCtx, metricsStore, llamaMgr, embedMgr, reqQueue)
 		}
 	}
 
@@ -190,7 +187,6 @@ func recordMetrics(
 	store metrics.Store,
 	llamaMgr, embedMgr *proc.Manager,
 	q *queue.Queue,
-	queueMax int,
 ) {
 	start := time.Now()
 	ticker := time.NewTicker(10 * time.Second)
@@ -201,26 +197,25 @@ func recordMetrics(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			uptime := time.Since(start).Seconds()
-			store.Record("uptime_seconds", uptime, nil)                    //nolint:errcheck
-			store.Record("queue_depth", float64(q.Depth()), nil)           //nolint:errcheck
+			store.Record("uptime_seconds", time.Since(start).Seconds(), nil)  //nolint:errcheck
+			store.Record("queue_depth", float64(q.Depth()), nil)              //nolint:errcheck
 
 			if llamaMgr != nil {
 				st := llamaMgr.Status()
-				health := 0.0
+				h := 0.0
 				if st.Healthy {
-					health = 1.0
+					h = 1.0
 				}
-				store.Record("process_health", health, map[string]string{"process": "llama-server"}) //nolint:errcheck
+				store.Record("process_health", h, map[string]string{"process": "llama-server"})    //nolint:errcheck
 				store.Record("restart_count", float64(st.RestartCount), map[string]string{"process": "llama-server"}) //nolint:errcheck
 			}
 			if embedMgr != nil {
 				st := embedMgr.Status()
-				health := 0.0
+				h := 0.0
 				if st.Healthy {
-					health = 1.0
+					h = 1.0
 				}
-				store.Record("process_health", health, map[string]string{"process": "embedder"}) //nolint:errcheck
+				store.Record("process_health", h, map[string]string{"process": "embedder"})    //nolint:errcheck
 				store.Record("restart_count", float64(st.RestartCount), map[string]string{"process": "embedder"}) //nolint:errcheck
 			}
 		}
@@ -245,7 +240,6 @@ func forwardEvents(
 			if !ok {
 				return
 			}
-			// Update UI from current manager state after any event.
 			pushStatus(uiSrv, llamaMgr, embedMgr)
 		case <-ticker.C:
 			pushStatus(uiSrv, llamaMgr, embedMgr)

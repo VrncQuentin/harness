@@ -10,13 +10,27 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/vrnc/harness/pkg/httpclient"
+)
+
+// EventKind classifies a process manager event.
+type EventKind string
+
+const (
+	EventStart      EventKind = "start"
+	EventStop       EventKind = "stop"
+	EventHealthOK   EventKind = "health_ok"
+	EventHealthFail EventKind = "health_fail"
+	EventRestart    EventKind = "restart"
+	EventError      EventKind = "error"
 )
 
 // Event is a structured log event emitted by the process manager.
 type Event struct {
 	Time    time.Time
 	Process string
-	Kind    string // "start", "stop", "health_ok", "health_fail", "restart", "error"
+	Kind    EventKind
 	Message string
 }
 
@@ -25,7 +39,7 @@ type Status struct {
 	Running      bool
 	Healthy      bool
 	RestartCount int
-	LastError    string
+	LastError    error
 }
 
 // Manager manages a single child process with health checking and restart logic.
@@ -35,13 +49,14 @@ type Manager struct {
 	healthURL   string
 	events      chan<- Event
 	checkPeriod time.Duration
+	httpClient  *http.Client
 
 	mu           sync.Mutex
 	cmd          *exec.Cmd
 	running      bool
 	healthy      bool
 	restartCount int
-	lastError    string
+	lastError    error
 }
 
 // ManagerConfig holds the configuration for a Manager.
@@ -51,6 +66,8 @@ type ManagerConfig struct {
 	HealthURL   string
 	Events      chan<- Event
 	CheckPeriod time.Duration
+	// HTTPClient is used for health checks. Defaults to httpclient.New() if nil.
+	HTTPClient *http.Client
 }
 
 // NewManager creates a new process Manager.
@@ -59,35 +76,24 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if period == 0 {
 		period = 5 * time.Second
 	}
+	hc := cfg.HTTPClient
+	if hc == nil {
+		hc = httpclient.New()
+	}
 	return &Manager{
 		name:        cfg.Name,
 		buildArgs:   cfg.BuildArgs,
 		healthURL:   cfg.HealthURL,
 		events:      cfg.Events,
 		checkPeriod: period,
+		httpClient:  hc,
 	}
 }
 
-// Start begins the process and the health check loop. It returns immediately;
-// the process runs in background goroutines. ctx cancellation triggers shutdown.
-func (m *Manager) Start(ctx context.Context) {
-	go m.run(ctx)
-}
-
-// Status returns the current status of the managed process.
-func (m *Manager) Status() Status {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return Status{
-		Running:      m.running,
-		Healthy:      m.healthy,
-		RestartCount: m.restartCount,
-		LastError:    m.lastError,
-	}
-}
-
-// run is the main loop: start the process, health-check it, restart on failure.
-func (m *Manager) run(ctx context.Context) {
+// Run is the main loop: start the process, health-check it, restart on failure.
+// It blocks until ctx is cancelled. Callers are responsible for launching it
+// as a goroutine: go mgr.Run(ctx).
+func (m *Manager) Run(ctx context.Context) {
 	backoff := time.Second
 	maxBackoff := 30 * time.Second
 
@@ -96,9 +102,9 @@ func (m *Manager) run(ctx context.Context) {
 			return
 		}
 
-		if err := m.startProcess(); err != nil {
-			m.setError(err.Error())
-			m.emit("error", fmt.Sprintf("failed to start: %v", err))
+		if err := m.startProcess(ctx); err != nil {
+			m.setError(err)
+			m.emit(EventError, fmt.Sprintf("failed to start: %v", err))
 			select {
 			case <-ctx.Done():
 				return
@@ -109,7 +115,7 @@ func (m *Manager) run(ctx context.Context) {
 		}
 
 		backoff = time.Second // reset on successful start
-		m.emit("start", "process started")
+		m.emit(EventStart, "process started")
 
 		// Health check loop — runs until the process dies or context is cancelled.
 		m.healthLoop(ctx)
@@ -126,7 +132,7 @@ func (m *Manager) run(ctx context.Context) {
 		m.healthy = false
 		m.mu.Unlock()
 
-		m.emit("restart", fmt.Sprintf("restarting (attempt %d), backoff %s", m.restartCount, backoff))
+		m.emit(EventRestart, fmt.Sprintf("restarting (attempt %d), backoff %s", m.restartCount, backoff))
 
 		select {
 		case <-ctx.Done():
@@ -134,6 +140,18 @@ func (m *Manager) run(ctx context.Context) {
 		case <-time.After(backoff):
 			backoff = min(backoff*2, maxBackoff)
 		}
+	}
+}
+
+// Status returns the current status of the managed process.
+func (m *Manager) Status() Status {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return Status{
+		Running:      m.running,
+		Healthy:      m.healthy,
+		RestartCount: m.restartCount,
+		LastError:    m.lastError,
 	}
 }
 
@@ -164,15 +182,15 @@ func (m *Manager) healthLoop(ctx context.Context) {
 			m.running = false
 			m.healthy = false
 			m.mu.Unlock()
-			m.emit("stop", "process exited")
+			m.emit(EventStop, "process exited")
 			return
 		case <-ticker.C:
 			if err := m.checkHealth(ctx); err != nil {
 				m.mu.Lock()
 				m.healthy = false
-				m.lastError = err.Error()
+				m.lastError = err
 				m.mu.Unlock()
-				m.emit("health_fail", fmt.Sprintf("health check failed: %v", err))
+				m.emit(EventHealthFail, fmt.Sprintf("health check failed: %v", err))
 				// Kill the process so the outer loop restarts it.
 				m.stopProcess()
 				return
@@ -180,15 +198,16 @@ func (m *Manager) healthLoop(ctx context.Context) {
 			m.mu.Lock()
 			m.healthy = true
 			m.mu.Unlock()
-			m.emit("health_ok", "healthy")
+			m.emit(EventHealthOK, "healthy")
 		}
 	}
 }
 
-// startProcess spawns the child process.
-func (m *Manager) startProcess() error {
+// startProcess spawns the child process. Uses CommandContext so the OS kills
+// the child automatically when ctx is cancelled.
+func (m *Manager) startProcess(ctx context.Context) error {
 	binary, args := m.buildArgs()
-	cmd := exec.Command(binary, args...)
+	cmd := exec.CommandContext(ctx, binary, args...)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("proc: failed to start %s: %w", m.name, err)
 	}
@@ -215,32 +234,32 @@ func (m *Manager) checkHealth(ctx context.Context) error {
 	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.healthURL, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.healthURL, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("proc: build health request: %w", err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := m.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("proc: health GET %s: %w", m.healthURL, err)
 	}
 	resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= 300 {
 		return fmt.Errorf("proc: health check returned status %d", resp.StatusCode)
 	}
 	return nil
 }
 
-// setError stores the last error message under the lock.
-func (m *Manager) setError(msg string) {
+// setError stores the last error under the lock.
+func (m *Manager) setError(err error) {
 	m.mu.Lock()
-	m.lastError = msg
+	m.lastError = err
 	m.mu.Unlock()
 }
 
 // emit sends an event on the events channel (non-blocking).
-func (m *Manager) emit(kind, msg string) {
+func (m *Manager) emit(kind EventKind, msg string) {
 	if m.events == nil {
 		return
 	}
@@ -255,30 +274,23 @@ func (m *Manager) emit(kind, msg string) {
 	}
 }
 
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // LlamaArgs builds the argument slice for llama-server.
-func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel int) (string, []string) {
+func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int) (string, []string) {
 	return binary, []string{
 		"--model", modelPath,
 		"--ctx-size", fmt.Sprintf("%d", ctxSize),
 		"--n-gpu-layers", fmt.Sprintf("%d", gpuLayers),
 		"--parallel", fmt.Sprintf("%d", nParallel),
-		"--port", "8081",
+		"--port", fmt.Sprintf("%d", port),
 		"--host", "127.0.0.1",
 	}
 }
 
 // EmbedderArgs builds the argument slice for the embedder sidecar.
-func EmbedderArgs(binary, modelPath string) (string, []string) {
+func EmbedderArgs(binary, modelPath string, port int) (string, []string) {
 	return binary, []string{
 		"--model", modelPath,
-		"--port", "8082",
+		"--port", fmt.Sprintf("%d", port),
 		"--host", "127.0.0.1",
 	}
 }

@@ -16,7 +16,7 @@ func TestHealth_OK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, nil)
 	if err := c.Health(context.Background()); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -28,7 +28,7 @@ func TestHealth_NotOK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, nil)
 	if err := c.Health(context.Background()); err == nil {
 		t.Fatal("expected error for 503 response")
 	}
@@ -49,7 +49,7 @@ func TestComplete_Streaming(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, nil)
 	ch, err := c.Complete(context.Background(), CompletionRequest{
 		Messages: []Message{{Role: "user", Content: "hi"}},
 	})
@@ -84,7 +84,7 @@ func TestComplete_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	c := NewClient(srv.URL)
+	c := NewClient(srv.URL, nil)
 	_, err := c.Complete(ctx, CompletionRequest{
 		Messages: []Message{{Role: "user", Content: "hi"}},
 	})

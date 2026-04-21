@@ -28,12 +28,14 @@ type ModelConfig struct {
 	CtxSize   int    `toml:"ctx_size"`
 	GPULayers int    `toml:"gpu_layers"`
 	NParallel int    `toml:"n_parallel"`
+	Port      int    `toml:"port"` // default: 8081
 }
 
 // EmbedderConfig holds the embedder sidecar configuration.
 type EmbedderConfig struct {
 	Binary    string `toml:"binary"`
 	ModelPath string `toml:"model_path"`
+	Port      int    `toml:"port"` // default: 8082
 }
 
 // MemoryConfig holds memory repo configuration.
@@ -79,6 +81,10 @@ func Defaults() Config {
 			CtxSize:   32768,
 			GPULayers: 35,
 			NParallel: 1,
+			Port:      8081,
+		},
+		Embedder: EmbedderConfig{
+			Port: 8082,
 		},
 		UI: UIConfig{
 			Port:        3000,
@@ -131,6 +137,18 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Model.ModelPath == "" {
 		return fmt.Errorf("config: model.model_path is required")
+	}
+	if cfg.Model.Port == 0 {
+		return fmt.Errorf("config: model.port must be non-zero")
+	}
+	if cfg.Embedder.Binary == "" {
+		return fmt.Errorf("config: embedder.binary is required")
+	}
+	if cfg.Embedder.ModelPath == "" {
+		return fmt.Errorf("config: embedder.model_path is required")
+	}
+	if cfg.Embedder.Port == 0 {
+		return fmt.Errorf("config: embedder.port must be non-zero")
 	}
 	if cfg.UI.Port == 0 {
 		return fmt.Errorf("config: ui.port must be non-zero")

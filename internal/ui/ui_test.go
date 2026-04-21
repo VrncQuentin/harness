@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,8 +30,8 @@ func TestHandleStatus_OK(t *testing.T) {
 
 func TestHandleStatus_WithErrors(t *testing.T) {
 	s := NewServer(3000)
-	s.AddStartupError("config.toml not found")
-	s.AddStartupError("llama-server binary not found")
+	s.AddStartupError(errors.New("config.toml not found"))
+	s.AddStartupError(errors.New("llama-server binary not found"))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()

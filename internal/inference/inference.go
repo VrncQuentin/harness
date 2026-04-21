@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/vrnc/harness/pkg/httpclient"
 )
 
 // Client is the interface for the inference backend.
@@ -52,32 +54,31 @@ type sseChunk struct {
 	} `json:"choices"`
 }
 
-// httpClient implements Client against a base URL.
-type httpClient struct {
+// implClient implements Client against a base URL.
+type implClient struct {
 	baseURL    string
 	httpClient *http.Client
 }
 
 // NewClient creates a new inference client targeting baseURL
-// (e.g. "http://127.0.0.1:8081").
-func NewClient(baseURL string) Client {
-	return &httpClient{
-		baseURL: strings.TrimRight(baseURL, "/"),
-		httpClient: &http.Client{
-			Timeout: 0, // streaming — no overall timeout; rely on context
-			Transport: &http.Transport{
-				ResponseHeaderTimeout: 30 * time.Second,
-			},
-		},
+// (e.g. "http://127.0.0.1:8081"). Pass nil for hc to use the default
+// streaming-optimised client from pkg/httpclient.
+func NewClient(baseURL string, hc *http.Client) Client {
+	if hc == nil {
+		hc = httpclient.NewStreaming()
+	}
+	return &implClient{
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		httpClient: hc,
 	}
 }
 
 // Health performs a GET /health and returns nil if the server is up.
-func (c *httpClient) Health(ctx context.Context) error {
+func (c *implClient) Health(ctx context.Context) error {
 	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.baseURL+"/health", nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.baseURL+"/health", http.NoBody)
 	if err != nil {
 		return fmt.Errorf("inference: build health request: %w", err)
 	}
@@ -88,7 +89,7 @@ func (c *httpClient) Health(ctx context.Context) error {
 	}
 	resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= 300 {
 		return fmt.Errorf("inference: health check returned %d", resp.StatusCode)
 	}
 	return nil
@@ -96,7 +97,7 @@ func (c *httpClient) Health(ctx context.Context) error {
 
 // Complete sends a streaming chat completion request and returns a channel of tokens.
 // The channel is closed after the last token or on error. Cancelling ctx stops the stream.
-func (c *httpClient) Complete(ctx context.Context, req CompletionRequest) (<-chan Token, error) {
+func (c *implClient) Complete(ctx context.Context, req CompletionRequest) (<-chan Token, error) {
 	req.Stream = true
 
 	body, err := json.Marshal(req)

@@ -24,6 +24,10 @@ ctx_size = 4096
 gpu_layers = 10
 n_parallel = 1
 
+[embedder]
+binary = "/path/to/embedder"
+model_path = "/path/to/embed.gguf"
+
 [ui]
 port = 3000
 open_on_start = false

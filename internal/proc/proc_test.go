@@ -27,14 +27,16 @@ func TestStatus_InitialState(t *testing.T) {
 	if s.RestartCount != 0 {
 		t.Errorf("expected restart count 0, got %d", s.RestartCount)
 	}
+	if s.LastError != nil {
+		t.Errorf("expected nil LastError initially, got %v", s.LastError)
+	}
 }
 
 func TestLlamaArgs(t *testing.T) {
-	bin, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2)
+	bin, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081)
 	if bin != "/bin/llama-server" {
 		t.Errorf("unexpected binary: %s", bin)
 	}
-	// Verify required flags are present.
 	found := map[string]bool{}
 	for i := 0; i < len(args)-1; i++ {
 		found[args[i]] = true
@@ -47,7 +49,7 @@ func TestLlamaArgs(t *testing.T) {
 }
 
 func TestEmbedderArgs(t *testing.T) {
-	bin, args := EmbedderArgs("/bin/embedder", "/models/embed.gguf")
+	bin, args := EmbedderArgs("/bin/embedder", "/models/embed.gguf", 8082)
 	if bin != "/bin/embedder" {
 		t.Errorf("unexpected binary: %s", bin)
 	}
@@ -56,13 +58,16 @@ func TestEmbedderArgs(t *testing.T) {
 	}
 }
 
-func TestMinDuration(t *testing.T) {
-	a := 2 * time.Second
-	b := 5 * time.Second
-	if got := min(a, b); got != a {
-		t.Errorf("min(%v,%v) = %v, want %v", a, b, got, a)
-	}
-	if got := min(b, a); got != a {
-		t.Errorf("min(%v,%v) = %v, want %v", b, a, got, a)
+func TestEventKindConstants(t *testing.T) {
+	kinds := []EventKind{EventStart, EventStop, EventHealthOK, EventHealthFail, EventRestart, EventError}
+	seen := map[EventKind]bool{}
+	for _, k := range kinds {
+		if seen[k] {
+			t.Errorf("duplicate EventKind: %q", k)
+		}
+		seen[k] = true
+		if k == "" {
+			t.Error("empty EventKind")
+		}
 	}
 }

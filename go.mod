@@ -1,6 +1,6 @@
 module github.com/vrnc/harness
 
-go 1.22
+go 1.25
 
 require (
 	fyne.io/systray v1.11.0
