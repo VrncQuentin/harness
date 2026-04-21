@@ -22,7 +22,7 @@ Write-Host "==> Building harness ($Version @ $Commit)..." -ForegroundColor Cyan
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
-$LdFlags = "-s -w " +
+$LdFlags = "-s -w -H windowsgui " +
            "-X main.version=$Version " +
            "-X main.commit=$Commit " +
            "-X main.builtAt=$Built"
