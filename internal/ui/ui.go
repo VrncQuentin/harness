@@ -62,7 +62,11 @@ func NewServer(port int) *Server {
 		port:  port,
 		state: &State{data: stateSnapshot{StartTime: time.Now()}},
 	}
-	s.tmpl = template.Must(template.ParseFS(assets.TemplateFS, "templates/status.html"))
+	s.tmpl = template.Must(template.ParseFS(
+		assets.TemplateFS,
+		"templates/layout.html",
+		"templates/status.html",
+	))
 	return s
 }
 
@@ -113,6 +117,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleStatus)
 	mux.HandleFunc("/events", s.handleSSE)
+	mux.Handle("/static/", http.FileServer(http.FS(assets.StaticFS)))
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.port),
@@ -139,12 +144,69 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// handleStatus renders the status page.
+// pageData is the template context for a rendered page. It embeds the state
+// snapshot so status fields are reachable directly (e.g. .LlamaStatus).
+type pageData struct {
+	stateSnapshot
+	Page       string
+	QueuePct   int
+	UptimeText string
+}
+
+// handleStatus renders the status page. Only the root path renders the page;
+// any other unknown path returns 404 so we don't shadow future routes.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
 	snap := s.state.snapshot()
+	data := pageData{
+		stateSnapshot: snap,
+		Page:          "status",
+		QueuePct:      queuePct(snap.QueueDepth, snap.QueueMax),
+		UptimeText:    formatUptime(time.Since(snap.StartTime)),
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tmpl.Execute(w, snap); err != nil {
+	if err := s.tmpl.ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func queuePct(depth, max int) int {
+	if max <= 0 {
+		return 0
+	}
+	p := depth * 100 / max
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	return p
+}
+
+func formatUptime(d time.Duration) string {
+	s := int64(d.Seconds())
+	if s < 0 {
+		s = 0
+	}
+	days := s / 86400
+	s -= days * 86400
+	h := s / 3600
+	s -= h * 3600
+	m := s / 60
+	s -= m * 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh", days, h)
+	case h > 0:
+		return fmt.Sprintf("%dh %dm", h, m)
+	case m > 0:
+		return fmt.Sprintf("%dm %ds", m, s)
+	default:
+		return fmt.Sprintf("%ds", s)
 	}
 }
 

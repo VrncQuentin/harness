@@ -1,0 +1,54 @@
+document.addEventListener('htmx:sseMessage', function (evt) {
+  try {
+    var d = JSON.parse(evt.detail.data);
+    setBadge('llama-badge', d.llama_healthy);
+    setBadge('embed-badge', d.embed_healthy);
+    setText('llama-running', d.llama_running ? 'Yes' : 'No');
+    setText('embed-running', d.embed_running ? 'Yes' : 'No');
+    setText('llama-restarts', d.llama_restarts);
+    setText('embed-restarts', d.embed_restarts);
+    setQueue(d.queue_depth, d.queue_max);
+    setUptime(d.uptime_seconds);
+  } catch (e) { /* ignore malformed frame */ }
+});
+
+function setBadge(id, ok) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = ok ? 'Healthy' : 'Unhealthy';
+  el.className = 'badge ' + (ok ? 'badge-ok' : 'badge-err');
+}
+
+function setText(id, v) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = v;
+}
+
+function setQueue(depth, max) {
+  var qd = document.getElementById('queue-depth');
+  if (qd) {
+    qd.innerHTML = depth + '<span class="num-max"> / ' + max + '</span>';
+  }
+  var m = document.getElementById('queue-meter');
+  if (m) {
+    var pct = max > 0 ? (depth * 100 / max) : 0;
+    m.style.width = pct + '%';
+  }
+}
+
+function setUptime(s) {
+  var el = document.getElementById('uptime');
+  if (!el) return;
+  el.textContent = formatUptime(s);
+}
+
+function formatUptime(s) {
+  s = Math.max(0, Math.floor(s));
+  var d = Math.floor(s / 86400); s -= d * 86400;
+  var h = Math.floor(s / 3600);  s -= h * 3600;
+  var m = Math.floor(s / 60);    s -= m * 60;
+  if (d > 0) return d + 'd ' + h + 'h';
+  if (h > 0) return h + 'h ' + m + 'm';
+  if (m > 0) return m + 'm ' + s + 's';
+  return s + 's';
+}
