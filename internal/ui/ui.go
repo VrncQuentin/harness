@@ -23,16 +23,26 @@ type ProcessStatus struct {
 	LastError    error
 }
 
-// State is the complete UI state snapshot.
-type State struct {
-	mu sync.RWMutex
-
+// stateSnapshot holds the copyable fields of State (no mutex).
+type stateSnapshot struct {
 	LlamaStatus    ProcessStatus
 	EmbedderStatus ProcessStatus
 	QueueDepth     int
 	QueueMax       int
 	StartupErrors  []error
 	StartTime      time.Time
+}
+
+// State is the protected mutable state of the UI server.
+type State struct {
+	mu   sync.RWMutex
+	data stateSnapshot
+}
+
+func (s *State) snapshot() stateSnapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.data
 }
 
 // Server is the UI HTTP server.
@@ -50,7 +60,7 @@ type Server struct {
 func NewServer(port int) *Server {
 	s := &Server{
 		port:  port,
-		state: &State{StartTime: time.Now()},
+		state: &State{data: stateSnapshot{StartTime: time.Now()}},
 	}
 	s.tmpl = template.Must(template.ParseFS(assets.TemplateFS, "templates/status.html"))
 	return s
@@ -59,7 +69,7 @@ func NewServer(port int) *Server {
 // SetLlamaStatus updates the llama-server status.
 func (s *Server) SetLlamaStatus(st ProcessStatus) {
 	s.state.mu.Lock()
-	s.state.LlamaStatus = st
+	s.state.data.LlamaStatus = st
 	s.state.mu.Unlock()
 	s.broadcastState()
 }
@@ -67,7 +77,7 @@ func (s *Server) SetLlamaStatus(st ProcessStatus) {
 // SetEmbedderStatus updates the embedder status.
 func (s *Server) SetEmbedderStatus(st ProcessStatus) {
 	s.state.mu.Lock()
-	s.state.EmbedderStatus = st
+	s.state.data.EmbedderStatus = st
 	s.state.mu.Unlock()
 	s.broadcastState()
 }
@@ -75,8 +85,8 @@ func (s *Server) SetEmbedderStatus(st ProcessStatus) {
 // SetQueueDepth updates the queue depth.
 func (s *Server) SetQueueDepth(depth, max int) {
 	s.state.mu.Lock()
-	s.state.QueueDepth = depth
-	s.state.QueueMax = max
+	s.state.data.QueueDepth = depth
+	s.state.data.QueueMax = max
 	s.state.mu.Unlock()
 	s.broadcastState()
 }
@@ -84,7 +94,7 @@ func (s *Server) SetQueueDepth(depth, max int) {
 // AddStartupError appends a startup error.
 func (s *Server) AddStartupError(err error) {
 	s.state.mu.Lock()
-	s.state.StartupErrors = append(s.state.StartupErrors, err)
+	s.state.data.StartupErrors = append(s.state.data.StartupErrors, err)
 	s.state.mu.Unlock()
 	s.broadcastState()
 }
@@ -92,7 +102,7 @@ func (s *Server) AddStartupError(err error) {
 // ClearStartupErrors clears all startup errors.
 func (s *Server) ClearStartupErrors() {
 	s.state.mu.Lock()
-	s.state.StartupErrors = nil
+	s.state.data.StartupErrors = nil
 	s.state.mu.Unlock()
 	s.broadcastState()
 }
@@ -131,10 +141,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 // handleStatus renders the status page.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	s.state.mu.RLock()
-	snap := *s.state
-	s.state.mu.RUnlock()
-
+	snap := s.state.snapshot()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.tmpl.Execute(w, snap); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
@@ -182,11 +189,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 // broadcastState sends the current state to all SSE clients.
 func (s *Server) broadcastState() {
-	s.state.mu.RLock()
-	snap := *s.state
-	s.state.mu.RUnlock()
-
-	b, _ := json.Marshal(stateToPayload(snap))
+	b, _ := json.Marshal(stateToPayload(s.state.snapshot()))
 	msg := string(b)
 
 	s.sseClients.Range(func(key, _ any) bool {
@@ -201,11 +204,7 @@ func (s *Server) broadcastState() {
 
 // sendState marshals the current state and sends it to a specific client channel.
 func (s *Server) sendState(ch chan string) {
-	s.state.mu.RLock()
-	snap := *s.state
-	s.state.mu.RUnlock()
-
-	b, _ := json.Marshal(stateToPayload(snap))
+	b, _ := json.Marshal(stateToPayload(s.state.snapshot()))
 	select {
 	case ch <- string(b):
 	default:
@@ -225,7 +224,7 @@ type ssePayload struct {
 	UptimeSeconds int64    `json:"uptime_seconds"`
 }
 
-func stateToPayload(s State) ssePayload {
+func stateToPayload(s stateSnapshot) ssePayload {
 	var errs []string
 	for _, e := range s.StartupErrors {
 		errs = append(errs, e.Error())
