@@ -1,0 +1,37 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Harness — {{template "title" .}}</title>
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js"></script>
+<script src="https://unpkg.com/htmx.org@1.9.12/dist/ext/sse.js"></script>
+</head>
+<body hx-ext="sse" sse-connect="/events" sse-swap="message">
+<header class="topbar">
+  <div class="wrap">
+    <div class="brand">
+      <span class="brand-mark"></span>
+      <span class="brand-name">Harness</span>
+    </div>
+    <nav class="nav">
+      <a href="/" class="nav-link {{if eq .Page "status"}}active{{end}}">Status</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap main">
+{{template "content" .}}
+</main>
+
+<footer class="footer">
+  <div class="wrap">
+    <span>Local AI inference harness</span>
+    <span class="mono">uptime <span id="uptime">{{.UptimeText}}</span></span>
+  </div>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>{{end}}
