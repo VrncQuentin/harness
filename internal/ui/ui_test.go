@@ -47,9 +47,7 @@ func TestSetLlamaStatus(t *testing.T) {
 	s := NewServer(3000)
 	s.SetLlamaStatus(ProcessStatus{Name: "llama", Running: true, Healthy: true})
 
-	s.state.mu.RLock()
-	healthy := s.state.LlamaStatus.Healthy
-	s.state.mu.RUnlock()
+	healthy := s.state.snapshot().LlamaStatus.Healthy
 
 	if !healthy {
 		t.Error("expected llama status healthy")
@@ -60,10 +58,9 @@ func TestSetQueueDepth(t *testing.T) {
 	s := NewServer(3000)
 	s.SetQueueDepth(3, 8)
 
-	s.state.mu.RLock()
-	depth := s.state.QueueDepth
-	max := s.state.QueueMax
-	s.state.mu.RUnlock()
+	snap := s.state.snapshot()
+	depth := snap.QueueDepth
+	max := snap.QueueMax
 
 	if depth != 3 || max != 8 {
 		t.Errorf("expected depth 3/8, got %d/%d", depth, max)
