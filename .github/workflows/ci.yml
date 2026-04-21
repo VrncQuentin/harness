@@ -7,33 +7,18 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    name: Vet & Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Vet
-        run: go vet ./...
-
-      - name: Test
-        run: go test -count=1 ./...
-
-  build:
-    name: Build (Windows)
+  ci:
+    name: Vet, Test & Build
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
-
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -count=1 ./...
       - name: Build
         run: go build ./cmd/harness
