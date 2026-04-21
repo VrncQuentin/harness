@@ -1,0 +1,20 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - goimports
+    - misspell
+    - prealloc
+    - unconvert
+    - unparam
+
+issues:
+  max-same-issues: 0
