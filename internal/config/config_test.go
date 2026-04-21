@@ -68,3 +68,72 @@ func TestDefaults(t *testing.T) {
 		t.Errorf("expected default queue depth 8, got %d", d.Queue.MaxDepth)
 	}
 }
+
+func TestSaveLoadRoundtrip(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Defaults()
+	cfg.Model.Binary = "/path/to/llama-server"
+	cfg.Model.ModelPath = "/path/to/model.gguf"
+	cfg.Embedder.Binary = "/path/to/embedder"
+	cfg.Embedder.ModelPath = "/path/to/embed.gguf"
+
+	if err := Save(&cfg, dir); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Model.Binary != cfg.Model.Binary {
+		t.Errorf("binary roundtrip: got %q, want %q", loaded.Model.Binary, cfg.Model.Binary)
+	}
+	if loaded.UI.Port != cfg.UI.Port {
+		t.Errorf("ui port roundtrip: got %d, want %d", loaded.UI.Port, cfg.UI.Port)
+	}
+	if loaded.Queue.MaxDepth != cfg.Queue.MaxDepth {
+		t.Errorf("queue max_depth roundtrip: got %d, want %d", loaded.Queue.MaxDepth, cfg.Queue.MaxDepth)
+	}
+}
+
+func TestSaveAtomic(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Defaults()
+	cfg.Model.Binary = "/a"
+	cfg.Model.ModelPath = "/a.gguf"
+	cfg.Embedder.Binary = "/b"
+	cfg.Embedder.ModelPath = "/b.gguf"
+
+	if err := Save(&cfg, dir); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	// Overwrite with different content; no temp file should remain.
+	cfg.Model.Binary = "/c"
+	if err := Save(&cfg, dir); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if filepath.Ext(e.Name()) == ".tmp" {
+			t.Errorf("unexpected leftover temp file: %s", e.Name())
+		}
+	}
+}
+
+func TestValidateExposed(t *testing.T) {
+	cfg := Defaults()
+	if err := Validate(&cfg); err == nil {
+		t.Error("expected Validate to fail on empty defaults (missing required paths)")
+	}
+	cfg.Model.Binary = "/x"
+	cfg.Model.ModelPath = "/y.gguf"
+	cfg.Embedder.Binary = "/a"
+	cfg.Embedder.ModelPath = "/b.gguf"
+	if err := Validate(&cfg); err != nil {
+		t.Errorf("expected Validate to pass once required fields set: %v", err)
+	}
+}

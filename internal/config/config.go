@@ -123,15 +123,41 @@ func Load(dir string) (*Config, error) {
 		return nil, fmt.Errorf("config: failed to parse config.toml: %w", err)
 	}
 
-	if err := validate(&cfg); err != nil {
+	if err := Validate(&cfg); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
 }
 
-// validate checks that required fields are present.
-func validate(cfg *Config) error {
+// Save atomically writes cfg to dir/config.toml. It writes a temp file in the
+// same directory and renames into place so readers never see a partial file.
+func Save(cfg *Config, dir string) error {
+	path := filepath.Join(dir, "config.toml")
+	tmp, err := os.CreateTemp(dir, "config.toml.*.tmp")
+	if err != nil {
+		return fmt.Errorf("config: create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+
+	if err := toml.NewEncoder(tmp).Encode(cfg); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("config: encode TOML: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("config: close temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("config: rename temp file: %w", err)
+	}
+	return nil
+}
+
+// Validate checks that required fields are present.
+func Validate(cfg *Config) error {
 	if cfg.Model.Binary == "" {
 		return fmt.Errorf("config: model.binary is required")
 	}
