@@ -3,8 +3,8 @@ package assets
 
 import "embed"
 
-//go:embed icon.png
-var IconPNG []byte
+//go:embed icon.ico
+var IconICO []byte
 
 //go:embed templates/status.html
 var TemplateFS embed.FS
