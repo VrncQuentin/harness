@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: ["**"]
   pull_request:
     branches: [main]
 
@@ -10,7 +8,6 @@ jobs:
   lint:
     name: Lint
     runs-on: windows-latest
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -24,7 +21,6 @@ jobs:
   ci:
     name: Vet, Test & Build
     runs-on: windows-latest
-    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
