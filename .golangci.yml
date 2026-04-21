@@ -9,12 +9,15 @@ linters:
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
-    - goimports
     - misspell
     - prealloc
     - unconvert
     - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 
 issues:
   max-same-issues: 0
