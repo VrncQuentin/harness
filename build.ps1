@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 
 $_commit  = git rev-parse --short HEAD 2>&1
 $Commit   = if ($LASTEXITCODE -eq 0) { "$_commit".Trim() } else { "unknown" }
-$_version = git describe --tags --exact-match 2>&1
+$_version = & { $ErrorActionPreference = 'SilentlyContinue'; git describe --tags --exact-match 2>&1 }
 $Version  = if ($LASTEXITCODE -eq 0) { "$_version".Trim() } else { "dev" }
 $Built   = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
 
