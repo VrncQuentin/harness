@@ -431,7 +431,16 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		s.renderConfig(w, r, configPageData{SaveErr: "could not parse form: " + err.Error()}, true)
 		return
 	}
-	cfg := parseConfigForm(r)
+	// Use the current on-disk config as the base so fields the form doesn't
+	// touch (or numeric fields left blank) preserve their existing values
+	// rather than snapping back to Defaults.
+	base := config.Defaults()
+	if s.binDir != "" {
+		if cur, err := config.Load(s.binDir); err == nil {
+			base = *cur
+		}
+	}
+	cfg := parseConfigForm(r, &base)
 
 	if err := config.Validate(cfg); err != nil {
 		s.renderConfig(w, r, configPageData{Config: cfg, ValidationErr: err.Error()}, true)
@@ -461,10 +470,12 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-// parseConfigForm builds a Config from the posted form, applying defaults for
-// numeric fields that are missing or non-numeric.
-func parseConfigForm(r *http.Request) *config.Config {
-	cfg := config.Defaults()
+// parseConfigForm builds a Config from the posted form, overlaying values on
+// base. Numeric fields that are missing or unparseable keep the base value;
+// string fields are always overwritten (an empty required field will surface
+// as a validation error downstream).
+func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
+	cfg := *base
 
 	cfg.Model.Binary = strings.TrimSpace(r.FormValue("model_binary"))
 	cfg.Model.ModelPath = strings.TrimSpace(r.FormValue("model_path"))

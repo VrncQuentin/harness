@@ -140,17 +140,20 @@ func Save(cfg *Config, dir string) error {
 	}
 	tmpPath := tmp.Name()
 
-	if err := toml.NewEncoder(tmp).Encode(cfg); err != nil {
+	// Best-effort cleanup on every error path. Close is a no-op after the
+	// explicit Close below; Remove is a no-op after a successful Rename.
+	defer func() {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
+	}()
+
+	if err := toml.NewEncoder(tmp).Encode(cfg); err != nil {
 		return fmt.Errorf("config: encode TOML: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
 		return fmt.Errorf("config: close temp file: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
 		return fmt.Errorf("config: rename temp file: %w", err)
 	}
 	return nil

@@ -167,6 +167,57 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	}
 }
 
+func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
+	dir := t.TempDir()
+	// Seed disk with a config whose numeric values diverge from Defaults.
+	existing := config.Defaults()
+	existing.Model.Binary = "C:\\existing.exe"
+	existing.Model.ModelPath = "C:\\existing.gguf"
+	existing.Model.CtxSize = 11111
+	existing.Model.GPULayers = 42
+	existing.Embedder.Binary = "C:\\eb.exe"
+	existing.Embedder.ModelPath = "C:\\eb.gguf"
+	existing.Prompt.MemoryTokenBudget = 9999
+	if err := config.Save(&existing, dir); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	s := NewServer(3000, dir)
+
+	form := url.Values{}
+	// Update only the string fields; leave every numeric field blank.
+	form.Set("model_binary", "C:\\new.exe")
+	form.Set("model_path", "C:\\new.gguf")
+	form.Set("embed_binary", "C:\\eb.exe")
+	form.Set("embed_path", "C:\\eb.gguf")
+
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	loaded, err := config.Load(dir)
+	if err != nil {
+		t.Fatalf("load after save: %v", err)
+	}
+	if loaded.Model.CtxSize != 11111 {
+		t.Errorf("expected Model.CtxSize preserved (11111), got %d", loaded.Model.CtxSize)
+	}
+	if loaded.Model.GPULayers != 42 {
+		t.Errorf("expected Model.GPULayers preserved (42), got %d", loaded.Model.GPULayers)
+	}
+	if loaded.Prompt.MemoryTokenBudget != 9999 {
+		t.Errorf("expected Prompt.MemoryTokenBudget preserved (9999), got %d", loaded.Prompt.MemoryTokenBudget)
+	}
+	if loaded.Model.Binary != "C:\\new.exe" {
+		t.Errorf("expected Model.Binary updated, got %q", loaded.Model.Binary)
+	}
+}
+
 func TestHandleConfig_POSTInvalidShowsValidationError(t *testing.T) {
 	dir := t.TempDir()
 	s := NewServer(3000, dir)
