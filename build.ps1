@@ -1,4 +1,3 @@
-#Requires -Version 7.0
 [CmdletBinding()]
 param(
     [string]$OutDir = "dist",
@@ -7,8 +6,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$Commit  = (git rev-parse --short HEAD 2>$null) ?? "unknown"
-$Version = (git describe --tags --exact-match 2>$null) ?? "dev"
+$_commit  = git rev-parse --short HEAD 2>$null
+$Commit   = if ($_commit) { $_commit } else { "unknown" }
+$_version = git describe --tags --exact-match 2>$null
+$Version  = if ($_version) { $_version } else { "dev" }
 $Built   = (Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ")
 
 if ($Test) {
