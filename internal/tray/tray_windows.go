@@ -32,7 +32,7 @@ func AcquireSingleInstance() (bool, error) {
 	}
 
 	// Keep the handle open for the lifetime of the process.
-	// We intentionally never close it — Windows will release it when the process exits.
+	// We intentionally never close it - Windows will release it when the process exits.
 	_ = handle
 	return true, nil
 }

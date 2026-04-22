@@ -1,0 +1,47 @@
+#!/bin/sh
+# Pre-commit hook: run the formatter on staged files; fail if anything was fixed
+# so the developer can re-stage.
+#
+# Enable with: scripts/install-hooks.ps1  (sets core.hooksPath)
+
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+if command -v pwsh >/dev/null 2>&1; then
+    PS=pwsh
+elif command -v powershell >/dev/null 2>&1; then
+    PS=powershell
+else
+    echo "pre-commit: neither pwsh nor powershell on PATH, skipping format" >&2
+    exit 0
+fi
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+if [ -z "$staged" ]; then
+    exit 0
+fi
+
+"$PS" -NoProfile -ExecutionPolicy Bypass -File "$REPO_ROOT/scripts/format.ps1" -Staged
+rc=$?
+if [ $rc -ne 0 ]; then
+    echo "pre-commit: formatter errored (exit $rc)" >&2
+    exit $rc
+fi
+
+dirty=0
+for f in $staged; do
+    if ! git diff --quiet -- "$f" 2>/dev/null; then
+        if [ $dirty -eq 0 ]; then
+            echo "" >&2
+            echo "pre-commit: formatter modified these staged files:" >&2
+        fi
+        echo "  $f" >&2
+        dirty=1
+    fi
+done
+
+if [ $dirty -eq 1 ]; then
+    echo "" >&2
+    echo "Re-stage ('git add <files>') and re-commit." >&2
+    exit 1
+fi
+exit 0

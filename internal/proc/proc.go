@@ -117,7 +117,7 @@ func (m *Manager) Run(ctx context.Context) {
 		backoff = time.Second // reset on successful start
 		m.emit(EventStart, "process started")
 
-		// Health check loop — runs until the process dies or context is cancelled.
+		// Health check loop - runs until the process dies or context is cancelled.
 		m.healthLoop(ctx)
 
 		if ctx.Err() != nil {
@@ -125,7 +125,7 @@ func (m *Manager) Run(ctx context.Context) {
 			return
 		}
 
-		// Process died or health loop exited — increment restart count and retry.
+		// Process died or health loop exited - increment restart count and retry.
 		m.mu.Lock()
 		m.restartCount++
 		m.running = false
