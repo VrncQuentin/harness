@@ -77,8 +77,9 @@ type Store interface {
 	Save(*Config) error
 }
 
-// Defaults returns a Config with sensible defaults applied. The column
-// defaults in the 0001_init migration must stay in sync with these values.
+// Defaults returns a Config with sensible defaults applied. This is the
+// single source of truth for initial values; the db package seeds every
+// column from these on first run.
 func Defaults() Config {
 	return Config{
 		Model: ModelConfig{

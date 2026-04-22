@@ -41,14 +41,15 @@ func Open(path string) (*DB, error) {
 		_ = sqldb.Close()
 		return nil, err
 	}
-	if err := seed(sqldb); err != nil {
-		_ = sqldb.Close()
-		return nil, err
-	}
 
 	d := &DB{sqldb: sqldb}
 	d.cfg = &ConfigStore{db: sqldb}
 	d.metrics = &MetricsStore{db: sqldb}
+
+	if err := d.cfg.seed(); err != nil {
+		_ = sqldb.Close()
+		return nil, err
+	}
 	return d, nil
 }
 
@@ -80,16 +81,6 @@ func runMigrations(sqldb *sql.DB) error {
 	}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("db: migrate up: %w", err)
-	}
-	return nil
-}
-
-// seed inserts the singleton config row if it doesn't exist. Column defaults
-// in the DDL supply the initial values; they must stay in sync with
-// config.Defaults.
-func seed(sqldb *sql.DB) error {
-	if _, err := sqldb.Exec(`INSERT OR IGNORE INTO config (id) VALUES (1)`); err != nil {
-		return fmt.Errorf("db: seed config: %w", err)
 	}
 	return nil
 }

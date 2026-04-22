@@ -14,6 +14,52 @@ type ConfigStore struct {
 	db *sql.DB
 }
 
+// seed inserts the singleton config row if it doesn't exist, populating every
+// column from config.Defaults(). Idempotent via INSERT OR IGNORE. This is the
+// single source of truth for initial values - the migration carries no
+// column defaults of its own.
+func (s *ConfigStore) seed() error {
+	d := config.Defaults()
+	_, err := s.db.Exec(`
+		INSERT OR IGNORE INTO config (
+			id,
+			model_binary, model_path, model_ctx_size, model_gpu_layers,
+			model_n_parallel, model_port,
+			embedder_binary, embedder_model_path, embedder_port,
+			memory_repo_path,
+			ui_port, ui_open_on_start,
+			api_enabled, api_port,
+			prompt_ctx_size, prompt_memory_token_budget, prompt_conversation_reserve,
+			queue_max_depth, queue_wal_path,
+			metrics_retention_days
+		) VALUES (
+			1,
+			?, ?, ?, ?,
+			?, ?,
+			?, ?, ?,
+			?,
+			?, ?,
+			?, ?,
+			?, ?, ?,
+			?, ?,
+			?
+		)`,
+		d.Model.Binary, d.Model.ModelPath, d.Model.CtxSize, d.Model.GPULayers,
+		d.Model.NParallel, d.Model.Port,
+		d.Embedder.Binary, d.Embedder.ModelPath, d.Embedder.Port,
+		d.Memory.RepoPath,
+		d.UI.Port, boolInt(d.UI.OpenOnStart),
+		boolInt(d.API.Enabled), d.API.Port,
+		d.Prompt.CtxSize, d.Prompt.MemoryTokenBudget, d.Prompt.ConversationReserve,
+		d.Queue.MaxDepth, d.Queue.WALPath,
+		d.Metrics.RetentionDays,
+	)
+	if err != nil {
+		return fmt.Errorf("db: seed config: %w", err)
+	}
+	return nil
+}
+
 // Load returns the current config and whether the user has explicitly saved
 // it at least once. A fresh install returns (Defaults(), false, nil).
 func (s *ConfigStore) Load() (*config.Config, bool, error) {
