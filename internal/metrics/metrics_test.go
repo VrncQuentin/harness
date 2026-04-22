@@ -1,31 +1,43 @@
 package metrics
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestOpenAndRecord(t *testing.T) {
+func newTestStore(t *testing.T) Store {
+	t.Helper()
 	dir := t.TempDir()
-	store, err := Open(filepath.Join(dir, "test.db"))
+	db, err := sql.Open("sqlite", filepath.Join(dir, "test.db"))
 	if err != nil {
-		t.Fatalf("open: %v", err)
+		t.Fatalf("sql.Open: %v", err)
 	}
-	defer func() { _ = store.Close() }()
+	t.Cleanup(func() { _ = db.Close() })
 
+	store, err := Open(db)
+	if err != nil {
+		t.Fatalf("metrics.Open: %v", err)
+	}
+	return store
+}
+
+func TestOpen_NilDB(t *testing.T) {
+	if _, err := Open(nil); err == nil {
+		t.Fatal("expected error for nil db, got nil")
+	}
+}
+
+func TestOpenAndRecord(t *testing.T) {
+	store := newTestStore(t)
 	if err := store.Record("queue_depth", 3.0, map[string]string{"host": "local"}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 }
 
 func TestQuery(t *testing.T) {
-	dir := t.TempDir()
-	store, err := Open(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = store.Close() }()
+	store := newTestStore(t)
 
 	before := time.Now().Add(-time.Second)
 
@@ -47,12 +59,7 @@ func TestQuery(t *testing.T) {
 }
 
 func TestQuery_Empty(t *testing.T) {
-	dir := t.TempDir()
-	store, err := Open(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = store.Close() }()
+	store := newTestStore(t)
 
 	pts, err := store.Query("nonexistent", time.Now().Add(-time.Hour), time.Now())
 	if err != nil {
@@ -64,12 +71,7 @@ func TestQuery_Empty(t *testing.T) {
 }
 
 func TestRecord_WithTags(t *testing.T) {
-	dir := t.TempDir()
-	store, err := Open(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("open: %v", err)
-	}
-	defer func() { _ = store.Close() }()
+	store := newTestStore(t)
 
 	tags := map[string]string{"process": "llama-server", "status": "healthy"}
 	if err := store.Record("process_health", 1.0, tags); err != nil {

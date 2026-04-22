@@ -2,24 +2,45 @@ package ui
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	_ "modernc.org/sqlite"
+
 	"github.com/vrnc/harness/internal/config"
 )
 
-func TestHandleStatus_OK(t *testing.T) {
-	s := NewServer(3000, "")
+// newServerWithStore returns a Server wired to a fresh temp SQLite config store.
+// The store is also returned for assertions.
+func newServerWithStore(t *testing.T) (*Server, *config.Store) {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "harness.db"))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
 
-	// Use httptest recorder directly instead of starting a real server.
+	store, err := config.Open(db)
+	if err != nil {
+		t.Fatalf("config.Open: %v", err)
+	}
+	s := NewServer(3000)
+	s.SetConfigStore(store)
+	return s, store
+}
+
+func TestHandleStatus_OK(t *testing.T) {
+	s := NewServer(3000)
+
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	s.handleStatus(rec, req)
@@ -35,48 +56,22 @@ func TestHandleStatus_OK(t *testing.T) {
 }
 
 func TestHandleStatus_WithErrors(t *testing.T) {
-	s := NewServer(3000, "")
-	s.AddStartupError(errors.New("config.toml not found"))
-	s.AddStartupError(errors.New("llama-server binary not found"))
+	s := NewServer(3000)
+	s.AddStartupError(errors.New("llama-server binary not found: C:\\missing.exe"))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	s.handleStatus(rec, req)
 
 	body, _ := io.ReadAll(rec.Body)
-	if !strings.Contains(string(body), "config.toml not found") {
+	if !strings.Contains(string(body), "llama-server binary not found") {
 		t.Error("expected startup error in response body")
 	}
 }
 
-func TestSetLlamaStatus(t *testing.T) {
-	s := NewServer(3000, "")
-	s.SetLlamaStatus(ProcessStatus{Name: "llama", Running: true, Healthy: true})
-
-	healthy := s.state.snapshot().LlamaStatus.Healthy
-
-	if !healthy {
-		t.Error("expected llama status healthy")
-	}
-}
-
-func TestSetQueueDepth(t *testing.T) {
-	s := NewServer(3000, "")
-	s.SetQueueDepth(3, 8)
-
-	snap := s.state.snapshot()
-	depth := snap.QueueDepth
-	max := snap.QueueMax
-
-	if depth != 3 || max != 8 {
-		t.Errorf("expected depth 3/8, got %d/%d", depth, max)
-	}
-}
-
-func TestHandleStatus_ConfigMissingShowsFirstRunCTA(t *testing.T) {
-	s := NewServer(3000, "")
-	// Matches the prefix produced by config.Load when config.toml is missing.
-	s.AddStartupError(errors.New("config: config.toml not found at C:\\harness\\config.toml"))
+func TestHandleStatus_FirstRunShowsSetupCTA(t *testing.T) {
+	s := NewServer(3000)
+	s.SetFirstRun(true)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -84,17 +79,34 @@ func TestHandleStatus_ConfigMissingShowsFirstRunCTA(t *testing.T) {
 
 	body, _ := io.ReadAll(rec.Body)
 	if !strings.Contains(string(body), "Set up your harness") {
-		t.Error("expected first-run CTA for config-missing error")
+		t.Error("expected first-run CTA when FirstRun=true")
 	}
 	if !strings.Contains(string(body), "/config") {
 		t.Error("expected CTA to link to /config")
 	}
 }
 
+func TestSetLlamaStatus(t *testing.T) {
+	s := NewServer(3000)
+	s.SetLlamaStatus(ProcessStatus{Name: "llama", Running: true, Healthy: true})
+
+	if !s.state.snapshot().LlamaStatus.Healthy {
+		t.Error("expected llama status healthy")
+	}
+}
+
+func TestSetQueueDepth(t *testing.T) {
+	s := NewServer(3000)
+	s.SetQueueDepth(3, 8)
+
+	snap := s.state.snapshot()
+	if snap.QueueDepth != 3 || snap.QueueMax != 8 {
+		t.Errorf("expected depth 3/8, got %d/%d", snap.QueueDepth, snap.QueueMax)
+	}
+}
+
 func TestHandleConfig_GETRendersFormWithDefaults(t *testing.T) {
-	// No config on disk → form renders with Defaults() values.
-	dir := t.TempDir()
-	s := NewServer(3000, dir)
+	s, _ := newServerWithStore(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/config", nil)
 	rec := httptest.NewRecorder()
@@ -108,13 +120,27 @@ func TestHandleConfig_GETRendersFormWithDefaults(t *testing.T) {
 		t.Error("expected form field for model binary")
 	}
 	if !strings.Contains(body, "First run") {
-		t.Error("expected first-run banner when config is absent")
+		t.Error("expected first-run banner when config has never been saved")
+	}
+}
+
+func TestHandleConfig_GETWithoutStoreShowsError(t *testing.T) {
+	s := NewServer(3000) // no store attached
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "config store unavailable") {
+		t.Error("expected 'config store unavailable' message when no store is attached")
 	}
 }
 
 func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
-	dir := t.TempDir()
-	s := NewServer(3000, dir)
+	s, store := newServerWithStore(t)
 
 	var retryCalls int32
 	s.SetRetry(func() { atomic.AddInt32(&retryCalls, 1) })
@@ -150,13 +176,12 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 		t.Errorf("expected redirect to /config?saved=1, got %q", got)
 	}
 
-	// File must exist and round-trip through Load.
-	if _, err := os.Stat(filepath.Join(dir, "config.toml")); err != nil {
-		t.Fatalf("expected config.toml to be written: %v", err)
-	}
-	loaded, err := config.Load(dir)
+	loaded, configured, err := store.Load()
 	if err != nil {
 		t.Fatalf("loading saved config failed: %v", err)
+	}
+	if !configured {
+		t.Error("expected configured=true after POST")
 	}
 	if loaded.Model.Binary != "C:\\llama.exe" {
 		t.Errorf("model binary not persisted: got %q", loaded.Model.Binary)
@@ -168,8 +193,9 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 }
 
 func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
-	dir := t.TempDir()
-	// Seed disk with a config whose numeric values diverge from Defaults.
+	s, store := newServerWithStore(t)
+
+	// Seed store with a config whose numeric values diverge from Defaults.
 	existing := config.Defaults()
 	existing.Model.Binary = "C:\\existing.exe"
 	existing.Model.ModelPath = "C:\\existing.gguf"
@@ -178,11 +204,9 @@ func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 	existing.Embedder.Binary = "C:\\eb.exe"
 	existing.Embedder.ModelPath = "C:\\eb.gguf"
 	existing.Prompt.MemoryTokenBudget = 9999
-	if err := config.Save(&existing, dir); err != nil {
+	if err := store.Save(&existing); err != nil {
 		t.Fatalf("seed save: %v", err)
 	}
-
-	s := NewServer(3000, dir)
 
 	form := url.Values{}
 	// Update only the string fields; leave every numeric field blank.
@@ -200,7 +224,7 @@ func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 		t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	loaded, err := config.Load(dir)
+	loaded, _, err := store.Load()
 	if err != nil {
 		t.Fatalf("load after save: %v", err)
 	}
@@ -219,8 +243,7 @@ func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 }
 
 func TestHandleConfig_POSTInvalidShowsValidationError(t *testing.T) {
-	dir := t.TempDir()
-	s := NewServer(3000, dir)
+	s, store := newServerWithStore(t)
 
 	form := url.Values{}
 	// Deliberately omit model_binary, model_path, embed_binary, embed_path.
@@ -239,13 +262,18 @@ func TestHandleConfig_POSTInvalidShowsValidationError(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "Validation error") {
 		t.Error("expected validation error message in rendered form")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "config.toml")); !os.IsNotExist(err) {
-		t.Error("config.toml should not be written when validation fails")
+
+	_, configured, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if configured {
+		t.Error("config should not be marked configured when validation fails")
 	}
 }
 
 func TestHandleRetry_CallsCallback(t *testing.T) {
-	s := NewServer(3000, "")
+	s := NewServer(3000)
 	var called int32
 	s.SetRetry(func() { atomic.AddInt32(&called, 1) })
 
@@ -262,7 +290,7 @@ func TestHandleRetry_CallsCallback(t *testing.T) {
 }
 
 func TestHandleRetry_RejectsGET(t *testing.T) {
-	s := NewServer(3000, "")
+	s := NewServer(3000)
 	req := httptest.NewRequest(http.MethodGet, "/retry", nil)
 	rec := httptest.NewRecorder()
 	s.handleRetry(rec, req)
@@ -272,7 +300,7 @@ func TestHandleRetry_RejectsGET(t *testing.T) {
 }
 
 func TestStart_ServerStarts(t *testing.T) {
-	s := NewServer(13001, "") // use a high port to avoid conflicts
+	s := NewServer(13001) // use a high port to avoid conflicts
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -280,7 +308,6 @@ func TestStart_ServerStarts(t *testing.T) {
 		t.Fatalf("Start returned error: %v", err)
 	}
 
-	// Give it a moment to bind.
 	var resp *http.Response
 	var err error
 	for i := 0; i < 10; i++ {

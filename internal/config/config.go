@@ -1,77 +1,77 @@
-// Package config loads and validates the harness configuration from config.toml.
+// Package config loads, validates, and persists the harness configuration.
+// Configuration lives in the shared harness SQLite database as a single-row
+// typed table. There is no on-disk config file.
 package config
 
 import (
+	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
-
-	"github.com/BurntSushi/toml"
+	"time"
 )
 
 // Config is the top-level configuration structure for the harness.
 type Config struct {
-	Model    ModelConfig    `toml:"model"`
-	Embedder EmbedderConfig `toml:"embedder"`
-	Memory   MemoryConfig   `toml:"memory"`
-	UI       UIConfig       `toml:"ui"`
-	API      APIConfig      `toml:"api"`
-	Prompt   PromptConfig   `toml:"prompt"`
-	Queue    QueueConfig    `toml:"queue"`
-	Metrics  MetricsConfig  `toml:"metrics"`
+	Model    ModelConfig
+	Embedder EmbedderConfig
+	Memory   MemoryConfig
+	UI       UIConfig
+	API      APIConfig
+	Prompt   PromptConfig
+	Queue    QueueConfig
+	Metrics  MetricsConfig
 }
 
 // ModelConfig holds llama-server configuration.
 type ModelConfig struct {
-	Binary    string `toml:"binary"`
-	ModelPath string `toml:"model_path"`
-	CtxSize   int    `toml:"ctx_size"`
-	GPULayers int    `toml:"gpu_layers"`
-	NParallel int    `toml:"n_parallel"`
-	Port      int    `toml:"port"` // default: 8081
+	Binary    string
+	ModelPath string
+	CtxSize   int
+	GPULayers int
+	NParallel int
+	Port      int
 }
 
 // EmbedderConfig holds the embedder sidecar configuration.
 type EmbedderConfig struct {
-	Binary    string `toml:"binary"`
-	ModelPath string `toml:"model_path"`
-	Port      int    `toml:"port"` // default: 8082
+	Binary    string
+	ModelPath string
+	Port      int
 }
 
 // MemoryConfig holds memory repo configuration.
 type MemoryConfig struct {
-	RepoPath string `toml:"repo_path"`
+	RepoPath string
 }
 
 // UIConfig holds UI server configuration.
 type UIConfig struct {
-	Port        int  `toml:"port"`
-	OpenOnStart bool `toml:"open_on_start"`
+	Port        int
+	OpenOnStart bool
 }
 
 // APIConfig holds the optional API server configuration.
 type APIConfig struct {
-	Enabled bool `toml:"enabled"`
-	Port    int  `toml:"port"`
+	Enabled bool
+	Port    int
 }
 
 // PromptConfig holds prompt assembly configuration.
 type PromptConfig struct {
-	CtxSize             int `toml:"ctx_size"`
-	MemoryTokenBudget   int `toml:"memory_token_budget"`
-	ConversationReserve int `toml:"conversation_reserve"`
+	CtxSize             int
+	MemoryTokenBudget   int
+	ConversationReserve int
 }
 
 // QueueConfig holds queue configuration.
 type QueueConfig struct {
-	MaxDepth int    `toml:"max_depth"`
-	WALPath  string `toml:"wal_path"`
+	MaxDepth int
+	WALPath  string
 }
 
-// MetricsConfig holds metrics storage configuration.
+// MetricsConfig holds metrics retention configuration. The database file
+// itself is the shared harness.db next to the binary, not configurable here.
 type MetricsConfig struct {
-	DBPath        string `toml:"db_path"`
-	RetentionDays int    `toml:"retention_days"`
+	RetentionDays int
 }
 
 // Defaults returns a Config with sensible defaults applied.
@@ -103,58 +103,106 @@ func Defaults() Config {
 			MaxDepth: 8,
 		},
 		Metrics: MetricsConfig{
-			DBPath:        "metrics.db",
 			RetentionDays: 30,
 		},
 	}
 }
 
-// Load reads config.toml from dir and returns the parsed Config.
-// Returns a non-nil error if the file is missing or malformed.
-func Load(dir string) (*Config, error) {
-	path := filepath.Join(dir, "config.toml")
-
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, fmt.Errorf("config: config.toml not found at %s", path)
-	}
-
-	cfg := Defaults()
-	if _, err := toml.DecodeFile(path, &cfg); err != nil {
-		return nil, fmt.Errorf("config: failed to parse config.toml: %w", err)
-	}
-
-	if err := Validate(&cfg); err != nil {
-		return nil, err
-	}
-
-	return &cfg, nil
+// Store persists Config in a SQLite database. The same *sql.DB is shared with
+// other harness subsystems (e.g. metrics) - Store does not own or close it.
+type Store struct {
+	db *sql.DB
 }
 
-// Save atomically writes cfg to dir/config.toml. It writes a temp file in the
-// same directory and renames into place so readers never see a partial file.
-func Save(cfg *Config, dir string) error {
-	path := filepath.Join(dir, "config.toml")
-	tmp, err := os.CreateTemp(dir, "config.toml.*.tmp")
+// Open runs the config migration and seeds the defaults row if missing. The
+// caller owns db and is responsible for closing it.
+func Open(db *sql.DB) (*Store, error) {
+	if db == nil {
+		return nil, fmt.Errorf("config: nil db handle")
+	}
+	if err := migrate(db); err != nil {
+		return nil, err
+	}
+	if err := seed(db); err != nil {
+		return nil, err
+	}
+	return &Store{db: db}, nil
+}
+
+// Load returns the current config and whether the user has explicitly saved
+// it at least once. A fresh install returns (Defaults(), false, nil).
+func (s *Store) Load() (*Config, bool, error) {
+	row := s.db.QueryRow(`
+		SELECT
+			model_binary, model_path, model_ctx_size, model_gpu_layers,
+			model_n_parallel, model_port,
+			embedder_binary, embedder_model_path, embedder_port,
+			memory_repo_path,
+			ui_port, ui_open_on_start,
+			api_enabled, api_port,
+			prompt_ctx_size, prompt_memory_token_budget, prompt_conversation_reserve,
+			queue_max_depth, queue_wal_path,
+			metrics_retention_days,
+			saved_at
+		FROM config WHERE id = 1`)
+
+	var (
+		cfg         Config
+		openOnStart int
+		apiEnabled  int
+		savedAt     sql.NullInt64
+	)
+	err := row.Scan(
+		&cfg.Model.Binary, &cfg.Model.ModelPath, &cfg.Model.CtxSize, &cfg.Model.GPULayers,
+		&cfg.Model.NParallel, &cfg.Model.Port,
+		&cfg.Embedder.Binary, &cfg.Embedder.ModelPath, &cfg.Embedder.Port,
+		&cfg.Memory.RepoPath,
+		&cfg.UI.Port, &openOnStart,
+		&apiEnabled, &cfg.API.Port,
+		&cfg.Prompt.CtxSize, &cfg.Prompt.MemoryTokenBudget, &cfg.Prompt.ConversationReserve,
+		&cfg.Queue.MaxDepth, &cfg.Queue.WALPath,
+		&cfg.Metrics.RetentionDays,
+		&savedAt,
+	)
 	if err != nil {
-		return fmt.Errorf("config: create temp file: %w", err)
+		return nil, false, fmt.Errorf("config: load: %w", err)
 	}
-	tmpPath := tmp.Name()
+	cfg.UI.OpenOnStart = openOnStart != 0
+	cfg.API.Enabled = apiEnabled != 0
+	return &cfg, savedAt.Valid, nil
+}
 
-	// Best-effort cleanup on every error path. Close is a no-op after the
-	// explicit Close below; Remove is a no-op after a successful Rename.
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}()
-
-	if err := toml.NewEncoder(tmp).Encode(cfg); err != nil {
-		return fmt.Errorf("config: encode TOML: %w", err)
+// Save writes cfg and marks the row as user-saved.
+func (s *Store) Save(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config: save: nil config")
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("config: close temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("config: rename temp file: %w", err)
+	_, err := s.db.Exec(`
+		UPDATE config SET
+			model_binary = ?, model_path = ?, model_ctx_size = ?, model_gpu_layers = ?,
+			model_n_parallel = ?, model_port = ?,
+			embedder_binary = ?, embedder_model_path = ?, embedder_port = ?,
+			memory_repo_path = ?,
+			ui_port = ?, ui_open_on_start = ?,
+			api_enabled = ?, api_port = ?,
+			prompt_ctx_size = ?, prompt_memory_token_budget = ?, prompt_conversation_reserve = ?,
+			queue_max_depth = ?, queue_wal_path = ?,
+			metrics_retention_days = ?,
+			saved_at = ?
+		WHERE id = 1`,
+		cfg.Model.Binary, cfg.Model.ModelPath, cfg.Model.CtxSize, cfg.Model.GPULayers,
+		cfg.Model.NParallel, cfg.Model.Port,
+		cfg.Embedder.Binary, cfg.Embedder.ModelPath, cfg.Embedder.Port,
+		cfg.Memory.RepoPath,
+		cfg.UI.Port, boolInt(cfg.UI.OpenOnStart),
+		boolInt(cfg.API.Enabled), cfg.API.Port,
+		cfg.Prompt.CtxSize, cfg.Prompt.MemoryTokenBudget, cfg.Prompt.ConversationReserve,
+		cfg.Queue.MaxDepth, cfg.Queue.WALPath,
+		cfg.Metrics.RetentionDays,
+		time.Now().Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("config: save: %w", err)
 	}
 	return nil
 }
@@ -185,7 +233,50 @@ func Validate(cfg *Config) error {
 	return nil
 }
 
-// ConfigPath returns the expected path to config.toml given the binary directory.
-func ConfigPath(dir string) string {
-	return filepath.Join(dir, "config.toml")
+func migrate(db *sql.DB) error {
+	const ddl = `
+CREATE TABLE IF NOT EXISTS config (
+	id                           INTEGER PRIMARY KEY CHECK (id = 1),
+	model_binary                 TEXT    NOT NULL DEFAULT '',
+	model_path                   TEXT    NOT NULL DEFAULT '',
+	model_ctx_size               INTEGER NOT NULL DEFAULT 32768,
+	model_gpu_layers             INTEGER NOT NULL DEFAULT 35,
+	model_n_parallel             INTEGER NOT NULL DEFAULT 1,
+	model_port                   INTEGER NOT NULL DEFAULT 8081,
+	embedder_binary              TEXT    NOT NULL DEFAULT '',
+	embedder_model_path          TEXT    NOT NULL DEFAULT '',
+	embedder_port                INTEGER NOT NULL DEFAULT 8082,
+	memory_repo_path             TEXT    NOT NULL DEFAULT '',
+	ui_port                      INTEGER NOT NULL DEFAULT 3000,
+	ui_open_on_start             INTEGER NOT NULL DEFAULT 1,
+	api_enabled                  INTEGER NOT NULL DEFAULT 0,
+	api_port                     INTEGER NOT NULL DEFAULT 8080,
+	prompt_ctx_size              INTEGER NOT NULL DEFAULT 32768,
+	prompt_memory_token_budget   INTEGER NOT NULL DEFAULT 6144,
+	prompt_conversation_reserve  INTEGER NOT NULL DEFAULT 8192,
+	queue_max_depth              INTEGER NOT NULL DEFAULT 8,
+	queue_wal_path               TEXT    NOT NULL DEFAULT '',
+	metrics_retention_days       INTEGER NOT NULL DEFAULT 30,
+	saved_at                     INTEGER
+);`
+	if _, err := db.Exec(ddl); err != nil {
+		return fmt.Errorf("config: migrate: %w", err)
+	}
+	return nil
+}
+
+// seed inserts the singleton row if it doesn't exist. Column defaults supply
+// the initial values, so Defaults() and the DDL defaults must stay in sync.
+func seed(db *sql.DB) error {
+	if _, err := db.Exec(`INSERT OR IGNORE INTO config (id) VALUES (1)`); err != nil {
+		return fmt.Errorf("config: seed: %w", err)
+	}
+	return nil
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
