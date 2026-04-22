@@ -6,7 +6,7 @@
 <div class="alert alert-info">
   <div class="alert-head">
     <h2>First run</h2>
-    <p class="alert-sub">No <code>config.toml</code> was found. Fill in the required paths below and save to get started.</p>
+    <p class="alert-sub">No configuration saved yet. Fill in the required paths below and save to get started.</p>
   </div>
 </div>
 {{end}}
@@ -162,12 +162,9 @@
     <legend>Metrics</legend>
     <div class="fg-row">
       <div class="fg">
-        <label for="metrics_db_path">Database path</label>
-        <input type="text" id="metrics_db_path" name="metrics_db_path" value="{{.Config.Metrics.DBPath}}" placeholder="metrics.db">
-      </div>
-      <div class="fg">
         <label for="metrics_retention_days">Retention (days)</label>
         <input type="number" id="metrics_retention_days" name="metrics_retention_days" value="{{.Config.Metrics.RetentionDays}}" min="1">
+        <p class="fg-hint">Metrics are stored in <code>harness.db</code> next to the binary.</p>
       </div>
     </div>
   </fieldset>

@@ -38,6 +38,7 @@ type stateSnapshot struct {
 	QueueDepth     int
 	QueueMax       int
 	StartupErrors  []error
+	FirstRun       bool
 	StartTime      time.Time
 }
 
@@ -55,9 +56,8 @@ func (s *State) snapshot() stateSnapshot {
 
 // Server is the UI HTTP server.
 type Server struct {
-	port   int
-	binDir string
-	state  *State
+	port  int
+	state *State
 
 	// sseClients maps chan string → struct{} for active SSE subscribers.
 	sseClients sync.Map
@@ -70,16 +70,17 @@ type Server struct {
 
 	retryMu sync.RWMutex
 	retry   RetryFunc
+
+	storeMu sync.RWMutex
+	store   *config.Store
 }
 
-// NewServer creates a new UI server on the given port. binDir is the directory
-// where config.toml lives; it may be empty in tests that don't exercise the
-// config editor.
-func NewServer(port int, binDir string) *Server {
+// NewServer creates a new UI server on the given port. The config store is
+// injected separately via SetConfigStore once the shared database is open.
+func NewServer(port int) *Server {
 	s := &Server{
-		port:   port,
-		binDir: binDir,
-		state:  &State{data: stateSnapshot{StartTime: time.Now()}},
+		port:  port,
+		state: &State{data: stateSnapshot{StartTime: time.Now()}},
 	}
 	s.statusTmpl = template.Must(template.ParseFS(
 		assets.TemplateFS,
@@ -109,6 +110,20 @@ func (s *Server) callRetry() {
 	if fn != nil {
 		fn()
 	}
+}
+
+// SetConfigStore installs the config store used by the /config page. If nil,
+// the config page renders an error instead of a form.
+func (s *Server) SetConfigStore(store *config.Store) {
+	s.storeMu.Lock()
+	s.store = store
+	s.storeMu.Unlock()
+}
+
+func (s *Server) configStore() *config.Store {
+	s.storeMu.RLock()
+	defer s.storeMu.RUnlock()
+	return s.store
 }
 
 // SetLlamaStatus updates the llama-server status.
@@ -148,6 +163,15 @@ func (s *Server) AddStartupError(err error) {
 func (s *Server) ClearStartupErrors() {
 	s.state.mu.Lock()
 	s.state.data.StartupErrors = nil
+	s.state.mu.Unlock()
+	s.broadcastState()
+}
+
+// SetFirstRun toggles the "user has never saved config" banner. When true,
+// the status page shows a "Set up your harness" CTA instead of startup errors.
+func (s *Server) SetFirstRun(v bool) {
+	s.state.mu.Lock()
+	s.state.data.FirstRun = v
 	s.state.mu.Unlock()
 	s.broadcastState()
 }
@@ -206,7 +230,6 @@ type statusPageData struct {
 	basePage
 	stateSnapshot
 	QueuePct       int
-	ConfigMissing  bool
 	HasRetry       bool
 	StartupErrText []string
 }
@@ -231,20 +254,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	snap := s.state.snapshot()
 
 	errTexts := make([]string, 0, len(snap.StartupErrors))
-	configMissing := false
 	for _, e := range snap.StartupErrors {
-		msg := e.Error()
-		errTexts = append(errTexts, msg)
-		if !configMissing && isConfigMissingErr(msg) {
-			configMissing = true
-		}
+		errTexts = append(errTexts, e.Error())
 	}
 
 	data := statusPageData{
 		basePage:       s.newBasePage("status"),
 		stateSnapshot:  snap,
 		QueuePct:       queuePct(snap.QueueDepth, snap.QueueMax),
-		ConfigMissing:  configMissing,
 		HasRetry:       s.hasRetry(),
 		StartupErrText: errTexts,
 	}
@@ -258,13 +275,6 @@ func (s *Server) hasRetry() bool {
 	s.retryMu.RLock()
 	defer s.retryMu.RUnlock()
 	return s.retry != nil
-}
-
-// isConfigMissingErr reports whether a startup error came from config loading.
-// Used to show a first-run CTA pointing the user at the /config editor.
-func isConfigMissingErr(msg string) bool {
-	return strings.HasPrefix(msg, "config:") &&
-		(strings.Contains(msg, "not found") || strings.Contains(msg, "failed to parse"))
 }
 
 func queuePct(depth, max int) int {
@@ -377,6 +387,7 @@ type ssePayload struct {
 	QueueDepth    int      `json:"queue_depth"`
 	QueueMax      int      `json:"queue_max"`
 	StartupErrors []string `json:"startup_errors,omitempty"`
+	FirstRun      bool     `json:"first_run"`
 	UptimeSeconds int64    `json:"uptime_seconds"`
 }
 
@@ -393,25 +404,28 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // renderConfig renders /config with the given overlay data (error/success flags).
-// If cfg in overlay is nil, it is populated from disk (or defaults on first run).
-func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay configPageData, skipDiskLoad bool) {
+// If cfg in overlay is nil, it is populated from the store.
+func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay configPageData, skipStoreLoad bool) {
 	data := overlay
 	data.basePage = s.newBasePage("config")
 
-	if data.Config == nil && !skipDiskLoad {
-		if s.binDir == "" {
-			data.SaveErr = "binary directory not configured; cannot load config.toml"
+	if data.Config == nil && !skipStoreLoad {
+		store := s.configStore()
+		if store == nil {
+			data.SaveErr = "config store unavailable (harness.db could not be opened)"
 			d := config.Defaults()
 			data.Config = &d
 			data.FirstRun = true
 		} else {
-			cfg, err := config.Load(s.binDir)
+			cfg, configured, err := store.Load()
 			if err != nil {
+				data.SaveErr = err.Error()
 				d := config.Defaults()
 				data.Config = &d
 				data.FirstRun = true
 			} else {
 				data.Config = cfg
+				data.FirstRun = !configured
 			}
 		}
 	}
@@ -425,20 +439,25 @@ func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay co
 	}
 }
 
-// saveConfig parses the form, validates, writes atomically, then triggers retry.
+// saveConfig parses the form, validates, writes, then triggers retry.
 func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		s.renderConfig(w, r, configPageData{SaveErr: "could not parse form: " + err.Error()}, true)
 		return
 	}
-	// Use the current on-disk config as the base so fields the form doesn't
+
+	store := s.configStore()
+	if store == nil {
+		s.renderConfig(w, r, configPageData{SaveErr: "config store unavailable"}, true)
+		return
+	}
+
+	// Use the current saved config as the base so fields the form doesn't
 	// touch (or numeric fields left blank) preserve their existing values
 	// rather than snapping back to Defaults.
 	base := config.Defaults()
-	if s.binDir != "" {
-		if cur, err := config.Load(s.binDir); err == nil {
-			base = *cur
-		}
+	if cur, _, err := store.Load(); err == nil {
+		base = *cur
 	}
 	cfg := parseConfigForm(r, &base)
 
@@ -446,11 +465,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 		s.renderConfig(w, r, configPageData{Config: cfg, ValidationErr: err.Error()}, true)
 		return
 	}
-	if s.binDir == "" {
-		s.renderConfig(w, r, configPageData{Config: cfg, SaveErr: "binary directory not configured"}, true)
-		return
-	}
-	if err := config.Save(cfg, s.binDir); err != nil {
+	if err := store.Save(cfg); err != nil {
 		s.renderConfig(w, r, configPageData{Config: cfg, SaveErr: err.Error()}, true)
 		return
 	}
@@ -503,7 +518,6 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.Queue.MaxDepth = atoiOr(r.FormValue("queue_max_depth"), cfg.Queue.MaxDepth)
 	cfg.Queue.WALPath = strings.TrimSpace(r.FormValue("queue_wal_path"))
 
-	cfg.Metrics.DBPath = strings.TrimSpace(r.FormValue("metrics_db_path"))
 	cfg.Metrics.RetentionDays = atoiOr(r.FormValue("metrics_retention_days"), cfg.Metrics.RetentionDays)
 
 	return &cfg
@@ -536,6 +550,7 @@ func stateToPayload(s stateSnapshot) ssePayload {
 		QueueDepth:    s.QueueDepth,
 		QueueMax:      s.QueueMax,
 		StartupErrors: errs,
+		FirstRun:      s.FirstRun,
 		UptimeSeconds: int64(time.Since(s.StartTime).Seconds()),
 	}
 }

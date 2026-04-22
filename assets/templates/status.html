@@ -2,11 +2,11 @@
 {{define "content"}}
 <h1 class="page-title">Status</h1>
 
-{{if .ConfigMissing}}
+{{if .FirstRun}}
 <div class="alert alert-info">
   <div class="alert-head">
     <h2>Set up your harness</h2>
-    <p class="alert-sub">No valid <code>config.toml</code> yet. Open the config editor to enter your model paths, then come back here.</p>
+    <p class="alert-sub">No configuration saved yet. Open the config editor to enter your model paths, then come back here.</p>
   </div>
   <div class="alert-actions">
     <a href="/config" class="btn btn-primary">Open config editor</a>
