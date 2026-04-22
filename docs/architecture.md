@@ -4,7 +4,7 @@
 
 A local AI inference harness with a git-backed memory system, layered prompt assembly, and a browser-based management UI. First iteration delegates agentic tool execution (file edits, shell, web search) to opencode. Future iterations replace opencode with a native agent layer.
 
-The harness runs as a double-clickable Windows native binary. It starts silently, opens the management UI in the default browser if not already open, and lives in the system tray until explicitly quit. The browser UI is the only user-facing surface — all errors (missing config, missing model, llama-server failures, missing memory repo) are surfaced there, not in a terminal.
+The harness runs as a double-clickable Windows native binary. It starts silently, opens the management UI in the default browser if not already open, and lives in the system tray until explicitly quit. The browser UI is the only user-facing surface — all errors (unconfigured on first run, missing model, llama-server failures, missing memory repo) are surfaced there, not in a terminal.
 
 The binary targets llama-server as the inference backend and uses a separate embedding sidecar for semantic memory.
 
@@ -188,7 +188,7 @@ Spawns and monitors llama-server and the Embedder sidecar as child processes.
 - Emits structured events to UI log stream via SSE
 
 ### Metrics Store (`internal/metrics`)
-Collects and persists time-series metrics to a SQLite file alongside the binary. No external dependencies.
+Collects and persists time-series metrics to the shared `harness.db` SQLite file alongside the binary. Uses the same `*sql.DB` handle as the config store — opened once in `main`, shared by all subsystems. No external dependencies.
 
 Metrics collected grow with each milestone:
 - **M1:** llama-server health, uptime, queue depth, restart count
@@ -218,7 +218,7 @@ Thin OpenAI-compatible HTTP server. Enables opencode and other external tools to
 - Separate port from UI server, disabled by default, enabled via config
 
 ### Metrics Store (`internal/metrics`)
-SQLite database (`metrics.db`) alongside the binary. Written to by all components, read by the UI server for the status and logs pages.
+Time-series tables inside the shared `harness.db` alongside the binary. Written to by all components, read by the UI server for the status and logs pages.
 
 Schema grows per milestone:
 - **M1:** `uptime`, `process_health` (llama-server, embedder), `queue_depth`, `restart_count`
@@ -258,54 +258,27 @@ memory/
 
 Everything in the repo is committed. The repo travels with the user — portable across machines and mediums.
 
-The metrics SQLite file (`metrics.db`) lives alongside the harness binary, not in the memory repo — it is machine-local operational data, not user data.
+The shared `harness.db` SQLite file (config + metrics) lives alongside the harness binary, not in the memory repo — it is machine-local operational data, not user data.
 
 ---
 
 ## Config
 
-Single TOML file, hot-reloaded where safe:
+Configuration lives in a single-row typed `config` table inside `harness.db`. There is no on-disk config file — the user edits settings through the `/config` page in the management UI, which writes back to the database.
 
-```toml
-[model]
-binary = "/usr/local/bin/llama-server"   # or Windows path
-model_path = "/models/qwen3-coder-30b-a3b.Q4_K_M.gguf"
-ctx_size = 32768
-gpu_layers = 35
-n_parallel = 1
+The schema mirrors the Go `config.Config` struct: one column per field, snake-cased with a section prefix (`model_binary`, `embedder_port`, `prompt_memory_token_budget`, etc.). Column defaults in the DDL mirror `config.Defaults()` in Go so the two stay honest.
 
-[embedder]
-binary = "/usr/local/bin/nomic-embed-server"
-model_path = "/models/nomic-embed-text-v1.5.gguf"
+Sections and fields:
+- **model:** `binary`, `model_path`, `ctx_size`, `gpu_layers`, `n_parallel`, `port`
+- **embedder:** `binary`, `model_path`, `port`
+- **memory:** `repo_path`
+- **ui:** `port`, `open_on_start`
+- **api:** `enabled`, `port`
+- **prompt:** `ctx_size`, `memory_token_budget`, `conversation_reserve`
+- **queue:** `max_depth`, `wal_path`
+- **metrics:** `retention_days`
 
-[memory]
-repo_path = "~/memory"
-retrieval_top_k = 5
-recency_weight = 0.4
-semantic_weight = 0.6
-episode_summary_max_tokens = 512
-
-[queue]
-max_depth = 8
-wal_path = "~/memory/runtime/queue.wal"
-
-[prompt]
-ctx_size = 32768
-memory_token_budget = 6144    # max tokens for layers 3–5 combined
-conversation_reserve = 8192   # guaranteed headroom for live turns
-
-[metrics]
-db_path = "metrics.db"      # relative to binary, or absolute path
-retention_days = 30
-
-[ui]
-port = 3000
-open_on_start = true
-
-[api]
-enabled = false
-port = 8080
-```
+First run: the row is seeded with defaults and `saved_at` is NULL. The status page shows a "Set up your harness" CTA until the user saves at least once. Changes to `ui.port`, model/embedder binaries, and ports take effect on the next harness restart; everything else is reloaded when the retry callback fires.
 
 ---
 
@@ -321,7 +294,7 @@ port = 8080
 
 **Embedder as sidecar.** Keeps Core free of Python/C dependencies. Uses the same process management pattern as llama-server — uniform failure handling, restart logic, and health checking.
 
-**Metrics store is a SQLite file alongside the binary.** All metrics are written to `metrics.db` in the same directory as the binary. The UI reads from it directly — no separate metrics server. Each milestone adds its own table(s). On restart, history is preserved. Prometheus export (M8) reads from the same database.
+**Single SQLite file for all persistent state.** Config (single-row typed table) and metrics (time-series tables) share `harness.db` in the same directory as the binary. One `*sql.DB` handle is opened in `main` and passed to both subsystems — no per-package database connection, no lock contention. The UI reads metrics directly — no separate metrics server. Each milestone adds its own table(s). On restart, history is preserved. Prometheus export (M8) reads from the same database.
 
 **Memory repo is never auto-created.** If `memory.repo_path` is not set or the path does not exist, the harness refuses to start and prompts the user to either provide an existing repo path or run `init-memory <path>` explicitly. No silent creation.
 

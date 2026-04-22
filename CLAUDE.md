@@ -38,8 +38,7 @@ docs/
   architecture.md
   roadmap.md
   agents.md
-config.toml         ← user config (may not exist on first run)
-metrics.db          ← SQLite metrics history (created on first run)
+harness.db          ← SQLite database: config (single-row typed table) + metrics history (created on first run)
 ```
 
 ---
@@ -71,16 +70,16 @@ metrics.db          ← SQLite metrics history (created on first run)
 - `systray` must own the main goroutine. Everything else runs in goroutines launched from `cmd/harness/main.go`.
 - The UI server and the API server are on separate ports. Never merge them.
 - **The UI server starts first, always.** It must be up before anything else is attempted. Config loading, memory repo validation, llama-server startup, embedder startup — all of this happens after the UI is serving. If anything fails, it is displayed in the UI as a setup error. The user should never need a terminal to diagnose or fix a problem.
-- There is no CLI. No subcommands. No `init-memory`. The user sets up the memory repo themselves (it is a plain git repo) and points `config.toml` at it.
-- Metrics are written to `metrics.db` (SQLite, alongside the binary). Each milestone adds its own metrics — see `docs/roadmap.md` for what each milestone must instrument.
-- `metrics.db` is not committed to git. It is machine-local.
+- There is no CLI. No subcommands. No `init-memory`. The user sets up the memory repo themselves (it is a plain git repo) and points the harness at it via the config editor in the UI.
+- All persistent state (config + metrics) lives in `harness.db` (SQLite, alongside the binary). Each milestone adds its own metrics tables — see `docs/roadmap.md` for what each milestone must instrument.
+- `harness.db` is not committed to git. It is machine-local.
 
 ### UI
 - Server-side rendering only: `net/http` + `html/template` + htmx + SSE.
 - No JavaScript frameworks. No build step. No `node_modules`.
 - Static assets (CSS, htmx) embedded via `embed.FS` and compiled into the binary.
 - The status page is the first thing the user sees. If there are startup errors, it displays them as a clear checklist: what is wrong, why, and what the user needs to do to fix it. A "Retry" button re-attempts validation without restarting the binary.
-- Error states to handle explicitly in the UI: missing `config.toml`, invalid TOML, missing or invalid `memory.repo_path`, llama-server binary not found, model file not found, llama-server failed to start, embedder failed to start.
+- Error states to handle explicitly in the UI: first run (no config saved yet), `harness.db` cannot be opened, missing or invalid `memory.repo_path`, llama-server binary not found, model file not found, llama-server failed to start, embedder failed to start.
 
 ### Process management
 - `systray` (fyne-io/systray) for the tray icon. It blocks `main()` — all services start before calling `systray.Run()`.
@@ -95,54 +94,29 @@ metrics.db          ← SQLite metrics history (created on first run)
 ```
 1. Acquire single-instance mutex → if already held, exit silently
 2. Start UI server (port 3000) → always succeeds, browser opens if not already open
-3. Load and validate config.toml → surface errors in UI if missing or invalid
-4. Validate memory repo path → surface error in UI if missing or not a git repo
-5. Start llama-server process → surface error in UI if binary missing or startup fails
-6. Start embedder sidecar → surface error in UI if binary missing or startup fails
-7. Begin health check loops for llama-server and embedder
-8. Start API server if enabled in config
-9. Hand off to systray.Run()
+3. Open harness.db → surface error in UI if the database cannot be opened or migrated
+4. Load config row → if the user has never saved, show the first-run CTA and stop here
+5. Validate memory repo path → surface error in UI if missing or not a git repo
+6. Start llama-server process → surface error in UI if binary missing or startup fails
+7. Start embedder sidecar → surface error in UI if binary missing or startup fails
+8. Begin health check loops for llama-server and embedder
+9. Start API server if enabled in config
+10. Hand off to systray.Run()
 ```
 
-Steps 3–8 can fail independently. The UI reflects the state of each. A "Retry" button re-runs steps 3–8 without restarting the binary.
+Steps 3–9 can fail independently. The UI reflects the state of each. A "Retry" button re-runs steps 3–9 without restarting the binary.
 
 ---
 
 ## Config
 
-`config.toml` in the same directory as the binary. If missing, the UI shows an error with the expected path and a template the user can copy.
+Configuration is stored as a single-row typed table (`config`) in `harness.db` next to the binary. There is no on-disk config file — the user edits settings through the `/config` page in the management UI.
 
-```toml
-[model]
-binary = "C:\\path\\to\\llama-server.exe"
-model_path = "C:\\path\\to\\model.gguf"
-ctx_size = 32768
-gpu_layers = 35
-n_parallel = 1
+On first run the row is seeded with defaults (column defaults in the DDL mirror `config.Defaults()`). Until the user saves at least once, `saved_at` is NULL and the status page shows a "Set up your harness" CTA pointing at the config editor.
 
-[embedder]
-binary = "C:\\path\\to\\nomic-embed-server.exe"
-model_path = "C:\\path\\to\\nomic-embed-text.gguf"
+Required fields (validated on save): model binary, model path, embedder binary, embedder model path, model/embedder/UI ports.
 
-[memory]
-repo_path = "C:\\path\\to\\memory"   # must be an existing git repo
-
-[ui]
-port = 3000
-open_on_start = true
-
-[api]
-enabled = false
-port = 8080
-
-[prompt]
-ctx_size = 32768
-memory_token_budget = 6144
-conversation_reserve = 8192
-
-[queue]
-max_depth = 8
-```
+Schema lives in [internal/config/config.go](internal/config/config.go). The Go struct is flat per section (Model, Embedder, Memory, UI, API, Prompt, Queue, Metrics); DDL column names are snake_case with the section as prefix (e.g. `model_ctx_size`, `prompt_memory_token_budget`).
 
 ---
 

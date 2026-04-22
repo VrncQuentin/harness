@@ -14,7 +14,6 @@ import (
 type Store interface {
 	Record(name string, value float64, tags map[string]string) error
 	Query(name string, from, to time.Time) ([]DataPoint, error)
-	Close() error
 }
 
 // DataPoint is a single metric observation.
@@ -30,27 +29,18 @@ type sqliteStore struct {
 	db *sql.DB
 }
 
-// Open opens (or creates) the SQLite metrics database at path.
-func Open(path string) (Store, error) {
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		return nil, fmt.Errorf("metrics: open %s: %w", path, err)
+// Open runs the metrics migration against the shared harness database. The
+// caller owns db and is responsible for closing it.
+func Open(db *sql.DB) (Store, error) {
+	if db == nil {
+		return nil, fmt.Errorf("metrics: nil db handle")
 	}
-
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("metrics: ping %s: %w", path, err)
-	}
-
 	if err := migrate(db); err != nil {
-		_ = db.Close()
 		return nil, err
 	}
-
 	return &sqliteStore{db: db}, nil
 }
 
-// migrate creates tables if they do not exist.
 func migrate(db *sql.DB) error {
 	const ddl = `
 CREATE TABLE IF NOT EXISTS metrics (
@@ -124,9 +114,4 @@ func (s *sqliteStore) Query(name string, from, to time.Time) ([]DataPoint, error
 		return nil, fmt.Errorf("metrics: rows: %w", err)
 	}
 	return pts, nil
-}
-
-// Close closes the underlying database.
-func (s *sqliteStore) Close() error {
-	return s.db.Close()
 }
