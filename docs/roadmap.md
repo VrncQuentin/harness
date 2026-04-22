@@ -20,13 +20,13 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 
 **Acceptance tests:**
 - [ ] Start harness with valid config → llama-server process appears in OS process list, tray icon visible
-- [ ] Double-click binary while already running → second instance exits silently, first instance unaffected
+- [x] Double-click binary while already running → second instance exits silently, first instance unaffected
 - [ ] Kill llama-server manually → harness detects death within health check interval and restarts it
 - [ ] Send a streaming completion request → tokens arrive incrementally, request completes successfully
 - [ ] Fill the queue to max depth → next request returns a clear backpressure error, not a hang
 - [ ] Cancel a mid-flight request → llama-server is not left in a broken state, next request succeeds
-- [ ] Start harness with missing model file → browser status page shows error, binary does not crash
-- [ ] Start harness with missing config → browser status page shows actionable error
+- [x] Start harness with missing model file → browser status page shows error, binary does not crash
+- [x] Start harness with missing config → browser status page shows actionable error
 - [ ] Click Quit in system tray → in-flight requests drain, child processes terminate, binary exits cleanly
 - [ ] Open browser status page → shows llama-server as healthy and queue depth as 0
 - [ ] Kill llama-server → status page updates to unhealthy within one health check interval
