@@ -8,7 +8,7 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 
 **Goal:** model runs, requests go through, harness owns the process.
 
-- [ ] Config file (TOML): model path, ctx size, GPU layers
+- [x] Config store (SQLite, single-row typed table in `harness.db`): model path, ctx size, GPU layers, etc., edited via the `/config` page
 - [ ] Process Manager: spawn llama-server, health check loop, restart with backoff
 - [ ] Inference Client: OpenAI-compatible HTTP, streaming, cancellation
 - [ ] Queue: bounded channel, backpressure, WAL for crash recovery
@@ -26,7 +26,7 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 - [ ] Fill the queue to max depth → next request returns a clear backpressure error, not a hang
 - [ ] Cancel a mid-flight request → llama-server is not left in a broken state, next request succeeds
 - [x] Start harness with missing model file → browser status page shows error, binary does not crash
-- [x] Start harness with missing config → browser status page shows actionable error
+- [x] Start harness on first run (no saved config) → status page shows "Set up your harness" CTA linking to /config
 - [ ] Click Quit in system tray → in-flight requests drain, child processes terminate, binary exits cleanly
 - [ ] Open browser status page → shows llama-server as healthy and queue depth as 0
 - [ ] Kill llama-server → status page updates to unhealthy within one health check interval
@@ -187,6 +187,6 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 - [ ] Start harness, send 50 sequential requests → TTFT, throughput, and VRAM metrics visible in UI
 - [ ] Send SIGTERM → harness drains in-flight requests, commits any pending session, exits cleanly
 - [ ] Send SIGKILL → on next start, WAL is replayed, no data lost
-- [ ] Start with invalid TOML config → clear parse error, no crash
+- [ ] Start with a corrupted `harness.db` → clear error on the status page, no crash
 - [ ] Start with valid config but wrong model path → clear error at startup, not at first request
 - [ ] Enable Prometheus endpoint → `curl /metrics` returns valid Prometheus text format
