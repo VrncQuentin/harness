@@ -111,12 +111,7 @@ function Select-LlamaAssets {
                     }
                     throw "Driver too old - update NVIDIA driver and rerun."
                 }
-                if ($pick.Version -lt $flavors[0].Version) {
-                    Write-Info "Driver supports CUDA $driverCuda. Using cuda-$($pick.Version); cuda-$($flavors[0].Version) is also available with a newer driver."
-                    if (Confirm-Yes "Open NVIDIA driver download page to upgrade?") {
-                        Start-Process "https://www.nvidia.com/Download/index.aspx"
-                    }
-                }
+                Write-Info "Driver CUDA $driverCuda -> using cuda-$($pick.Version) build."
             }
             return @(
                 "$prefix-cuda-$($pick.Version)-x64.zip",
