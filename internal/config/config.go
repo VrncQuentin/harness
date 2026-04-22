@@ -83,7 +83,7 @@ func Defaults() Config {
 	return Config{
 		Model: ModelConfig{
 			CtxSize:   32768,
-			GPULayers: 35,
+			GPULayers: -1,
 			NParallel: 1,
 			Port:      8081,
 		},

@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS config (
     model_binary                 TEXT    NOT NULL DEFAULT '',
     model_path                   TEXT    NOT NULL DEFAULT '',
     model_ctx_size               INTEGER NOT NULL DEFAULT 32768,
-    model_gpu_layers             INTEGER NOT NULL DEFAULT 35,
+    model_gpu_layers             INTEGER NOT NULL DEFAULT -1,
     model_n_parallel             INTEGER NOT NULL DEFAULT 1,
     model_port                   INTEGER NOT NULL DEFAULT 8081,
     embedder_binary              TEXT    NOT NULL DEFAULT '',
