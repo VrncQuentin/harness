@@ -76,7 +76,7 @@ func TestComplete_ContextCancellation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(200)
-		// Write nothing — request will be cancelled before server responds.
+		// Write nothing - request will be cancelled before server responds.
 		<-r.Context().Done()
 	}))
 	defer srv.Close()

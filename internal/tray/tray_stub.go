@@ -6,7 +6,7 @@ package tray
 import "fmt"
 
 // AcquireSingleInstance is a no-op on non-Windows platforms.
-// Always returns (true, nil) — single-instance enforcement only runs on Windows.
+// Always returns (true, nil) - single-instance enforcement only runs on Windows.
 func AcquireSingleInstance() (bool, error) {
 	return true, nil
 }

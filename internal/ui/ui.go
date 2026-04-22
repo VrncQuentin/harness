@@ -63,7 +63,7 @@ type Server struct {
 	sseClients sync.Map
 
 	// Each page has its own template set because status.html and config.html
-	// both define "title" and "content" — sharing one set would let the later
+	// both define "title" and "content" - sharing one set would let the later
 	// parse clobber the earlier one.
 	statusTmpl *template.Template
 	configTmpl *template.Template
@@ -460,7 +460,7 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/config?saved=1", http.StatusSeeOther)
 }
 
-// handleRetry is POST /retry — clears startup errors and re-runs validation.
+// handleRetry is POST /retry - clears startup errors and re-runs validation.
 func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

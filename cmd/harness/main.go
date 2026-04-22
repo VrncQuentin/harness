@@ -38,10 +38,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Root context — cancelled when tray quit is triggered.
+	// Root context - cancelled when tray quit is triggered.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 
-	// Step 3: Start UI server — must succeed before we proceed.
+	// Step 3: Start UI server - must succeed before we proceed.
 	uiServer := ui.NewServer(3000, binDir)
 	if err := uiServer.Start(rootCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "harness: UI server failed to start: %v\n", err)
@@ -188,7 +188,7 @@ func main() {
 		}
 	}
 
-	// Step 9: Hand off to tray.Run() — this blocks until Quit.
+	// Step 9: Hand off to tray.Run() - this blocks until Quit.
 	uiURL := "http://localhost:3000"
 	if cfg != nil {
 		uiURL = fmt.Sprintf("http://localhost:%d", cfg.UI.Port)
