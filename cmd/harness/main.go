@@ -4,16 +4,14 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
 
-	_ "modernc.org/sqlite" // register the sqlite driver
-
 	"github.com/vrnc/harness/internal/config"
+	"github.com/vrnc/harness/internal/db"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/proc"
@@ -55,7 +53,7 @@ func main() {
 
 	// Step 4: Open the shared harness database.
 	dbPath := filepath.Join(binDir, dbFilename)
-	db, cfgStore, metricsStore := openStores(uiServer, dbPath)
+	harnessDB, cfgStore, metricsStore := openDB(uiServer, dbPath)
 
 	// Step 5: Load config (or fall back to defaults if store is unavailable).
 	cfg := config.Defaults()
@@ -172,8 +170,8 @@ func main() {
 		if reqQueue != nil {
 			reqQueue.Stop()
 		}
-		if db != nil {
-			_ = db.Close()
+		if harnessDB != nil {
+			_ = harnessDB.Close()
 		}
 	}
 
@@ -182,36 +180,17 @@ func main() {
 	tray.Run(uiURL, onQuit)
 }
 
-// openStores opens harness.db and initializes the config + metrics stores on
-// top of it. Any failure is surfaced to the UI as a startup error; the
-// returned stores may be nil, which callers must handle.
-func openStores(uiServer *ui.Server, path string) (*sql.DB, *config.Store, metrics.Store) {
-	db, err := sql.Open("sqlite", path)
+// openDB opens harness.db (running migrations + seed) and returns the handle
+// plus the typed sub-stores. Any failure is surfaced to the UI as a startup
+// error; the returned handle and stores may be nil, which callers must handle.
+func openDB(uiServer *ui.Server, path string) (*db.DB, config.Store, metrics.Store) {
+	d, err := db.Open(path)
 	if err != nil {
-		uiServer.AddStartupError(fmt.Errorf("harness.db open: %w", err))
+		uiServer.AddStartupError(fmt.Errorf("harness.db: %w", err))
 		return nil, nil, nil
 	}
-	if err := db.Ping(); err != nil {
-		uiServer.AddStartupError(fmt.Errorf("harness.db ping: %w", err))
-		_ = db.Close()
-		return nil, nil, nil
-	}
-
-	cfgStore, err := config.Open(db)
-	if err != nil {
-		uiServer.AddStartupError(err)
-		_ = db.Close()
-		return nil, nil, nil
-	}
-	uiServer.SetConfigStore(cfgStore)
-
-	metricsStore, err := metrics.Open(db)
-	if err != nil {
-		uiServer.AddStartupError(err)
-		// Config store is still usable; keep the DB open.
-		return db, cfgStore, nil
-	}
-	return db, cfgStore, metricsStore
+	uiServer.SetConfigStore(d.Config())
+	return d, d.Config(), d.Metrics()
 }
 
 // validatePaths checks that the binaries and model files referenced by cfg

@@ -4,7 +4,8 @@ go 1.25
 
 require (
 	fyne.io/systray v1.11.0
-	golang.org/x/sys v0.28.0
+	github.com/golang-migrate/migrate/v4 v4.19.1
+	golang.org/x/sys v0.38.0
 	modernc.org/sqlite v1.34.1
 )
 
