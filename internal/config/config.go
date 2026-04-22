@@ -147,10 +147,10 @@ func (s *Store) Load() (*Config, bool, error) {
 		FROM config WHERE id = 1`)
 
 	var (
-		cfg            Config
-		openOnStart    int
-		apiEnabled     int
-		savedAt        sql.NullInt64
+		cfg         Config
+		openOnStart int
+		apiEnabled  int
+		savedAt     sql.NullInt64
 	)
 	err := row.Scan(
 		&cfg.Model.Binary, &cfg.Model.ModelPath, &cfg.Model.CtxSize, &cfg.Model.GPULayers,

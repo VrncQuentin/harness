@@ -20,7 +20,7 @@ import (
 
 // newServerWithStore returns a Server wired to a fresh temp SQLite config store.
 // The store is also returned for assertions.
-func newServerWithStore(t *testing.T, port int) (*Server, *config.Store) {
+func newServerWithStore(t *testing.T) (*Server, *config.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := sql.Open("sqlite", filepath.Join(dir, "harness.db"))
@@ -33,7 +33,7 @@ func newServerWithStore(t *testing.T, port int) (*Server, *config.Store) {
 	if err != nil {
 		t.Fatalf("config.Open: %v", err)
 	}
-	s := NewServer(port)
+	s := NewServer(3000)
 	s.SetConfigStore(store)
 	return s, store
 }
@@ -106,7 +106,7 @@ func TestSetQueueDepth(t *testing.T) {
 }
 
 func TestHandleConfig_GETRendersFormWithDefaults(t *testing.T) {
-	s, _ := newServerWithStore(t, 3000)
+	s, _ := newServerWithStore(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/config", nil)
 	rec := httptest.NewRecorder()
@@ -140,7 +140,7 @@ func TestHandleConfig_GETWithoutStoreShowsError(t *testing.T) {
 }
 
 func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
-	s, store := newServerWithStore(t, 3000)
+	s, store := newServerWithStore(t)
 
 	var retryCalls int32
 	s.SetRetry(func() { atomic.AddInt32(&retryCalls, 1) })
@@ -193,7 +193,7 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 }
 
 func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
-	s, store := newServerWithStore(t, 3000)
+	s, store := newServerWithStore(t)
 
 	// Seed store with a config whose numeric values diverge from Defaults.
 	existing := config.Defaults()
@@ -243,7 +243,7 @@ func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 }
 
 func TestHandleConfig_POSTInvalidShowsValidationError(t *testing.T) {
-	s, store := newServerWithStore(t, 3000)
+	s, store := newServerWithStore(t)
 
 	form := url.Values{}
 	// Deliberately omit model_binary, model_path, embed_binary, embed_path.
