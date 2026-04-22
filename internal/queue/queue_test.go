@@ -61,9 +61,9 @@ func TestEnqueue_And_Dispatch(t *testing.T) {
 }
 
 func TestEnqueue_Full(t *testing.T) {
-	// Use nil client — worker will stall so queue fills up.
+	// Use nil client - worker will stall so queue fills up.
 	q := New(2, "", nil)
-	// Do NOT start the worker — keeps requests in channel.
+	// Do NOT start the worker - keeps requests in channel.
 
 	resp1 := make(chan inference.Token, 4)
 	resp2 := make(chan inference.Token, 4)

@@ -14,7 +14,7 @@ func New() *http.Client {
 }
 
 // NewStreaming returns an *http.Client for streaming responses (SSE).
-// No overall timeout — callers must pass a context with appropriate deadlines.
+// No overall timeout - callers must pass a context with appropriate deadlines.
 func NewStreaming() *http.Client {
 	return &http.Client{
 		Timeout: 0,
