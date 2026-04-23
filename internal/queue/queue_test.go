@@ -85,6 +85,40 @@ func TestDepth(t *testing.T) {
 	}
 }
 
+func TestSetClient_Swaps(t *testing.T) {
+	first := &fakeClient{tokens: []string{"old"}}
+	q := New(8, "", first)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := q.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	q.SetClient(&fakeClient{tokens: []string{"new"}})
+
+	resp := make(chan inference.Token, 8)
+	if err := q.Enqueue(Request{
+		ID:       "swap-test",
+		Messages: []inference.Message{{Role: "user", Content: "hi"}},
+		Response: resp,
+		Ctx:      context.Background(),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	var got string
+	for tok := range resp {
+		if tok.Err != nil {
+			t.Fatalf("token error: %v", tok.Err)
+		}
+		got += tok.Content
+	}
+	if got != "new" {
+		t.Errorf("expected swapped client output %q, got %q", "new", got)
+	}
+}
+
 func TestEnqueue_ClientError(t *testing.T) {
 	errClient := &errInferenceClient{}
 	q := New(8, "", errClient)
