@@ -4,7 +4,7 @@ import "testing"
 
 // writeAll writes every chunk to b, failing the test on any error. Wrapping
 // keeps the table tests readable without scattering //nolint:errcheck.
-func writeAll(t *testing.T, b *stderrBuffer, chunks ...string) {
+func writeAll(t *testing.T, b *outputBuffer, chunks ...string) {
 	t.Helper()
 	for _, c := range chunks {
 		if _, err := b.Write([]byte(c)); err != nil {
@@ -13,8 +13,8 @@ func writeAll(t *testing.T, b *stderrBuffer, chunks ...string) {
 	}
 }
 
-func TestStderrBuffer_RetainsTrailingLines(t *testing.T) {
-	b := newStderrBuffer(3)
+func TestOutputBuffer_RetainsTrailingLines(t *testing.T) {
+	b := newOutputBuffer(3)
 	writeAll(t, b, "line1\nline2\nline3\nline4\nline5\n")
 	got := b.Snapshot()
 	want := []string{"line3", "line4", "line5"}
@@ -23,8 +23,8 @@ func TestStderrBuffer_RetainsTrailingLines(t *testing.T) {
 	}
 }
 
-func TestStderrBuffer_SplitsAcrossWrites(t *testing.T) {
-	b := newStderrBuffer(10)
+func TestOutputBuffer_SplitsAcrossWrites(t *testing.T) {
+	b := newOutputBuffer(10)
 	writeAll(t, b, "par", "tial", " line\nnext line\n")
 	got := b.Snapshot()
 	want := []string{"partial line", "next line"}
@@ -33,8 +33,8 @@ func TestStderrBuffer_SplitsAcrossWrites(t *testing.T) {
 	}
 }
 
-func TestStderrBuffer_IncludesUnterminatedTail(t *testing.T) {
-	b := newStderrBuffer(10)
+func TestOutputBuffer_IncludesUnterminatedTail(t *testing.T) {
+	b := newOutputBuffer(10)
 	writeAll(t, b, "done\nin progress")
 	got := b.Snapshot()
 	want := []string{"done", "in progress"}
@@ -43,8 +43,8 @@ func TestStderrBuffer_IncludesUnterminatedTail(t *testing.T) {
 	}
 }
 
-func TestStderrBuffer_TrimsCR(t *testing.T) {
-	b := newStderrBuffer(10)
+func TestOutputBuffer_TrimsCR(t *testing.T) {
+	b := newOutputBuffer(10)
 	writeAll(t, b, "windows\r\nline\r\n")
 	got := b.Snapshot()
 	want := []string{"windows", "line"}
@@ -53,8 +53,8 @@ func TestStderrBuffer_TrimsCR(t *testing.T) {
 	}
 }
 
-func TestStderrBuffer_Reset(t *testing.T) {
-	b := newStderrBuffer(5)
+func TestOutputBuffer_Reset(t *testing.T) {
+	b := newOutputBuffer(5)
 	writeAll(t, b, "a\nb\npartial")
 	b.Reset()
 	if got := b.Snapshot(); len(got) != 0 {
@@ -67,8 +67,8 @@ func TestStderrBuffer_Reset(t *testing.T) {
 	}
 }
 
-func TestStderrBuffer_DefaultMaxLines(t *testing.T) {
-	b := newStderrBuffer(0)
+func TestOutputBuffer_DefaultMaxLines(t *testing.T) {
+	b := newOutputBuffer(0)
 	for i := 0; i < 100; i++ {
 		writeAll(t, b, "x\n")
 	}
