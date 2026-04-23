@@ -124,6 +124,9 @@ func (c *implClient) Complete(ctx context.Context, req CompletionRequest) (<-cha
 		return nil, fmt.Errorf("inference: unexpected status %d: %s", resp.StatusCode, string(b))
 	}
 
+	// Token buffer absorbs short network bursts so the SSE reader does not
+	// block on a slow consumer mid-stream. 64 covers a handful of round
+	// trips of llama-server token batches.
 	ch := make(chan Token, 64)
 	go func() {
 		defer close(ch)
