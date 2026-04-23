@@ -208,6 +208,7 @@ func (m *Manager) healthLoop(ctx context.Context) {
 func (m *Manager) startProcess(ctx context.Context) error {
 	binary, args := m.buildArgs()
 	cmd := exec.CommandContext(ctx, binary, args...)
+	hideConsole(cmd)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("proc: failed to start %s: %w", m.name, err)
 	}
