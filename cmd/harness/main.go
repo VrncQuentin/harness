@@ -294,6 +294,8 @@ func pushStatus(uiSrv *ui.Server, llamaMgr, embedMgr *proc.Manager) {
 			Healthy:      st.Healthy,
 			RestartCount: st.RestartCount,
 			LastError:    st.LastError,
+			ExitCode:     st.ExitCode,
+			StderrTail:   st.StderrTail,
 		})
 	}
 	if embedMgr != nil {
@@ -304,6 +306,8 @@ func pushStatus(uiSrv *ui.Server, llamaMgr, embedMgr *proc.Manager) {
 			Healthy:      st.Healthy,
 			RestartCount: st.RestartCount,
 			LastError:    st.LastError,
+			ExitCode:     st.ExitCode,
+			StderrTail:   st.StderrTail,
 		})
 	}
 }

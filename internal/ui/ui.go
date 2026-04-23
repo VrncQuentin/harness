@@ -29,6 +29,8 @@ type ProcessStatus struct {
 	Healthy      bool
 	RestartCount int
 	LastError    error
+	ExitCode     *int
+	StderrTail   []string
 }
 
 // stateSnapshot holds the copyable fields of State (no mutex).
