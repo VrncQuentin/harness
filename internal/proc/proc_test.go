@@ -64,6 +64,75 @@ func TestEmbedderArgs(t *testing.T) {
 	}
 }
 
+func TestReconfigure_SwapsArgsAndSignalsReload(t *testing.T) {
+	events := make(chan Event, 10)
+	m := NewManager(ManagerConfig{
+		Name: "test",
+		BuildArgs: func() (string, []string) {
+			return "old-binary", []string{"--old"}
+		},
+		HealthURL:   "http://127.0.0.1:9999/old",
+		Events:      events,
+		CheckPeriod: 5 * time.Second,
+	})
+
+	m.Reconfigure(func() (string, []string) {
+		return "new-binary", []string{"--new"}
+	}, "http://127.0.0.1:9999/new")
+
+	// Next startProcess should see the new values.
+	m.mu.Lock()
+	build := m.buildArgs
+	url := m.healthURL
+	m.mu.Unlock()
+
+	bin, args := build()
+	if bin != "new-binary" || len(args) != 1 || args[0] != "--new" {
+		t.Errorf("buildArgs not swapped: got %s %v", bin, args)
+	}
+	if url != "http://127.0.0.1:9999/new" {
+		t.Errorf("healthURL not swapped: got %s", url)
+	}
+
+	// Reload signal should be pending so the Run loop picks it up.
+	select {
+	case <-m.reloadCh:
+	default:
+		t.Error("expected reload signal to be pending")
+	}
+}
+
+func TestReconfigure_CoalescesMultipleCalls(t *testing.T) {
+	events := make(chan Event, 10)
+	m := NewManager(ManagerConfig{
+		Name: "test",
+		BuildArgs: func() (string, []string) {
+			return "binary", nil
+		},
+		HealthURL:   "http://127.0.0.1:9999/health",
+		Events:      events,
+		CheckPeriod: 5 * time.Second,
+	})
+
+	// Three calls back-to-back must not deadlock on the buffered channel.
+	m.Reconfigure(func() (string, []string) { return "a", nil }, "http://a")
+	m.Reconfigure(func() (string, []string) { return "b", nil }, "http://b")
+	m.Reconfigure(func() (string, []string) { return "c", nil }, "http://c")
+
+	// One signal should be pending (channel is buffered at 1).
+	select {
+	case <-m.reloadCh:
+	default:
+		t.Error("expected a reload signal")
+	}
+	// No second signal.
+	select {
+	case <-m.reloadCh:
+		t.Error("expected exactly one pending reload signal")
+	default:
+	}
+}
+
 func TestEventKindConstants(t *testing.T) {
 	kinds := []EventKind{EventStart, EventStop, EventHealthOK, EventHealthFail, EventRestart, EventError}
 	seen := map[EventKind]bool{}
