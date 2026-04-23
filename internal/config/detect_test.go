@@ -65,6 +65,59 @@ func TestDetect_ClassifiesModels(t *testing.T) {
 	}
 }
 
+func TestDetect_FindsModelsInParentOfBinDir(t *testing.T) {
+	// Dev layout: binary in dist/, models/ at repo root. Detect should find
+	// models under <binDir>/../models.
+	root := t.TempDir()
+	binDir := filepath.Join(root, "dist")
+	if err := os.Mkdir(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir dist: %v", err)
+	}
+	modelsDir := filepath.Join(root, "models")
+	if err := os.Mkdir(modelsDir, 0o755); err != nil {
+		t.Fatalf("mkdir models: %v", err)
+	}
+	main := filepath.Join(modelsDir, "Qwen3-35B.gguf")
+	embed := filepath.Join(modelsDir, "nomic-embed.gguf")
+	for _, p := range []string{main, embed} {
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	s := Detect(binDir)
+	if len(s.MainModel) != 1 || s.MainModel[0] != main {
+		t.Errorf("expected MainModel=[%s], got %v", main, s.MainModel)
+	}
+	if len(s.EmbedModel) != 1 || s.EmbedModel[0] != embed {
+		t.Errorf("expected EmbedModel=[%s], got %v", embed, s.EmbedModel)
+	}
+}
+
+func TestDetect_DedupesModelsAcrossRoots(t *testing.T) {
+	// If both binDir and parent contain models/ with the same file, Detect
+	// must not return it twice.
+	root := t.TempDir()
+	binDir := filepath.Join(root, "dist")
+	for _, d := range []string{binDir, filepath.Join(root, "models"), filepath.Join(binDir, "models")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	rootModel := filepath.Join(root, "models", "same.gguf")
+	distModel := filepath.Join(binDir, "models", "dist-only.gguf")
+	for _, p := range []string{rootModel, distModel} {
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	s := Detect(binDir)
+	if len(s.MainModel) != 2 {
+		t.Errorf("expected 2 main models (one per root, no dupes), got %v", s.MainModel)
+	}
+}
+
 func TestDetect_FindsLlamaBinaryNextToBinary(t *testing.T) {
 	dir := t.TempDir()
 	exe := "llama-server"
