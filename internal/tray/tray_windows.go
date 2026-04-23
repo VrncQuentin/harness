@@ -3,9 +3,9 @@
 package tray
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
-	"unsafe"
 
 	"fyne.io/systray"
 	"golang.org/x/sys/windows"
@@ -25,7 +25,7 @@ func AcquireSingleInstance() (bool, error) {
 
 	handle, err := windows.CreateMutex(nil, false, name)
 	if err != nil {
-		if err == windows.ERROR_ALREADY_EXISTS {
+		if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
 			return false, nil
 		}
 		return false, fmt.Errorf("tray: CreateMutex: %w", err)
@@ -80,6 +80,3 @@ func openBrowser(url string) {
 	cmd := exec.Command("cmd", "/c", "start", url)
 	cmd.Run() //nolint:errcheck
 }
-
-// Keep the handle variable alive to prevent GC (Windows-specific handle).
-var _ unsafe.Pointer

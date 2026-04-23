@@ -2,7 +2,7 @@ package queue
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"testing"
 	"time"
 
@@ -147,7 +147,7 @@ func TestEnqueue_ClientError(t *testing.T) {
 type errInferenceClient struct{}
 
 func (e *errInferenceClient) Complete(_ context.Context, _ inference.CompletionRequest) (<-chan inference.Token, error) {
-	return nil, fmt.Errorf("test error")
+	return nil, errors.New("test error")
 }
 
 func (e *errInferenceClient) Health(_ context.Context) error { return nil }

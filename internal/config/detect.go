@@ -37,8 +37,8 @@ func Detect(binDir string) Suggestions {
 	roots := searchRoots(binDir)
 	return Suggestions{
 		LlamaBinary: detectLlamaBinary(roots),
-		MainModel:   detectModels(roots, false),
-		EmbedModel:  detectModels(roots, true),
+		MainModel:   detectModels(roots, false /* embed */),
+		EmbedModel:  detectModels(roots, true /* embed */),
 	}
 }
 

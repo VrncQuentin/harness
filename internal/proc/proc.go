@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 
@@ -282,7 +283,7 @@ func (m *Manager) startProcess(ctx context.Context) error {
 	m.stderr.Reset()
 	cmd.Stderr = m.stderr
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("proc: failed to start %s: %w", m.name, err)
+		return fmt.Errorf("proc: start %s: %w", m.name, err)
 	}
 	m.mu.Lock()
 	m.cmd = cmd
@@ -356,10 +357,10 @@ func (m *Manager) emit(kind EventKind, msg string) {
 func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int) (string, []string) {
 	return binary, []string{
 		"--model", modelPath,
-		"--ctx-size", fmt.Sprintf("%d", ctxSize),
-		"--n-gpu-layers", fmt.Sprintf("%d", gpuLayers),
-		"--parallel", fmt.Sprintf("%d", nParallel),
-		"--port", fmt.Sprintf("%d", port),
+		"--ctx-size", strconv.Itoa(ctxSize),
+		"--n-gpu-layers", strconv.Itoa(gpuLayers),
+		"--parallel", strconv.Itoa(nParallel),
+		"--port", strconv.Itoa(port),
 		"--host", "127.0.0.1",
 	}
 }
@@ -372,7 +373,7 @@ func EmbedderArgs(binary, modelPath string, port int) (string, []string) {
 	return binary, []string{
 		"--model", modelPath,
 		"--embedding",
-		"--port", fmt.Sprintf("%d", port),
+		"--port", strconv.Itoa(port),
 		"--host", "127.0.0.1",
 	}
 }

@@ -3,8 +3,17 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+)
+
+// Sentinel errors returned by Validate for missing required fields.
+var (
+	ErrModelBinaryRequired    = errors.New("config: model.binary is required")
+	ErrModelPathRequired      = errors.New("config: model.model_path is required")
+	ErrEmbedderBinaryRequired = errors.New("config: embedder.binary is required")
+	ErrEmbedderPathRequired   = errors.New("config: embedder.model_path is required")
 )
 
 // Config is the top-level configuration structure for the harness.
@@ -121,16 +130,16 @@ func Defaults() Config {
 // length so direct callers (tests, future API callers) can't bypass it.
 func Validate(cfg *Config) error {
 	if strings.TrimSpace(cfg.Model.Binary) == "" {
-		return fmt.Errorf("config: model.binary is required")
+		return ErrModelBinaryRequired
 	}
 	if strings.TrimSpace(cfg.Model.ModelPath) == "" {
-		return fmt.Errorf("config: model.model_path is required")
+		return ErrModelPathRequired
 	}
 	if strings.TrimSpace(cfg.Embedder.Binary) == "" {
-		return fmt.Errorf("config: embedder.binary is required")
+		return ErrEmbedderBinaryRequired
 	}
 	if strings.TrimSpace(cfg.Embedder.ModelPath) == "" {
-		return fmt.Errorf("config: embedder.model_path is required")
+		return ErrEmbedderPathRequired
 	}
 
 	if err := validatePort("model.port", cfg.Model.Port); err != nil {
@@ -148,7 +157,7 @@ func Validate(cfg *Config) error {
 
 	// Port collisions: check all four regardless of API.Enabled so flipping
 	// the flag on later can't silently introduce a conflict.
-	seen := map[int]string{}
+	seen := make(map[int]string, 4)
 	for _, p := range []struct {
 		name string
 		val  int
