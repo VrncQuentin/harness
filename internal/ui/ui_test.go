@@ -140,7 +140,7 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	s, store := newServerWithStore(t)
 
 	var retryCalls int32
-	s.SetRetry(func() { atomic.AddInt32(&retryCalls, 1) })
+	s.SetRetry(func() ApplyResult { atomic.AddInt32(&retryCalls, 1); return ApplyResult{} })
 
 	form := url.Values{}
 	form.Set("model_binary", "C:\\llama.exe")
@@ -186,6 +186,61 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 
 	if atomic.LoadInt32(&retryCalls) != 1 {
 		t.Errorf("expected retry callback to fire once, got %d", retryCalls)
+	}
+}
+
+func TestHandleConfig_POSTIncludesApplyResultInRedirect(t *testing.T) {
+	s, _ := newServerWithStore(t)
+	s.SetRetry(func() ApplyResult {
+		return ApplyResult{
+			LiveApplied:   true,
+			RestartNeeded: []string{"UI port", "queue max depth"},
+		}
+	})
+
+	form := url.Values{}
+	form.Set("model_binary", "C:\\llama.exe")
+	form.Set("model_path", "C:\\m.gguf")
+	form.Set("model_port", "8081")
+	form.Set("embed_binary", "C:\\embed.exe")
+	form.Set("embed_path", "C:\\e.gguf")
+	form.Set("embed_port", "8082")
+	form.Set("ui_port", "3000")
+
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	want := "/config?saved=1&applied=1&restart=UI+port%7Cqueue+max+depth"
+	if loc != want {
+		t.Errorf("redirect mismatch:\n got: %q\nwant: %q", loc, want)
+	}
+}
+
+func TestHandleConfig_GETParsesApplyResultFromQuery(t *testing.T) {
+	s, store := newServerWithStore(t)
+	// Pre-seed so renderConfig has something to render.
+	_ = store.Save(&config.Config{
+		Model:    config.ModelConfig{Binary: "x", ModelPath: "y", Port: 1},
+		Embedder: config.EmbedderConfig{Binary: "x", ModelPath: "y", Port: 2},
+		UI:       config.UIConfig{Port: 3},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/config?saved=1&applied=1&restart=UI+port%7Cqueue+max+depth", nil)
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Model and embedder are reloading live") {
+		t.Errorf("expected mixed-apply message in body, got:\n%s", body)
+	}
+	if !strings.Contains(body, "UI port") || !strings.Contains(body, "queue max depth") {
+		t.Errorf("expected restart reasons in body, got:\n%s", body)
 	}
 }
 
@@ -379,7 +434,7 @@ func TestHandleConfig_POSTErrorDoesNotPreFillBinary(t *testing.T) {
 func TestHandleRetry_CallsCallback(t *testing.T) {
 	s := NewServer(3000)
 	var called int32
-	s.SetRetry(func() { atomic.AddInt32(&called, 1) })
+	s.SetRetry(func() ApplyResult { atomic.AddInt32(&called, 1); return ApplyResult{} })
 
 	req := httptest.NewRequest(http.MethodPost, "/retry", nil)
 	rec := httptest.NewRecorder()

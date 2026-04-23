@@ -8,6 +8,7 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,8 +20,18 @@ import (
 
 // RetryFunc is called when the user clicks Retry on the status page or saves
 // a new config. The implementation (in main) is responsible for clearing and
-// re-adding startup errors via the Server's methods.
-type RetryFunc func()
+// re-adding startup errors via the Server's methods, and returns what the
+// reload achieved vs. what still needs a full harness restart.
+type RetryFunc func() ApplyResult
+
+// ApplyResult reports the outcome of re-reading + re-applying the saved config.
+// LiveApplied is true when at least one component was reconfigured in place.
+// RestartNeeded lists human-readable reasons (e.g. "UI port") for changes that
+// require a full harness restart to take effect.
+type ApplyResult struct {
+	LiveApplied   bool
+	RestartNeeded []string
+}
 
 // ProcessStatus is the UI-facing status of a managed process.
 type ProcessStatus struct {
@@ -108,13 +119,14 @@ func (s *Server) SetRetry(fn RetryFunc) {
 	s.retryMu.Unlock()
 }
 
-func (s *Server) callRetry() {
+func (s *Server) callRetry() ApplyResult {
 	s.retryMu.RLock()
 	fn := s.retry
 	s.retryMu.RUnlock()
-	if fn != nil {
-		fn()
+	if fn == nil {
+		return ApplyResult{}
 	}
+	return fn()
 }
 
 // SetConfigStore installs the config store used by the /config page. If nil,
@@ -257,12 +269,14 @@ type statusPageData struct {
 // configPageData is the template context for the config editor.
 type configPageData struct {
 	basePage
-	Config        *config.Config
-	Suggestions   config.Suggestions
-	FirstRun      bool
-	Saved         bool
-	ValidationErr string
-	SaveErr       string
+	Config         *config.Config
+	Suggestions    config.Suggestions
+	FirstRun       bool
+	Saved          bool
+	LiveApplied    bool
+	RestartReasons []string
+	ValidationErr  string
+	SaveErr        string
 }
 
 // handleStatus renders the status page. Only the root path renders the page;
@@ -452,6 +466,10 @@ func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay co
 	}
 	if r.URL.Query().Get("saved") == "1" {
 		data.Saved = true
+		data.LiveApplied = r.URL.Query().Get("applied") == "1"
+		if rs := r.URL.Query().Get("restart"); rs != "" {
+			data.RestartReasons = strings.Split(rs, "|")
+		}
 	}
 
 	data.Suggestions = config.Detect(s.getBinDir())
@@ -500,8 +518,15 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Trigger retry so startup errors get cleared/refreshed against the new config.
-	s.callRetry()
-	http.Redirect(w, r, "/config?saved=1", http.StatusSeeOther)
+	result := s.callRetry()
+	target := "/config?saved=1"
+	if result.LiveApplied {
+		target += "&applied=1"
+	}
+	if len(result.RestartNeeded) > 0 {
+		target += "&restart=" + url.QueryEscape(strings.Join(result.RestartNeeded, "|"))
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // handleRetry is POST /retry - clears startup errors and re-runs validation.
