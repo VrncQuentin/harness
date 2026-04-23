@@ -26,27 +26,46 @@ type Suggestions struct {
 // binDir is typically the directory containing the running harness binary. If
 // empty, Detect returns zero-value Suggestions so tests and callers without a
 // resolved binary path get deterministic output.
+//
+// For dev ergonomics Detect also searches binDir's parent - the common layout
+// is dist/harness.exe alongside a sibling models/ and llama.cpp/ at the repo
+// root, so binDir alone misses both.
 func Detect(binDir string) Suggestions {
 	if binDir == "" {
 		return Suggestions{}
 	}
+	roots := searchRoots(binDir)
 	return Suggestions{
-		LlamaBinary: detectLlamaBinary(binDir),
-		MainModel:   detectModels(binDir, false),
-		EmbedModel:  detectModels(binDir, true),
+		LlamaBinary: detectLlamaBinary(roots),
+		MainModel:   detectModels(roots, false),
+		EmbedModel:  detectModels(roots, true),
 	}
 }
 
-func detectLlamaBinary(binDir string) []string {
+// searchRoots returns binDir plus its parent (when distinct). Parent covers
+// the dev layout where the built binary sits in dist/ while resources live at
+// the repo root.
+func searchRoots(binDir string) []string {
+	roots := []string{binDir}
+	if parent := filepath.Dir(binDir); parent != "" && parent != binDir {
+		roots = append(roots, parent)
+	}
+	return roots
+}
+
+func detectLlamaBinary(roots []string) []string {
 	exe := "llama-server"
 	if runtime.GOOS == "windows" {
 		exe = "llama-server.exe"
 	}
 
-	seeds := []string{
-		filepath.Join(binDir, exe),
-		filepath.Join(binDir, "llama.cpp", exe),
-		filepath.Join(binDir, "llama.cpp", "bin", exe),
+	var seeds []string
+	for _, r := range roots {
+		seeds = append(seeds,
+			filepath.Join(r, exe),
+			filepath.Join(r, "llama.cpp", exe),
+			filepath.Join(r, "llama.cpp", "bin", exe),
+		)
 	}
 	if runtime.GOOS == "windows" {
 		if pf := os.Getenv("ProgramFiles"); pf != "" {
@@ -71,28 +90,31 @@ func detectLlamaBinary(binDir string) []string {
 	return dedupAbs(found)
 }
 
-func detectModels(binDir string, embed bool) []string {
-	modelsDir := filepath.Join(binDir, "models")
-	entries, err := os.ReadDir(modelsDir)
-	if err != nil {
-		return nil
-	}
+func detectModels(roots []string, embed bool) []string {
 	var out []string
-	for _, e := range entries {
-		if e.IsDir() {
+	for _, r := range roots {
+		modelsDir := filepath.Join(r, "models")
+		entries, err := os.ReadDir(modelsDir)
+		if err != nil {
 			continue
 		}
-		name := e.Name()
-		if !strings.EqualFold(filepath.Ext(name), ".gguf") {
-			continue
-		}
-		if looksLikeEmbedder(name) != embed {
-			continue
-		}
-		if abs, err := filepath.Abs(filepath.Join(modelsDir, name)); err == nil {
-			out = append(out, abs)
+		for _, e := range entries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if !strings.EqualFold(filepath.Ext(name), ".gguf") {
+				continue
+			}
+			if looksLikeEmbedder(name) != embed {
+				continue
+			}
+			if abs, err := filepath.Abs(filepath.Join(modelsDir, name)); err == nil {
+				out = append(out, abs)
+			}
 		}
 	}
+	out = dedupAbs(out)
 	sort.Strings(out)
 	return out
 }
