@@ -40,6 +40,14 @@ type Status struct {
 	Healthy      bool
 	RestartCount int
 	LastError    error
+	// ExitCode is non-nil once the child has exited at least once. It is
+	// cleared on the next successful start so it only reports the most
+	// recent exit while the process is back up.
+	ExitCode *int
+	// StderrTail is a recent, bounded window of the child's stderr. Empty
+	// while the child is healthy; populated when a crash-looping child
+	// needs to explain itself.
+	StderrTail []string
 }
 
 // Manager manages a single child process with health checking and restart logic.
@@ -57,6 +65,8 @@ type Manager struct {
 	healthy      bool
 	restartCount int
 	lastError    error
+	exitCode     *int
+	stderr       *stderrBuffer
 }
 
 // ManagerConfig holds the configuration for a Manager.
@@ -87,6 +97,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		events:      cfg.Events,
 		checkPeriod: period,
 		httpClient:  hc,
+		stderr:      newStderrBuffer(64),
 	}
 }
 
@@ -147,11 +158,18 @@ func (m *Manager) Run(ctx context.Context) {
 func (m *Manager) Status() Status {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	var ec *int
+	if m.exitCode != nil {
+		v := *m.exitCode
+		ec = &v
+	}
 	return Status{
 		Running:      m.running,
 		Healthy:      m.healthy,
 		RestartCount: m.restartCount,
 		LastError:    m.lastError,
+		ExitCode:     ec,
+		StderrTail:   m.stderr.Snapshot(),
 	}
 }
 
@@ -169,6 +187,12 @@ func (m *Manager) healthLoop(ctx context.Context) {
 		m.mu.Unlock()
 		if cmd != nil {
 			cmd.Wait() //nolint:errcheck
+			if cmd.ProcessState != nil {
+				code := cmd.ProcessState.ExitCode()
+				m.mu.Lock()
+				m.exitCode = &code
+				m.mu.Unlock()
+			}
 		}
 		close(done)
 	}()
@@ -209,6 +233,8 @@ func (m *Manager) startProcess(ctx context.Context) error {
 	binary, args := m.buildArgs()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	hideConsole(cmd)
+	m.stderr.Reset()
+	cmd.Stderr = m.stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("proc: failed to start %s: %w", m.name, err)
 	}
@@ -216,6 +242,7 @@ func (m *Manager) startProcess(ctx context.Context) error {
 	m.cmd = cmd
 	m.running = true
 	m.healthy = false
+	m.exitCode = nil
 	m.mu.Unlock()
 	return nil
 }

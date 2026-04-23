@@ -135,6 +135,37 @@ a:hover { text-decoration: underline; }
   font-family: var(--mono);
   word-break: break-word;
 }
+.card-meta {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.card-meta code {
+  font-family: var(--mono);
+  color: var(--fg);
+}
+.card-stderr {
+  margin-top: 0.5rem;
+}
+.card-stderr > summary {
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: var(--muted);
+  user-select: none;
+}
+.card-stderr pre {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-family: var(--mono);
+  max-height: 14rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 /* Stats list */
 .stats { margin: 0; padding: 0; }
