@@ -42,8 +42,9 @@ type Queue struct {
 	walMu   sync.Mutex
 	walFile *os.File
 
-	client inference.Client
-	wg     sync.WaitGroup
+	clientMu sync.RWMutex
+	client   inference.Client
+	wg       sync.WaitGroup
 }
 
 // New creates a new Queue. walPath may be empty to disable WAL.
@@ -116,16 +117,29 @@ func (q *Queue) worker(ctx context.Context) {
 	}
 }
 
+// SetClient atomically swaps the inference client. In-flight requests keep
+// using the old client; new requests go to the new one. Safe to call while
+// the worker is running.
+func (q *Queue) SetClient(c inference.Client) {
+	q.clientMu.Lock()
+	q.client = c
+	q.clientMu.Unlock()
+}
+
 // dispatch sends the request to the inference client and streams tokens back.
 func (q *Queue) dispatch(req Request) {
 	defer close(req.Response)
 
-	if q.client == nil {
+	q.clientMu.RLock()
+	client := q.client
+	q.clientMu.RUnlock()
+
+	if client == nil {
 		req.Response <- inference.Token{Err: fmt.Errorf("queue: no inference client configured")}
 		return
 	}
 
-	tokenCh, err := q.client.Complete(req.Ctx, inference.CompletionRequest{
+	tokenCh, err := client.Complete(req.Ctx, inference.CompletionRequest{
 		Messages: req.Messages,
 		Stream:   true,
 	})

@@ -53,13 +53,18 @@ type Status struct {
 // Manager manages a single child process with health checking and restart logic.
 type Manager struct {
 	name        string
-	buildArgs   func() (string, []string)
-	healthURL   string
 	events      chan<- Event
 	checkPeriod time.Duration
 	httpClient  *http.Client
 
+	// reloadCh is signalled by Reconfigure. The Run loop treats a reload as
+	// an intentional restart: backoff resets and the restart count is not
+	// bumped.
+	reloadCh chan struct{}
+
 	mu           sync.Mutex
+	buildArgs    func() (string, []string)
+	healthURL    string
 	cmd          *exec.Cmd
 	running      bool
 	healthy      bool
@@ -98,7 +103,24 @@ func NewManager(cfg ManagerConfig) *Manager {
 		checkPeriod: period,
 		httpClient:  hc,
 		stderr:      newStderrBuffer(64),
+		reloadCh:    make(chan struct{}, 1),
 	}
+}
+
+// Reconfigure atomically swaps the args builder and health URL, then kills the
+// running child so Run spins it up again under the new config. The restart is
+// user-initiated, so it does not count against RestartCount and skips backoff.
+func (m *Manager) Reconfigure(buildArgs func() (string, []string), healthURL string) {
+	m.mu.Lock()
+	m.buildArgs = buildArgs
+	m.healthURL = healthURL
+	m.mu.Unlock()
+
+	select {
+	case m.reloadCh <- struct{}{}:
+	default:
+	}
+	m.stopProcess()
 }
 
 // Run is the main loop: start the process, health-check it, restart on failure.
@@ -119,6 +141,9 @@ func (m *Manager) Run(ctx context.Context) {
 			select {
 			case <-ctx.Done():
 				return
+			case <-m.reloadCh:
+				backoff = time.Second
+				continue
 			case <-time.After(backoff):
 				backoff = min(backoff*2, maxBackoff)
 				continue
@@ -136,18 +161,36 @@ func (m *Manager) Run(ctx context.Context) {
 			return
 		}
 
-		// Process died or health loop exited - increment restart count and retry.
+		// Drain a pending reload signal: if the exit was user-initiated we
+		// skip the failure accounting and restart immediately with fresh args.
+		reloaded := false
+		select {
+		case <-m.reloadCh:
+			reloaded = true
+		default:
+		}
+
 		m.mu.Lock()
-		m.restartCount++
+		if !reloaded {
+			m.restartCount++
+		}
 		m.running = false
 		m.healthy = false
 		m.mu.Unlock()
+
+		if reloaded {
+			backoff = time.Second
+			m.emit(EventRestart, "reloading with new config")
+			continue
+		}
 
 		m.emit(EventRestart, fmt.Sprintf("restarting (attempt %d), backoff %s", m.restartCount, backoff))
 
 		select {
 		case <-ctx.Done():
 			return
+		case <-m.reloadCh:
+			backoff = time.Second
 		case <-time.After(backoff):
 			backoff = min(backoff*2, maxBackoff)
 		}
@@ -230,7 +273,10 @@ func (m *Manager) healthLoop(ctx context.Context) {
 // startProcess spawns the child process. Uses CommandContext so the OS kills
 // the child automatically when ctx is cancelled.
 func (m *Manager) startProcess(ctx context.Context) error {
-	binary, args := m.buildArgs()
+	m.mu.Lock()
+	build := m.buildArgs
+	m.mu.Unlock()
+	binary, args := build()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	hideConsole(cmd)
 	m.stderr.Reset()
@@ -262,14 +308,18 @@ func (m *Manager) checkHealth(ctx context.Context) error {
 	reqCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, m.healthURL, http.NoBody)
+	m.mu.Lock()
+	url := m.healthURL
+	m.mu.Unlock()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("proc: build health request: %w", err)
 	}
 
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("proc: health GET %s: %w", m.healthURL, err)
+		return fmt.Errorf("proc: health GET %s: %w", url, err)
 	}
 	_ = resp.Body.Close()
 

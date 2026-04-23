@@ -15,7 +15,15 @@
 <div class="alert alert-ok">
   <div class="alert-head">
     <h2>Saved</h2>
-    <p class="alert-sub">Configuration written. Restart the harness to apply changes to running processes (model, embedder, ports).</p>
+    {{if and .LiveApplied (not .RestartReasons)}}
+    <p class="alert-sub">Changes applied live. Running processes are reloading with the new config.</p>
+    {{else if and .LiveApplied .RestartReasons}}
+    <p class="alert-sub">Model and embedder are reloading live. These fields still require a harness restart: <strong>{{range $i, $r := .RestartReasons}}{{if $i}}, {{end}}{{$r}}{{end}}</strong>.</p>
+    {{else if .RestartReasons}}
+    <p class="alert-sub">Saved, but these fields require a harness restart to take effect: <strong>{{range $i, $r := .RestartReasons}}{{if $i}}, {{end}}{{$r}}{{end}}</strong>.</p>
+    {{else}}
+    <p class="alert-sub">Configuration written.</p>
+    {{end}}
   </div>
 </div>
 {{end}}
@@ -188,6 +196,6 @@
     <button type="submit" class="btn btn-primary">Save config</button>
     <a href="/" class="btn btn-ghost">Cancel</a>
   </div>
-  <p class="cfg-note">Required fields are marked <span class="req">*</span>. Changes to model, embedder, and port settings take effect on the next harness restart.</p>
+  <p class="cfg-note">Required fields are marked <span class="req">*</span>. Model and embedder changes are applied live. UI port, queue depth, and queue WAL path still require a harness restart.</p>
 </form>
 {{end}}
