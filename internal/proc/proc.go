@@ -45,10 +45,10 @@ type Status struct {
 	// cleared on the next successful start so it only reports the most
 	// recent exit while the process is back up.
 	ExitCode *int
-	// StderrTail is a recent, bounded window of the child's stderr. Empty
-	// while the child is healthy; populated when a crash-looping child
-	// needs to explain itself.
-	StderrTail []string
+	// OutputTail is a recent, bounded window of the child's merged
+	// stdout+stderr. Empty while the child is healthy; populated when a
+	// crash-looping child needs to explain itself.
+	OutputTail []string
 }
 
 // Manager manages a single child process with health checking and restart logic.
@@ -72,7 +72,7 @@ type Manager struct {
 	restartCount int
 	lastError    error
 	exitCode     *int
-	stderr       *stderrBuffer
+	output       *outputBuffer
 }
 
 // ManagerConfig holds the configuration for a Manager.
@@ -103,7 +103,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		events:      cfg.Events,
 		checkPeriod: period,
 		httpClient:  hc,
-		stderr:      newStderrBuffer(64),
+		output:      newOutputBuffer(64),
 		reloadCh:    make(chan struct{}, 1),
 	}
 }
@@ -213,7 +213,7 @@ func (m *Manager) Status() Status {
 		RestartCount: m.restartCount,
 		LastError:    m.lastError,
 		ExitCode:     ec,
-		StderrTail:   m.stderr.Snapshot(),
+		OutputTail:   m.output.Snapshot(),
 	}
 }
 
@@ -280,8 +280,12 @@ func (m *Manager) startProcess(ctx context.Context) error {
 	binary, args := build()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	hideConsole(cmd)
-	m.stderr.Reset()
-	cmd.Stderr = m.stderr
+	m.output.Reset()
+	// Merge stdout and stderr into one ring buffer: llama-server and the
+	// embedder split diagnostics across both streams, and Go would otherwise
+	// send stdout to the null device, swallowing whatever landed there.
+	cmd.Stdout = m.output
+	cmd.Stderr = m.output
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("proc: start %s: %w", m.name, err)
 	}
