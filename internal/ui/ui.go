@@ -72,7 +72,7 @@ type Server struct {
 	retry   RetryFunc
 
 	storeMu sync.RWMutex
-	store   *config.Store
+	store   config.Store
 }
 
 // NewServer creates a new UI server on the given port. The config store is
@@ -114,13 +114,13 @@ func (s *Server) callRetry() {
 
 // SetConfigStore installs the config store used by the /config page. If nil,
 // the config page renders an error instead of a form.
-func (s *Server) SetConfigStore(store *config.Store) {
+func (s *Server) SetConfigStore(store config.Store) {
 	s.storeMu.Lock()
 	s.store = store
 	s.storeMu.Unlock()
 }
 
-func (s *Server) configStore() *config.Store {
+func (s *Server) configStore() config.Store {
 	s.storeMu.RLock()
 	defer s.storeMu.RUnlock()
 	return s.store
