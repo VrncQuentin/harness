@@ -1,0 +1,2 @@
+ALTER TABLE config ADD COLUMN log_ring_max_entries INTEGER NOT NULL DEFAULT 500;
+ALTER TABLE config ADD COLUMN log_proc_max_lines   INTEGER NOT NULL DEFAULT 64;

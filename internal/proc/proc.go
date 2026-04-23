@@ -84,6 +84,9 @@ type ManagerConfig struct {
 	CheckPeriod time.Duration
 	// HTTPClient is used for health checks. Defaults to httpclient.New() if nil.
 	HTTPClient *http.Client
+	// OutputMaxLines bounds the retained stdout+stderr tail for this child.
+	// Zero or negative falls back to the outputBuffer default.
+	OutputMaxLines int
 }
 
 // NewManager creates a new process Manager.
@@ -103,7 +106,7 @@ func NewManager(cfg ManagerConfig) *Manager {
 		events:      cfg.Events,
 		checkPeriod: period,
 		httpClient:  hc,
-		output:      newOutputBuffer(64),
+		output:      newOutputBuffer(cfg.OutputMaxLines),
 		reloadCh:    make(chan struct{}, 1),
 	}
 }

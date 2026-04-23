@@ -81,8 +81,10 @@ func run() error {
 
 	// Tee the default log + slog outputs into an in-memory ring so the
 	// status page can show recent harness output. Stderr still receives
-	// everything so terminal launches are unchanged.
-	logRing := logbuf.New(0)
+	// everything so terminal launches are unchanged. The ring is sized from
+	// the default config because we haven't opened the DB yet - saved values
+	// take effect on the next harness launch, like UI port.
+	logRing := logbuf.New(config.Defaults().Log.RingMaxEntries)
 	logSink := io.MultiWriter(os.Stderr, logRing)
 	log.SetOutput(logSink)
 	slog.SetDefault(slog.New(slog.NewTextHandler(logSink, nil)))
@@ -203,10 +205,11 @@ func (rt *runtime) startServices(
 				cfg.Model.Port,
 			)
 		},
-		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Model.Port),
-		Events:      events,
-		CheckPeriod: 5 * time.Second,
-		HTTPClient:  httpclient.New(),
+		HealthURL:      fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Model.Port),
+		Events:         events,
+		CheckPeriod:    5 * time.Second,
+		HTTPClient:     httpclient.New(),
+		OutputMaxLines: cfg.Log.ProcMaxLines,
 	})
 	go rt.llamaMgr.Run(ctx)
 
@@ -219,10 +222,11 @@ func (rt *runtime) startServices(
 				cfg.Embedder.Port,
 			)
 		},
-		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Embedder.Port),
-		Events:      events,
-		CheckPeriod: 5 * time.Second,
-		HTTPClient:  httpclient.New(),
+		HealthURL:      fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Embedder.Port),
+		Events:         events,
+		CheckPeriod:    5 * time.Second,
+		HTTPClient:     httpclient.New(),
+		OutputMaxLines: cfg.Log.ProcMaxLines,
 	})
 	go rt.embedMgr.Run(ctx)
 
@@ -330,6 +334,15 @@ func (rt *runtime) applyConfig(
 	}
 	if old.Queue.WALPath != loaded.Queue.WALPath {
 		result.RestartNeeded = append(result.RestartNeeded, "queue WAL path")
+	}
+	// Log buffers are allocated at startup and at proc.NewManager. Flipping
+	// sizes on a running harness does not resize the live buffers; surface
+	// that to the user so they know to restart.
+	if old.Log.RingMaxEntries != loaded.Log.RingMaxEntries {
+		result.RestartNeeded = append(result.RestartNeeded, "harness log buffer size")
+	}
+	if old.Log.ProcMaxLines != loaded.Log.ProcMaxLines {
+		result.RestartNeeded = append(result.RestartNeeded, "process log buffer size")
 	}
 
 	return result

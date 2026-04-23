@@ -7,6 +7,8 @@ document.addEventListener('htmx:sseMessage', function (evt) {
     setText('embed-running', d.embed_running ? 'Yes' : 'No');
     setText('llama-restarts', d.llama_restarts);
     setText('embed-restarts', d.embed_restarts);
+    setProcOutput('llama', d.llama_output);
+    setProcOutput('embed', d.embed_output);
     setQueue(d.queue_depth, d.queue_max);
     setUptime(d.uptime_seconds);
   } catch (e) { /* ignore malformed frame */ }
@@ -22,6 +24,33 @@ function setBadge(id, ok) {
 function setText(id, v) {
   var el = document.getElementById(id);
   if (el) el.textContent = v;
+}
+
+// setProcOutput swaps the <pre> contents for a process card in place. Auto-
+// scroll only when the user was already pinned to the bottom, so scrolling
+// up to read a past line isn't yanked back on the next SSE frame.
+function setProcOutput(prefix, lines) {
+  var pre = document.getElementById(prefix + '-output');
+  var empty = document.getElementById(prefix + '-output-empty');
+  var count = document.getElementById(prefix + '-output-count');
+  if (!pre || !empty || !count) return;
+  lines = lines || [];
+  if (lines.length === 0) {
+    pre.hidden = true;
+    pre.textContent = '';
+    empty.hidden = false;
+    count.textContent = '';
+    return;
+  }
+  var atBottom = (pre.scrollHeight - pre.scrollTop - pre.clientHeight) < 4;
+  var next = lines.join('\n') + '\n';
+  if (pre.textContent !== next) {
+    pre.textContent = next;
+    if (atBottom) pre.scrollTop = pre.scrollHeight;
+  }
+  pre.hidden = false;
+  empty.hidden = true;
+  count.textContent = ' (' + lines.length + ' lines)';
 }
 
 function setQueue(depth, max) {
