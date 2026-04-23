@@ -8,8 +8,8 @@ import (
 
 // fakeStore captures Record calls for assertion. Query is unused here.
 type fakeStore struct {
-	calls  []recordCall
-	err    error
+	calls []recordCall
+	err   error
 }
 
 type recordCall struct {
