@@ -58,9 +58,12 @@ type Queue struct {
 func New(maxDepth int, walPath string, client inference.Client) *Queue {
 	return &Queue{
 		maxDepth: maxDepth,
-		ch:       make(chan Request, maxDepth),
-		walPath:  walPath,
-		client:   client,
+		// Channel capacity is the queue's contract: the channel itself is the
+		// bounded buffer and Enqueue's non-blocking send returns ErrQueueFull
+		// when full. Sized intentionally per Uber's "Channel Size" rule.
+		ch:      make(chan Request, maxDepth),
+		walPath: walPath,
+		client:  client,
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,6 +99,9 @@ func run() error {
 	}
 	uiServer.SetFirstRun(!configured)
 
+	// proc.Manager.emit is non-blocking and drops on a full buffer; size 64
+	// is large enough to absorb startup bursts (multiple managers emitting
+	// start/health events back-to-back) without losing them.
 	events := make(chan proc.Event, 64)
 	rt := &runtime{cfg: cfg}
 
@@ -244,7 +248,7 @@ func (rt *runtime) applyConfig(
 	old := rt.cfg
 	rt.cfg = *loaded
 
-	result := ui.ApplyResult{}
+	var result ui.ApplyResult
 
 	if !rt.started {
 		rt.startServices(ctx, uiServer, events, metricsStore)
@@ -331,7 +335,7 @@ func validatePaths(uiServer *ui.Server, cfg *config.Config) {
 		if c.path == "" {
 			continue
 		}
-		if _, err := os.Stat(c.path); os.IsNotExist(err) {
+		if _, err := os.Stat(c.path); errors.Is(err, fs.ErrNotExist) {
 			uiServer.AddStartupError(fmt.Errorf("%s not found: %s", c.label, c.path))
 		}
 	}

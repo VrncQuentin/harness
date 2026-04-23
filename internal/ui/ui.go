@@ -362,7 +362,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	ch := make(chan string, 8)
+	// Per-client SSE buffer. Senders (broadcastState, sendState) use
+	// non-blocking sends and drop on overflow, so 1 is enough: a missed
+	// payload is replaced by the next one within the 2s ticker.
+	ch := make(chan string, 1)
 	s.sseClients.Store(ch, struct{}{})
 	defer s.sseClients.Delete(ch)
 
@@ -433,7 +436,7 @@ type ssePayload struct {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		s.renderConfig(w, r, configPageData{}, false)
+		s.renderConfig(w, r, configPageData{}, false /* skipStoreLoad */)
 	case http.MethodPost:
 		s.saveConfig(w, r)
 	default:
@@ -492,13 +495,13 @@ func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay co
 // saveConfig parses the form, validates, writes, then triggers retry.
 func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
-		s.renderConfig(w, r, configPageData{SaveErr: "could not parse form: " + err.Error()}, true)
+		s.renderConfig(w, r, configPageData{SaveErr: "could not parse form: " + err.Error()}, true /* skipStoreLoad */)
 		return
 	}
 
 	store := s.configStore()
 	if store == nil {
-		s.renderConfig(w, r, configPageData{SaveErr: "config store unavailable"}, true)
+		s.renderConfig(w, r, configPageData{SaveErr: "config store unavailable"}, true /* skipStoreLoad */)
 		return
 	}
 
@@ -512,11 +515,11 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := parseConfigForm(r, &base)
 
 	if err := config.Validate(cfg); err != nil {
-		s.renderConfig(w, r, configPageData{Config: cfg, ValidationErr: err.Error()}, true)
+		s.renderConfig(w, r, configPageData{Config: cfg, ValidationErr: err.Error()}, true /* skipStoreLoad */)
 		return
 	}
 	if err := store.Save(cfg); err != nil {
-		s.renderConfig(w, r, configPageData{Config: cfg, SaveErr: err.Error()}, true)
+		s.renderConfig(w, r, configPageData{Config: cfg, SaveErr: err.Error()}, true /* skipStoreLoad */)
 		return
 	}
 
