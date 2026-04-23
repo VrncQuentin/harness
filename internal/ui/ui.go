@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vrnc/harness/assets"
@@ -95,8 +96,7 @@ type Server struct {
 	binDirMu sync.RWMutex
 	binDir   string
 
-	logRingMu sync.RWMutex
-	logRing   *logbuf.Ring
+	logRing atomic.Pointer[logbuf.Ring]
 }
 
 // NewServer creates a new UI server on the given port. The config store is
@@ -170,15 +170,11 @@ func (s *Server) getBinDir() string {
 // show recent output and stream new entries over SSE. Safe to leave unset;
 // the log panel then renders empty and the SSE endpoint returns 503.
 func (s *Server) SetLogRing(r *logbuf.Ring) {
-	s.logRingMu.Lock()
-	s.logRing = r
-	s.logRingMu.Unlock()
+	s.logRing.Store(r)
 }
 
 func (s *Server) getLogRing() *logbuf.Ring {
-	s.logRingMu.RLock()
-	defer s.logRingMu.RUnlock()
-	return s.logRing
+	return s.logRing.Load()
 }
 
 // SetLlamaStatus updates the llama-server status.
