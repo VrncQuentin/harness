@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/vrnc/harness/internal/config"
@@ -22,6 +23,19 @@ import (
 )
 
 const dbFilename = "harness.db"
+
+// runtime holds mutable service references that the retry/save callback
+// reconfigures in place. A mutex guards all fields because the callback runs
+// on an HTTP goroutine while other goroutines (forwardEvents, metrics) read
+// the same managers and queue.
+type runtime struct {
+	mu       sync.Mutex
+	cfg      config.Config
+	llamaMgr *proc.Manager
+	embedMgr *proc.Manager
+	reqQueue *queue.Queue
+	started  bool
+}
 
 func main() {
 	// Step 1: Acquire single-instance mutex (Windows only).
@@ -70,26 +84,24 @@ func main() {
 	}
 	uiServer.SetFirstRun(!configured)
 
-	uiServer.SetRetry(func() {
-		uiServer.ClearStartupErrors()
-		if cfgStore == nil {
-			uiServer.AddStartupError(fmt.Errorf("config store unavailable (harness.db could not be opened)"))
-			return
-		}
-		loaded, wasSaved, lerr := cfgStore.Load()
-		if lerr != nil {
-			uiServer.AddStartupError(fmt.Errorf("config load: %w", lerr))
-			return
-		}
-		uiServer.SetFirstRun(!wasSaved)
-		if !wasSaved {
-			return
-		}
-		if verr := config.Validate(loaded); verr != nil {
-			uiServer.AddStartupError(verr)
-			return
-		}
-		validatePaths(uiServer, loaded)
+	events := make(chan proc.Event, 64)
+	rt := &runtime{cfg: cfg}
+
+	// Boot-time start: if the user has previously saved config, bring services
+	// up right away. Otherwise they will be created on the first /config save.
+	if configured {
+		validatePaths(uiServer, &cfg)
+		rt.mu.Lock()
+		rt.startServices(rootCtx, uiServer, events, metricsStore)
+		rt.mu.Unlock()
+	}
+
+	// forwardEvents needs to see managers that may be created later (first-run
+	// save path), so it fetches them via a getter under rt.mu.
+	go forwardEvents(rootCtx, events, uiServer, rt.getManagers)
+
+	uiServer.SetRetry(func() ui.ApplyResult {
+		return rt.applyConfig(rootCtx, uiServer, cfgStore, events, metricsStore)
 	})
 
 	// Open browser to UI unless disabled by saved config.
@@ -100,76 +112,14 @@ func main() {
 		}()
 	}
 
-	// Event channel for process manager log events.
-	events := make(chan proc.Event, 64)
-
-	var llamaMgr, embedMgr *proc.Manager
-	var reqQueue *queue.Queue
-
-	if configured {
-		validatePaths(uiServer, &cfg)
-
-		// Step 6: Start process manager for llama-server.
-		llamaMgr = proc.NewManager(proc.ManagerConfig{
-			Name: "llama-server",
-			BuildArgs: func() (string, []string) {
-				return proc.LlamaArgs(
-					cfg.Model.Binary,
-					cfg.Model.ModelPath,
-					cfg.Model.CtxSize,
-					cfg.Model.GPULayers,
-					cfg.Model.NParallel,
-					cfg.Model.Port,
-				)
-			},
-			HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Model.Port),
-			Events:      events,
-			CheckPeriod: 5 * time.Second,
-			HTTPClient:  httpclient.New(),
-		})
-		go llamaMgr.Run(rootCtx)
-
-		// Step 7: Start process manager for embedder sidecar.
-		embedMgr = proc.NewManager(proc.ManagerConfig{
-			Name: "embedder",
-			BuildArgs: func() (string, []string) {
-				return proc.EmbedderArgs(
-					cfg.Embedder.Binary,
-					cfg.Embedder.ModelPath,
-					cfg.Embedder.Port,
-				)
-			},
-			HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Embedder.Port),
-			Events:      events,
-			CheckPeriod: 5 * time.Second,
-			HTTPClient:  httpclient.New(),
-		})
-		go embedMgr.Run(rootCtx)
-
-		// Build inference client and queue.
-		inferClient := inference.NewClient(
-			fmt.Sprintf("http://127.0.0.1:%d", cfg.Model.Port),
-			httpclient.NewStreaming(),
-		)
-		reqQueue = queue.New(cfg.Queue.MaxDepth, cfg.Queue.WALPath, inferClient)
-		if err := reqQueue.Start(rootCtx); err != nil {
-			uiServer.AddStartupError(fmt.Errorf("queue WAL error: %w", err))
-		}
-
-		// Step 8: Metrics recording goroutine.
-		if metricsStore != nil {
-			go recordMetrics(rootCtx, metricsStore, llamaMgr, embedMgr, reqQueue)
-		}
-	}
-
-	// Forward process events to UI.
-	go forwardEvents(rootCtx, events, uiServer, llamaMgr, embedMgr)
-
 	// Shutdown function called by tray Quit.
 	onQuit := func() {
 		rootCancel()
-		if reqQueue != nil {
-			reqQueue.Stop()
+		rt.mu.Lock()
+		q := rt.reqQueue
+		rt.mu.Unlock()
+		if q != nil {
+			q.Stop()
 		}
 		if harnessDB != nil {
 			_ = harnessDB.Close()
@@ -179,6 +129,163 @@ func main() {
 	// Step 9: Hand off to tray.Run() - this blocks until Quit.
 	uiURL := fmt.Sprintf("http://localhost:%d", cfg.UI.Port)
 	tray.Run(uiURL, onQuit)
+}
+
+// startServices brings llama-server, embedder, queue, and metrics up under the
+// current rt.cfg. Caller must hold rt.mu.
+func (rt *runtime) startServices(
+	ctx context.Context,
+	uiServer *ui.Server,
+	events chan proc.Event,
+	metricsStore metrics.Store,
+) {
+	cfg := &rt.cfg
+
+	rt.llamaMgr = proc.NewManager(proc.ManagerConfig{
+		Name: "llama-server",
+		BuildArgs: func() (string, []string) {
+			return proc.LlamaArgs(
+				cfg.Model.Binary,
+				cfg.Model.ModelPath,
+				cfg.Model.CtxSize,
+				cfg.Model.GPULayers,
+				cfg.Model.NParallel,
+				cfg.Model.Port,
+			)
+		},
+		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Model.Port),
+		Events:      events,
+		CheckPeriod: 5 * time.Second,
+		HTTPClient:  httpclient.New(),
+	})
+	go rt.llamaMgr.Run(ctx)
+
+	rt.embedMgr = proc.NewManager(proc.ManagerConfig{
+		Name: "embedder",
+		BuildArgs: func() (string, []string) {
+			return proc.EmbedderArgs(
+				cfg.Embedder.Binary,
+				cfg.Embedder.ModelPath,
+				cfg.Embedder.Port,
+			)
+		},
+		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Embedder.Port),
+		Events:      events,
+		CheckPeriod: 5 * time.Second,
+		HTTPClient:  httpclient.New(),
+	})
+	go rt.embedMgr.Run(ctx)
+
+	inferClient := inference.NewClient(
+		fmt.Sprintf("http://127.0.0.1:%d", cfg.Model.Port),
+		httpclient.NewStreaming(),
+	)
+	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, cfg.Queue.WALPath, inferClient)
+	if err := rt.reqQueue.Start(ctx); err != nil {
+		uiServer.AddStartupError(fmt.Errorf("queue WAL error: %w", err))
+	}
+
+	if metricsStore != nil {
+		go recordMetrics(ctx, metricsStore, rt.llamaMgr, rt.embedMgr, rt.reqQueue)
+	}
+
+	rt.started = true
+}
+
+// applyConfig reloads config from the store, validates it, and either starts
+// services for the first time or reconfigures the live ones to match. Tier-3
+// changes (UI port, queue) are returned as RestartNeeded so the UI can flag
+// them - no live apply path exists for those yet.
+func (rt *runtime) applyConfig(
+	ctx context.Context,
+	uiServer *ui.Server,
+	cfgStore config.Store,
+	events chan proc.Event,
+	metricsStore metrics.Store,
+) ui.ApplyResult {
+	uiServer.ClearStartupErrors()
+	if cfgStore == nil {
+		uiServer.AddStartupError(fmt.Errorf("config store unavailable (harness.db could not be opened)"))
+		return ui.ApplyResult{}
+	}
+	loaded, wasSaved, lerr := cfgStore.Load()
+	if lerr != nil {
+		uiServer.AddStartupError(fmt.Errorf("config load: %w", lerr))
+		return ui.ApplyResult{}
+	}
+	uiServer.SetFirstRun(!wasSaved)
+	if !wasSaved {
+		return ui.ApplyResult{}
+	}
+	if verr := config.Validate(loaded); verr != nil {
+		uiServer.AddStartupError(verr)
+		return ui.ApplyResult{}
+	}
+	validatePaths(uiServer, loaded)
+
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	old := rt.cfg
+	rt.cfg = *loaded
+
+	result := ui.ApplyResult{}
+
+	if !rt.started {
+		rt.startServices(ctx, uiServer, events, metricsStore)
+		result.LiveApplied = true
+	} else {
+		if old.Model != loaded.Model {
+			rt.llamaMgr.Reconfigure(func() (string, []string) {
+				return proc.LlamaArgs(
+					loaded.Model.Binary,
+					loaded.Model.ModelPath,
+					loaded.Model.CtxSize,
+					loaded.Model.GPULayers,
+					loaded.Model.NParallel,
+					loaded.Model.Port,
+				)
+			}, fmt.Sprintf("http://127.0.0.1:%d/health", loaded.Model.Port))
+			result.LiveApplied = true
+		}
+		if old.Embedder != loaded.Embedder {
+			rt.embedMgr.Reconfigure(func() (string, []string) {
+				return proc.EmbedderArgs(
+					loaded.Embedder.Binary,
+					loaded.Embedder.ModelPath,
+					loaded.Embedder.Port,
+				)
+			}, fmt.Sprintf("http://127.0.0.1:%d/health", loaded.Embedder.Port))
+			result.LiveApplied = true
+		}
+		// The queue holds a reference to the inference client, which is pinned
+		// to the model port - swap the client so in-flight requests drain
+		// against the old port and new ones hit the new one.
+		if old.Model.Port != loaded.Model.Port && rt.reqQueue != nil {
+			rt.reqQueue.SetClient(inference.NewClient(
+				fmt.Sprintf("http://127.0.0.1:%d", loaded.Model.Port),
+				httpclient.NewStreaming(),
+			))
+		}
+	}
+
+	if old.UI.Port != loaded.UI.Port {
+		result.RestartNeeded = append(result.RestartNeeded, "UI port")
+	}
+	if old.Queue.MaxDepth != loaded.Queue.MaxDepth {
+		result.RestartNeeded = append(result.RestartNeeded, "queue max depth")
+	}
+	if old.Queue.WALPath != loaded.Queue.WALPath {
+		result.RestartNeeded = append(result.RestartNeeded, "queue WAL path")
+	}
+
+	return result
+}
+
+func (rt *runtime) getManagers() (*proc.Manager, *proc.Manager) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.llamaMgr, rt.embedMgr
 }
 
 // openDB opens harness.db (running migrations + seed) and returns the handle
@@ -259,12 +366,13 @@ func recordMetrics(
 	}
 }
 
-// forwardEvents reads process events and updates the UI state.
+// forwardEvents reads process events and updates the UI state. Managers are
+// fetched via getMgrs on every push so first-save startup is observed.
 func forwardEvents(
 	ctx context.Context,
 	events <-chan proc.Event,
 	uiSrv *ui.Server,
-	llamaMgr, embedMgr *proc.Manager,
+	getMgrs func() (*proc.Manager, *proc.Manager),
 ) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -277,9 +385,11 @@ func forwardEvents(
 			if !ok {
 				return
 			}
-			pushStatus(uiSrv, llamaMgr, embedMgr)
+			l, e := getMgrs()
+			pushStatus(uiSrv, l, e)
 		case <-ticker.C:
-			pushStatus(uiSrv, llamaMgr, embedMgr)
+			l, e := getMgrs()
+			pushStatus(uiSrv, l, e)
 		}
 	}
 }
