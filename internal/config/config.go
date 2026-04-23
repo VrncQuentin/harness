@@ -2,7 +2,10 @@
 // validation. Persistence lives in internal/db - this package holds no SQL.
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Config is the top-level configuration structure for the harness.
 type Config struct {
@@ -113,28 +116,91 @@ func Defaults() Config {
 	}
 }
 
-// Validate checks that required fields are present.
+// Validate checks required fields, numeric bounds, and port collisions. The
+// UI trims form values before calling this, but Validate re-checks trimmed
+// length so direct callers (tests, future API callers) can't bypass it.
 func Validate(cfg *Config) error {
-	if cfg.Model.Binary == "" {
+	if strings.TrimSpace(cfg.Model.Binary) == "" {
 		return fmt.Errorf("config: model.binary is required")
 	}
-	if cfg.Model.ModelPath == "" {
+	if strings.TrimSpace(cfg.Model.ModelPath) == "" {
 		return fmt.Errorf("config: model.model_path is required")
 	}
-	if cfg.Model.Port == 0 {
-		return fmt.Errorf("config: model.port must be non-zero")
-	}
-	if cfg.Embedder.Binary == "" {
+	if strings.TrimSpace(cfg.Embedder.Binary) == "" {
 		return fmt.Errorf("config: embedder.binary is required")
 	}
-	if cfg.Embedder.ModelPath == "" {
+	if strings.TrimSpace(cfg.Embedder.ModelPath) == "" {
 		return fmt.Errorf("config: embedder.model_path is required")
 	}
-	if cfg.Embedder.Port == 0 {
-		return fmt.Errorf("config: embedder.port must be non-zero")
+
+	if err := validatePort("model.port", cfg.Model.Port); err != nil {
+		return err
 	}
-	if cfg.UI.Port == 0 {
-		return fmt.Errorf("config: ui.port must be non-zero")
+	if err := validatePort("embedder.port", cfg.Embedder.Port); err != nil {
+		return err
+	}
+	if err := validatePort("ui.port", cfg.UI.Port); err != nil {
+		return err
+	}
+	if err := validatePort("api.port", cfg.API.Port); err != nil {
+		return err
+	}
+
+	// Port collisions: check all four regardless of API.Enabled so flipping
+	// the flag on later can't silently introduce a conflict.
+	seen := map[int]string{}
+	for _, p := range []struct {
+		name string
+		val  int
+	}{
+		{"model.port", cfg.Model.Port},
+		{"embedder.port", cfg.Embedder.Port},
+		{"ui.port", cfg.UI.Port},
+		{"api.port", cfg.API.Port},
+	} {
+		if other, ok := seen[p.val]; ok {
+			return fmt.Errorf("config: %s and %s both use port %d", other, p.name, p.val)
+		}
+		seen[p.val] = p.name
+	}
+
+	if cfg.Model.CtxSize < 0 {
+		return fmt.Errorf("config: model.ctx_size must be >= 0, got %d", cfg.Model.CtxSize)
+	}
+	if cfg.Model.GPULayers < -1 {
+		return fmt.Errorf("config: model.gpu_layers must be >= -1 (-1 offloads all), got %d", cfg.Model.GPULayers)
+	}
+	if cfg.Model.NParallel < 1 {
+		return fmt.Errorf("config: model.n_parallel must be >= 1, got %d", cfg.Model.NParallel)
+	}
+
+	if cfg.Prompt.CtxSize < 0 {
+		return fmt.Errorf("config: prompt.ctx_size must be >= 0, got %d", cfg.Prompt.CtxSize)
+	}
+	if cfg.Prompt.MemoryTokenBudget < 0 {
+		return fmt.Errorf("config: prompt.memory_token_budget must be >= 0, got %d", cfg.Prompt.MemoryTokenBudget)
+	}
+	if cfg.Prompt.ConversationReserve < 0 {
+		return fmt.Errorf("config: prompt.conversation_reserve must be >= 0, got %d", cfg.Prompt.ConversationReserve)
+	}
+	if cfg.Prompt.CtxSize > 0 && cfg.Prompt.MemoryTokenBudget+cfg.Prompt.ConversationReserve > cfg.Prompt.CtxSize {
+		return fmt.Errorf("config: prompt.memory_token_budget (%d) + prompt.conversation_reserve (%d) exceed prompt.ctx_size (%d)",
+			cfg.Prompt.MemoryTokenBudget, cfg.Prompt.ConversationReserve, cfg.Prompt.CtxSize)
+	}
+
+	if cfg.Queue.MaxDepth < 1 {
+		return fmt.Errorf("config: queue.max_depth must be >= 1, got %d", cfg.Queue.MaxDepth)
+	}
+	if cfg.Metrics.RetentionDays < 1 {
+		return fmt.Errorf("config: metrics.retention_days must be >= 1, got %d", cfg.Metrics.RetentionDays)
+	}
+
+	return nil
+}
+
+func validatePort(name string, port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("config: %s must be between 1 and 65535, got %d", name, port)
 	}
 	return nil
 }
