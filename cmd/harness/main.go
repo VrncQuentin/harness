@@ -6,7 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +19,7 @@ import (
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
 	"github.com/vrnc/harness/internal/inference"
+	"github.com/vrnc/harness/internal/logbuf"
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/proc"
 	"github.com/vrnc/harness/internal/queue"
@@ -70,12 +74,21 @@ func run() error {
 		return fmt.Errorf("cannot determine binary dir: %w", err)
 	}
 
+	// Tee the default log + slog outputs into an in-memory ring so the
+	// status page can show recent harness output. Stderr still receives
+	// everything so terminal launches are unchanged.
+	logRing := logbuf.New(0)
+	logSink := io.MultiWriter(os.Stderr, logRing)
+	log.SetOutput(logSink)
+	slog.SetDefault(slog.New(slog.NewTextHandler(logSink, nil)))
+
 	// Root context - cancelled when tray quit is triggered.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 
 	// Step 3: Start UI server - must succeed before we proceed.
 	uiServer := ui.NewServer(3000)
 	uiServer.SetBinDir(binDir)
+	uiServer.SetLogRing(logRing)
 	if err := uiServer.Start(rootCtx); err != nil {
 		rootCancel()
 		return fmt.Errorf("UI server start: %w", err)

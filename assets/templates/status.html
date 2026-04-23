@@ -93,4 +93,14 @@
     </div>
   </div>
 </section>
+
+<details class="logs-card" id="logs-panel">
+  <summary>
+    <span>Harness logs</span>
+    <span class="logs-meta" id="logs-status">live</span>
+  </summary>
+  <div class="logs-body" id="logs-body">
+    {{range .LogEntries}}<div class="log-row"><span class="log-time">{{.Time}}</span><span class="log-line">{{.Line}}</span></div>{{else}}<div class="log-empty">No log output yet.</div>{{end}}
+  </div>
+</details>
 {{end}}

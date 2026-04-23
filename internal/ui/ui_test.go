@@ -13,9 +13,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
+	"github.com/vrnc/harness/internal/logbuf"
 )
 
 // newServerWithStore returns a Server wired to a fresh temp SQLite config store.
@@ -455,6 +457,98 @@ func TestHandleRetry_RejectsGET(t *testing.T) {
 	s.handleRetry(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405 for GET, got %d", rec.Code)
+	}
+}
+
+func TestHandleStatus_RendersRecentLogs(t *testing.T) {
+	s := NewServer(3000)
+	ring := logbuf.New(10)
+	s.SetLogRing(ring)
+	if _, err := ring.Write([]byte("hello world\nsecond line\n")); err != nil {
+		t.Fatalf("ring write: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{"hello world", "second line"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("status body missing log line %q", want)
+		}
+	}
+}
+
+func TestHandleStatus_NoLogRingRendersEmpty(t *testing.T) {
+	s := NewServer(3000)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestHandleLogsSSE_NoRingReturns503(t *testing.T) {
+	s := NewServer(3000)
+
+	req := httptest.NewRequest(http.MethodGet, "/logs/events", nil)
+	rec := httptest.NewRecorder()
+	s.handleLogsSSE(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 with no ring, got %d", rec.Code)
+	}
+}
+
+// flushRecorder is a ResponseRecorder that satisfies http.Flusher so streaming
+// handlers don't bail out on the type assertion. Flush is a no-op because the
+// recorder always has the bytes available immediately.
+type flushRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func (f *flushRecorder) Flush() {}
+
+func TestHandleLogsSSE_StreamsNewEntries(t *testing.T) {
+	s := NewServer(3000)
+	ring := logbuf.New(10)
+	s.SetLogRing(ring)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/logs/events", nil).WithContext(ctx)
+	rec := &flushRecorder{httptest.NewRecorder()}
+
+	done := make(chan struct{})
+	go func() {
+		s.handleLogsSSE(rec, req)
+		close(done)
+	}()
+
+	// Give the handler time to register its subscription before we publish.
+	time.Sleep(50 * time.Millisecond)
+	if _, err := ring.Write([]byte("hello sse\n")); err != nil {
+		t.Fatalf("ring write: %v", err)
+	}
+	// Allow the fan-out + write to land before we tear down.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not return after context cancel")
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "hello sse") {
+		t.Errorf("SSE payload missing line, got: %q", body)
+	}
+	if !strings.HasPrefix(body, "data: ") {
+		t.Errorf("SSE payload not framed as data:, got: %q", body)
 	}
 }
 

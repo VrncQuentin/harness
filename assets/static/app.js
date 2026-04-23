@@ -52,3 +52,48 @@ function formatUptime(s) {
   if (m > 0) return m + 'm ' + s + 's';
   return s + 's';
 }
+
+// Live harness log streaming. Caps DOM rows so a noisy run doesn't grow
+// unbounded. Auto-scrolls only when the user is already at the bottom so
+// scrolling up to read a past line isn't yanked away.
+(function () {
+  var body = document.getElementById('logs-body');
+  var meta = document.getElementById('logs-status');
+  if (!body || typeof EventSource === 'undefined') return;
+
+  var MAX_ROWS = 500;
+  var es = new EventSource('/logs/events');
+
+  es.onopen = function () {
+    if (meta) { meta.textContent = 'live'; meta.classList.remove('is-disconnected'); }
+  };
+  es.onerror = function () {
+    if (meta) { meta.textContent = 'disconnected'; meta.classList.add('is-disconnected'); }
+  };
+  es.onmessage = function (evt) {
+    var entry;
+    try { entry = JSON.parse(evt.data); } catch (e) { return; }
+
+    var empty = body.querySelector('.log-empty');
+    if (empty) empty.remove();
+
+    var atBottom = (body.scrollHeight - body.scrollTop - body.clientHeight) < 4;
+
+    var row = document.createElement('div');
+    row.className = 'log-row';
+    var t = document.createElement('span');
+    t.className = 'log-time';
+    t.textContent = entry.time || '';
+    var l = document.createElement('span');
+    l.className = 'log-line';
+    l.textContent = entry.line || '';
+    row.appendChild(t);
+    row.appendChild(l);
+    body.appendChild(row);
+
+    while (body.childElementCount > MAX_ROWS) {
+      body.removeChild(body.firstElementChild);
+    }
+    if (atBottom) body.scrollTop = body.scrollHeight;
+  };
+})();
