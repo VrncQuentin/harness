@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"io"
 	"net/http"
@@ -13,26 +12,22 @@ import (
 	"sync/atomic"
 	"testing"
 
-	_ "modernc.org/sqlite"
-
 	"github.com/vrnc/harness/internal/config"
+	"github.com/vrnc/harness/internal/db"
 )
 
 // newServerWithStore returns a Server wired to a fresh temp SQLite config store.
 // The store is also returned for assertions.
-func newServerWithStore(t *testing.T) (*Server, *config.Store) {
+func newServerWithStore(t *testing.T) (*Server, config.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "harness.db"))
+	d, err := db.Open(filepath.Join(dir, "harness.db"))
 	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
+		t.Fatalf("db.Open: %v", err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() { _ = d.Close() })
 
-	store, err := config.Open(db)
-	if err != nil {
-		t.Fatalf("config.Open: %v", err)
-	}
+	store := d.Config()
 	s := NewServer(3000)
 	s.SetConfigStore(store)
 	return s, store
