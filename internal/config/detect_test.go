@@ -156,12 +156,12 @@ func TestDetect_DedupAbs(t *testing.T) {
 
 func TestLooksLikeEmbedder(t *testing.T) {
 	cases := map[string]bool{
-		"nomic-embed-text-v2.gguf":  true,
-		"mxbai-embed-large.gguf":    true,
-		"BGE-EMBEDDINGS.gguf":       true,
-		"Qwen3-35B-UD-Q3.gguf":      false,
-		"llama-3-8b-instruct.gguf":  false,
-		"mistral-7b-embedly.gguf":   true, // intentional: substring match is enough
+		"nomic-embed-text-v2.gguf": true,
+		"mxbai-embed-large.gguf":   true,
+		"BGE-EMBEDDINGS.gguf":      true,
+		"Qwen3-35B-UD-Q3.gguf":     false,
+		"llama-3-8b-instruct.gguf": false,
+		"mistral-7b-embedly.gguf":  true, // intentional: substring match is enough
 	}
 	for name, want := range cases {
 		if got := looksLikeEmbedder(name); got != want {
