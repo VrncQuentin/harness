@@ -617,8 +617,13 @@ func TestHandleLogsSSE_StreamsNewEntries(t *testing.T) {
 	if !strings.Contains(body, "hello sse") {
 		t.Errorf("SSE payload missing line, got: %q", body)
 	}
-	if !strings.HasPrefix(body, "data: ") {
-		t.Errorf("SSE payload not framed as data:, got: %q", body)
+	// The stream opens with a ": connected" comment so headers flush
+	// immediately and the browser fires onopen; the real entry follows.
+	if !strings.HasPrefix(body, ": connected\n\n") {
+		t.Errorf("SSE payload did not begin with connected comment, got: %q", body)
+	}
+	if !strings.Contains(body, "data: ") {
+		t.Errorf("SSE payload missing data frame, got: %q", body)
 	}
 }
 
