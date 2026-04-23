@@ -57,9 +57,17 @@ func TestEmbedderArgs(t *testing.T) {
 	for _, a := range args {
 		found[a] = true
 	}
-	for _, flag := range []string{"--model", "--embedding", "--port", "--host"} {
+	for _, flag := range []string{"--model", "--embedding", "--n-gpu-layers", "--port", "--host"} {
 		if !found[flag] {
 			t.Errorf("missing flag %s in args: %v", flag, args)
+		}
+	}
+	// --n-gpu-layers must be 0 so the embedder stays on CPU+RAM.
+	for i, a := range args {
+		if a == "--n-gpu-layers" {
+			if i+1 >= len(args) || args[i+1] != "0" {
+				t.Errorf("expected --n-gpu-layers 0, got args: %v", args)
+			}
 		}
 	}
 }
