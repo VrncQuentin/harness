@@ -53,8 +53,14 @@ func TestEmbedderArgs(t *testing.T) {
 	if bin != "/bin/embedder" {
 		t.Errorf("unexpected binary: %s", bin)
 	}
-	if len(args) == 0 {
-		t.Error("expected non-empty args for embedder")
+	found := map[string]bool{}
+	for _, a := range args {
+		found[a] = true
+	}
+	for _, flag := range []string{"--model", "--embedding", "--port", "--host"} {
+		if !found[flag] {
+			t.Errorf("missing flag %s in args: %v", flag, args)
+		}
 	}
 }
 
