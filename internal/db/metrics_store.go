@@ -9,11 +9,12 @@ import (
 	"github.com/vrnc/harness/internal/metrics"
 )
 
-// MetricsStore is the time-series store for harness metrics. It satisfies
-// metrics.Store.
+// MetricsStore is the time-series store for harness metrics.
 type MetricsStore struct {
 	db *sql.DB
 }
+
+var _ metrics.Store = (*MetricsStore)(nil)
 
 // Record inserts a metric data point.
 func (s *MetricsStore) Record(name string, value float64, tags map[string]string) error {

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,6 +23,11 @@ import (
 	"github.com/vrnc/harness/pkg/httpclient"
 )
 
+// errConfigStoreUnavailable is surfaced when the harness DB could not be
+// opened, so the user sees one consistent message in the status page and the
+// config editor.
+var errConfigStoreUnavailable = errors.New("config store unavailable (harness.db could not be opened)")
+
 const dbFilename = "harness.db"
 
 // runtime holds mutable service references that the retry/save callback
@@ -38,21 +44,29 @@ type runtime struct {
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "harness: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// run wires up the harness and blocks until the tray Quit menu is selected.
+// Errors returned here are fatal; non-fatal startup errors are surfaced to the
+// UI instead.
+func run() error {
 	// Step 1: Acquire single-instance mutex (Windows only).
 	first, err := tray.AcquireSingleInstance()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "harness: single-instance check failed: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("single-instance check: %w", err)
 	}
 	if !first {
-		os.Exit(0)
+		return nil
 	}
 
 	// Step 2: Resolve binary directory for the shared DB, WAL, etc.
 	binDir, err := binaryDir()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "harness: cannot determine binary dir: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("cannot determine binary dir: %w", err)
 	}
 
 	// Root context - cancelled when tray quit is triggered.
@@ -62,8 +76,8 @@ func main() {
 	uiServer := ui.NewServer(3000)
 	uiServer.SetBinDir(binDir)
 	if err := uiServer.Start(rootCtx); err != nil {
-		fmt.Fprintf(os.Stderr, "harness: UI server failed to start: %v\n", err)
-		os.Exit(1)
+		rootCancel()
+		return fmt.Errorf("UI server start: %w", err)
 	}
 
 	// Step 4: Open the shared harness database.
@@ -129,6 +143,7 @@ func main() {
 	// Step 9: Hand off to tray.Run() - this blocks until Quit.
 	uiURL := fmt.Sprintf("http://localhost:%d", cfg.UI.Port)
 	tray.Run(uiURL, onQuit)
+	return nil
 }
 
 // startServices brings llama-server, embedder, queue, and metrics up under the
@@ -205,7 +220,7 @@ func (rt *runtime) applyConfig(
 ) ui.ApplyResult {
 	uiServer.ClearStartupErrors()
 	if cfgStore == nil {
-		uiServer.AddStartupError(fmt.Errorf("config store unavailable (harness.db could not be opened)"))
+		uiServer.AddStartupError(errConfigStoreUnavailable)
 		return ui.ApplyResult{}
 	}
 	loaded, wasSaved, lerr := cfgStore.Load()

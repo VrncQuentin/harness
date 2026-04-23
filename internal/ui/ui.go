@@ -174,11 +174,11 @@ func (s *Server) SetEmbedderStatus(st ProcessStatus) {
 	s.broadcastState()
 }
 
-// SetQueueDepth updates the queue depth.
-func (s *Server) SetQueueDepth(depth, max int) {
+// SetQueueDepth updates the queue depth and the configured maximum.
+func (s *Server) SetQueueDepth(depth, capacity int) {
 	s.state.mu.Lock()
 	s.state.data.QueueDepth = depth
-	s.state.data.QueueMax = max
+	s.state.data.QueueMax = capacity
 	s.state.mu.Unlock()
 	s.broadcastState()
 }
@@ -312,11 +312,11 @@ func (s *Server) hasRetry() bool {
 	return s.retry != nil
 }
 
-func queuePct(depth, max int) int {
-	if max <= 0 {
+func queuePct(depth, capacity int) int {
+	if capacity <= 0 {
 		return 0
 	}
-	p := depth * 100 / max
+	p := depth * 100 / capacity
 	if p < 0 {
 		return 0
 	}
@@ -394,7 +394,10 @@ func (s *Server) broadcastState() {
 	msg := string(b)
 
 	s.sseClients.Range(func(key, _ any) bool {
-		ch := key.(chan string)
+		ch, ok := key.(chan string)
+		if !ok {
+			return true
+		}
 		select {
 		case ch <- msg:
 		default:

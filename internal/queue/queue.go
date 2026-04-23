@@ -4,6 +4,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -22,8 +23,14 @@ type Request struct {
 	Ctx      context.Context
 }
 
-// ErrQueueFull is returned when the queue is at max capacity.
-var ErrQueueFull = fmt.Errorf("queue: at capacity, try again later")
+// Sentinel errors returned by the queue.
+var (
+	// ErrQueueFull is returned when the queue is at max capacity.
+	ErrQueueFull = errors.New("queue: at capacity, try again later")
+	// ErrNoClient is returned to dispatched requests when no inference
+	// client is configured.
+	ErrNoClient = errors.New("queue: no inference client configured")
+)
 
 // walRecord is a single WAL entry, JSON-encoded.
 type walRecord struct {
@@ -135,7 +142,7 @@ func (q *Queue) dispatch(req Request) {
 	q.clientMu.RUnlock()
 
 	if client == nil {
-		req.Response <- inference.Token{Err: fmt.Errorf("queue: no inference client configured")}
+		req.Response <- inference.Token{Err: ErrNoClient}
 		return
 	}
 
@@ -144,7 +151,7 @@ func (q *Queue) dispatch(req Request) {
 		Stream:   true,
 	})
 	if err != nil {
-		req.Response <- inference.Token{Err: fmt.Errorf("queue: inference error: %w", err)}
+		req.Response <- inference.Token{Err: fmt.Errorf("queue: inference: %w", err)}
 		return
 	}
 

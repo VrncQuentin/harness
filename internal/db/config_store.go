@@ -2,17 +2,22 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/vrnc/harness/internal/config"
 )
 
-// ConfigStore persists the single-row harness config. It satisfies
-// config.Store.
+// ErrNilConfig is returned by Save when called with a nil config.
+var ErrNilConfig = errors.New("db: save config: nil config")
+
+// ConfigStore persists the single-row harness config.
 type ConfigStore struct {
 	db *sql.DB
 }
+
+var _ config.Store = (*ConfigStore)(nil)
 
 // seed inserts the singleton config row if it doesn't exist, populating every
 // column from config.Defaults(). Idempotent via INSERT OR IGNORE. This is the
@@ -106,7 +111,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 // Save writes cfg and marks the row as user-saved.
 func (s *ConfigStore) Save(cfg *config.Config) error {
 	if cfg == nil {
-		return fmt.Errorf("db: save config: nil config")
+		return ErrNilConfig
 	}
 	_, err := s.db.Exec(`
 		UPDATE config SET
