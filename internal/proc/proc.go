@@ -315,9 +315,13 @@ func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int
 }
 
 // EmbedderArgs builds the argument slice for the embedder sidecar.
+// --embedding switches llama-server into embedding mode; without it the
+// server boots a chat-completion endpoint and /embedding returns 501,
+// which defeats the whole point of running a second process.
 func EmbedderArgs(binary, modelPath string, port int) (string, []string) {
 	return binary, []string{
 		"--model", modelPath,
+		"--embedding",
 		"--port", fmt.Sprintf("%d", port),
 		"--host", "127.0.0.1",
 	}
