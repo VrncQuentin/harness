@@ -25,12 +25,12 @@ const defaultMaxEntries = 500
 
 // Ring is a bounded line-oriented ring buffer. It is safe for concurrent use.
 type Ring struct {
-	mu         sync.Mutex
-	max        int
-	entries    []Entry
-	partial    []byte
-	subs       map[chan Entry]struct{}
-	now        func() time.Time
+	mu      sync.Mutex
+	max     int
+	entries []Entry
+	partial []byte
+	subs    map[chan Entry]struct{}
+	now     func() time.Time
 }
 
 // New returns a Ring that retains at most max entries. If max <= 0,
