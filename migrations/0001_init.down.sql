@@ -1,3 +1,2 @@
-DROP INDEX IF EXISTS metrics_name_ts;
 DROP TABLE IF EXISTS metrics;
 DROP TABLE IF EXISTS config;
