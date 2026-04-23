@@ -36,7 +36,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 .wrap {
-  max-width: 960px;
+  max-width: 1200px;
   margin: 0 auto;
   padding: 0 1.25rem;
 }
@@ -145,16 +145,15 @@ a:hover { text-decoration: underline; }
   color: var(--fg);
 }
 .card-stderr {
-  margin-top: 0.5rem;
+  margin-top: 0.75rem;
 }
-.card-stderr > summary {
-  cursor: pointer;
+.card-stderr-label {
+  margin: 0 0 0.35rem;
   font-size: 0.75rem;
   color: var(--muted);
-  user-select: none;
 }
 .card-stderr pre {
-  margin: 0.5rem 0 0;
+  margin: 0;
   padding: 0.5rem 0.7rem;
   background: var(--bg);
   border: 1px solid var(--border);
@@ -165,6 +164,15 @@ a:hover { text-decoration: underline; }
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+.card-stderr-empty {
+  padding: 0.5rem 0.7rem;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  font-style: italic;
 }
 
 /* Stats list */

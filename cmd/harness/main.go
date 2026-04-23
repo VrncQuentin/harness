@@ -82,6 +82,8 @@ func run() error {
 	log.SetOutput(logSink)
 	slog.SetDefault(slog.New(slog.NewTextHandler(logSink, nil)))
 
+	slog.Info("harness starting", "binDir", binDir)
+
 	// Root context - cancelled when tray quit is triggered.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 
@@ -93,10 +95,14 @@ func run() error {
 		rootCancel()
 		return fmt.Errorf("UI server start: %w", err)
 	}
+	slog.Info("ui server listening", "url", "http://localhost:3000")
 
 	// Step 4: Open the shared harness database.
 	dbPath := filepath.Join(binDir, dbFilename)
 	harnessDB, cfgStore, metricsStore := openDB(uiServer, dbPath)
+	if harnessDB != nil {
+		slog.Info("harness.db opened", "path", dbPath)
+	}
 
 	// Step 5: Load config (or fall back to defaults if store is unavailable).
 	cfg := config.Defaults()
@@ -104,6 +110,7 @@ func run() error {
 	if cfgStore != nil {
 		loaded, wasSaved, lerr := cfgStore.Load()
 		if lerr != nil {
+			slog.Error("config load failed", "err", lerr)
 			uiServer.AddStartupError(fmt.Errorf("config load: %w", lerr))
 		} else {
 			cfg = *loaded
@@ -111,6 +118,11 @@ func run() error {
 		}
 	}
 	uiServer.SetFirstRun(!configured)
+	if configured {
+		slog.Info("config loaded", "model_port", cfg.Model.Port, "embed_port", cfg.Embedder.Port)
+	} else {
+		slog.Info("first run: waiting for config")
+	}
 
 	// proc.Manager.emit is non-blocking and drops on a full buffer; size 64
 	// is large enough to absorb startup bursts (multiple managers emitting
@@ -145,6 +157,7 @@ func run() error {
 
 	// Shutdown function called by tray Quit.
 	onQuit := func() {
+		slog.Info("harness shutting down")
 		rootCancel()
 		rt.mu.Lock()
 		q := rt.reqQueue
@@ -264,10 +277,12 @@ func (rt *runtime) applyConfig(
 	var result ui.ApplyResult
 
 	if !rt.started {
+		slog.Info("starting services", "model_port", loaded.Model.Port, "embed_port", loaded.Embedder.Port)
 		rt.startServices(ctx, uiServer, events, metricsStore)
 		result.LiveApplied = true
 	} else {
 		if old.Model != loaded.Model {
+			slog.Info("reconfiguring llama-server", "old_port", old.Model.Port, "new_port", loaded.Model.Port)
 			rt.llamaMgr.Reconfigure(func() (string, []string) {
 				return proc.LlamaArgs(
 					loaded.Model.Binary,
@@ -281,6 +296,7 @@ func (rt *runtime) applyConfig(
 			result.LiveApplied = true
 		}
 		if old.Embedder != loaded.Embedder {
+			slog.Info("reconfiguring embedder", "old_port", old.Embedder.Port, "new_port", loaded.Embedder.Port)
 			rt.embedMgr.Reconfigure(func() (string, []string) {
 				return proc.EmbedderArgs(
 					loaded.Embedder.Binary,
@@ -398,8 +414,9 @@ func recordMetrics(
 	}
 }
 
-// forwardEvents reads process events and updates the UI state. Managers are
-// fetched via getMgrs on every push so first-save startup is observed.
+// forwardEvents reads process events, logs them, and updates the UI state.
+// Managers are fetched via getMgrs on every push so first-save startup is
+// observed.
 func forwardEvents(
 	ctx context.Context,
 	events <-chan proc.Event,
@@ -413,16 +430,33 @@ func forwardEvents(
 		select {
 		case <-ctx.Done():
 			return
-		case _, ok := <-events:
+		case ev, ok := <-events:
 			if !ok {
 				return
 			}
+			logProcEvent(ev)
 			l, e := getMgrs()
 			pushStatus(uiSrv, l, e)
 		case <-ticker.C:
 			l, e := getMgrs()
 			pushStatus(uiSrv, l, e)
 		}
+	}
+}
+
+// logProcEvent emits a slog entry for a proc.Event. Health-OK events log at
+// debug level so the default Info handler doesn't spam the panel every 5s.
+func logProcEvent(ev proc.Event) {
+	attrs := []any{"process", ev.Process, "kind", string(ev.Kind), "msg", ev.Message}
+	switch ev.Kind {
+	case proc.EventHealthOK:
+		slog.Debug("proc event", attrs...)
+	case proc.EventHealthFail, proc.EventStop:
+		slog.Warn("proc event", attrs...)
+	case proc.EventError:
+		slog.Error("proc event", attrs...)
+	default:
+		slog.Info("proc event", attrs...)
 	}
 }
 
