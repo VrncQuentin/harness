@@ -73,6 +73,9 @@ type Server struct {
 
 	storeMu sync.RWMutex
 	store   config.Store
+
+	binDirMu sync.RWMutex
+	binDir   string
 }
 
 // NewServer creates a new UI server on the given port. The config store is
@@ -124,6 +127,21 @@ func (s *Server) configStore() config.Store {
 	s.storeMu.RLock()
 	defer s.storeMu.RUnlock()
 	return s.store
+}
+
+// SetBinDir records the directory containing the running harness binary. It is
+// used by the /config page to suggest detected llama-server and .gguf paths.
+// Safe to leave unset; detection then returns no suggestions.
+func (s *Server) SetBinDir(dir string) {
+	s.binDirMu.Lock()
+	s.binDir = dir
+	s.binDirMu.Unlock()
+}
+
+func (s *Server) getBinDir() string {
+	s.binDirMu.RLock()
+	defer s.binDirMu.RUnlock()
+	return s.binDir
 }
 
 // SetLlamaStatus updates the llama-server status.
@@ -238,6 +256,7 @@ type statusPageData struct {
 type configPageData struct {
 	basePage
 	Config        *config.Config
+	Suggestions   config.Suggestions
 	FirstRun      bool
 	Saved         bool
 	ValidationErr string
@@ -431,6 +450,14 @@ func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay co
 	}
 	if r.URL.Query().Get("saved") == "1" {
 		data.Saved = true
+	}
+
+	data.Suggestions = config.Detect(s.getBinDir())
+	// On a fresh GET render, pre-fill model_binary with the first detected
+	// llama-server if the user has not entered one yet. We do not pre-fill
+	// anything else - datalists let the user pick without us guessing.
+	if !skipStoreLoad && data.Config != nil && data.Config.Model.Binary == "" && len(data.Suggestions.LlamaBinary) > 0 {
+		data.Config.Model.Binary = data.Suggestions.LlamaBinary[0]
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
