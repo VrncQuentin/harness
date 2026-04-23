@@ -19,6 +19,12 @@ func TestDefaults(t *testing.T) {
 	if !d.UI.OpenOnStart {
 		t.Error("expected default UI.OpenOnStart=true")
 	}
+	if d.Log.RingMaxEntries != 500 {
+		t.Errorf("expected default Log.RingMaxEntries 500, got %d", d.Log.RingMaxEntries)
+	}
+	if d.Log.ProcMaxLines != 64 {
+		t.Errorf("expected default Log.ProcMaxLines 64, got %d", d.Log.ProcMaxLines)
+	}
 }
 
 // validCfg returns a Config that passes Validate, as a starting point for
@@ -190,6 +196,23 @@ func TestValidate(t *testing.T) {
 			name:    "retention zero",
 			mutate:  func(c *Config) { c.Metrics.RetentionDays = 0 },
 			wantErr: "metrics.retention_days must be >= 1",
+		},
+
+		// Log buffer bounds.
+		{
+			name:    "ring max entries zero",
+			mutate:  func(c *Config) { c.Log.RingMaxEntries = 0 },
+			wantErr: "log.ring_max_entries must be >= 1",
+		},
+		{
+			name:    "ring max entries negative",
+			mutate:  func(c *Config) { c.Log.RingMaxEntries = -10 },
+			wantErr: "log.ring_max_entries must be >= 1",
+		},
+		{
+			name:    "proc max lines zero",
+			mutate:  func(c *Config) { c.Log.ProcMaxLines = 0 },
+			wantErr: "log.proc_max_lines must be >= 1",
 		},
 	}
 

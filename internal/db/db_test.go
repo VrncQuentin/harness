@@ -97,6 +97,12 @@ func TestConfigStore_LoadFreshReturnsDefaultsAndNotConfigured(t *testing.T) {
 	if cfg.Metrics.RetentionDays != defaults.Metrics.RetentionDays {
 		t.Errorf("Metrics.RetentionDays: got %d, want %d", cfg.Metrics.RetentionDays, defaults.Metrics.RetentionDays)
 	}
+	if cfg.Log.RingMaxEntries != defaults.Log.RingMaxEntries {
+		t.Errorf("Log.RingMaxEntries: got %d, want %d", cfg.Log.RingMaxEntries, defaults.Log.RingMaxEntries)
+	}
+	if cfg.Log.ProcMaxLines != defaults.Log.ProcMaxLines {
+		t.Errorf("Log.ProcMaxLines: got %d, want %d", cfg.Log.ProcMaxLines, defaults.Log.ProcMaxLines)
+	}
 }
 
 func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
@@ -113,6 +119,8 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	cfg.UI.OpenOnStart = false
 	cfg.API.Enabled = true
 	cfg.API.Port = 9090
+	cfg.Log.RingMaxEntries = 1234
+	cfg.Log.ProcMaxLines = 99
 
 	if err := store.Save(&cfg); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -142,6 +150,12 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	}
 	if loaded.Memory.RepoPath != cfg.Memory.RepoPath {
 		t.Errorf("Memory.RepoPath roundtrip: got %q, want %q", loaded.Memory.RepoPath, cfg.Memory.RepoPath)
+	}
+	if loaded.Log.RingMaxEntries != 1234 {
+		t.Errorf("Log.RingMaxEntries roundtrip: got %d, want 1234", loaded.Log.RingMaxEntries)
+	}
+	if loaded.Log.ProcMaxLines != 99 {
+		t.Errorf("Log.ProcMaxLines roundtrip: got %d, want 99", loaded.Log.ProcMaxLines)
 	}
 }
 
