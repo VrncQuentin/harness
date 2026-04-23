@@ -42,6 +42,7 @@ const dbFilename = "harness.db"
 type runtime struct {
 	mu       sync.Mutex
 	cfg      config.Config
+	logRing  *logbuf.Ring
 	llamaMgr *proc.Manager
 	embedMgr *proc.Manager
 	reqQueue *queue.Queue
@@ -135,7 +136,7 @@ func run() error {
 	// is large enough to absorb startup bursts (multiple managers emitting
 	// start/health events back-to-back) without losing them.
 	events := make(chan proc.Event, 64)
-	rt := &runtime{cfg: cfg}
+	rt := &runtime{cfg: cfg, logRing: logRing}
 
 	// Boot-time start: if the user has previously saved config, bring services
 	// up right away. Otherwise they will be created on the first /config save.
@@ -335,14 +336,18 @@ func (rt *runtime) applyConfig(
 	if old.Queue.WALPath != loaded.Queue.WALPath {
 		result.RestartNeeded = append(result.RestartNeeded, "queue WAL path")
 	}
-	// Log buffers are allocated at startup and at proc.NewManager. Flipping
-	// sizes on a running harness does not resize the live buffers; surface
-	// that to the user so they know to restart.
-	if old.Log.RingMaxEntries != loaded.Log.RingMaxEntries {
-		result.RestartNeeded = append(result.RestartNeeded, "harness log buffer size")
+	if old.Log.RingMaxEntries != loaded.Log.RingMaxEntries && rt.logRing != nil {
+		rt.logRing.Resize(loaded.Log.RingMaxEntries)
+		result.LiveApplied = true
 	}
 	if old.Log.ProcMaxLines != loaded.Log.ProcMaxLines {
-		result.RestartNeeded = append(result.RestartNeeded, "process log buffer size")
+		if rt.llamaMgr != nil {
+			rt.llamaMgr.SetOutputMaxLines(loaded.Log.ProcMaxLines)
+		}
+		if rt.embedMgr != nil {
+			rt.embedMgr.SetOutputMaxLines(loaded.Log.ProcMaxLines)
+		}
+		result.LiveApplied = true
 	}
 
 	return result

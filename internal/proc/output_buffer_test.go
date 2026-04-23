@@ -77,6 +77,46 @@ func TestOutputBuffer_DefaultMaxLines(t *testing.T) {
 	}
 }
 
+func TestOutputBuffer_SetMaxLinesShrink(t *testing.T) {
+	b := newOutputBuffer(5)
+	writeAll(t, b, "a\nb\nc\nd\ne\n")
+	b.SetMaxLines(3)
+	got := b.Snapshot()
+	want := []string{"c", "d", "e"}
+	if !equalSlices(got, want) {
+		t.Errorf("after SetMaxLines(3), Snapshot = %v, want %v", got, want)
+	}
+	writeAll(t, b, "f\n")
+	got = b.Snapshot()
+	want = []string{"d", "e", "f"}
+	if !equalSlices(got, want) {
+		t.Errorf("after SetMaxLines+Write, Snapshot = %v, want %v", got, want)
+	}
+}
+
+func TestOutputBuffer_SetMaxLinesGrow(t *testing.T) {
+	b := newOutputBuffer(3)
+	writeAll(t, b, "a\nb\nc\n")
+	b.SetMaxLines(10)
+	writeAll(t, b, "d\ne\n")
+	got := b.Snapshot()
+	want := []string{"a", "b", "c", "d", "e"}
+	if !equalSlices(got, want) {
+		t.Errorf("after SetMaxLines(10)+Write, Snapshot = %v, want %v", got, want)
+	}
+}
+
+func TestOutputBuffer_SetMaxLinesZeroUsesDefault(t *testing.T) {
+	b := newOutputBuffer(10)
+	b.SetMaxLines(0)
+	for i := 0; i < defaultOutputMaxLines+5; i++ {
+		writeAll(t, b, "x\n")
+	}
+	if got := len(b.Snapshot()); got != defaultOutputMaxLines {
+		t.Errorf("after SetMaxLines(0), Snapshot length = %d, want %d", got, defaultOutputMaxLines)
+	}
+}
+
 func equalSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

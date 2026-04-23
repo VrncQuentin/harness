@@ -91,6 +91,26 @@ func (r *Ring) Snapshot() []Entry {
 	return out
 }
 
+// Resize changes the retention cap. If max is <= 0 the default is used.
+// Shrinking drops the oldest entries so Snapshot reflects the new cap
+// immediately; growing is a no-op until more lines arrive. Subscribers are
+// unaffected.
+func (r *Ring) Resize(max int) {
+	if max <= 0 {
+		max = defaultMaxEntries
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if max == r.max {
+		return
+	}
+	if len(r.entries) > max {
+		drop := len(r.entries) - max
+		r.entries = append(r.entries[:0], r.entries[drop:]...)
+	}
+	r.max = max
+}
+
 // Subscribe registers ch to receive each new entry. The returned cancel
 // function removes the subscription. Sends are non-blocking; if ch is full,
 // the entry is dropped for that subscriber.

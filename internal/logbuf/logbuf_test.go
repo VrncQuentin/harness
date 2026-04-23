@@ -182,6 +182,66 @@ func TestRing_ConcurrentWritesAreSafe(t *testing.T) {
 	}
 }
 
+func TestRing_ResizeShrinkDropsOldest(t *testing.T) {
+	r := New(5)
+	writeAll(t, r, "a\nb\nc\nd\ne\n")
+	r.Resize(3)
+	got := lines(r.Snapshot())
+	want := []string{"c", "d", "e"}
+	if !equalSlices(got, want) {
+		t.Errorf("after Resize(3), Snapshot = %v, want %v", got, want)
+	}
+	// New writes still respect the new cap.
+	writeAll(t, r, "f\n")
+	got = lines(r.Snapshot())
+	want = []string{"d", "e", "f"}
+	if !equalSlices(got, want) {
+		t.Errorf("after Resize+Write, Snapshot = %v, want %v", got, want)
+	}
+}
+
+func TestRing_ResizeGrowKeepsEntries(t *testing.T) {
+	r := New(3)
+	writeAll(t, r, "a\nb\nc\n")
+	r.Resize(10)
+	writeAll(t, r, "d\ne\n")
+	got := lines(r.Snapshot())
+	want := []string{"a", "b", "c", "d", "e"}
+	if !equalSlices(got, want) {
+		t.Errorf("after Resize(10)+Write, Snapshot = %v, want %v", got, want)
+	}
+}
+
+func TestRing_ResizeZeroUsesDefault(t *testing.T) {
+	r := New(10)
+	writeAll(t, r, "x\n")
+	r.Resize(0)
+	// Fill past the default cap; length should settle at defaultMaxEntries.
+	for i := 0; i < defaultMaxEntries+5; i++ {
+		writeAll(t, r, "y\n")
+	}
+	if got := len(r.Snapshot()); got != defaultMaxEntries {
+		t.Errorf("after Resize(0), Snapshot length = %d, want %d", got, defaultMaxEntries)
+	}
+}
+
+func TestRing_ResizeSubscribersUnaffected(t *testing.T) {
+	r := New(5)
+	ch := make(chan Entry, 4)
+	cancel := r.Subscribe(ch)
+	defer cancel()
+
+	writeAll(t, r, "one\n")
+	r.Resize(2)
+	writeAll(t, r, "two\n")
+
+	got := drain(ch, 2, time.Second)
+	want := []string{"one", "two"}
+	if !equalSlices(got, want) {
+		t.Errorf("subscriber got %v, want %v", got, want)
+	}
+}
+
 // drain collects up to n entries from ch or returns whatever arrived before
 // the timeout.
 func drain(ch <-chan Entry, n int, timeout time.Duration) []string {
