@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDefaults(t *testing.T) {
 	d := Defaults()
@@ -18,16 +21,195 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
+// validCfg returns a Config that passes Validate, as a starting point for
+// table entries to mutate a single field into an error state.
+func validCfg() Config {
+	c := Defaults()
+	c.Model.Binary = "/llama-server"
+	c.Model.ModelPath = "/models/model.gguf"
+	c.Embedder.Binary = "/embedder"
+	c.Embedder.ModelPath = "/models/nomic.gguf"
+	return c
+}
+
 func TestValidate(t *testing.T) {
-	cfg := Defaults()
-	if err := Validate(&cfg); err == nil {
-		t.Error("expected Validate to fail on empty defaults (missing required paths)")
+	tests := []struct {
+		name    string
+		mutate  func(c *Config)
+		wantErr string // substring; empty means Validate must succeed
+	}{
+		{
+			name:   "valid defaults with required paths",
+			mutate: func(*Config) {},
+		},
+
+		// Required strings.
+		{
+			name:    "missing model binary",
+			mutate:  func(c *Config) { c.Model.Binary = "" },
+			wantErr: "model.binary is required",
+		},
+		{
+			name:    "whitespace-only model binary",
+			mutate:  func(c *Config) { c.Model.Binary = "   " },
+			wantErr: "model.binary is required",
+		},
+		{
+			name:    "missing model path",
+			mutate:  func(c *Config) { c.Model.ModelPath = "" },
+			wantErr: "model.model_path is required",
+		},
+		{
+			name:    "missing embedder binary",
+			mutate:  func(c *Config) { c.Embedder.Binary = "" },
+			wantErr: "embedder.binary is required",
+		},
+		{
+			name:    "missing embedder model path",
+			mutate:  func(c *Config) { c.Embedder.ModelPath = "" },
+			wantErr: "embedder.model_path is required",
+		},
+
+		// Port ranges.
+		{
+			name:    "model port zero",
+			mutate:  func(c *Config) { c.Model.Port = 0 },
+			wantErr: "model.port must be between 1 and 65535",
+		},
+		{
+			name:    "model port negative",
+			mutate:  func(c *Config) { c.Model.Port = -1 },
+			wantErr: "model.port must be between 1 and 65535",
+		},
+		{
+			name:    "model port too high",
+			mutate:  func(c *Config) { c.Model.Port = 70000 },
+			wantErr: "model.port must be between 1 and 65535",
+		},
+		{
+			name:    "embedder port zero",
+			mutate:  func(c *Config) { c.Embedder.Port = 0 },
+			wantErr: "embedder.port must be between 1 and 65535",
+		},
+		{
+			name:    "ui port zero",
+			mutate:  func(c *Config) { c.UI.Port = 0 },
+			wantErr: "ui.port must be between 1 and 65535",
+		},
+		{
+			name:    "api port zero",
+			mutate:  func(c *Config) { c.API.Port = 0 },
+			wantErr: "api.port must be between 1 and 65535",
+		},
+
+		// Port collisions.
+		{
+			name:    "model and embedder collide",
+			mutate:  func(c *Config) { c.Embedder.Port = c.Model.Port },
+			wantErr: "both use port",
+		},
+		{
+			name:    "ui and api collide",
+			mutate:  func(c *Config) { c.API.Port = c.UI.Port },
+			wantErr: "both use port",
+		},
+		{
+			name: "collision detected even when api disabled",
+			mutate: func(c *Config) {
+				c.API.Enabled = false
+				c.API.Port = c.UI.Port
+			},
+			wantErr: "both use port",
+		},
+
+		// Model numeric bounds.
+		{
+			name:    "negative ctx size",
+			mutate:  func(c *Config) { c.Model.CtxSize = -1 },
+			wantErr: "model.ctx_size must be >= 0",
+		},
+		{
+			name:   "gpu layers -1 is allowed",
+			mutate: func(c *Config) { c.Model.GPULayers = -1 },
+		},
+		{
+			name:    "gpu layers below -1",
+			mutate:  func(c *Config) { c.Model.GPULayers = -2 },
+			wantErr: "model.gpu_layers must be >= -1",
+		},
+		{
+			name:    "n_parallel zero",
+			mutate:  func(c *Config) { c.Model.NParallel = 0 },
+			wantErr: "model.n_parallel must be >= 1",
+		},
+
+		// Prompt bounds + budget sum.
+		{
+			name:    "negative memory budget",
+			mutate:  func(c *Config) { c.Prompt.MemoryTokenBudget = -1 },
+			wantErr: "prompt.memory_token_budget must be >= 0",
+		},
+		{
+			name:    "negative conversation reserve",
+			mutate:  func(c *Config) { c.Prompt.ConversationReserve = -1 },
+			wantErr: "prompt.conversation_reserve must be >= 0",
+		},
+		{
+			name: "budget plus reserve exceeds ctx",
+			mutate: func(c *Config) {
+				c.Prompt.CtxSize = 4096
+				c.Prompt.MemoryTokenBudget = 3000
+				c.Prompt.ConversationReserve = 2000
+			},
+			wantErr: "exceed prompt.ctx_size",
+		},
+		{
+			name: "budget plus reserve equals ctx is fine",
+			mutate: func(c *Config) {
+				c.Prompt.CtxSize = 8192
+				c.Prompt.MemoryTokenBudget = 4096
+				c.Prompt.ConversationReserve = 4096
+			},
+		},
+		{
+			name: "ctx size zero skips budget check",
+			mutate: func(c *Config) {
+				c.Prompt.CtxSize = 0
+				c.Prompt.MemoryTokenBudget = 1000
+				c.Prompt.ConversationReserve = 1000
+			},
+		},
+
+		// Queue + metrics.
+		{
+			name:    "queue depth zero",
+			mutate:  func(c *Config) { c.Queue.MaxDepth = 0 },
+			wantErr: "queue.max_depth must be >= 1",
+		},
+		{
+			name:    "retention zero",
+			mutate:  func(c *Config) { c.Metrics.RetentionDays = 0 },
+			wantErr: "metrics.retention_days must be >= 1",
+		},
 	}
-	cfg.Model.Binary = "/x"
-	cfg.Model.ModelPath = "/y.gguf"
-	cfg.Embedder.Binary = "/a"
-	cfg.Embedder.ModelPath = "/b.gguf"
-	if err := Validate(&cfg); err != nil {
-		t.Errorf("expected Validate to pass once required fields set: %v", err)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validCfg()
+			tc.mutate(&cfg)
+			err := Validate(&cfg)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected Validate to pass, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErr)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tc.wantErr, err.Error())
+			}
+		})
 	}
 }
