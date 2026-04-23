@@ -16,7 +16,12 @@ import (
 
 	"github.com/vrnc/harness/assets"
 	"github.com/vrnc/harness/internal/config"
+	"github.com/vrnc/harness/internal/logbuf"
 )
+
+// statusLogTail is the number of recent log entries shown server-rendered on
+// the status page. New entries are appended client-side via SSE.
+const statusLogTail = 100
 
 // RetryFunc is called when the user clicks Retry on the status page or saves
 // a new config. The implementation (in main) is responsible for clearing and
@@ -89,6 +94,9 @@ type Server struct {
 
 	binDirMu sync.RWMutex
 	binDir   string
+
+	logRingMu sync.RWMutex
+	logRing   *logbuf.Ring
 }
 
 // NewServer creates a new UI server on the given port. The config store is
@@ -158,6 +166,21 @@ func (s *Server) getBinDir() string {
 	return s.binDir
 }
 
+// SetLogRing wires the harness log ring into the UI so the status page can
+// show recent output and stream new entries over SSE. Safe to leave unset;
+// the log panel then renders empty and the SSE endpoint returns 503.
+func (s *Server) SetLogRing(r *logbuf.Ring) {
+	s.logRingMu.Lock()
+	s.logRing = r
+	s.logRingMu.Unlock()
+}
+
+func (s *Server) getLogRing() *logbuf.Ring {
+	s.logRingMu.RLock()
+	defer s.logRingMu.RUnlock()
+	return s.logRing
+}
+
 // SetLlamaStatus updates the llama-server status.
 func (s *Server) SetLlamaStatus(st ProcessStatus) {
 	s.state.mu.Lock()
@@ -214,6 +237,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleStatus)
 	mux.HandleFunc("/events", s.handleSSE)
+	mux.HandleFunc("/logs/events", s.handleLogsSSE)
 	mux.HandleFunc("/config", s.handleConfig)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.Handle("/static/", http.FileServer(http.FS(assets.StaticFS)))
@@ -264,6 +288,13 @@ type statusPageData struct {
 	QueuePct       int
 	HasRetry       bool
 	StartupErrText []string
+	LogEntries     []logEntryView
+}
+
+// logEntryView is the template-friendly form of a logbuf entry.
+type logEntryView struct {
+	Time string
+	Line string
 }
 
 // configPageData is the template context for the config editor.
@@ -299,6 +330,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		QueuePct:       queuePct(snap.QueueDepth, snap.QueueMax),
 		HasRetry:       s.hasRetry(),
 		StartupErrText: errTexts,
+		LogEntries:     s.recentLogEntries(statusLogTail),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.statusTmpl.ExecuteTemplate(w, "layout", data); err != nil {
@@ -346,6 +378,76 @@ func formatUptime(d time.Duration) string {
 		return fmt.Sprintf("%dm %ds", m, s)
 	default:
 		return fmt.Sprintf("%ds", s)
+	}
+}
+
+// recentLogEntries returns the last n log entries from the ring formatted
+// for the status template. Empty if no ring is wired up.
+func (s *Server) recentLogEntries(n int) []logEntryView {
+	r := s.getLogRing()
+	if r == nil {
+		return nil
+	}
+	all := r.Snapshot()
+	if len(all) > n {
+		all = all[len(all)-n:]
+	}
+	out := make([]logEntryView, len(all))
+	for i, e := range all {
+		out[i] = logEntryView{
+			Time: e.Time.Format("15:04:05"),
+			Line: e.Line,
+		}
+	}
+	return out
+}
+
+// handleLogsSSE streams new log entries to the client. The initial snapshot
+// is rendered server-side in the status page; this stream only carries
+// entries written after the connection was opened.
+func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
+	ring := s.getLogRing()
+	if ring == nil {
+		http.Error(w, "log ring not configured", http.StatusServiceUnavailable)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	// Buffer 64 entries so a brief render hiccup doesn't drop bursts; the
+	// ring itself drops on overflow rather than blocking the writer.
+	ch := make(chan logbuf.Entry, 64)
+	cancel := ring.Subscribe(ch)
+	defer cancel()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case e, ok := <-ch:
+			if !ok {
+				return
+			}
+			payload, err := json.Marshal(struct {
+				Time string `json:"time"`
+				Line string `json:"line"`
+			}{
+				Time: e.Time.Format("15:04:05"),
+				Line: e.Line,
+			})
+			if err != nil {
+				continue
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+			flusher.Flush()
+		}
 	}
 }
 
