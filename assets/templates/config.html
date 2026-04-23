@@ -43,11 +43,19 @@
     <legend>Model (llama-server)</legend>
     <div class="fg">
       <label for="model_binary">Binary path <span class="req">*</span></label>
-      <input type="text" id="model_binary" name="model_binary" value="{{.Config.Model.Binary}}" placeholder="C:\path\to\llama-server.exe" required>
+      <input type="text" id="model_binary" name="model_binary" value="{{.Config.Model.Binary}}" placeholder="C:\path\to\llama-server.exe" list="model_binary_options" required>
+      <datalist id="model_binary_options">
+        {{range .Suggestions.LlamaBinary}}<option value="{{.}}">{{end}}
+      </datalist>
+      {{if .Suggestions.LlamaBinary}}<p class="fg-hint">Detected {{len .Suggestions.LlamaBinary}} llama-server candidate{{if gt (len .Suggestions.LlamaBinary) 1}}s{{end}} on this machine.</p>{{end}}
     </div>
     <div class="fg">
       <label for="model_path">Model file <span class="req">*</span></label>
-      <input type="text" id="model_path" name="model_path" value="{{.Config.Model.ModelPath}}" placeholder="C:\path\to\model.gguf" required>
+      <input type="text" id="model_path" name="model_path" value="{{.Config.Model.ModelPath}}" placeholder="C:\path\to\model.gguf" list="model_path_options" required>
+      <datalist id="model_path_options">
+        {{range .Suggestions.MainModel}}<option value="{{.}}">{{end}}
+      </datalist>
+      {{if .Suggestions.MainModel}}<p class="fg-hint">{{len .Suggestions.MainModel}} .gguf file{{if gt (len .Suggestions.MainModel) 1}}s{{end}} found in <code>models/</code>.</p>{{end}}
     </div>
     <div class="fg-row">
       <div class="fg">
@@ -73,11 +81,18 @@
     <legend>Embedder</legend>
     <div class="fg">
       <label for="embed_binary">Binary path <span class="req">*</span></label>
-      <input type="text" id="embed_binary" name="embed_binary" value="{{.Config.Embedder.Binary}}" placeholder="C:\path\to\nomic-embed-server.exe" required>
+      <input type="text" id="embed_binary" name="embed_binary" value="{{.Config.Embedder.Binary}}" placeholder="C:\path\to\nomic-embed-server.exe" list="embed_binary_options" required>
+      <datalist id="embed_binary_options">
+        {{range .Suggestions.LlamaBinary}}<option value="{{.}}">{{end}}
+      </datalist>
     </div>
     <div class="fg">
       <label for="embed_path">Model file <span class="req">*</span></label>
-      <input type="text" id="embed_path" name="embed_path" value="{{.Config.Embedder.ModelPath}}" placeholder="C:\path\to\nomic-embed-text.gguf" required>
+      <input type="text" id="embed_path" name="embed_path" value="{{.Config.Embedder.ModelPath}}" placeholder="C:\path\to\nomic-embed-text.gguf" list="embed_path_options" required>
+      <datalist id="embed_path_options">
+        {{range .Suggestions.EmbedModel}}<option value="{{.}}">{{end}}
+      </datalist>
+      {{if .Suggestions.EmbedModel}}<p class="fg-hint">{{len .Suggestions.EmbedModel}} embedder .gguf file{{if gt (len .Suggestions.EmbedModel) 1}}s{{end}} found in <code>models/</code>.</p>{{end}}
     </div>
     <div class="fg">
       <label for="embed_port">Port</label>
