@@ -26,6 +26,7 @@ type Config struct {
 	Prompt   PromptConfig
 	Queue    QueueConfig
 	Metrics  MetricsConfig
+	Log      LogConfig
 }
 
 // ModelConfig holds llama-server configuration.
@@ -81,6 +82,17 @@ type MetricsConfig struct {
 	RetentionDays int
 }
 
+// LogConfig holds in-memory log buffer sizes. Both buffers are allocated
+// once at startup, so changes take effect on the next harness launch.
+type LogConfig struct {
+	// RingMaxEntries caps the harness log ring that feeds the status page
+	// and /logs/events SSE stream.
+	RingMaxEntries int
+	// ProcMaxLines caps each child process's stdout+stderr tail shown on
+	// the status page.
+	ProcMaxLines int
+}
+
 // Store persists and retrieves Config. The concrete implementation lives in
 // internal/db; callers accept this interface so they can be tested with
 // in-memory fakes.
@@ -121,6 +133,10 @@ func Defaults() Config {
 		},
 		Metrics: MetricsConfig{
 			RetentionDays: 30,
+		},
+		Log: LogConfig{
+			RingMaxEntries: 500,
+			ProcMaxLines:   64,
 		},
 	}
 }
@@ -202,6 +218,13 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Metrics.RetentionDays < 1 {
 		return fmt.Errorf("config: metrics.retention_days must be >= 1, got %d", cfg.Metrics.RetentionDays)
+	}
+
+	if cfg.Log.RingMaxEntries < 1 {
+		return fmt.Errorf("config: log.ring_max_entries must be >= 1, got %d", cfg.Log.RingMaxEntries)
+	}
+	if cfg.Log.ProcMaxLines < 1 {
+		return fmt.Errorf("config: log.proc_max_lines must be >= 1, got %d", cfg.Log.ProcMaxLines)
 	}
 
 	return nil

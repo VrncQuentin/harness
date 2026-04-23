@@ -36,7 +36,8 @@ func (s *ConfigStore) seed() error {
 			api_enabled, api_port,
 			prompt_ctx_size, prompt_memory_token_budget, prompt_conversation_reserve,
 			queue_max_depth, queue_wal_path,
-			metrics_retention_days
+			metrics_retention_days,
+			log_ring_max_entries, log_proc_max_lines
 		) VALUES (
 			1,
 			?, ?, ?, ?,
@@ -47,7 +48,8 @@ func (s *ConfigStore) seed() error {
 			?, ?,
 			?, ?, ?,
 			?, ?,
-			?
+			?,
+			?, ?
 		)`,
 		d.Model.Binary, d.Model.ModelPath, d.Model.CtxSize, d.Model.GPULayers,
 		d.Model.NParallel, d.Model.Port,
@@ -58,6 +60,7 @@ func (s *ConfigStore) seed() error {
 		d.Prompt.CtxSize, d.Prompt.MemoryTokenBudget, d.Prompt.ConversationReserve,
 		d.Queue.MaxDepth, d.Queue.WALPath,
 		d.Metrics.RetentionDays,
+		d.Log.RingMaxEntries, d.Log.ProcMaxLines,
 	)
 	if err != nil {
 		return fmt.Errorf("db: seed config: %w", err)
@@ -79,6 +82,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 			prompt_ctx_size, prompt_memory_token_budget, prompt_conversation_reserve,
 			queue_max_depth, queue_wal_path,
 			metrics_retention_days,
+			log_ring_max_entries, log_proc_max_lines,
 			saved_at
 		FROM config WHERE id = 1`)
 
@@ -98,6 +102,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		&cfg.Prompt.CtxSize, &cfg.Prompt.MemoryTokenBudget, &cfg.Prompt.ConversationReserve,
 		&cfg.Queue.MaxDepth, &cfg.Queue.WALPath,
 		&cfg.Metrics.RetentionDays,
+		&cfg.Log.RingMaxEntries, &cfg.Log.ProcMaxLines,
 		&savedAt,
 	)
 	if err != nil {
@@ -124,6 +129,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			prompt_ctx_size = ?, prompt_memory_token_budget = ?, prompt_conversation_reserve = ?,
 			queue_max_depth = ?, queue_wal_path = ?,
 			metrics_retention_days = ?,
+			log_ring_max_entries = ?, log_proc_max_lines = ?,
 			saved_at = ?
 		WHERE id = 1`,
 		cfg.Model.Binary, cfg.Model.ModelPath, cfg.Model.CtxSize, cfg.Model.GPULayers,
@@ -135,6 +141,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 		cfg.Prompt.CtxSize, cfg.Prompt.MemoryTokenBudget, cfg.Prompt.ConversationReserve,
 		cfg.Queue.MaxDepth, cfg.Queue.WALPath,
 		cfg.Metrics.RetentionDays,
+		cfg.Log.RingMaxEntries, cfg.Log.ProcMaxLines,
 		time.Now().Unix(),
 	)
 	if err != nil {
