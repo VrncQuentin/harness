@@ -296,6 +296,53 @@ func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 	}
 }
 
+func TestHandleConfig_POSTPersistsLogBufferFields(t *testing.T) {
+	s, store := newServerWithStore(t)
+	s.SetRetry(func() ApplyResult { return ApplyResult{} })
+
+	form := url.Values{}
+	form.Set("model_binary", "C:\\llama.exe")
+	form.Set("model_path", "C:\\m.gguf")
+	form.Set("embed_binary", "C:\\embed.exe")
+	form.Set("embed_path", "C:\\e.gguf")
+	form.Set("log_ring_max_entries", "1500")
+	form.Set("log_proc_max_lines", "200")
+
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Log.RingMaxEntries != 1500 {
+		t.Errorf("RingMaxEntries: got %d, want 1500", loaded.Log.RingMaxEntries)
+	}
+	if loaded.Log.ProcMaxLines != 200 {
+		t.Errorf("ProcMaxLines: got %d, want 200", loaded.Log.ProcMaxLines)
+	}
+}
+
+func TestHandleConfig_GETRendersLogFields(t *testing.T) {
+	s, _ := newServerWithStore(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{`name="log_ring_max_entries"`, `name="log_proc_max_lines"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected config form to include %q", want)
+		}
+	}
+}
+
 func TestHandleConfig_POSTInvalidShowsValidationError(t *testing.T) {
 	s, store := newServerWithStore(t)
 
@@ -489,6 +536,29 @@ func TestHandleStatus_NoLogRingRendersEmpty(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestStateToPayload_CarriesProcOutputTails(t *testing.T) {
+	snap := stateSnapshot{
+		LlamaStatus: ProcessStatus{
+			Running:    true,
+			Healthy:    true,
+			OutputTail: []string{"llama line 1", "llama line 2"},
+		},
+		EmbedderStatus: ProcessStatus{
+			Running:    true,
+			Healthy:    false,
+			OutputTail: []string{"embed err"},
+		},
+		StartTime: time.Now(),
+	}
+	p := stateToPayload(snap)
+	if len(p.LlamaOutput) != 2 || p.LlamaOutput[1] != "llama line 2" {
+		t.Errorf("LlamaOutput: got %v, want both llama lines", p.LlamaOutput)
+	}
+	if len(p.EmbedOutput) != 1 || p.EmbedOutput[0] != "embed err" {
+		t.Errorf("EmbedOutput: got %v, want [embed err]", p.EmbedOutput)
 	}
 }
 

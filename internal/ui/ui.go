@@ -520,9 +520,11 @@ type ssePayload struct {
 	LlamaHealthy  bool     `json:"llama_healthy"`
 	LlamaRunning  bool     `json:"llama_running"`
 	LlamaRestarts int      `json:"llama_restarts"`
+	LlamaOutput   []string `json:"llama_output"`
 	EmbedHealthy  bool     `json:"embed_healthy"`
 	EmbedRunning  bool     `json:"embed_running"`
 	EmbedRestarts int      `json:"embed_restarts"`
+	EmbedOutput   []string `json:"embed_output"`
 	QueueDepth    int      `json:"queue_depth"`
 	QueueMax      int      `json:"queue_max"`
 	StartupErrors []string `json:"startup_errors,omitempty"`
@@ -678,6 +680,9 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 
 	cfg.Metrics.RetentionDays = atoiOr(r.FormValue("metrics_retention_days"), cfg.Metrics.RetentionDays)
 
+	cfg.Log.RingMaxEntries = atoiOr(r.FormValue("log_ring_max_entries"), cfg.Log.RingMaxEntries)
+	cfg.Log.ProcMaxLines = atoiOr(r.FormValue("log_proc_max_lines"), cfg.Log.ProcMaxLines)
+
 	return &cfg
 }
 
@@ -702,9 +707,11 @@ func stateToPayload(s stateSnapshot) ssePayload {
 		LlamaHealthy:  s.LlamaStatus.Healthy,
 		LlamaRunning:  s.LlamaStatus.Running,
 		LlamaRestarts: s.LlamaStatus.RestartCount,
+		LlamaOutput:   s.LlamaStatus.OutputTail,
 		EmbedHealthy:  s.EmbedderStatus.Healthy,
 		EmbedRunning:  s.EmbedderStatus.Running,
 		EmbedRestarts: s.EmbedderStatus.RestartCount,
+		EmbedOutput:   s.EmbedderStatus.OutputTail,
 		QueueDepth:    s.QueueDepth,
 		QueueMax:      s.QueueMax,
 		StartupErrors: errs,

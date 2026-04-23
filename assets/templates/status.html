@@ -50,13 +50,10 @@
     {{with .LlamaStatus.ExitCode}}
     <p class="card-meta">Last exit code: <code>{{.}}</code></p>
     {{end}}
-    <div class="card-output">
-      <p class="card-output-label">Recent output{{if .LlamaStatus.OutputTail}} ({{len .LlamaStatus.OutputTail}} lines){{end}}</p>
-      {{if .LlamaStatus.OutputTail}}
-      <pre>{{range .LlamaStatus.OutputTail}}{{.}}&#10;{{end}}</pre>
-      {{else}}
-      <div class="card-output-empty">No output yet.</div>
-      {{end}}
+    <div class="card-output" id="llama-output-wrap">
+      <p class="card-output-label">Recent output<span id="llama-output-count">{{if .LlamaStatus.OutputTail}} ({{len .LlamaStatus.OutputTail}} lines){{end}}</span></p>
+      <pre id="llama-output" {{if not .LlamaStatus.OutputTail}}hidden{{end}}>{{range .LlamaStatus.OutputTail}}{{.}}&#10;{{end}}</pre>
+      <div class="card-output-empty" id="llama-output-empty" {{if .LlamaStatus.OutputTail}}hidden{{end}}>No output yet.</div>
     </div>
   </div>
 
@@ -77,13 +74,10 @@
     {{with .EmbedderStatus.ExitCode}}
     <p class="card-meta">Last exit code: <code>{{.}}</code></p>
     {{end}}
-    <div class="card-output">
-      <p class="card-output-label">Recent output{{if .EmbedderStatus.OutputTail}} ({{len .EmbedderStatus.OutputTail}} lines){{end}}</p>
-      {{if .EmbedderStatus.OutputTail}}
-      <pre>{{range .EmbedderStatus.OutputTail}}{{.}}&#10;{{end}}</pre>
-      {{else}}
-      <div class="card-output-empty">No output yet.</div>
-      {{end}}
+    <div class="card-output" id="embed-output-wrap">
+      <p class="card-output-label">Recent output<span id="embed-output-count">{{if .EmbedderStatus.OutputTail}} ({{len .EmbedderStatus.OutputTail}} lines){{end}}</span></p>
+      <pre id="embed-output" {{if not .EmbedderStatus.OutputTail}}hidden{{end}}>{{range .EmbedderStatus.OutputTail}}{{.}}&#10;{{end}}</pre>
+      <div class="card-output-empty" id="embed-output-empty" {{if .EmbedderStatus.OutputTail}}hidden{{end}}>No output yet.</div>
     </div>
   </div>
 

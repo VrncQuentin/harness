@@ -192,10 +192,26 @@
     </div>
   </fieldset>
 
+  <fieldset class="cfg-section">
+    <legend>Logs</legend>
+    <div class="fg-row">
+      <div class="fg">
+        <label for="log_ring_max_entries">Harness log buffer (lines)</label>
+        <input type="number" id="log_ring_max_entries" name="log_ring_max_entries" value="{{.Config.Log.RingMaxEntries}}" min="1">
+        <p class="fg-hint">Lines retained in the live harness log panel.</p>
+      </div>
+      <div class="fg">
+        <label for="log_proc_max_lines">Process output buffer (lines)</label>
+        <input type="number" id="log_proc_max_lines" name="log_proc_max_lines" value="{{.Config.Log.ProcMaxLines}}" min="1">
+        <p class="fg-hint">Lines retained per child process (llama-server, embedder).</p>
+      </div>
+    </div>
+  </fieldset>
+
   <div class="cfg-actions">
     <button type="submit" class="btn btn-primary">Save config</button>
     <a href="/" class="btn btn-ghost">Cancel</a>
   </div>
-  <p class="cfg-note">Required fields are marked <span class="req">*</span>. Model and embedder changes are applied live. UI port, queue depth, and queue WAL path still require a harness restart.</p>
+  <p class="cfg-note">Required fields are marked <span class="req">*</span>. Model and embedder changes are applied live. UI port, queue depth, queue WAL path, and log buffer sizes still require a harness restart.</p>
 </form>
 {{end}}
