@@ -369,10 +369,13 @@ func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int
 // --embedding switches llama-server into embedding mode; without it the
 // server boots a chat-completion endpoint and /embedding returns 501,
 // which defeats the whole point of running a second process.
+// --n-gpu-layers 0 pins the embedder to CPU+RAM so it never competes with
+// the main model for VRAM.
 func EmbedderArgs(binary, modelPath string, port int) (string, []string) {
 	return binary, []string{
 		"--model", modelPath,
 		"--embedding",
+		"--n-gpu-layers", "0",
 		"--port", strconv.Itoa(port),
 		"--host", "127.0.0.1",
 	}
