@@ -111,6 +111,13 @@ func NewManager(cfg ManagerConfig) *Manager {
 	}
 }
 
+// SetOutputMaxLines resizes the stdout+stderr tail retained for this manager
+// without restarting the child. Shrinking drops the oldest lines; growing
+// simply raises the cap for future writes.
+func (m *Manager) SetOutputMaxLines(maxLines int) {
+	m.output.SetMaxLines(maxLines)
+}
+
 // Reconfigure atomically swaps the args builder and health URL, then kills the
 // running child so Run spins it up again under the new config. The restart is
 // user-initiated, so it does not count against RestartCount and skips backoff.

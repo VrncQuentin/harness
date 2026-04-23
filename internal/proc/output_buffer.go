@@ -6,6 +6,10 @@ import (
 	"sync"
 )
 
+// defaultOutputMaxLines is the fallback cap used when callers pass a
+// non-positive size to newOutputBuffer or SetMaxLines.
+const defaultOutputMaxLines = 32
+
 // outputBuffer is a bounded, line-oriented ring buffer for the merged
 // stdout+stderr of a child process. It implements io.Writer and retains
 // only the most recent maxLines complete lines so a long-running crash
@@ -19,7 +23,7 @@ type outputBuffer struct {
 
 func newOutputBuffer(maxLines int) *outputBuffer {
 	if maxLines <= 0 {
-		maxLines = 32
+		maxLines = defaultOutputMaxLines
 	}
 	return &outputBuffer{maxLines: maxLines}
 }
@@ -52,6 +56,25 @@ func (b *outputBuffer) Snapshot() []string {
 		out = append(out, strings.TrimRight(string(b.partial), "\r"))
 	}
 	return out
+}
+
+// SetMaxLines changes the retention cap. A non-positive value falls back to
+// the newOutputBuffer default. Shrinking drops the oldest lines so the next
+// Snapshot already respects the new cap.
+func (b *outputBuffer) SetMaxLines(maxLines int) {
+	if maxLines <= 0 {
+		maxLines = defaultOutputMaxLines
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if maxLines == b.maxLines {
+		return
+	}
+	if len(b.lines) > maxLines {
+		drop := len(b.lines) - maxLines
+		b.lines = append(b.lines[:0], b.lines[drop:]...)
+	}
+	b.maxLines = maxLines
 }
 
 // Reset drops all retained output. Called on every (re)start so output
