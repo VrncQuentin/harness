@@ -230,6 +230,7 @@ func recordMetrics(
 	llamaMgr, embedMgr *proc.Manager,
 	q *queue.Queue,
 ) {
+	rec := metrics.NewRecorder(store)
 	start := time.Now()
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
@@ -239,28 +240,19 @@ func recordMetrics(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			store.Record("uptime_seconds", time.Since(start).Seconds(), nil) //nolint:errcheck
+			_ = rec.Uptime(time.Since(start))
 			if q != nil {
-				store.Record("queue_depth", float64(q.Depth()), nil) //nolint:errcheck
+				_ = rec.QueueDepth(q.Depth())
 			}
-
 			if llamaMgr != nil {
 				st := llamaMgr.Status()
-				h := 0.0
-				if st.Healthy {
-					h = 1.0
-				}
-				store.Record("process_health", h, map[string]string{"process": "llama-server"})                       //nolint:errcheck
-				store.Record("restart_count", float64(st.RestartCount), map[string]string{"process": "llama-server"}) //nolint:errcheck
+				_ = rec.ProcessHealth("llama-server", st.Healthy)
+				_ = rec.ProcessRestartCount("llama-server", st.RestartCount)
 			}
 			if embedMgr != nil {
 				st := embedMgr.Status()
-				h := 0.0
-				if st.Healthy {
-					h = 1.0
-				}
-				store.Record("process_health", h, map[string]string{"process": "embedder"})                       //nolint:errcheck
-				store.Record("restart_count", float64(st.RestartCount), map[string]string{"process": "embedder"}) //nolint:errcheck
+				_ = rec.ProcessHealth("embedder", st.Healthy)
+				_ = rec.ProcessRestartCount("embedder", st.RestartCount)
 			}
 		}
 	}
