@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -264,6 +266,113 @@ func TestHandleConfig_POSTInvalidShowsValidationError(t *testing.T) {
 	}
 	if configured {
 		t.Error("config should not be marked configured when validation fails")
+	}
+}
+
+func TestHandleConfig_GETRendersDatalistAnchors(t *testing.T) {
+	s, _ := newServerWithStore(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	body := rec.Body.String()
+	for _, id := range []string{
+		"model_binary_options",
+		"model_path_options",
+		"embed_binary_options",
+		"embed_path_options",
+	} {
+		if !strings.Contains(body, `id="`+id+`"`) {
+			t.Errorf("expected datalist with id=%q", id)
+		}
+	}
+}
+
+func TestHandleConfig_GETPreFillsDetectedLlamaBinary(t *testing.T) {
+	s, _ := newServerWithStore(t)
+
+	dir := t.TempDir()
+	exe := "llama-server"
+	if runtime.GOOS == "windows" {
+		exe = "llama-server.exe"
+	}
+	want := filepath.Join(dir, exe)
+	if err := os.WriteFile(want, nil, 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s.SetBinDir(dir)
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, want) {
+		t.Errorf("expected detected llama-server %q to appear in rendered form", want)
+	}
+}
+
+func TestHandleConfig_GETOffersModelSuggestionsInDatalist(t *testing.T) {
+	s, _ := newServerWithStore(t)
+
+	dir := t.TempDir()
+	modelsDir := filepath.Join(dir, "models")
+	if err := os.Mkdir(modelsDir, 0o755); err != nil {
+		t.Fatalf("mkdir models: %v", err)
+	}
+	main := filepath.Join(modelsDir, "Qwen3-35B.gguf")
+	embed := filepath.Join(modelsDir, "nomic-embed-v2.gguf")
+	for _, p := range []string{main, embed} {
+		if err := os.WriteFile(p, nil, 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+	s.SetBinDir(dir)
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `value="`+main+`"`) {
+		t.Errorf("expected main model option for %s in rendered body", main)
+	}
+	if !strings.Contains(body, `value="`+embed+`"`) {
+		t.Errorf("expected embedder model option for %s in rendered body", embed)
+	}
+}
+
+func TestHandleConfig_POSTErrorDoesNotPreFillBinary(t *testing.T) {
+	s, _ := newServerWithStore(t)
+
+	dir := t.TempDir()
+	exe := "llama-server"
+	if runtime.GOOS == "windows" {
+		exe = "llama-server.exe"
+	}
+	detected := filepath.Join(dir, exe)
+	if err := os.WriteFile(detected, nil, 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s.SetBinDir(dir)
+
+	// POST with blank required fields → re-renders with ValidationErr. The
+	// rendered form should echo the user's submission (empty) rather than
+	// silently inserting the detected path.
+	form := url.Values{}
+	form.Set("ui_port", "3000")
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 re-render, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, `name="model_binary" value="`+detected+`"`) {
+		t.Error("POST error re-render should not overwrite the user's submitted value with detected path")
 	}
 }
 

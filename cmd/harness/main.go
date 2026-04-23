@@ -46,6 +46,7 @@ func main() {
 
 	// Step 3: Start UI server - must succeed before we proceed.
 	uiServer := ui.NewServer(3000)
+	uiServer.SetBinDir(binDir)
 	if err := uiServer.Start(rootCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "harness: UI server failed to start: %v\n", err)
 		os.Exit(1)
