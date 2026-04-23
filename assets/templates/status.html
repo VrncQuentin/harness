@@ -50,12 +50,12 @@
     {{with .LlamaStatus.ExitCode}}
     <p class="card-meta">Last exit code: <code>{{.}}</code></p>
     {{end}}
-    <div class="card-stderr">
-      <p class="card-stderr-label">Recent stderr{{if .LlamaStatus.StderrTail}} ({{len .LlamaStatus.StderrTail}} lines){{end}}</p>
-      {{if .LlamaStatus.StderrTail}}
-      <pre>{{range .LlamaStatus.StderrTail}}{{.}}&#10;{{end}}</pre>
+    <div class="card-output">
+      <p class="card-output-label">Recent output{{if .LlamaStatus.OutputTail}} ({{len .LlamaStatus.OutputTail}} lines){{end}}</p>
+      {{if .LlamaStatus.OutputTail}}
+      <pre>{{range .LlamaStatus.OutputTail}}{{.}}&#10;{{end}}</pre>
       {{else}}
-      <div class="card-stderr-empty">No stderr output yet.</div>
+      <div class="card-output-empty">No output yet.</div>
       {{end}}
     </div>
   </div>
@@ -77,12 +77,12 @@
     {{with .EmbedderStatus.ExitCode}}
     <p class="card-meta">Last exit code: <code>{{.}}</code></p>
     {{end}}
-    <div class="card-stderr">
-      <p class="card-stderr-label">Recent stderr{{if .EmbedderStatus.StderrTail}} ({{len .EmbedderStatus.StderrTail}} lines){{end}}</p>
-      {{if .EmbedderStatus.StderrTail}}
-      <pre>{{range .EmbedderStatus.StderrTail}}{{.}}&#10;{{end}}</pre>
+    <div class="card-output">
+      <p class="card-output-label">Recent output{{if .EmbedderStatus.OutputTail}} ({{len .EmbedderStatus.OutputTail}} lines){{end}}</p>
+      {{if .EmbedderStatus.OutputTail}}
+      <pre>{{range .EmbedderStatus.OutputTail}}{{.}}&#10;{{end}}</pre>
       {{else}}
-      <div class="card-stderr-empty">No stderr output yet.</div>
+      <div class="card-output-empty">No output yet.</div>
       {{end}}
     </div>
   </div>

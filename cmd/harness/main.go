@@ -74,6 +74,11 @@ func run() error {
 		return fmt.Errorf("cannot determine binary dir: %w", err)
 	}
 
+	// Redirect os.Stdout to os.Stderr so any stray fmt.Println or direct
+	// Stdout writes (ours or from dependencies) flow through the same sink
+	// as slog/log below, instead of escaping to the void.
+	os.Stdout = os.Stderr
+
 	// Tee the default log + slog outputs into an in-memory ring so the
 	// status page can show recent harness output. Stderr still receives
 	// everything so terminal launches are unchanged.
@@ -471,7 +476,7 @@ func pushStatus(uiSrv *ui.Server, llamaMgr, embedMgr *proc.Manager) {
 			RestartCount: st.RestartCount,
 			LastError:    st.LastError,
 			ExitCode:     st.ExitCode,
-			StderrTail:   st.StderrTail,
+			OutputTail:   st.OutputTail,
 		})
 	}
 	if embedMgr != nil {
@@ -483,7 +488,7 @@ func pushStatus(uiSrv *ui.Server, llamaMgr, embedMgr *proc.Manager) {
 			RestartCount: st.RestartCount,
 			LastError:    st.LastError,
 			ExitCode:     st.ExitCode,
-			StderrTail:   st.StderrTail,
+			OutputTail:   st.OutputTail,
 		})
 	}
 }

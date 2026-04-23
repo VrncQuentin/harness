@@ -144,15 +144,15 @@ a:hover { text-decoration: underline; }
   font-family: var(--mono);
   color: var(--fg);
 }
-.card-stderr {
+.card-output {
   margin-top: 0.75rem;
 }
-.card-stderr-label {
+.card-output-label {
   margin: 0 0 0.35rem;
   font-size: 0.75rem;
   color: var(--muted);
 }
-.card-stderr pre {
+.card-output pre {
   margin: 0;
   padding: 0.5rem 0.7rem;
   background: var(--bg);
@@ -165,7 +165,7 @@ a:hover { text-decoration: underline; }
   white-space: pre-wrap;
   word-break: break-word;
 }
-.card-stderr-empty {
+.card-output-empty {
   padding: 0.5rem 0.7rem;
   background: var(--bg);
   border: 1px dashed var(--border);
