@@ -417,16 +417,38 @@ func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
+	// Subscribe before the first flush so no entry written between "headers
+	// out" and "loop entered" is missed.
+	//
 	// Buffer 64 entries so a brief render hiccup doesn't drop bursts; the
 	// ring itself drops on overflow rather than blocking the writer.
 	ch := make(chan logbuf.Entry, 64)
 	cancel := ring.Subscribe(ch)
 	defer cancel()
 
+	// Flush an SSE comment immediately so headers go out the door and the
+	// browser fires onopen. Without this the connection sits header-less
+	// until the first log line, which for a quiet harness can be many
+	// minutes and leaves the panel looking stuck.
+	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	// Heartbeat so idle connections stay warm and a dropped client is
+	// noticed promptly (the Write fails and we exit).
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-ticker.C:
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
 		case e, ok := <-ch:
 			if !ok {
 				return
@@ -441,7 +463,9 @@ func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				continue
 			}
-			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+				return
+			}
 			flusher.Flush()
 		}
 	}
