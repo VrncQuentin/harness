@@ -507,6 +507,113 @@ func TestHandleRetry_RejectsGET(t *testing.T) {
 	}
 }
 
+func TestHandleProcRestart_CallsMatchingCallback(t *testing.T) {
+	s := NewServer(3000)
+	var llama, embed int32
+	s.SetProcRestarts(
+		func() { atomic.AddInt32(&llama, 1) },
+		func() { atomic.AddInt32(&embed, 1) },
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/procs/llama/restart", nil)
+	rec := httptest.NewRecorder()
+	s.handleProcRestart("llama")(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("llama: expected 303, got %d", rec.Code)
+	}
+	if atomic.LoadInt32(&llama) != 1 || atomic.LoadInt32(&embed) != 0 {
+		t.Errorf("expected llama callback only, llama=%d embed=%d", llama, embed)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/procs/embed/restart", nil)
+	rec = httptest.NewRecorder()
+	s.handleProcRestart("embed")(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("embed: expected 303, got %d", rec.Code)
+	}
+	if atomic.LoadInt32(&embed) != 1 {
+		t.Errorf("expected embed callback to be called, got %d", embed)
+	}
+}
+
+func TestHandleProcRestart_RejectsGET(t *testing.T) {
+	s := NewServer(3000)
+	req := httptest.NewRequest(http.MethodGet, "/procs/llama/restart", nil)
+	rec := httptest.NewRecorder()
+	s.handleProcRestart("llama")(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for GET, got %d", rec.Code)
+	}
+}
+
+func TestHandleProcRestart_NoCallbackStillRedirects(t *testing.T) {
+	// The manager may not be up yet on first run. The handler must not
+	// panic and must still redirect so the UI doesn't show a blank page.
+	s := NewServer(3000)
+	req := httptest.NewRequest(http.MethodPost, "/procs/llama/restart", nil)
+	rec := httptest.NewRecorder()
+	s.handleProcRestart("llama")(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Errorf("expected 303 even without callback, got %d", rec.Code)
+	}
+}
+
+func TestHandleStatus_RendersRestartFormWhenFailed(t *testing.T) {
+	s := NewServer(3000)
+	s.SetLlamaStatus(ProcessStatus{Name: "llama-server", Failed: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `action="/procs/llama/restart"`) {
+		t.Error("status page should include llama restart form when Failed")
+	}
+	// The restart form must be visible (no hidden attribute) when Failed.
+	if !strings.Contains(body, `id="llama-restart-form"`) {
+		t.Fatal("llama restart form missing from body")
+	}
+	if strings.Contains(body, `id="llama-restart-form" hidden`) ||
+		strings.Contains(body, `hidden id="llama-restart-form"`) {
+		t.Error("llama restart form should not be hidden when Failed=true")
+	}
+	// Badge text can have surrounding whitespace from the template; just
+	// verify the word appears and the other two options do not.
+	if !strings.Contains(body, "Failed") {
+		t.Error("badge should read 'Failed' when Status.Failed is true")
+	}
+	// When Failed=true the badge must not simultaneously render the other
+	// two states. Look for them between the open tag and its close.
+	const open = `id="llama-badge"`
+	i := strings.Index(body, open)
+	j := strings.Index(body[i:], "</span>")
+	if i < 0 || j < 0 {
+		t.Fatal("could not locate llama-badge span in rendered body")
+	}
+	badge := body[i : i+j]
+	if strings.Contains(badge, "Healthy") || strings.Contains(badge, "Unhealthy") {
+		t.Errorf("badge should not render Healthy/Unhealthy when Failed; got %q", badge)
+	}
+}
+
+func TestHandleStatus_HidesRestartFormWhenNotFailed(t *testing.T) {
+	s := NewServer(3000)
+	s.SetLlamaStatus(ProcessStatus{Name: "llama-server", Running: true, Healthy: true})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="llama-restart-form"`) {
+		t.Fatal("llama restart form should still be in DOM so JS can toggle it")
+	}
+	if !strings.Contains(body, `hidden`) {
+		t.Error("llama restart form should be hidden when not Failed")
+	}
+}
+
 func TestHandleStatus_RendersRecentLogs(t *testing.T) {
 	s := NewServer(3000)
 	ring := logbuf.New(10)
