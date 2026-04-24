@@ -113,8 +113,10 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	cfg.Model.Binary = "C:\\llama.exe"
 	cfg.Model.ModelPath = "C:\\m.gguf"
 	cfg.Model.CtxSize = 4096
+	cfg.Model.Verbose = true
 	cfg.Embedder.Binary = "C:\\embed.exe"
 	cfg.Embedder.ModelPath = "C:\\e.gguf"
+	cfg.Embedder.Verbose = true
 	cfg.Memory.RepoPath = "C:\\memory"
 	cfg.UI.OpenOnStart = false
 	cfg.API.Enabled = true
@@ -156,6 +158,12 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	}
 	if loaded.Log.ProcMaxLines != 99 {
 		t.Errorf("Log.ProcMaxLines roundtrip: got %d, want 99", loaded.Log.ProcMaxLines)
+	}
+	if !loaded.Model.Verbose {
+		t.Errorf("Model.Verbose roundtrip: got false, want true")
+	}
+	if !loaded.Embedder.Verbose {
+		t.Errorf("Embedder.Verbose roundtrip: got false, want true")
 	}
 }
 
