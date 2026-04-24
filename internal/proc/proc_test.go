@@ -1,6 +1,8 @@
 package proc
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -29,6 +31,9 @@ func TestStatus_InitialState(t *testing.T) {
 	}
 	if s.LastError != nil {
 		t.Errorf("expected nil LastError initially, got %v", s.LastError)
+	}
+	if s.Failed {
+		t.Error("expected Failed=false initially")
 	}
 }
 
@@ -142,7 +147,7 @@ func TestReconfigure_CoalescesMultipleCalls(t *testing.T) {
 }
 
 func TestEventKindConstants(t *testing.T) {
-	kinds := []EventKind{EventStart, EventStop, EventHealthOK, EventHealthFail, EventRestart, EventError}
+	kinds := []EventKind{EventStart, EventStop, EventHealthOK, EventHealthFail, EventRestart, EventError, EventFailed}
 	seen := map[EventKind]bool{}
 	for _, k := range kinds {
 		if seen[k] {
@@ -153,4 +158,170 @@ func TestEventKindConstants(t *testing.T) {
 			t.Error("empty EventKind")
 		}
 	}
+}
+
+func TestRecordFailure_TripsAtThresholdWithinWindow(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		Name:             "test",
+		BuildArgs:        func() (string, []string) { return "binary", nil },
+		HealthURL:        "http://127.0.0.1:9999/health",
+		FailureThreshold: 3,
+		FailureWindow:    time.Minute,
+	})
+
+	for i := 0; i < 2; i++ {
+		if tripped := m.recordFailure(); tripped {
+			t.Fatalf("tripped too early on failure %d", i+1)
+		}
+		if m.isFailed() {
+			t.Fatalf("Failed=true too early on failure %d", i+1)
+		}
+	}
+
+	if tripped := m.recordFailure(); !tripped {
+		t.Fatal("expected recordFailure to trip on threshold")
+	}
+	if !m.isFailed() {
+		t.Fatal("expected Failed=true after tripping")
+	}
+	if !m.Status().Failed {
+		t.Fatal("Status.Failed should mirror isFailed")
+	}
+
+	// A subsequent call should not report tripped again - the UI emits once.
+	if tripped := m.recordFailure(); tripped {
+		t.Error("expected second trip to be false (already open)")
+	}
+}
+
+func TestRecordFailure_EvictsOutsideWindow(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		Name:             "test",
+		BuildArgs:        func() (string, []string) { return "binary", nil },
+		HealthURL:        "http://127.0.0.1:9999/health",
+		FailureThreshold: 3,
+		FailureWindow:    50 * time.Millisecond,
+	})
+
+	// Two stale failures that should roll out of the window.
+	m.mu.Lock()
+	stale := time.Now().Add(-time.Second)
+	m.failures = []time.Time{stale, stale}
+	m.mu.Unlock()
+
+	if tripped := m.recordFailure(); tripped {
+		t.Fatal("expected stale failures to be evicted so threshold is not met")
+	}
+	if m.isFailed() {
+		t.Fatal("Failed should remain false after stale eviction")
+	}
+	m.mu.Lock()
+	got := len(m.failures)
+	m.mu.Unlock()
+	if got != 1 {
+		t.Fatalf("expected 1 live failure after eviction, got %d", got)
+	}
+}
+
+func TestClearCircuit_ResetsFailedAndFailures(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		Name:             "test",
+		BuildArgs:        func() (string, []string) { return "binary", nil },
+		HealthURL:        "http://127.0.0.1:9999/health",
+		FailureThreshold: 1,
+		FailureWindow:    time.Minute,
+	})
+	if !m.recordFailure() {
+		t.Fatal("expected threshold 1 to trip on first failure")
+	}
+	m.clearCircuit()
+	if m.isFailed() {
+		t.Error("Failed should be false after clearCircuit")
+	}
+	m.mu.Lock()
+	got := len(m.failures)
+	m.mu.Unlock()
+	if got != 0 {
+		t.Errorf("failures should be empty after clearCircuit, got %d", got)
+	}
+}
+
+func TestRestart_ClearsCircuitAndSignalsReload(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		Name:             "test",
+		BuildArgs:        func() (string, []string) { return "binary", nil },
+		HealthURL:        "http://127.0.0.1:9999/health",
+		FailureThreshold: 1,
+		FailureWindow:    time.Minute,
+	})
+	_ = m.recordFailure()
+	if !m.isFailed() {
+		t.Fatal("precondition: expected Failed=true before Restart")
+	}
+
+	m.Restart()
+
+	if m.isFailed() {
+		t.Error("Restart should clear Failed")
+	}
+	select {
+	case <-m.reloadCh:
+	default:
+		t.Error("Restart should signal reloadCh so Run wakes up")
+	}
+}
+
+func TestRun_BlocksInFailedStateUntilReload(t *testing.T) {
+	// A Run loop that enters the Failed state must stop calling BuildArgs
+	// until Restart/Reconfigure wakes it. Pre-trip the breaker so the test
+	// does not depend on how fast the OS rejects a bogus binary.
+	var starts int32
+	m := NewManager(ManagerConfig{
+		Name: "test",
+		BuildArgs: func() (string, []string) {
+			atomic.AddInt32(&starts, 1)
+			return "definitely-not-a-real-binary-name", nil
+		},
+		HealthURL:        "http://127.0.0.1:1/health",
+		CheckPeriod:      10 * time.Millisecond,
+		FailureThreshold: 2,
+		FailureWindow:    time.Second,
+	})
+
+	m.recordFailure()
+	m.recordFailure()
+	if !m.isFailed() {
+		t.Fatal("precondition: expected circuit tripped after two failures")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		m.Run(ctx)
+		close(done)
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	if got := atomic.LoadInt32(&starts); got != 0 {
+		cancel()
+		<-done
+		t.Fatalf("Run called BuildArgs while Failed: got %d calls", got)
+	}
+
+	// Restart should wake the loop so it attempts to spawn again.
+	m.Restart()
+	deadline := time.Now().Add(time.Second)
+	for atomic.LoadInt32(&starts) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if atomic.LoadInt32(&starts) == 0 {
+		cancel()
+		<-done
+		t.Fatal("Restart did not wake the Run loop")
+	}
+
+	cancel()
+	<-done
 }

@@ -175,6 +175,21 @@ func run() error {
 	uiServer.SetRetry(func() ui.ApplyResult {
 		return rt.applyConfig(rootCtx, uiServer, cfgStore, events, metricsStore)
 	})
+	// Bind the proc cards' Restart buttons. The managers may swap across
+	// Reconfigure calls, so the callbacks re-read them under rt.mu each time
+	// rather than closing over a specific *Manager.
+	uiServer.SetProcRestarts(
+		func() {
+			if m, _ := rt.getManagers(); m != nil {
+				m.Restart()
+			}
+		},
+		func() {
+			if _, m := rt.getManagers(); m != nil {
+				m.Restart()
+			}
+		},
+	)
 
 	// Open browser to UI unless disabled by saved config.
 	if cfg.UI.OpenOnStart {
@@ -517,7 +532,7 @@ func logProcEvent(ev proc.Event) {
 		slog.Debug("proc event", attrs...)
 	case proc.EventHealthFail, proc.EventStop:
 		slog.Warn("proc event", attrs...)
-	case proc.EventError:
+	case proc.EventError, proc.EventFailed:
 		slog.Error("proc event", attrs...)
 	default:
 		slog.Info("proc event", attrs...)
@@ -535,6 +550,7 @@ func pushStatus(uiSrv *ui.Server, llamaMgr, embedMgr *proc.Manager) {
 			RestartCount: st.RestartCount,
 			LastError:    st.LastError,
 			ExitCode:     st.ExitCode,
+			Failed:       st.Failed,
 		})
 	}
 	if embedMgr != nil {
@@ -546,6 +562,7 @@ func pushStatus(uiSrv *ui.Server, llamaMgr, embedMgr *proc.Manager) {
 			RestartCount: st.RestartCount,
 			LastError:    st.LastError,
 			ExitCode:     st.ExitCode,
+			Failed:       st.Failed,
 		})
 	}
 }
