@@ -92,13 +92,13 @@
   </div>
 </section>
 
-<details class="logs-card" id="logs-panel">
-  <summary>
-    <span>Harness logs</span>
+<div class="card logs-card" id="logs-panel">
+  <header class="card-head">
+    <h3>Harness logs</h3>
     <span class="logs-meta" id="logs-status">live</span>
-  </summary>
+  </header>
   <div class="logs-body" id="logs-body">
     {{range .LogEntries}}<div class="log-row"><span class="log-time">{{.Time}}</span><span class="log-line">{{.Line}}</span></div>{{else}}<div class="log-empty">No log output yet.</div>{{end}}
   </div>
-</details>
+</div>
 {{end}}
