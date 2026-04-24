@@ -175,6 +175,52 @@ func TestReconfigure_CoalescesMultipleCalls(t *testing.T) {
 	}
 }
 
+func TestFormatExitLine(t *testing.T) {
+	zero := 0
+	ok := 1
+	accessViolation := -1073741819 // 0xC0000005 on Windows
+	tests := []struct {
+		name string
+		proc string
+		code *int
+		want string
+	}{
+		{
+			name: "nil exit code",
+			proc: "llama-server",
+			code: nil,
+			want: "[harness] llama-server exited (exit code unavailable)\n",
+		},
+		{
+			name: "clean exit",
+			proc: "llama-server",
+			code: &zero,
+			want: "[harness] llama-server exited (code 0 / 0x00000000)\n",
+		},
+		{
+			name: "nonzero exit",
+			proc: "embedder",
+			code: &ok,
+			want: "[harness] embedder exited (code 1 / 0x00000001)\n",
+		},
+		{
+			name: "windows access violation",
+			proc: "llama-server",
+			code: &accessViolation,
+			want: "[harness] llama-server exited (code -1073741819 / 0xC0000005)\n",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatExitLine(tc.proc, tc.code)
+			if got != tc.want {
+				t.Errorf("formatExitLine:\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEventKindConstants(t *testing.T) {
 	kinds := []EventKind{EventStart, EventStop, EventHealthOK, EventHealthFail, EventRestart, EventError, EventFailed}
 	seen := map[EventKind]bool{}
