@@ -26,6 +26,16 @@ const (
 	EventHealthFail EventKind = "health_fail"
 	EventRestart    EventKind = "restart"
 	EventError      EventKind = "error"
+	// EventFailed is emitted once when the circuit breaker trips. The Run
+	// loop then blocks until Restart or Reconfigure is called.
+	EventFailed EventKind = "failed"
+)
+
+// Defaults for the circuit breaker: a process that dies five times in a
+// sixty-second window stops retrying and waits for the user to intervene.
+const (
+	defaultFailureThreshold = 5
+	defaultFailureWindow    = 60 * time.Second
 )
 
 // Event is a structured log event emitted by the process manager.
@@ -46,6 +56,10 @@ type Status struct {
 	// cleared on the next successful start so it only reports the most
 	// recent exit while the process is back up.
 	ExitCode *int
+	// Failed is true when the circuit breaker has tripped: the process has
+	// died too many times in the failure window and the Run loop is blocked
+	// awaiting a Restart or Reconfigure.
+	Failed bool
 }
 
 // Manager manages a single child process with health checking and restart logic.
@@ -55,10 +69,17 @@ type Manager struct {
 	checkPeriod time.Duration
 	httpClient  *http.Client
 
-	// reloadCh is signalled by Reconfigure. The Run loop treats a reload as
-	// an intentional restart: backoff resets and the restart count is not
-	// bumped.
+	// reloadCh is signalled by Reconfigure and Restart. The Run loop treats
+	// either as an intentional restart: backoff resets, the restart count is
+	// not bumped, and the failure counted against the circuit breaker is
+	// cleared.
 	reloadCh chan struct{}
+
+	// Circuit breaker knobs: if the process fails failureThreshold times
+	// within failureWindow, the Run loop enters the Failed state and stops
+	// retrying until the user clicks Restart or saves a new config.
+	failureThreshold int
+	failureWindow    time.Duration
 
 	mu           sync.Mutex
 	buildArgs    func() (string, []string)
@@ -70,6 +91,11 @@ type Manager struct {
 	lastError    error
 	exitCode     *int
 	output       io.Writer
+	// failures holds the timestamps of recent unplanned exits, evicted as
+	// they age past failureWindow. Cap on length is failureThreshold so the
+	// slice stays tiny.
+	failures []time.Time
+	failed   bool
 }
 
 // ManagerConfig holds the configuration for a Manager.
@@ -83,6 +109,12 @@ type ManagerConfig struct {
 	HTTPClient *http.Client
 	// Output receives the child's merged stdout+stderr. Nil discards.
 	Output io.Writer
+	// FailureThreshold is the number of unplanned exits within FailureWindow
+	// that puts the manager into the Failed state. Zero picks the default.
+	FailureThreshold int
+	// FailureWindow is the rolling window used by the circuit breaker. Zero
+	// picks the default.
+	FailureWindow time.Duration
 }
 
 // NewManager creates a new process Manager.
@@ -99,32 +131,100 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if out == nil {
 		out = io.Discard
 	}
+	threshold := cfg.FailureThreshold
+	if threshold <= 0 {
+		threshold = defaultFailureThreshold
+	}
+	window := cfg.FailureWindow
+	if window <= 0 {
+		window = defaultFailureWindow
+	}
 	return &Manager{
-		name:        cfg.Name,
-		buildArgs:   cfg.BuildArgs,
-		healthURL:   cfg.HealthURL,
-		events:      cfg.Events,
-		checkPeriod: period,
-		httpClient:  hc,
-		output:      out,
-		reloadCh:    make(chan struct{}, 1),
+		name:             cfg.Name,
+		buildArgs:        cfg.BuildArgs,
+		healthURL:        cfg.HealthURL,
+		events:           cfg.Events,
+		checkPeriod:      period,
+		httpClient:       hc,
+		output:           out,
+		reloadCh:         make(chan struct{}, 1),
+		failureThreshold: threshold,
+		failureWindow:    window,
 	}
 }
 
 // Reconfigure atomically swaps the args builder and health URL, then kills the
 // running child so Run spins it up again under the new config. The restart is
-// user-initiated, so it does not count against RestartCount and skips backoff.
+// user-initiated, so it does not count against RestartCount, skips backoff,
+// and clears any tripped circuit breaker.
 func (m *Manager) Reconfigure(buildArgs func() (string, []string), healthURL string) {
 	m.mu.Lock()
 	m.buildArgs = buildArgs
 	m.healthURL = healthURL
 	m.mu.Unlock()
 
+	m.clearCircuit()
 	select {
 	case m.reloadCh <- struct{}{}:
 	default:
 	}
 	m.stopProcess()
+}
+
+// Restart clears the circuit breaker and kicks the Run loop to try again with
+// the currently-configured args. It is the manual escape hatch from the
+// Failed state: the user sees the process is stuck, fixes whatever external
+// issue caused the flap (freed a port, restarted a driver, etc.), and clicks
+// Restart without needing to re-save config.
+//
+// RestartCount is not cleared - it reflects lifetime restarts across the
+// Run loop, which the UI shows so the user can tell this process has been
+// trouble.
+func (m *Manager) Restart() {
+	m.clearCircuit()
+	select {
+	case m.reloadCh <- struct{}{}:
+	default:
+	}
+	m.stopProcess()
+}
+
+// recordFailure timestamps the most recent unplanned exit and evicts
+// entries older than failureWindow. Returns true if this call tripped the
+// breaker so the caller can emit EventFailed exactly once per trip.
+func (m *Manager) recordFailure() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-m.failureWindow)
+	kept := m.failures[:0]
+	for _, t := range m.failures {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	m.failures = append(kept, now)
+	if !m.failed && len(m.failures) >= m.failureThreshold {
+		m.failed = true
+		return true
+	}
+	return false
+}
+
+// clearCircuit resets the circuit breaker. Called on user-initiated
+// restarts (Restart, Reconfigure) and when Run exits the Failed-state wait.
+func (m *Manager) clearCircuit() {
+	m.mu.Lock()
+	m.failed = false
+	m.failures = nil
+	m.mu.Unlock()
+}
+
+// isFailed reports whether the circuit breaker is currently tripped.
+func (m *Manager) isFailed() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.failed
 }
 
 // Run is the main loop: start the process, health-check it, restart on failure.
@@ -139,19 +239,37 @@ func (m *Manager) Run(ctx context.Context) {
 			return
 		}
 
-		if err := m.startProcess(ctx); err != nil {
-			m.setError(err)
-			m.emit(EventError, fmt.Sprintf("failed to start: %v", err))
+		// Circuit-breaker gate: after too many failures in the window, park
+		// here until Restart or Reconfigure signals reloadCh. No retries, no
+		// sleeps, no churn - the UI shows Failed and the user drives.
+		if m.isFailed() {
 			select {
 			case <-ctx.Done():
 				return
 			case <-m.reloadCh:
+				m.clearCircuit()
 				backoff = time.Second
 				continue
-			case <-time.After(backoff):
-				backoff = min(backoff*2, maxBackoff)
+			}
+		}
+
+		if err := m.startProcess(ctx); err != nil {
+			m.setError(err)
+			m.emit(EventError, fmt.Sprintf("failed to start: %v", err))
+			if m.recordFailure() {
+				m.emitCircuitOpen()
 				continue
 			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.reloadCh:
+				m.clearCircuit()
+				backoff = time.Second
+			case <-time.After(backoff):
+				backoff = min(backoff*2, maxBackoff)
+			}
+			continue
 		}
 
 		backoff = time.Second // reset on successful start
@@ -183,8 +301,14 @@ func (m *Manager) Run(ctx context.Context) {
 		m.mu.Unlock()
 
 		if reloaded {
+			m.clearCircuit()
 			backoff = time.Second
 			m.emit(EventRestart, "reloading with new config")
+			continue
+		}
+
+		if m.recordFailure() {
+			m.emitCircuitOpen()
 			continue
 		}
 
@@ -194,11 +318,21 @@ func (m *Manager) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-m.reloadCh:
+			m.clearCircuit()
 			backoff = time.Second
 		case <-time.After(backoff):
 			backoff = min(backoff*2, maxBackoff)
 		}
 	}
+}
+
+// emitCircuitOpen publishes a single EventFailed so the UI can surface the
+// breaker trip in the log panel alongside the Failed badge.
+func (m *Manager) emitCircuitOpen() {
+	m.emit(EventFailed, fmt.Sprintf(
+		"circuit open: %d failures within %s; waiting for restart or new config",
+		m.failureThreshold, m.failureWindow,
+	))
 }
 
 // Status returns the current status of the managed process.
@@ -216,6 +350,7 @@ func (m *Manager) Status() Status {
 		RestartCount: m.restartCount,
 		LastError:    m.lastError,
 		ExitCode:     ec,
+		Failed:       m.failed,
 	}
 }
 
