@@ -85,8 +85,14 @@ func run() error {
 	// everything so terminal launches are unchanged. The ring is sized from
 	// the default config because we haven't opened the DB yet - saved values
 	// take effect on the next harness launch, like UI port.
+	//
+	// We cannot use io.MultiWriter here: in a `-H windowsgui` build there is
+	// no attached console, so os.Stderr.Write fails, and MultiWriter returns
+	// the error without writing to later writers -- meaning the ring stays
+	// empty and the log panel never populates. tee writes to each sink and
+	// swallows per-sink errors so one bad writer can't silence the others.
 	logRing := logbuf.New(config.Defaults().Log.RingMaxEntries)
-	logSink := io.MultiWriter(os.Stderr, logRing)
+	logSink := tee(os.Stderr, logRing)
 	log.SetOutput(logSink)
 	slog.SetDefault(slog.New(slog.NewTextHandler(logSink, nil)))
 
@@ -400,6 +406,26 @@ func binaryDir() (string, error) {
 		return "", fmt.Errorf("os.Executable: %w", err)
 	}
 	return filepath.Dir(exe), nil
+}
+
+// teeWriter writes each payload to every underlying writer, discarding
+// per-writer errors so one failing sink (e.g. a detached os.Stderr in a
+// `-H windowsgui` build) cannot prevent the others from receiving the data.
+// It always reports the full length written so slog's handler does not
+// treat the write as short.
+type teeWriter struct {
+	writers []io.Writer
+}
+
+func tee(ws ...io.Writer) *teeWriter {
+	return &teeWriter{writers: ws}
+}
+
+func (t *teeWriter) Write(p []byte) (int, error) {
+	for _, w := range t.writers {
+		_, _ = w.Write(p)
+	}
+	return len(p), nil
 }
 
 // recordMetrics periodically writes process and queue metrics to the store.
