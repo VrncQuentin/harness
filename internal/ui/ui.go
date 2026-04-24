@@ -24,6 +24,11 @@ import (
 // the status page. New entries are appended client-side via SSE.
 const statusLogTail = 100
 
+// procLogTail is the number of recent output lines shown server-rendered for
+// each proc's log card. New entries are appended client-side via SSE, so this
+// only controls the initial seed on page load.
+const procLogTail = 50
+
 // RetryFunc is called when the user clicks Retry on the status page or saves
 // a new config. The implementation (in main) is responsible for clearing and
 // re-adding startup errors via the Server's methods, and returns what the
@@ -47,7 +52,6 @@ type ProcessStatus struct {
 	RestartCount int
 	LastError    error
 	ExitCode     *int
-	OutputTail   []string
 }
 
 // stateSnapshot holds the copyable fields of State (no mutex).
@@ -96,7 +100,9 @@ type Server struct {
 	binDirMu sync.RWMutex
 	binDir   string
 
-	logRing atomic.Pointer[logbuf.Ring]
+	logRing   atomic.Pointer[logbuf.Ring]
+	llamaRing atomic.Pointer[logbuf.Ring]
+	embedRing atomic.Pointer[logbuf.Ring]
 }
 
 // NewServer creates a new UI server on the given port. The config store is
@@ -173,9 +179,20 @@ func (s *Server) SetLogRing(r *logbuf.Ring) {
 	s.logRing.Store(r)
 }
 
-func (s *Server) getLogRing() *logbuf.Ring {
-	return s.logRing.Load()
+// SetLlamaOutputRing wires the ring that receives llama-server stdout+stderr.
+// The status page's llama card subscribes over SSE to stream new lines.
+func (s *Server) SetLlamaOutputRing(r *logbuf.Ring) {
+	s.llamaRing.Store(r)
 }
+
+// SetEmbedOutputRing wires the ring that receives the embedder's stdout+stderr.
+func (s *Server) SetEmbedOutputRing(r *logbuf.Ring) {
+	s.embedRing.Store(r)
+}
+
+func (s *Server) getLogRing() *logbuf.Ring   { return s.logRing.Load() }
+func (s *Server) getLlamaRing() *logbuf.Ring { return s.llamaRing.Load() }
+func (s *Server) getEmbedRing() *logbuf.Ring { return s.embedRing.Load() }
 
 // SetLlamaStatus updates the llama-server status.
 func (s *Server) SetLlamaStatus(st ProcessStatus) {
@@ -233,7 +250,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleStatus)
 	mux.HandleFunc("/events", s.handleSSE)
-	mux.HandleFunc("/logs/events", s.handleLogsSSE)
+	mux.HandleFunc("/logs/harness", s.streamRing(s.getLogRing))
+	mux.HandleFunc("/logs/llama", s.streamRing(s.getLlamaRing))
+	mux.HandleFunc("/logs/embed", s.streamRing(s.getEmbedRing))
 	mux.HandleFunc("/config", s.handleConfig)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.Handle("/static/", http.FileServer(http.FS(assets.StaticFS)))
@@ -284,7 +303,16 @@ type statusPageData struct {
 	QueuePct       int
 	HasRetry       bool
 	StartupErrText []string
-	LogEntries     []logEntryView
+	HarnessLog     logboxData
+	LlamaLog       logboxData
+	EmbedLog       logboxData
+}
+
+// logboxData is the data passed to the shared "logbox" template partial. One
+// instance per card: harness logs, llama-server output, embedder output.
+type logboxData struct {
+	BodyID  string
+	Entries []logEntryView
 }
 
 // logEntryView is the template-friendly form of a logbuf entry.
@@ -326,7 +354,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		QueuePct:       queuePct(snap.QueueDepth, snap.QueueMax),
 		HasRetry:       s.hasRetry(),
 		StartupErrText: errTexts,
-		LogEntries:     s.recentLogEntries(statusLogTail),
+		HarnessLog:     logboxData{BodyID: "harness-log", Entries: recentEntries(s.getLogRing(), statusLogTail)},
+		LlamaLog:       logboxData{BodyID: "llama-log", Entries: recentEntries(s.getLlamaRing(), procLogTail)},
+		EmbedLog:       logboxData{BodyID: "embed-log", Entries: recentEntries(s.getEmbedRing(), procLogTail)},
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.statusTmpl.ExecuteTemplate(w, "layout", data); err != nil {
@@ -377,14 +407,13 @@ func formatUptime(d time.Duration) string {
 	}
 }
 
-// recentLogEntries returns the last n log entries from the ring formatted
-// for the status template. Empty if no ring is wired up.
-func (s *Server) recentLogEntries(n int) []logEntryView {
-	r := s.getLogRing()
-	if r == nil {
+// recentEntries returns the last n log entries from ring formatted for the
+// status template. Returns nil if the ring is not wired up.
+func recentEntries(ring *logbuf.Ring, n int) []logEntryView {
+	if ring == nil {
 		return nil
 	}
-	all := r.Snapshot()
+	all := ring.Snapshot()
 	if len(all) > n {
 		all = all[len(all)-n:]
 	}
@@ -398,75 +427,79 @@ func (s *Server) recentLogEntries(n int) []logEntryView {
 	return out
 }
 
-// handleLogsSSE streams new log entries to the client. The initial snapshot
-// is rendered server-side in the status page; this stream only carries
-// entries written after the connection was opened.
-func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
-	ring := s.getLogRing()
-	if ring == nil {
-		http.Error(w, "log ring not configured", http.StatusServiceUnavailable)
-		return
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-
-	// Subscribe before the first flush so no entry written between "headers
-	// out" and "loop entered" is missed.
-	//
-	// Buffer 64 entries so a brief render hiccup doesn't drop bursts; the
-	// ring itself drops on overflow rather than blocking the writer.
-	ch := make(chan logbuf.Entry, 64)
-	cancel := ring.Subscribe(ch)
-	defer cancel()
-
-	// Flush an SSE comment immediately so headers go out the door and the
-	// browser fires onopen. Without this the connection sits header-less
-	// until the first log line, which for a quiet harness can be many
-	// minutes and leaves the panel looking stuck.
-	if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
-		return
-	}
-	flusher.Flush()
-
-	// Heartbeat so idle connections stay warm and a dropped client is
-	// noticed promptly (the Write fails and we exit).
-	ticker := time.NewTicker(15 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-r.Context().Done():
+// streamRing returns an SSE handler that streams new entries from the ring
+// returned by get. get is called per-request so callers can install the ring
+// lazily via a setter and have streams pick it up on the next connection.
+// The initial snapshot is rendered server-side in the status page; this
+// stream only carries entries written after the connection was opened.
+func (s *Server) streamRing(get func() *logbuf.Ring) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ring := get()
+		if ring == nil {
+			http.Error(w, "log ring not configured", http.StatusServiceUnavailable)
 			return
-		case <-ticker.C:
-			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		// Subscribe before the first flush so no entry written between "headers
+		// out" and "loop entered" is missed.
+		//
+		// Buffer 64 entries so a brief render hiccup doesn't drop bursts; the
+		// ring itself drops on overflow rather than blocking the writer.
+		ch := make(chan logbuf.Entry, 64)
+		cancel := ring.Subscribe(ch)
+		defer cancel()
+
+		// Flush an SSE comment immediately so headers go out the door and the
+		// browser fires onopen. Without this the connection sits header-less
+		// until the first log line, which for a quiet harness can be many
+		// minutes and leaves the panel looking stuck.
+		if _, err := fmt.Fprint(w, ": connected\n\n"); err != nil {
+			return
+		}
+		flusher.Flush()
+
+		// Heartbeat so idle connections stay warm and a dropped client is
+		// noticed promptly (the Write fails and we exit).
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-r.Context().Done():
 				return
+			case <-ticker.C:
+				if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+					return
+				}
+				flusher.Flush()
+			case e, ok := <-ch:
+				if !ok {
+					return
+				}
+				payload, err := json.Marshal(struct {
+					Time string `json:"time"`
+					Line string `json:"line"`
+				}{
+					Time: e.Time.Format("15:04:05"),
+					Line: e.Line,
+				})
+				if err != nil {
+					continue
+				}
+				if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+					return
+				}
+				flusher.Flush()
 			}
-			flusher.Flush()
-		case e, ok := <-ch:
-			if !ok {
-				return
-			}
-			payload, err := json.Marshal(struct {
-				Time string `json:"time"`
-				Line string `json:"line"`
-			}{
-				Time: e.Time.Format("15:04:05"),
-				Line: e.Line,
-			})
-			if err != nil {
-				continue
-			}
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
-				return
-			}
-			flusher.Flush()
 		}
 	}
 }
@@ -544,11 +577,9 @@ type ssePayload struct {
 	LlamaHealthy  bool     `json:"llama_healthy"`
 	LlamaRunning  bool     `json:"llama_running"`
 	LlamaRestarts int      `json:"llama_restarts"`
-	LlamaOutput   []string `json:"llama_output"`
 	EmbedHealthy  bool     `json:"embed_healthy"`
 	EmbedRunning  bool     `json:"embed_running"`
 	EmbedRestarts int      `json:"embed_restarts"`
-	EmbedOutput   []string `json:"embed_output"`
 	QueueDepth    int      `json:"queue_depth"`
 	QueueMax      int      `json:"queue_max"`
 	StartupErrors []string `json:"startup_errors,omitempty"`
@@ -731,11 +762,9 @@ func stateToPayload(s stateSnapshot) ssePayload {
 		LlamaHealthy:  s.LlamaStatus.Healthy,
 		LlamaRunning:  s.LlamaStatus.Running,
 		LlamaRestarts: s.LlamaStatus.RestartCount,
-		LlamaOutput:   s.LlamaStatus.OutputTail,
 		EmbedHealthy:  s.EmbedderStatus.Healthy,
 		EmbedRunning:  s.EmbedderStatus.Running,
 		EmbedRestarts: s.EmbedderStatus.RestartCount,
-		EmbedOutput:   s.EmbedderStatus.OutputTail,
 		QueueDepth:    s.QueueDepth,
 		QueueMax:      s.QueueMax,
 		StartupErrors: errs,

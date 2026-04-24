@@ -1,18 +1,21 @@
-document.addEventListener('htmx:sseMessage', function (evt) {
-  try {
-    var d = JSON.parse(evt.detail.data);
+// Live status stream. Patches badge/running/restart/queue/uptime nodes by id
+// whenever the server broadcasts a new state frame.
+(function () {
+  if (typeof EventSource === 'undefined') return;
+  var es = new EventSource('/events');
+  es.onmessage = function (evt) {
+    var d;
+    try { d = JSON.parse(evt.data); } catch (e) { return; }
     setBadge('llama-badge', d.llama_healthy);
     setBadge('embed-badge', d.embed_healthy);
     setText('llama-running', d.llama_running ? 'Yes' : 'No');
     setText('embed-running', d.embed_running ? 'Yes' : 'No');
     setText('llama-restarts', d.llama_restarts);
     setText('embed-restarts', d.embed_restarts);
-    setProcOutput('llama', d.llama_output);
-    setProcOutput('embed', d.embed_output);
     setQueue(d.queue_depth, d.queue_max);
     setUptime(d.uptime_seconds);
-  } catch (e) { /* ignore malformed frame */ }
-});
+  };
+})();
 
 function setBadge(id, ok) {
   var el = document.getElementById(id);
@@ -24,33 +27,6 @@ function setBadge(id, ok) {
 function setText(id, v) {
   var el = document.getElementById(id);
   if (el) el.textContent = v;
-}
-
-// setProcOutput swaps the <pre> contents for a process card in place. Auto-
-// scroll only when the user was already pinned to the bottom, so scrolling
-// up to read a past line isn't yanked back on the next SSE frame.
-function setProcOutput(prefix, lines) {
-  var pre = document.getElementById(prefix + '-output');
-  var empty = document.getElementById(prefix + '-output-empty');
-  var count = document.getElementById(prefix + '-output-count');
-  if (!pre || !empty || !count) return;
-  lines = lines || [];
-  if (lines.length === 0) {
-    pre.hidden = true;
-    pre.textContent = '';
-    empty.hidden = false;
-    count.textContent = '';
-    return;
-  }
-  var atBottom = (pre.scrollHeight - pre.scrollTop - pre.clientHeight) < 4;
-  var next = lines.join('\n') + '\n';
-  if (pre.textContent !== next) {
-    pre.textContent = next;
-    if (atBottom) pre.scrollTop = pre.scrollHeight;
-  }
-  pre.hidden = false;
-  empty.hidden = true;
-  count.textContent = ' (' + lines.length + ' lines)';
 }
 
 function setQueue(depth, max) {
@@ -82,22 +58,22 @@ function formatUptime(s) {
   return s + 's';
 }
 
-// Live harness log streaming. Caps DOM rows so a noisy run doesn't grow
-// unbounded. Auto-scrolls only when the user is already at the bottom so
-// scrolling up to read a past line isn't yanked away.
-(function () {
-  var body = document.getElementById('logs-body');
-  var meta = document.getElementById('logs-status');
+// subscribeLogStream wires one log box to its SSE endpoint. Appends a row per
+// entry, caps DOM size so a noisy run doesn't grow unbounded, and auto-scrolls
+// only when the user is already pinned to the bottom.
+function subscribeLogStream(bodyId, statusId, url) {
+  var body = document.getElementById(bodyId);
   if (!body || typeof EventSource === 'undefined') return;
+  var status = statusId ? document.getElementById(statusId) : null;
 
   var MAX_ROWS = 500;
-  var es = new EventSource('/logs/events');
+  var es = new EventSource(url);
 
   es.onopen = function () {
-    if (meta) { meta.textContent = 'live'; meta.classList.remove('is-disconnected'); }
+    if (status) { status.textContent = 'live'; status.classList.remove('is-disconnected'); }
   };
   es.onerror = function () {
-    if (meta) { meta.textContent = 'disconnected'; meta.classList.add('is-disconnected'); }
+    if (status) { status.textContent = 'disconnected'; status.classList.add('is-disconnected'); }
   };
   es.onmessage = function (evt) {
     var entry;
@@ -125,4 +101,8 @@ function formatUptime(s) {
     }
     if (atBottom) body.scrollTop = body.scrollHeight;
   };
-})();
+}
+
+subscribeLogStream('llama-log', null, '/logs/llama');
+subscribeLogStream('embed-log', null, '/logs/embed');
+subscribeLogStream('harness-log', 'harness-log-status', '/logs/harness');

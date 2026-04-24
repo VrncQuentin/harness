@@ -1,4 +1,9 @@
 {{define "title"}}Status{{end}}
+{{define "logbox"}}
+<div class="logs-body" id="{{.BodyID}}">
+  {{range .Entries}}<div class="log-row"><span class="log-time">{{.Time}}</span><span class="log-line">{{.Line}}</span></div>{{else}}<div class="log-empty">No output yet.</div>{{end}}
+</div>
+{{end}}
 {{define "content"}}
 <h1 class="page-title">Status</h1>
 
@@ -50,11 +55,7 @@
     {{with .LlamaStatus.ExitCode}}
     <p class="card-meta">Last exit code: <code>{{.}}</code></p>
     {{end}}
-    <div class="card-output" id="llama-output-wrap">
-      <p class="card-output-label">Recent output<span id="llama-output-count">{{if .LlamaStatus.OutputTail}} ({{len .LlamaStatus.OutputTail}} lines){{end}}</span></p>
-      <pre id="llama-output" {{if not .LlamaStatus.OutputTail}}hidden{{end}}>{{range .LlamaStatus.OutputTail}}{{.}}&#10;{{end}}</pre>
-      <div class="card-output-empty" id="llama-output-empty" {{if .LlamaStatus.OutputTail}}hidden{{end}}>No output yet.</div>
-    </div>
+    {{template "logbox" .LlamaLog}}
   </div>
 
   <div class="card">
@@ -74,11 +75,7 @@
     {{with .EmbedderStatus.ExitCode}}
     <p class="card-meta">Last exit code: <code>{{.}}</code></p>
     {{end}}
-    <div class="card-output" id="embed-output-wrap">
-      <p class="card-output-label">Recent output<span id="embed-output-count">{{if .EmbedderStatus.OutputTail}} ({{len .EmbedderStatus.OutputTail}} lines){{end}}</span></p>
-      <pre id="embed-output" {{if not .EmbedderStatus.OutputTail}}hidden{{end}}>{{range .EmbedderStatus.OutputTail}}{{.}}&#10;{{end}}</pre>
-      <div class="card-output-empty" id="embed-output-empty" {{if .EmbedderStatus.OutputTail}}hidden{{end}}>No output yet.</div>
-    </div>
+    {{template "logbox" .EmbedLog}}
   </div>
 
   <div class="card">
@@ -92,13 +89,11 @@
   </div>
 </section>
 
-<div class="card logs-card" id="logs-panel">
+<div class="card logs-card">
   <header class="card-head">
     <h3>Harness logs</h3>
-    <span class="logs-meta" id="logs-status">live</span>
+    <span class="logs-meta" id="harness-log-status">live</span>
   </header>
-  <div class="logs-body" id="logs-body">
-    {{range .LogEntries}}<div class="log-row"><span class="log-time">{{.Time}}</span><span class="log-line">{{.Line}}</span></div>{{else}}<div class="log-empty">No log output yet.</div>{{end}}
-  </div>
+  {{template "logbox" .HarnessLog}}
 </div>
 {{end}}
