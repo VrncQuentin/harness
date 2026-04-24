@@ -6,22 +6,31 @@
   es.onmessage = function (evt) {
     var d;
     try { d = JSON.parse(evt.data); } catch (e) { return; }
-    setBadge('llama-badge', d.llama_healthy);
-    setBadge('embed-badge', d.embed_healthy);
+    setBadge('llama-badge', d.llama_healthy, d.llama_failed);
+    setBadge('embed-badge', d.embed_healthy, d.embed_failed);
     setText('llama-running', d.llama_running ? 'Yes' : 'No');
     setText('embed-running', d.embed_running ? 'Yes' : 'No');
     setText('llama-restarts', d.llama_restarts);
     setText('embed-restarts', d.embed_restarts);
+    toggleHidden('llama-restart-form', !d.llama_failed);
+    toggleHidden('embed-restart-form', !d.embed_failed);
     setQueue(d.queue_depth, d.queue_max);
     setUptime(d.uptime_seconds);
   };
 })();
 
-function setBadge(id, ok) {
+function setBadge(id, ok, failed) {
   var el = document.getElementById(id);
   if (!el) return;
-  el.textContent = ok ? 'Healthy' : 'Unhealthy';
+  var text = failed ? 'Failed' : (ok ? 'Healthy' : 'Unhealthy');
+  el.textContent = text;
   el.className = 'badge ' + (ok ? 'badge-ok' : 'badge-err');
+}
+
+function toggleHidden(id, hidden) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  if (hidden) el.setAttribute('hidden', ''); else el.removeAttribute('hidden');
 }
 
 function setText(id, v) {

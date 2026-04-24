@@ -42,7 +42,7 @@
     <header class="card-head">
       <h3>llama-server</h3>
       <span class="badge {{if .LlamaStatus.Healthy}}badge-ok{{else}}badge-err{{end}}" id="llama-badge">
-        {{if .LlamaStatus.Healthy}}Healthy{{else}}Unhealthy{{end}}
+        {{if .LlamaStatus.Failed}}Failed{{else if .LlamaStatus.Healthy}}Healthy{{else}}Unhealthy{{end}}
       </span>
     </header>
     <dl class="stats">
@@ -55,6 +55,10 @@
     {{with .LlamaStatus.ExitCode}}
     <p class="card-meta">Last exit code: <code>{{.}}</code></p>
     {{end}}
+    <form method="post" action="/procs/llama/restart" class="card-actions" id="llama-restart-form"{{if not .LlamaStatus.Failed}} hidden{{end}}>
+      <p class="card-err">Circuit open after repeated failures. Fix the underlying issue, then click Restart.</p>
+      <button type="submit" class="btn btn-primary">Restart</button>
+    </form>
     {{template "logbox" .LlamaLog}}
   </div>
 
@@ -62,7 +66,7 @@
     <header class="card-head">
       <h3>Embedder</h3>
       <span class="badge {{if .EmbedderStatus.Healthy}}badge-ok{{else}}badge-err{{end}}" id="embed-badge">
-        {{if .EmbedderStatus.Healthy}}Healthy{{else}}Unhealthy{{end}}
+        {{if .EmbedderStatus.Failed}}Failed{{else if .EmbedderStatus.Healthy}}Healthy{{else}}Unhealthy{{end}}
       </span>
     </header>
     <dl class="stats">
@@ -75,6 +79,10 @@
     {{with .EmbedderStatus.ExitCode}}
     <p class="card-meta">Last exit code: <code>{{.}}</code></p>
     {{end}}
+    <form method="post" action="/procs/embed/restart" class="card-actions" id="embed-restart-form"{{if not .EmbedderStatus.Failed}} hidden{{end}}>
+      <p class="card-err">Circuit open after repeated failures. Fix the underlying issue, then click Restart.</p>
+      <button type="submit" class="btn btn-primary">Restart</button>
+    </form>
     {{template "logbox" .EmbedLog}}
   </div>
 
