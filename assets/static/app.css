@@ -144,6 +144,15 @@ a:hover { text-decoration: underline; }
   font-family: var(--mono);
   color: var(--fg);
 }
+.card-actions {
+  margin: 0.75rem 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+.card-actions[hidden] { display: none; }
+.card-actions .card-err { margin: 0; width: 100%; }
 /* Stats list */
 .stats { margin: 0; padding: 0; }
 .stats > div {

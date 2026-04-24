@@ -52,6 +52,10 @@ type ProcessStatus struct {
 	RestartCount int
 	LastError    error
 	ExitCode     *int
+	// Failed is true when the circuit breaker has tripped. The status page
+	// renders a Failed badge and a Restart button in place of the usual
+	// Unhealthy state so the user knows no more auto-retries are coming.
+	Failed bool
 }
 
 // stateSnapshot holds the copyable fields of State (no mutex).
@@ -93,6 +97,13 @@ type Server struct {
 
 	retryMu sync.RWMutex
 	retry   RetryFunc
+
+	// procRestartMu guards the manual-restart callbacks wired by main
+	// once the process managers exist. The Restart button on a proc card
+	// POSTs to /procs/{name}/restart and we invoke the matching callback.
+	procRestartMu sync.RWMutex
+	llamaRestart  func()
+	embedRestart  func()
 
 	storeMu sync.RWMutex
 	store   config.Store
@@ -141,6 +152,29 @@ func (s *Server) callRetry() ApplyResult {
 		return ApplyResult{}
 	}
 	return fn()
+}
+
+// SetProcRestarts installs the callbacks used by the /procs/{name}/restart
+// endpoints. Either may be nil while the matching manager is not yet up; the
+// handler treats nil as a no-op and still redirects the user back to /.
+func (s *Server) SetProcRestarts(llama, embed func()) {
+	s.procRestartMu.Lock()
+	s.llamaRestart = llama
+	s.embedRestart = embed
+	s.procRestartMu.Unlock()
+}
+
+func (s *Server) getProcRestart(name string) func() {
+	s.procRestartMu.RLock()
+	defer s.procRestartMu.RUnlock()
+	switch name {
+	case "llama":
+		return s.llamaRestart
+	case "embed":
+		return s.embedRestart
+	default:
+		return nil
+	}
 }
 
 // SetConfigStore installs the config store used by the /config page. If nil,
@@ -255,6 +289,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/logs/embed", s.streamRing(s.getEmbedRing))
 	mux.HandleFunc("/config", s.handleConfig)
 	mux.HandleFunc("/retry", s.handleRetry)
+	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
+	mux.HandleFunc("/procs/embed/restart", s.handleProcRestart("embed"))
 	mux.Handle("/static/", http.FileServer(http.FS(assets.StaticFS)))
 
 	srv := &http.Server{
@@ -577,9 +613,11 @@ type ssePayload struct {
 	LlamaHealthy  bool     `json:"llama_healthy"`
 	LlamaRunning  bool     `json:"llama_running"`
 	LlamaRestarts int      `json:"llama_restarts"`
+	LlamaFailed   bool     `json:"llama_failed"`
 	EmbedHealthy  bool     `json:"embed_healthy"`
 	EmbedRunning  bool     `json:"embed_running"`
 	EmbedRestarts int      `json:"embed_restarts"`
+	EmbedFailed   bool     `json:"embed_failed"`
 	QueueDepth    int      `json:"queue_depth"`
 	QueueMax      int      `json:"queue_max"`
 	StartupErrors []string `json:"startup_errors,omitempty"`
@@ -700,6 +738,23 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// handleProcRestart is POST /procs/{name}/restart - invokes the manager's
+// manual restart, clearing its circuit breaker. A missing callback is a
+// no-op (the manager isn't up yet) and the user is redirected either way so
+// the updated status flows through SSE without a blank page.
+func (s *Server) handleProcRestart(name string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if fn := s.getProcRestart(name); fn != nil {
+			fn()
+		}
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	}
+}
+
 // parseConfigForm builds a Config from the posted form, overlaying values on
 // base. Numeric fields that are missing or unparseable keep the base value;
 // string fields are always overwritten (an empty required field will surface
@@ -762,9 +817,11 @@ func stateToPayload(s stateSnapshot) ssePayload {
 		LlamaHealthy:  s.LlamaStatus.Healthy,
 		LlamaRunning:  s.LlamaStatus.Running,
 		LlamaRestarts: s.LlamaStatus.RestartCount,
+		LlamaFailed:   s.LlamaStatus.Failed,
 		EmbedHealthy:  s.EmbedderStatus.Healthy,
 		EmbedRunning:  s.EmbedderStatus.Running,
 		EmbedRestarts: s.EmbedderStatus.RestartCount,
+		EmbedFailed:   s.EmbedderStatus.Failed,
 		QueueDepth:    s.QueueDepth,
 		QueueMax:      s.QueueMax,
 		StartupErrors: errs,
