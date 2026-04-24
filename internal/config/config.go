@@ -37,6 +37,9 @@ type ModelConfig struct {
 	GPULayers int
 	NParallel int
 	Port      int
+	// Verbose toggles llama-server's --verbose flag. Off by default because
+	// it's chatty; turn it on when diagnosing silent startup crashes.
+	Verbose bool
 }
 
 // EmbedderConfig holds the embedder sidecar configuration.
@@ -44,6 +47,9 @@ type EmbedderConfig struct {
 	Binary    string
 	ModelPath string
 	Port      int
+	// Verbose toggles the embedder sidecar's --verbose flag. Same rationale
+	// as ModelConfig.Verbose.
+	Verbose bool
 }
 
 // MemoryConfig holds memory repo configuration.

@@ -768,10 +768,12 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.Model.GPULayers = atoiOr(r.FormValue("model_gpu_layers"), cfg.Model.GPULayers)
 	cfg.Model.NParallel = atoiOr(r.FormValue("model_n_parallel"), cfg.Model.NParallel)
 	cfg.Model.Port = atoiOr(r.FormValue("model_port"), cfg.Model.Port)
+	cfg.Model.Verbose = r.FormValue("model_verbose") == "on"
 
 	cfg.Embedder.Binary = strings.TrimSpace(r.FormValue("embed_binary"))
 	cfg.Embedder.ModelPath = strings.TrimSpace(r.FormValue("embed_path"))
 	cfg.Embedder.Port = atoiOr(r.FormValue("embed_port"), cfg.Embedder.Port)
+	cfg.Embedder.Verbose = r.FormValue("embed_verbose") == "on"
 
 	cfg.Memory.RepoPath = strings.TrimSpace(r.FormValue("memory_repo"))
 

@@ -38,7 +38,7 @@ func TestStatus_InitialState(t *testing.T) {
 }
 
 func TestLlamaArgs(t *testing.T) {
-	bin, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081)
+	bin, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081, false)
 	if bin != "/bin/llama-server" {
 		t.Errorf("unexpected binary: %s", bin)
 	}
@@ -51,10 +51,20 @@ func TestLlamaArgs(t *testing.T) {
 			t.Errorf("missing flag %s in args: %v", flag, args)
 		}
 	}
+	if hasVerbose(args) {
+		t.Errorf("--verbose must not appear when verbose=false: %v", args)
+	}
+}
+
+func TestLlamaArgs_Verbose(t *testing.T) {
+	_, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081, true)
+	if !hasVerbose(args) {
+		t.Errorf("expected --verbose when verbose=true, got %v", args)
+	}
 }
 
 func TestEmbedderArgs(t *testing.T) {
-	bin, args := EmbedderArgs("/bin/embedder", "/models/embed.gguf", 8082)
+	bin, args := EmbedderArgs("/bin/embedder", "/models/embed.gguf", 8082, false)
 	if bin != "/bin/embedder" {
 		t.Errorf("unexpected binary: %s", bin)
 	}
@@ -75,6 +85,25 @@ func TestEmbedderArgs(t *testing.T) {
 			}
 		}
 	}
+	if hasVerbose(args) {
+		t.Errorf("--verbose must not appear when verbose=false: %v", args)
+	}
+}
+
+func TestEmbedderArgs_Verbose(t *testing.T) {
+	_, args := EmbedderArgs("/bin/embedder", "/models/embed.gguf", 8082, true)
+	if !hasVerbose(args) {
+		t.Errorf("expected --verbose when verbose=true, got %v", args)
+	}
+}
+
+func hasVerbose(args []string) bool {
+	for _, a := range args {
+		if a == "--verbose" {
+			return true
+		}
+	}
+	return false
 }
 
 func TestReconfigure_SwapsArgsAndSignalsReload(t *testing.T) {

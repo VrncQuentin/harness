@@ -83,6 +83,13 @@
         <input type="number" id="model_port" name="model_port" value="{{.Config.Model.Port}}" min="1" max="65535">
       </div>
     </div>
+    <div class="fg">
+      <label class="checkbox">
+        <input type="checkbox" id="model_verbose" name="model_verbose" {{if .Config.Model.Verbose}}checked{{end}}>
+        <span>Verbose logging (pass <code>--verbose</code> to llama-server)</span>
+      </label>
+      <p class="fg-hint">Turn on when diagnosing silent crashes. Noisy in normal operation.</p>
+    </div>
   </fieldset>
 
   <fieldset class="cfg-section">
@@ -105,6 +112,13 @@
     <div class="fg">
       <label for="embed_port">Port</label>
       <input type="number" id="embed_port" name="embed_port" value="{{.Config.Embedder.Port}}" min="1" max="65535">
+    </div>
+    <div class="fg">
+      <label class="checkbox">
+        <input type="checkbox" id="embed_verbose" name="embed_verbose" {{if .Config.Embedder.Verbose}}checked{{end}}>
+        <span>Verbose logging (pass <code>--verbose</code> to the embedder)</span>
+      </label>
+      <p class="fg-hint">Turn on when diagnosing silent crashes. Noisy in normal operation.</p>
     </div>
   </fieldset>
 

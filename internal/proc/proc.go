@@ -495,9 +495,11 @@ func (m *Manager) emit(kind EventKind, msg string) {
 	}
 }
 
-// LlamaArgs builds the argument slice for llama-server.
-func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int) (string, []string) {
-	return binary, []string{
+// LlamaArgs builds the argument slice for llama-server. When verbose is true,
+// --verbose is appended so early startup failures (model load, CUDA init,
+// port bind) surface with enough context to diagnose.
+func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int, verbose bool) (string, []string) {
+	args := []string{
 		"--model", modelPath,
 		"--ctx-size", strconv.Itoa(ctxSize),
 		"--n-gpu-layers", strconv.Itoa(gpuLayers),
@@ -505,6 +507,10 @@ func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int
 		"--port", strconv.Itoa(port),
 		"--host", "127.0.0.1",
 	}
+	if verbose {
+		args = append(args, "--verbose")
+	}
+	return binary, args
 }
 
 // EmbedderArgs builds the argument slice for the embedder sidecar.
@@ -512,13 +518,17 @@ func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int
 // server boots a chat-completion endpoint and /embedding returns 501,
 // which defeats the whole point of running a second process.
 // --n-gpu-layers 0 pins the embedder to CPU+RAM so it never competes with
-// the main model for VRAM.
-func EmbedderArgs(binary, modelPath string, port int) (string, []string) {
-	return binary, []string{
+// the main model for VRAM. verbose follows the same semantics as LlamaArgs.
+func EmbedderArgs(binary, modelPath string, port int, verbose bool) (string, []string) {
+	args := []string{
 		"--model", modelPath,
 		"--embedding",
 		"--n-gpu-layers", "0",
 		"--port", strconv.Itoa(port),
 		"--host", "127.0.0.1",
 	}
+	if verbose {
+		args = append(args, "--verbose")
+	}
+	return binary, args
 }

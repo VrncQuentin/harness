@@ -240,6 +240,7 @@ func (rt *runtime) startServices(
 				cfg.Model.GPULayers,
 				cfg.Model.NParallel,
 				cfg.Model.Port,
+				cfg.Model.Verbose,
 			)
 		},
 		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Model.Port),
@@ -257,6 +258,7 @@ func (rt *runtime) startServices(
 				cfg.Embedder.Binary,
 				cfg.Embedder.ModelPath,
 				cfg.Embedder.Port,
+				cfg.Embedder.Verbose,
 			)
 		},
 		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Embedder.Port),
@@ -337,6 +339,7 @@ func (rt *runtime) applyConfig(
 					loaded.Model.GPULayers,
 					loaded.Model.NParallel,
 					loaded.Model.Port,
+					loaded.Model.Verbose,
 				)
 			}, fmt.Sprintf("http://127.0.0.1:%d/health", loaded.Model.Port))
 			result.LiveApplied = true
@@ -348,6 +351,7 @@ func (rt *runtime) applyConfig(
 					loaded.Embedder.Binary,
 					loaded.Embedder.ModelPath,
 					loaded.Embedder.Port,
+					loaded.Embedder.Verbose,
 				)
 			}, fmt.Sprintf("http://127.0.0.1:%d/health", loaded.Embedder.Port))
 			result.LiveApplied = true

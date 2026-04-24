@@ -29,8 +29,8 @@ func (s *ConfigStore) seed() error {
 		INSERT OR IGNORE INTO config (
 			id,
 			model_binary, model_path, model_ctx_size, model_gpu_layers,
-			model_n_parallel, model_port,
-			embedder_binary, embedder_model_path, embedder_port,
+			model_n_parallel, model_port, model_verbose,
+			embedder_binary, embedder_model_path, embedder_port, embedder_verbose,
 			memory_repo_path,
 			ui_port, ui_open_on_start,
 			api_enabled, api_port,
@@ -41,8 +41,8 @@ func (s *ConfigStore) seed() error {
 		) VALUES (
 			1,
 			?, ?, ?, ?,
-			?, ?,
 			?, ?, ?,
+			?, ?, ?, ?,
 			?,
 			?, ?,
 			?, ?,
@@ -52,8 +52,8 @@ func (s *ConfigStore) seed() error {
 			?, ?
 		)`,
 		d.Model.Binary, d.Model.ModelPath, d.Model.CtxSize, d.Model.GPULayers,
-		d.Model.NParallel, d.Model.Port,
-		d.Embedder.Binary, d.Embedder.ModelPath, d.Embedder.Port,
+		d.Model.NParallel, d.Model.Port, boolInt(d.Model.Verbose),
+		d.Embedder.Binary, d.Embedder.ModelPath, d.Embedder.Port, boolInt(d.Embedder.Verbose),
 		d.Memory.RepoPath,
 		d.UI.Port, boolInt(d.UI.OpenOnStart),
 		boolInt(d.API.Enabled), d.API.Port,
@@ -74,8 +74,8 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	row := s.db.QueryRow(`
 		SELECT
 			model_binary, model_path, model_ctx_size, model_gpu_layers,
-			model_n_parallel, model_port,
-			embedder_binary, embedder_model_path, embedder_port,
+			model_n_parallel, model_port, model_verbose,
+			embedder_binary, embedder_model_path, embedder_port, embedder_verbose,
 			memory_repo_path,
 			ui_port, ui_open_on_start,
 			api_enabled, api_port,
@@ -87,15 +87,17 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		FROM config WHERE id = 1`)
 
 	var (
-		cfg         config.Config
-		openOnStart int
-		apiEnabled  int
-		savedAt     sql.NullInt64
+		cfg             config.Config
+		modelVerbose    int
+		embedderVerbose int
+		openOnStart     int
+		apiEnabled      int
+		savedAt         sql.NullInt64
 	)
 	err := row.Scan(
 		&cfg.Model.Binary, &cfg.Model.ModelPath, &cfg.Model.CtxSize, &cfg.Model.GPULayers,
-		&cfg.Model.NParallel, &cfg.Model.Port,
-		&cfg.Embedder.Binary, &cfg.Embedder.ModelPath, &cfg.Embedder.Port,
+		&cfg.Model.NParallel, &cfg.Model.Port, &modelVerbose,
+		&cfg.Embedder.Binary, &cfg.Embedder.ModelPath, &cfg.Embedder.Port, &embedderVerbose,
 		&cfg.Memory.RepoPath,
 		&cfg.UI.Port, &openOnStart,
 		&apiEnabled, &cfg.API.Port,
@@ -108,6 +110,8 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("db: load config: %w", err)
 	}
+	cfg.Model.Verbose = modelVerbose != 0
+	cfg.Embedder.Verbose = embedderVerbose != 0
 	cfg.UI.OpenOnStart = openOnStart != 0
 	cfg.API.Enabled = apiEnabled != 0
 	return &cfg, savedAt.Valid, nil
@@ -121,8 +125,8 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 	_, err := s.db.Exec(`
 		UPDATE config SET
 			model_binary = ?, model_path = ?, model_ctx_size = ?, model_gpu_layers = ?,
-			model_n_parallel = ?, model_port = ?,
-			embedder_binary = ?, embedder_model_path = ?, embedder_port = ?,
+			model_n_parallel = ?, model_port = ?, model_verbose = ?,
+			embedder_binary = ?, embedder_model_path = ?, embedder_port = ?, embedder_verbose = ?,
 			memory_repo_path = ?,
 			ui_port = ?, ui_open_on_start = ?,
 			api_enabled = ?, api_port = ?,
@@ -133,8 +137,8 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			saved_at = ?
 		WHERE id = 1`,
 		cfg.Model.Binary, cfg.Model.ModelPath, cfg.Model.CtxSize, cfg.Model.GPULayers,
-		cfg.Model.NParallel, cfg.Model.Port,
-		cfg.Embedder.Binary, cfg.Embedder.ModelPath, cfg.Embedder.Port,
+		cfg.Model.NParallel, cfg.Model.Port, boolInt(cfg.Model.Verbose),
+		cfg.Embedder.Binary, cfg.Embedder.ModelPath, cfg.Embedder.Port, boolInt(cfg.Embedder.Verbose),
 		cfg.Memory.RepoPath,
 		cfg.UI.Port, boolInt(cfg.UI.OpenOnStart),
 		boolInt(cfg.API.Enabled), cfg.API.Port,
