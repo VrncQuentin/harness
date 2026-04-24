@@ -1,6 +1,12 @@
-document.addEventListener('htmx:sseMessage', function (evt) {
-  try {
-    var d = JSON.parse(evt.detail.data);
+// Live status stream. Uses a plain EventSource because the only thing the
+// client does with each frame is patch a handful of DOM nodes by id - no
+// swapping, no htmx needed.
+(function () {
+  if (typeof EventSource === 'undefined') return;
+  var es = new EventSource('/events');
+  es.onmessage = function (evt) {
+    var d;
+    try { d = JSON.parse(evt.data); } catch (e) { return; }
     setBadge('llama-badge', d.llama_healthy);
     setBadge('embed-badge', d.embed_healthy);
     setText('llama-running', d.llama_running ? 'Yes' : 'No');
@@ -11,8 +17,8 @@ document.addEventListener('htmx:sseMessage', function (evt) {
     setProcOutput('embed', d.embed_output);
     setQueue(d.queue_depth, d.queue_max);
     setUptime(d.uptime_seconds);
-  } catch (e) { /* ignore malformed frame */ }
-});
+  };
+})();
 
 function setBadge(id, ok) {
   var el = document.getElementById(id);
