@@ -6,6 +6,7 @@ package proc
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os/exec"
 	"strconv"
@@ -45,10 +46,6 @@ type Status struct {
 	// cleared on the next successful start so it only reports the most
 	// recent exit while the process is back up.
 	ExitCode *int
-	// OutputTail is a recent, bounded window of the child's merged
-	// stdout+stderr. Empty while the child is healthy; populated when a
-	// crash-looping child needs to explain itself.
-	OutputTail []string
 }
 
 // Manager manages a single child process with health checking and restart logic.
@@ -72,7 +69,7 @@ type Manager struct {
 	restartCount int
 	lastError    error
 	exitCode     *int
-	output       *outputBuffer
+	output       io.Writer
 }
 
 // ManagerConfig holds the configuration for a Manager.
@@ -84,9 +81,8 @@ type ManagerConfig struct {
 	CheckPeriod time.Duration
 	// HTTPClient is used for health checks. Defaults to httpclient.New() if nil.
 	HTTPClient *http.Client
-	// OutputMaxLines bounds the retained stdout+stderr tail for this child.
-	// Zero or negative falls back to the outputBuffer default.
-	OutputMaxLines int
+	// Output receives the child's merged stdout+stderr. Nil discards.
+	Output io.Writer
 }
 
 // NewManager creates a new process Manager.
@@ -99,6 +95,10 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if hc == nil {
 		hc = httpclient.New()
 	}
+	out := cfg.Output
+	if out == nil {
+		out = io.Discard
+	}
 	return &Manager{
 		name:        cfg.Name,
 		buildArgs:   cfg.BuildArgs,
@@ -106,16 +106,9 @@ func NewManager(cfg ManagerConfig) *Manager {
 		events:      cfg.Events,
 		checkPeriod: period,
 		httpClient:  hc,
-		output:      newOutputBuffer(cfg.OutputMaxLines),
+		output:      out,
 		reloadCh:    make(chan struct{}, 1),
 	}
-}
-
-// SetOutputMaxLines resizes the stdout+stderr tail retained for this manager
-// without restarting the child. Shrinking drops the oldest lines; growing
-// simply raises the cap for future writes.
-func (m *Manager) SetOutputMaxLines(maxLines int) {
-	m.output.SetMaxLines(maxLines)
 }
 
 // Reconfigure atomically swaps the args builder and health URL, then kills the
@@ -223,7 +216,6 @@ func (m *Manager) Status() Status {
 		RestartCount: m.restartCount,
 		LastError:    m.lastError,
 		ExitCode:     ec,
-		OutputTail:   m.output.Snapshot(),
 	}
 }
 
@@ -290,10 +282,11 @@ func (m *Manager) startProcess(ctx context.Context) error {
 	binary, args := build()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	hideConsole(cmd)
-	m.output.Reset()
-	// Merge stdout and stderr into one ring buffer: llama-server and the
-	// embedder split diagnostics across both streams, and Go would otherwise
-	// send stdout to the null device, swallowing whatever landed there.
+	// Merge stdout and stderr into one sink: llama-server and the embedder
+	// split diagnostics across both streams, and Go would otherwise send
+	// stdout to the null device, swallowing whatever landed there. Each
+	// line arrives timestamped on the ring so the UI can show recent output
+	// across restarts.
 	cmd.Stdout = m.output
 	cmd.Stderr = m.output
 	if err := cmd.Start(); err != nil {

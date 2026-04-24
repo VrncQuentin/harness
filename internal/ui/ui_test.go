@@ -539,35 +539,12 @@ func TestHandleStatus_NoLogRingRendersEmpty(t *testing.T) {
 	}
 }
 
-func TestStateToPayload_CarriesProcOutputTails(t *testing.T) {
-	snap := stateSnapshot{
-		LlamaStatus: ProcessStatus{
-			Running:    true,
-			Healthy:    true,
-			OutputTail: []string{"llama line 1", "llama line 2"},
-		},
-		EmbedderStatus: ProcessStatus{
-			Running:    true,
-			Healthy:    false,
-			OutputTail: []string{"embed err"},
-		},
-		StartTime: time.Now(),
-	}
-	p := stateToPayload(snap)
-	if len(p.LlamaOutput) != 2 || p.LlamaOutput[1] != "llama line 2" {
-		t.Errorf("LlamaOutput: got %v, want both llama lines", p.LlamaOutput)
-	}
-	if len(p.EmbedOutput) != 1 || p.EmbedOutput[0] != "embed err" {
-		t.Errorf("EmbedOutput: got %v, want [embed err]", p.EmbedOutput)
-	}
-}
-
-func TestHandleLogsSSE_NoRingReturns503(t *testing.T) {
+func TestStreamRing_NoRingReturns503(t *testing.T) {
 	s := NewServer(3000)
 
-	req := httptest.NewRequest(http.MethodGet, "/logs/events", nil)
+	req := httptest.NewRequest(http.MethodGet, "/logs/harness", nil)
 	rec := httptest.NewRecorder()
-	s.handleLogsSSE(rec, req)
+	s.streamRing(s.getLogRing)(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 with no ring, got %d", rec.Code)
@@ -583,18 +560,18 @@ type flushRecorder struct {
 
 func (f *flushRecorder) Flush() {}
 
-func TestHandleLogsSSE_StreamsNewEntries(t *testing.T) {
+func TestStreamRing_StreamsNewEntries(t *testing.T) {
 	s := NewServer(3000)
 	ring := logbuf.New(10)
 	s.SetLogRing(ring)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/logs/events", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/logs/harness", nil).WithContext(ctx)
 	rec := &flushRecorder{httptest.NewRecorder()}
 
 	done := make(chan struct{})
 	go func() {
-		s.handleLogsSSE(rec, req)
+		s.streamRing(s.getLogRing)(rec, req)
 		close(done)
 	}()
 

@@ -40,13 +40,15 @@ const dbFilename = "harness.db"
 // on an HTTP goroutine while other goroutines (forwardEvents, metrics) read
 // the same managers and queue.
 type runtime struct {
-	mu       sync.Mutex
-	cfg      config.Config
-	logRing  *logbuf.Ring
-	llamaMgr *proc.Manager
-	embedMgr *proc.Manager
-	reqQueue *queue.Queue
-	started  bool
+	mu        sync.Mutex
+	cfg       config.Config
+	logRing   *logbuf.Ring
+	llamaRing *logbuf.Ring
+	embedRing *logbuf.Ring
+	llamaMgr  *proc.Manager
+	embedMgr  *proc.Manager
+	reqQueue  *queue.Queue
+	started   bool
 }
 
 func main() {
@@ -96,6 +98,12 @@ func run() error {
 	log.SetOutput(logSink)
 	slog.SetDefault(slog.New(slog.NewTextHandler(logSink, nil)))
 
+	// One ring per child process holds its merged stdout+stderr; the UI
+	// subscribes to each over SSE so the llama-server and embedder cards
+	// stream their recent output the same way the harness logs card does.
+	llamaRing := logbuf.New(config.Defaults().Log.ProcMaxLines)
+	embedRing := logbuf.New(config.Defaults().Log.ProcMaxLines)
+
 	slog.Info("harness starting", "binDir", binDir)
 
 	// Root context - cancelled when tray quit is triggered.
@@ -105,6 +113,8 @@ func run() error {
 	uiServer := ui.NewServer(3000)
 	uiServer.SetBinDir(binDir)
 	uiServer.SetLogRing(logRing)
+	uiServer.SetLlamaOutputRing(llamaRing)
+	uiServer.SetEmbedOutputRing(embedRing)
 	if err := uiServer.Start(rootCtx); err != nil {
 		rootCancel()
 		return fmt.Errorf("UI server start: %w", err)
@@ -142,7 +152,12 @@ func run() error {
 	// is large enough to absorb startup bursts (multiple managers emitting
 	// start/health events back-to-back) without losing them.
 	events := make(chan proc.Event, 64)
-	rt := &runtime{cfg: cfg, logRing: logRing}
+	rt := &runtime{
+		cfg:       cfg,
+		logRing:   logRing,
+		llamaRing: llamaRing,
+		embedRing: embedRing,
+	}
 
 	// Boot-time start: if the user has previously saved config, bring services
 	// up right away. Otherwise they will be created on the first /config save.
@@ -212,11 +227,11 @@ func (rt *runtime) startServices(
 				cfg.Model.Port,
 			)
 		},
-		HealthURL:      fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Model.Port),
-		Events:         events,
-		CheckPeriod:    5 * time.Second,
-		HTTPClient:     httpclient.New(),
-		OutputMaxLines: cfg.Log.ProcMaxLines,
+		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Model.Port),
+		Events:      events,
+		CheckPeriod: 5 * time.Second,
+		HTTPClient:  httpclient.New(),
+		Output:      rt.llamaRing,
 	})
 	go rt.llamaMgr.Run(ctx)
 
@@ -229,11 +244,11 @@ func (rt *runtime) startServices(
 				cfg.Embedder.Port,
 			)
 		},
-		HealthURL:      fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Embedder.Port),
-		Events:         events,
-		CheckPeriod:    5 * time.Second,
-		HTTPClient:     httpclient.New(),
-		OutputMaxLines: cfg.Log.ProcMaxLines,
+		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Embedder.Port),
+		Events:      events,
+		CheckPeriod: 5 * time.Second,
+		HTTPClient:  httpclient.New(),
+		Output:      rt.embedRing,
 	})
 	go rt.embedMgr.Run(ctx)
 
@@ -347,11 +362,11 @@ func (rt *runtime) applyConfig(
 		result.LiveApplied = true
 	}
 	if old.Log.ProcMaxLines != loaded.Log.ProcMaxLines {
-		if rt.llamaMgr != nil {
-			rt.llamaMgr.SetOutputMaxLines(loaded.Log.ProcMaxLines)
+		if rt.llamaRing != nil {
+			rt.llamaRing.Resize(loaded.Log.ProcMaxLines)
 		}
-		if rt.embedMgr != nil {
-			rt.embedMgr.SetOutputMaxLines(loaded.Log.ProcMaxLines)
+		if rt.embedRing != nil {
+			rt.embedRing.Resize(loaded.Log.ProcMaxLines)
 		}
 		result.LiveApplied = true
 	}
@@ -520,7 +535,6 @@ func pushStatus(uiSrv *ui.Server, llamaMgr, embedMgr *proc.Manager) {
 			RestartCount: st.RestartCount,
 			LastError:    st.LastError,
 			ExitCode:     st.ExitCode,
-			OutputTail:   st.OutputTail,
 		})
 	}
 	if embedMgr != nil {
@@ -532,7 +546,6 @@ func pushStatus(uiSrv *ui.Server, llamaMgr, embedMgr *proc.Manager) {
 			RestartCount: st.RestartCount,
 			LastError:    st.LastError,
 			ExitCode:     st.ExitCode,
-			OutputTail:   st.OutputTail,
 		})
 	}
 }
