@@ -151,9 +151,11 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	form.Set("model_gpu_layers", "20")
 	form.Set("model_n_parallel", "1")
 	form.Set("model_port", "8081")
+	form.Set("model_verbose", "on")
 	form.Set("embed_binary", "C:\\embed.exe")
 	form.Set("embed_path", "C:\\e.gguf")
 	form.Set("embed_port", "8082")
+	form.Set("embed_verbose", "on")
 	form.Set("ui_port", "3000")
 	form.Set("ui_open_on_start", "on")
 	form.Set("api_port", "8080")
@@ -185,9 +187,64 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	if loaded.Model.Binary != "C:\\llama.exe" {
 		t.Errorf("model binary not persisted: got %q", loaded.Model.Binary)
 	}
+	if !loaded.Model.Verbose {
+		t.Error("expected Model.Verbose=true after POST with model_verbose=on")
+	}
+	if !loaded.Embedder.Verbose {
+		t.Error("expected Embedder.Verbose=true after POST with embed_verbose=on")
+	}
 
 	if atomic.LoadInt32(&retryCalls) != 1 {
 		t.Errorf("expected retry callback to fire once, got %d", retryCalls)
+	}
+}
+
+// A subsequent POST without the verbose checkboxes must clear them - HTML
+// forms omit unchecked checkboxes entirely, so missing value means false.
+func TestHandleConfig_POSTClearsVerboseWhenUnchecked(t *testing.T) {
+	s, store := newServerWithStore(t)
+	s.SetRetry(func() ApplyResult { return ApplyResult{} })
+
+	// Seed with verbose=true.
+	seed := config.Defaults()
+	seed.Model.Binary = "C:\\llama.exe"
+	seed.Model.ModelPath = "C:\\m.gguf"
+	seed.Model.Verbose = true
+	seed.Embedder.Binary = "C:\\embed.exe"
+	seed.Embedder.ModelPath = "C:\\e.gguf"
+	seed.Embedder.Verbose = true
+	if err := store.Save(&seed); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	form := url.Values{}
+	form.Set("model_binary", "C:\\llama.exe")
+	form.Set("model_path", "C:\\m.gguf")
+	form.Set("model_port", "8081")
+	form.Set("embed_binary", "C:\\embed.exe")
+	form.Set("embed_path", "C:\\e.gguf")
+	form.Set("embed_port", "8082")
+	form.Set("ui_port", "3000")
+	// Deliberately omit model_verbose and embed_verbose.
+
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Model.Verbose {
+		t.Error("expected Model.Verbose=false when form omitted the checkbox")
+	}
+	if loaded.Embedder.Verbose {
+		t.Error("expected Embedder.Verbose=false when form omitted the checkbox")
 	}
 }
 
