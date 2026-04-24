@@ -386,7 +386,12 @@ func (m *Manager) healthLoop(ctx context.Context) {
 			m.mu.Lock()
 			m.running = false
 			m.healthy = false
+			code := m.exitCode
+			out := m.output
 			m.mu.Unlock()
+			if out != nil {
+				_, _ = io.WriteString(out, formatExitLine(m.name, code))
+			}
 			m.emit(EventStop, "process exited")
 			return
 		case <-ticker.C:
@@ -493,6 +498,18 @@ func (m *Manager) emit(kind EventKind, msg string) {
 	}:
 	default:
 	}
+}
+
+// formatExitLine produces the synthetic log line appended to the process
+// output ring when a child exits. The hex form matters on Windows because
+// the common crash codes (0xC0000005 access violation, 0xC000013A Ctrl+C,
+// 0xC00000FD stack overflow) are only recognisable in hex - the signed
+// decimal form Go returns is opaque.
+func formatExitLine(name string, code *int) string {
+	if code == nil {
+		return fmt.Sprintf("[harness] %s exited (exit code unavailable)\n", name)
+	}
+	return fmt.Sprintf("[harness] %s exited (code %d / 0x%08X)\n", name, *code, uint32(*code))
 }
 
 // LlamaArgs builds the argument slice for llama-server. When verbose is true,
