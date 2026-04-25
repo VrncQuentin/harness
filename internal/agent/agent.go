@@ -73,6 +73,9 @@ type Registry interface {
 	// agent must already exist; an unknown name returns an error
 	// wrapping fs.ErrNotExist.
 	WritePersona(name string, body []byte) error
+	// WriteRules replaces agents/<name>/rules.md with body. Same
+	// rules as WritePersona.
+	WriteRules(name string, body []byte) error
 	// WriteNotes replaces agents/<name>/notes.md with body. Same
 	// rules as WritePersona.
 	WriteNotes(name string, body []byte) error
@@ -250,6 +253,19 @@ func (r *DiskRegistry) WritePersona(name string, body []byte) error {
 	}
 	if err := r.writer.WriteFile(a.PersonaPath, body); err != nil {
 		return fmt.Errorf("agent: write persona %q: %w", name, err)
+	}
+	return nil
+}
+
+// WriteRules replaces the agent's rules.md with body. The file is
+// created if missing.
+func (r *DiskRegistry) WriteRules(name string, body []byte) error {
+	a, err := r.resolveForWrite(name)
+	if err != nil {
+		return err
+	}
+	if err := r.writer.WriteFile(a.RulesPath, body); err != nil {
+		return fmt.Errorf("agent: write rules %q: %w", name, err)
 	}
 	return nil
 }

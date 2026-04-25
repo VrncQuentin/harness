@@ -352,6 +352,71 @@ func TestDiskRegistry_WritePersonaRejectsEmptyName(t *testing.T) {
 	}
 }
 
+func TestDiskRegistry_WriteRulesPersists(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/rules.md": "old",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.WriteRules("coder", []byte("new rules")); err != nil {
+		t.Fatalf("WriteRules: %v", err)
+	}
+	got, err := mem.Read("agents/coder/rules.md")
+	if err != nil {
+		t.Fatalf("Read rules: %v", err)
+	}
+	if string(got) != "new rules" {
+		t.Errorf("rules = %q, want %q", string(got), "new rules")
+	}
+}
+
+func TestDiskRegistry_WriteRulesCreatesMissingFile(t *testing.T) {
+	// Agent dir exists (persona.md present) but no rules.md yet.
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md": "p",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.WriteRules("coder", []byte("body")); err != nil {
+		t.Fatalf("WriteRules: %v", err)
+	}
+	got, err := mem.Read("agents/coder/rules.md")
+	if err != nil {
+		t.Fatalf("Read rules: %v", err)
+	}
+	if string(got) != "body" {
+		t.Errorf("rules = %q, want %q", string(got), "body")
+	}
+}
+
+func TestDiskRegistry_WriteRulesUnknownWrapsErrNotExist(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md": "c",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	err := reg.WriteRules("ghost", []byte("body"))
+	if err == nil {
+		t.Fatal("WriteRules ghost: expected error, got nil")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("WriteRules ghost: errors.Is(err, fs.ErrNotExist) = false, err = %v", err)
+	}
+}
+
+func TestDiskRegistry_WriteRulesRejectsEmptyName(t *testing.T) {
+	mem := newRepoWithAgents(t, nil)
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.WriteRules("", []byte("x")); err == nil {
+		t.Fatal("WriteRules(\"\"): expected error, got nil")
+	}
+}
+
 func TestDiskRegistry_WriteNotesPersists(t *testing.T) {
 	mem := newRepoWithAgents(t, map[string]string{
 		"agents/coder/persona.md": "p",
