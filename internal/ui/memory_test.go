@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -130,6 +131,8 @@ func TestHandleMemory_RendersTreeAndTokens(t *testing.T) {
 		`href="/memory/edit?path=global%2frules.md"`,
 		`href="/memory/edit?path=global%2ffacts.md"`,
 		"C:\\repo",
+		filepath.Join("C:\\repo", "agents"),
+		"biggest agent",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("memory body missing %q", want)
@@ -413,6 +416,57 @@ func TestBuildMemoryTree_DirTokensAreSumOfChildren(t *testing.T) {
 	}
 	if total != 6 {
 		t.Errorf("total Tokens = %d, want 6", total)
+	}
+}
+
+func TestBuildMemoryTree_AgentsDirUsesBiggestAgent(t *testing.T) {
+	// Two agents at very different sizes. The page total should
+	// reflect global + the biggest single agent, not the sum across
+	// agents, since only one agent runs in any given prompt.
+	// rune-quarter tokens: 8→2, 16→4, 40→10.
+	store := newStubMemoryStore(map[string]string{
+		"global/rules.md":            "abcdefgh",              // 2
+		"agents/small/persona.md":    "abcdefghijklmnop",      // 4
+		"agents/big/persona.md":      strings.Repeat("a", 40), // 10
+		"agents/big/episodes/one.md": strings.Repeat("b", 40), // 10
+	})
+	tree, total, err := buildMemoryTree(store)
+	if err != nil {
+		t.Fatalf("buildMemoryTree: %v", err)
+	}
+
+	var agents *memoryTreeNode
+	for _, n := range tree {
+		if n.Path == "agents" {
+			agents = n
+			break
+		}
+	}
+	if agents == nil {
+		t.Fatal("expected agents/ in tree")
+	}
+	// big = 10 + 10 = 20; small = 4. Max is 20.
+	if agents.Tokens != 20 {
+		t.Errorf("agents Tokens = %d, want 20 (max of 20, 4)", agents.Tokens)
+	}
+	// total = global (2) + biggest agent (20) = 22.
+	if total != 22 {
+		t.Errorf("total Tokens = %d, want 22 (global 2 + biggest agent 20)", total)
+	}
+
+	// Subdirectories under an individual agent still sum normally.
+	var bigAgent *memoryTreeNode
+	for _, c := range agents.Children {
+		if c.Path == "agents/big" {
+			bigAgent = c
+			break
+		}
+	}
+	if bigAgent == nil {
+		t.Fatal("expected agents/big in tree")
+	}
+	if bigAgent.Tokens != 20 {
+		t.Errorf("agents/big Tokens = %d, want 20 (10+10)", bigAgent.Tokens)
 	}
 }
 
