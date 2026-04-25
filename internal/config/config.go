@@ -100,7 +100,7 @@ type MetricsConfig struct {
 // once at startup, so changes take effect on the next harness launch.
 type LogConfig struct {
 	// RingMaxEntries caps the harness log ring that feeds the status page
-	// and /logs/harness SSE stream.
+	// and the harness-log channel of the /events SSE stream.
 	RingMaxEntries int
 	// ProcMaxLines caps each child process's stdout+stderr tail shown on
 	// the status page.
