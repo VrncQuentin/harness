@@ -40,6 +40,17 @@ type DirLister interface {
 	ListDirs(relPath string) ([]string, error)
 }
 
+// DirCreator is an optional capability some Readers expose for
+// creating subdirectories under the repo root. The agent registry
+// uses this when available to add a new agent folder; callers can
+// type-assert on it.
+type DirCreator interface {
+	// MkdirAll creates relPath and any necessary parents under the
+	// repo root. It is a no-op if the directory already exists; if
+	// relPath names an existing file, an error is returned.
+	MkdirAll(relPath string) error
+}
+
 // DirReader serves files from a directory on the local filesystem. It is
 // the concrete Reader used in production; tests can use an in-memory fake
 // that implements the same interface.
@@ -49,13 +60,14 @@ type DirReader struct {
 	Root string
 }
 
-// Compile-time assertions that *DirReader satisfies both Reader and the
-// optional DirLister capability, per the Uber Go style guide's "Verify
-// Interface Compliance" rule. Keeping each on its own line surfaces the
-// missing method when one interface drifts.
+// Compile-time assertions that *DirReader satisfies Reader and the
+// optional DirLister/DirCreator capabilities, per the Uber Go style
+// guide's "Verify Interface Compliance" rule. Keeping each on its own
+// line surfaces the missing method when one interface drifts.
 var (
-	_ Reader    = (*DirReader)(nil)
-	_ DirLister = (*DirReader)(nil)
+	_ Reader     = (*DirReader)(nil)
+	_ DirLister  = (*DirReader)(nil)
+	_ DirCreator = (*DirReader)(nil)
 )
 
 // NewDirReader returns a DirReader rooted at root.
@@ -112,6 +124,18 @@ func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// MkdirAll implements DirCreator.
+func (r *DirReader) MkdirAll(relPath string) error {
+	if err := checkRel(relPath); err != nil {
+		return err
+	}
+	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
+	}
+	return nil
 }
 
 // Glob implements Reader.

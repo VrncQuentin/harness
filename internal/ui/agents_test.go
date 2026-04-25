@@ -6,27 +6,33 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
 
-// stubRegistry is a test double that records the last SetActive call and can
-// be primed to return a scripted error from each method.
+// stubRegistry is a test double that records the last SetActive/Create calls
+// and can be primed to return a scripted error from each method.
 type stubRegistry struct {
-	agents   []AgentInfo
-	active   atomic.Value // string
-	setCalls atomic.Int32
-	lastSet  atomic.Value // string
+	mu          sync.Mutex
+	agents      []AgentInfo
+	active      atomic.Value // string
+	setCalls    atomic.Int32
+	lastSet     atomic.Value // string
+	createCalls atomic.Int32
+	lastCreate  atomic.Value // string
 
-	listErr error
-	getErr  error
-	setErr  error
+	listErr   error
+	getErr    error
+	setErr    error
+	createErr error
 }
 
 func newStubRegistry(active string, agents ...AgentInfo) *stubRegistry {
 	r := &stubRegistry{agents: agents}
 	r.active.Store(active)
 	r.lastSet.Store("")
+	r.lastCreate.Store("")
 	return r
 }
 
@@ -34,8 +40,10 @@ func (r *stubRegistry) List() ([]AgentInfo, error) {
 	if r.listErr != nil {
 		return nil, r.listErr
 	}
+	r.mu.Lock()
 	out := make([]AgentInfo, len(r.agents))
 	copy(out, r.agents)
+	r.mu.Unlock()
 	return out, nil
 }
 
@@ -43,6 +51,8 @@ func (r *stubRegistry) Get(name string) (AgentInfo, error) {
 	if r.getErr != nil {
 		return AgentInfo{}, r.getErr
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, a := range r.agents {
 		if a.Name == name {
 			return a, nil
@@ -66,8 +76,25 @@ func (r *stubRegistry) SetActive(name string) error {
 	return nil
 }
 
+func (r *stubRegistry) Create(name string) error {
+	r.createCalls.Add(1)
+	r.lastCreate.Store(name)
+	if r.createErr != nil {
+		return r.createErr
+	}
+	r.mu.Lock()
+	r.agents = append(r.agents, AgentInfo{Name: name, PersonaPath: "agents/" + name + "/persona.md"})
+	r.mu.Unlock()
+	return nil
+}
+
 func (r *stubRegistry) lastSetActive() string {
 	v, _ := r.lastSet.Load().(string)
+	return v
+}
+
+func (r *stubRegistry) lastCreated() string {
+	v, _ := r.lastCreate.Load().(string)
 	return v
 }
 
@@ -110,7 +137,7 @@ func TestHandleAgents_GETWithoutRegistryShowsSetupCTA(t *testing.T) {
 	}
 }
 
-func TestHandleAgents_GETEmptyRegistryShowsHint(t *testing.T) {
+func TestHandleAgents_GETEmptyRegistryShowsCreateForm(t *testing.T) {
 	s := NewServer(3000)
 	s.SetAgentRegistry(newStubRegistry(""))
 
@@ -122,8 +149,10 @@ func TestHandleAgents_GETEmptyRegistryShowsHint(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "No agents found") {
-		t.Errorf("expected no-agents hint, got:\n%s", body)
+	for _, want := range []string{"No agents yet", `action="/agents/create"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected empty-state body to contain %q, got:\n%s", want, body)
+		}
 	}
 }
 
@@ -255,5 +284,115 @@ func TestHandleAgents_MethodNotAllowedOnPOST(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405 for POST /agents, got %d", rec.Code)
+	}
+}
+
+func TestHandleAgentsCreate_POSTRedirectsOnSuccess(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("")
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("name", "coder")
+	req := httptest.NewRequest(http.MethodPost, "/agents/create", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsCreate(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Header().Get("Location"), "/agents?created=coder"; got != want {
+		t.Errorf("Location = %q, want %q", got, want)
+	}
+	if got := reg.createCalls.Load(); got != 1 {
+		t.Errorf("expected Create called once, got %d", got)
+	}
+	if got := reg.lastCreated(); got != "coder" {
+		t.Errorf("expected Create(\"coder\"), got %q", got)
+	}
+}
+
+func TestHandleAgentsCreate_POSTTrimsName(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("")
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("name", "  coder  ")
+	req := httptest.NewRequest(http.MethodPost, "/agents/create", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsCreate(rec, req)
+
+	if got := reg.lastCreated(); got != "coder" {
+		t.Errorf("expected trimmed Create(\"coder\"), got %q", got)
+	}
+}
+
+func TestHandleAgentsCreate_POSTValidationErrorRendersForm(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("", AgentInfo{Name: "coder", Persona: "c"})
+	reg.createErr = errors.New("agent: invalid name: name is empty")
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("name", "bad name")
+	req := httptest.NewRequest(http.MethodPost, "/agents/create", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsCreate(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"agent: invalid name", "bad name", "coder"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected body to contain %q, got:\n%s", want, body)
+		}
+	}
+}
+
+func TestHandleAgentsCreate_POSTNoRegistryReturns503(t *testing.T) {
+	s := NewServer(3000)
+
+	req := httptest.NewRequest(http.MethodPost, "/agents/create", strings.NewReader("name=coder"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsCreate(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when registry is nil, got %d", rec.Code)
+	}
+}
+
+func TestHandleAgentsCreate_GETMethodNotAllowed(t *testing.T) {
+	s := NewServer(3000)
+	s.SetAgentRegistry(newStubRegistry(""))
+
+	req := httptest.NewRequest(http.MethodGet, "/agents/create", nil)
+	rec := httptest.NewRecorder()
+	s.handleAgentsCreate(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for GET /agents/create, got %d", rec.Code)
+	}
+}
+
+func TestHandleAgents_GETShowsCreatedFlash(t *testing.T) {
+	s := NewServer(3000)
+	s.SetAgentRegistry(newStubRegistry("", AgentInfo{Name: "coder"}))
+
+	req := httptest.NewRequest(http.MethodGet, "/agents?created=coder", nil)
+	rec := httptest.NewRecorder()
+	s.handleAgents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Created agent") {
+		t.Errorf("expected created flash, got:\n%s", body)
 	}
 }
