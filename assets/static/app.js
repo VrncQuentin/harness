@@ -95,24 +95,13 @@ function formatUptime(s) {
   return s + 's';
 }
 
-// subscribeLogStream wires one log box to its SSE endpoint. Appends a row per
-// entry, caps DOM size so a noisy run doesn't grow unbounded, and auto-scrolls
-// only when the user is already pinned to the bottom.
-function subscribeLogStream(bodyId, statusId, url) {
-  var body = document.getElementById(bodyId);
-  if (!body || typeof EventSource === 'undefined') return;
-  var status = statusId ? document.getElementById(statusId) : null;
+// logEventHandler appends multiplexed log events to one log box, caps DOM
+// size, and auto-scrolls only when the user is already pinned to the bottom.
+function logEventHandler(bodyId) {
+  return function (evt) {
+    var body = document.getElementById(bodyId);
+    if (!body) return;
 
-  var MAX_ROWS = 500;
-  var es = new EventSource(url);
-
-  es.onopen = function () {
-    if (status) { status.textContent = 'live'; status.classList.remove('is-disconnected'); }
-  };
-  es.onerror = function () {
-    if (status) { status.textContent = 'disconnected'; status.classList.add('is-disconnected'); }
-  };
-  es.onmessage = function (evt) {
     var entry;
     try { entry = JSON.parse(evt.data); } catch (e) { return; }
 
@@ -133,16 +122,12 @@ function subscribeLogStream(bodyId, statusId, url) {
     row.appendChild(l);
     body.appendChild(row);
 
-    while (body.childElementCount > MAX_ROWS) {
+    while (body.childElementCount > 500) {
       body.removeChild(body.firstElementChild);
     }
     if (atBottom) body.scrollTop = body.scrollHeight;
   };
 }
-
-subscribeLogStream('llama-log', null, '/logs/llama');
-subscribeLogStream('embed-log', null, '/logs/embed');
-subscribeLogStream('harness-log', 'harness-log-status', '/logs/harness');
 
 // Modal dialog wiring. Buttons with data-open-dialog="<id>" call
 // showModal() on the matching <dialog>; buttons with data-close-dialog
