@@ -67,9 +67,9 @@ func TestDiskRegistry_ListFindsSubdirsSorted(t *testing.T) {
 		t.Fatalf("List: %v", err)
 	}
 	want := []Agent{
-		{Name: "coder", PersonaPath: "agents/coder/persona.md", NotesPath: "agents/coder/notes.md"},
-		{Name: "reviewer", PersonaPath: "agents/reviewer/persona.md", NotesPath: "agents/reviewer/notes.md"},
-		{Name: "zeta", PersonaPath: "agents/zeta/persona.md", NotesPath: "agents/zeta/notes.md"},
+		{Name: "coder", PersonaPath: "agents/coder/persona.md", RulesPath: "agents/coder/rules.md", NotesPath: "agents/coder/notes.md"},
+		{Name: "reviewer", PersonaPath: "agents/reviewer/persona.md", RulesPath: "agents/reviewer/rules.md", NotesPath: "agents/reviewer/notes.md"},
+		{Name: "zeta", PersonaPath: "agents/zeta/persona.md", RulesPath: "agents/zeta/rules.md", NotesPath: "agents/zeta/notes.md"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("List =\n\t%v\nwant\n\t%v", got, want)
@@ -92,6 +92,12 @@ func TestDiskRegistry_Get(t *testing.T) {
 	}
 	if got.PersonaPath != "agents/coder/persona.md" {
 		t.Errorf("Get coder: PersonaPath = %q, want agents/coder/persona.md", got.PersonaPath)
+	}
+	if got.RulesPath != "agents/coder/rules.md" {
+		t.Errorf("Get coder: RulesPath = %q, want agents/coder/rules.md", got.RulesPath)
+	}
+	if got.NotesPath != "agents/coder/notes.md" {
+		t.Errorf("Get coder: NotesPath = %q, want agents/coder/notes.md", got.NotesPath)
 	}
 }
 
@@ -201,7 +207,7 @@ func TestDiskRegistry_CreateMakesDirAndIsDiscoverable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	want := Agent{Name: "coder", PersonaPath: "agents/coder/persona.md", NotesPath: "agents/coder/notes.md"}
+	want := Agent{Name: "coder", PersonaPath: "agents/coder/persona.md", RulesPath: "agents/coder/rules.md", NotesPath: "agents/coder/notes.md"}
 	if got != want {
 		t.Errorf("Create =\n\t%v\nwant\n\t%v", got, want)
 	}

@@ -181,6 +181,7 @@ func (h *HotReload) watchedFiles() map[string]struct{} {
 	if ag != "" {
 		base := filepath.Join(h.repoPath, "agents", ag)
 		out[filepath.Join(base, "persona.md")] = struct{}{}
+		out[filepath.Join(base, "rules.md")] = struct{}{}
 		out[filepath.Join(base, "notes.md")] = struct{}{}
 	}
 	return out

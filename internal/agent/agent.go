@@ -44,10 +44,14 @@ var ErrInvalidName = errors.New("agent: invalid name")
 var ErrAgentExists = errors.New("agent: already exists")
 
 // Agent is the minimal metadata the prompt assembler needs: the agent's
-// name and the repo-relative paths of its persona and notes files.
+// name and the repo-relative paths of its persona, rules, and notes
+// files. Rules are an optional per-agent layer analogous to
+// global/rules.md - always-on behavioural constraints scoped to this
+// agent (e.g. "make a plan before any edit").
 type Agent struct {
 	Name        string
 	PersonaPath string
+	RulesPath   string
 	NotesPath   string
 }
 
@@ -174,6 +178,7 @@ func newAgent(name string) Agent {
 	return Agent{
 		Name:        name,
 		PersonaPath: path.Join(agentsDir, name, "persona.md"),
+		RulesPath:   path.Join(agentsDir, name, "rules.md"),
 		NotesPath:   path.Join(agentsDir, name, "notes.md"),
 	}
 }

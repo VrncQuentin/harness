@@ -1,8 +1,8 @@
 // Package prompt assembles the layered system prompt sent to the model.
 // Layers are stacked in a fixed order and budgeted against the memory
 // token limit and the conversation reserve; trimming is oldest-episode
-// first, and the mandatory layers (rules, user, persona) are never
-// dropped.
+// first, and the mandatory layers (rules, user, persona, agent rules)
+// are never dropped.
 //
 // Chat template formatting is the job of llama-server's
 // apply_chat_template endpoint, not this package - we return a
@@ -48,12 +48,13 @@ const (
 // its file is missing or empty, so these are only written when the
 // layer contributes content.
 const (
-	rulesHeader    = "# Rules"
-	userHeader     = "# User"
-	personaHeader  = "# Persona"
-	factsHeader    = "# Facts"
-	notesHeader    = "# Notes"
-	episodesHeader = "# Episodes"
+	rulesHeader      = "# Rules"
+	userHeader       = "# User"
+	personaHeader    = "# Persona"
+	agentRulesHeader = "# Agent Rules"
+	factsHeader      = "# Facts"
+	notesHeader      = "# Notes"
+	episodesHeader   = "# Episodes"
 )
 
 // LayerStats reports token counts per layer and the overall total for
@@ -63,6 +64,7 @@ type LayerStats struct {
 	Rules        int
 	User         int
 	Persona      int
+	AgentRules   int
 	Facts        int
 	Notes        int
 	Episodes     int
@@ -167,7 +169,7 @@ func (a *DiskAssembler) Assemble(ctx context.Context, agentName string, conversa
 	convoTokens := a.countMessages(conversation)
 	stats := a.trim(logger, &layers, convoTokens)
 	stats.Conversation = convoTokens
-	stats.Total = stats.Rules + stats.User + stats.Persona + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
+	stats.Total = stats.Rules + stats.User + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
 
 	system := renderSystem(layers)
 	out := make([]inference.Message, 0, len(conversation)+1)
@@ -181,6 +183,7 @@ func (a *DiskAssembler) Assemble(ctx context.Context, agentName string, conversa
 		"rules_tokens", stats.Rules,
 		"user_tokens", stats.User,
 		"persona_tokens", stats.Persona,
+		"agent_rules_tokens", stats.AgentRules,
 		"facts_tokens", stats.Facts,
 		"notes_tokens", stats.Notes,
 		"episodes_tokens", stats.Episodes,
@@ -206,12 +209,13 @@ func (a *DiskAssembler) loggerFor(ctx context.Context) *slog.Logger {
 // used between loading and rendering. The per-episode split lets the
 // trimmer drop oldest-first without re-reading the files.
 type rawLayers struct {
-	rules    string
-	user     string
-	persona  string
-	facts    string
-	notes    string
-	episodes []episode
+	rules      string
+	user       string
+	persona    string
+	agentRules string
+	facts      string
+	notes      string
+	episodes   []episode
 }
 
 type episode struct {
@@ -249,6 +253,12 @@ func (a *DiskAssembler) loadLayers(agentName string) (rawLayers, error) {
 			return rawLayers{}, err
 		}
 		lay.persona = persona
+
+		agentRules, err := a.readOptional(ag.RulesPath)
+		if err != nil {
+			return rawLayers{}, err
+		}
+		lay.agentRules = agentRules
 
 		notes, err := a.readOptional(ag.NotesPath)
 		if err != nil {
@@ -339,10 +349,11 @@ func (a *DiskAssembler) countMessages(msgs []inference.Message) int {
 }
 
 // trim enforces the memory token budget and, when ctx_size is set, the
-// overall budget against conversation reserve. Layers 1-3 (rules,
-// user, persona) are never trimmed. Episodes are dropped oldest-first
-// until the memory budget is respected and the total budget fits.
-// Returns the stats computed against the final layer set.
+// overall budget against conversation reserve. The mandatory layers
+// (rules, user, persona, agent rules) are never trimmed. Episodes are
+// dropped oldest-first until the memory budget is respected and the
+// total budget fits. Returns the stats computed against the final
+// layer set.
 func (a *DiskAssembler) trim(logger *slog.Logger, lay *rawLayers, convoTokens int) LayerStats {
 	stats := a.statsFor(lay)
 
@@ -399,7 +410,7 @@ func (a *DiskAssembler) trim(logger *slog.Logger, lay *rawLayers, convoTokens in
 // totalFixed returns the sum of all layer tokens except conversation,
 // used under the ctx_size guardrail.
 func (a *DiskAssembler) totalFixed(s *LayerStats) int {
-	return s.Rules + s.User + s.Persona + s.Facts + s.Notes + s.Episodes
+	return s.Rules + s.User + s.Persona + s.AgentRules + s.Facts + s.Notes + s.Episodes
 }
 
 // statsFor recounts layer tokens from the current raw layers.
@@ -408,6 +419,7 @@ func (a *DiskAssembler) statsFor(lay *rawLayers) LayerStats {
 	s.Rules = a.tokenizer(lay.rules)
 	s.User = a.tokenizer(lay.user)
 	s.Persona = a.tokenizer(lay.persona)
+	s.AgentRules = a.tokenizer(lay.agentRules)
 	s.Facts = a.tokenizer(lay.facts)
 	s.Notes = a.tokenizer(lay.notes)
 	for _, ep := range lay.episodes {
@@ -424,6 +436,7 @@ func renderSystem(lay rawLayers) string {
 	writeSection(&b, rulesHeader, lay.rules)
 	writeSection(&b, userHeader, lay.user)
 	writeSection(&b, personaHeader, lay.persona)
+	writeSection(&b, agentRulesHeader, lay.agentRules)
 	writeSection(&b, factsHeader, lay.facts)
 	writeSection(&b, notesHeader, lay.notes)
 	if len(lay.episodes) > 0 {
