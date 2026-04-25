@@ -1,0 +1,1 @@
+ALTER TABLE config ADD COLUMN agent_active TEXT NOT NULL DEFAULT '';

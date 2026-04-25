@@ -21,6 +21,7 @@ type Config struct {
 	Model    ModelConfig
 	Embedder EmbedderConfig
 	Memory   MemoryConfig
+	Agent    AgentConfig
 	UI       UIConfig
 	API      APIConfig
 	Prompt   PromptConfig
@@ -55,6 +56,13 @@ type EmbedderConfig struct {
 // MemoryConfig holds memory repo configuration.
 type MemoryConfig struct {
 	RepoPath string
+}
+
+// AgentConfig tracks the currently active agent. An empty Active means
+// no agent is selected; the prompt assembler skips the persona/notes
+// layers in that case.
+type AgentConfig struct {
+	Active string
 }
 
 // UIConfig holds UI server configuration.

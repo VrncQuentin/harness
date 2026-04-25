@@ -185,11 +185,11 @@ func (a *DiskAssembler) loadLayers(agentName string) (rawLayers, error) {
 	}
 	lay.rules = rules
 
-	if content, err := a.readOptional(userPath); err != nil {
+	user, err := a.readOptional(userPath)
+	if err != nil {
 		return rawLayers{}, err
-	} else {
-		lay.user = content
 	}
+	lay.user = user
 
 	if agentName != "" {
 		ag, err := a.reg.Get(agentName)
@@ -367,6 +367,9 @@ func renderSystem(lay rawLayers) string {
 	writeSection(&b, factsHeader, lay.facts)
 	writeSection(&b, notesHeader, lay.notes)
 	if len(lay.episodes) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
 		b.WriteString(episodesHeader)
 		b.WriteString("\n\n")
 		for i, ep := range lay.episodes {
@@ -378,7 +381,6 @@ func renderSystem(lay rawLayers) string {
 			b.WriteString("\n\n")
 			b.WriteString(strings.TrimRight(ep.content, "\n"))
 		}
-		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
