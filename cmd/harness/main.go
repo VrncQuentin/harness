@@ -569,18 +569,41 @@ func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
 	if err != nil {
 		return ui.AgentInfo{}, err
 	}
-	info := ui.AgentInfo{Name: a.Name, PersonaPath: a.PersonaPath}
-	b, err := ad.mem.Read(a.PersonaPath)
+	info := ui.AgentInfo{
+		Name:        a.Name,
+		PersonaPath: a.PersonaPath,
+		RulesPath:   a.RulesPath,
+		NotesPath:   a.NotesPath,
+	}
+	persona, err := readOptional(ad.mem, a.PersonaPath)
 	if err != nil {
-		// A missing persona file is rendered as "(empty)" by the
-		// template; only surface real I/O failures to the caller.
-		if errors.Is(err, fs.ErrNotExist) {
-			return info, nil
-		}
 		return info, err
 	}
-	info.Persona = string(b)
+	info.Persona = persona
+	rules, err := readOptional(ad.mem, a.RulesPath)
+	if err != nil {
+		return info, err
+	}
+	info.Rules = rules
+	notes, err := readOptional(ad.mem, a.NotesPath)
+	if err != nil {
+		return info, err
+	}
+	info.Notes = notes
 	return info, nil
+}
+
+// readOptional returns the contents of relPath, treating a missing file
+// as an empty string. Real I/O errors are surfaced to the caller.
+func readOptional(mem memory.Reader, relPath string) (string, error) {
+	b, err := mem.Read(relPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(b), nil
 }
 
 func (ad *uiAgentRegistryAdapter) Active() string {
@@ -594,6 +617,18 @@ func (ad *uiAgentRegistryAdapter) SetActive(name string) error {
 func (ad *uiAgentRegistryAdapter) Create(name string) error {
 	_, err := ad.reg.Create(name)
 	return err
+}
+
+func (ad *uiAgentRegistryAdapter) WritePersona(name string, body []byte) error {
+	return ad.reg.WritePersona(name, body)
+}
+
+func (ad *uiAgentRegistryAdapter) WriteRules(name string, body []byte) error {
+	return ad.reg.WriteRules(name, body)
+}
+
+func (ad *uiAgentRegistryAdapter) WriteNotes(name string, body []byte) error {
+	return ad.reg.WriteNotes(name, body)
 }
 
 // errNoActiveAgent is surfaced when the OpenAI request omits the agent

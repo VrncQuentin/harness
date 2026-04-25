@@ -51,6 +51,19 @@ type DirCreator interface {
 	MkdirAll(relPath string) error
 }
 
+// FileWriter is an optional capability some Readers expose for
+// writing files under the repo root. The agent registry uses this
+// when available to persist edits to persona.md and notes.md;
+// callers can type-assert on it.
+type FileWriter interface {
+	// WriteFile writes data to relPath, replacing any existing file
+	// at that path. The parent directory is created if missing.
+	// Implementations must publish the new content atomically so
+	// concurrent readers (e.g. the prompt hot-reload watcher) never
+	// observe a partial write.
+	WriteFile(relPath string, data []byte) error
+}
+
 // DirReader serves files from a directory on the local filesystem. It is
 // the concrete Reader used in production; tests can use an in-memory fake
 // that implements the same interface.
@@ -68,6 +81,7 @@ var (
 	_ Reader     = (*DirReader)(nil)
 	_ DirLister  = (*DirReader)(nil)
 	_ DirCreator = (*DirReader)(nil)
+	_ FileWriter = (*DirReader)(nil)
 )
 
 // NewDirReader returns a DirReader rooted at root.
@@ -134,6 +148,45 @@ func (r *DirReader) MkdirAll(relPath string) error {
 	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
+	}
+	return nil
+}
+
+// WriteFile implements FileWriter. It writes via a temp file in the
+// same directory followed by os.Rename so the prompt hot-reload watcher
+// (fsnotify) never observes a partial write mid-flight.
+func (r *DirReader) WriteFile(relPath string, data []byte) error {
+	if err := checkRel(relPath); err != nil {
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	parent := filepath.Dir(abs)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+
+	tmp, err := os.CreateTemp(parent, ".harness-*")
+	if err != nil {
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	tmpPath := tmp.Name()
+	// cleanup runs on every error path before the rename succeeds; once
+	// the rename lands the temp file no longer exists under tmpPath.
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	if err := os.Rename(tmpPath, abs); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
 	return nil
 }
