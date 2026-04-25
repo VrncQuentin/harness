@@ -1,0 +1,23 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.0.6/schema.json",
+  "files": {
+    "includes": ["assets/static/**/*.js", "assets/static/**/*.css"]
+  },
+  "formatter": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "style": {
+        "noVar": "off",
+        "useConst": "off",
+        "useTemplate": "off"
+      },
+      "correctness": {
+        "noUnusedVariables": "off"
+      }
+    }
+  }
+}

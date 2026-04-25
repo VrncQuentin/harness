@@ -18,6 +18,17 @@ jobs:
         with:
           version: v2.11.4
 
+  frontend-lint:
+    name: Frontend Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: biomejs/setup-biome@v2
+        with:
+          version: 2.0.6
+      - name: Biome check
+        run: biome check assets/static
+
   ci:
     name: Vet, Test & Build
     runs-on: windows-latest
