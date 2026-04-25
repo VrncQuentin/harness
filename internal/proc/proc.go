@@ -7,9 +7,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -389,9 +391,14 @@ func (m *Manager) healthLoop(ctx context.Context) {
 			code := m.exitCode
 			out := m.output
 			m.mu.Unlock()
+			line := formatExitLine(m.name, code)
 			if out != nil {
-				_, _ = io.WriteString(out, formatExitLine(m.name, code))
+				_, _ = io.WriteString(out, line)
 			}
+			// Also surface the exit through the harness log so it shows up
+			// outside the proc-specific SSE pipeline (which can drop on a
+			// burst). slog adds its own newline, so trim ours.
+			slog.Info(strings.TrimSuffix(line, "\n"))
 			m.emit(EventStop, "process exited")
 			return
 		case <-ticker.C:
