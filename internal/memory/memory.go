@@ -4,7 +4,9 @@
 package memory
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -51,6 +53,36 @@ type DirCreator interface {
 	MkdirAll(relPath string) error
 }
 
+// Walker is an optional capability some Readers expose for enumerating
+// every entry under a path. The UI memory page uses it to render the
+// repo as a tree with token estimates per file.
+type Walker interface {
+	// Walk returns all entries under relPath (excluding relPath
+	// itself), depth-first, sorted lexicographically. An empty
+	// relPath enumerates the whole repo. A missing relPath yields
+	// an empty slice and no error so callers can tolerate a
+	// partially-scaffolded repo. The .git directory is skipped so
+	// internal git plumbing never leaks into the UI.
+	Walk(relPath string) ([]Entry, error)
+}
+
+// Writer is an optional capability some Readers expose for replacing
+// the contents of a file. The UI memory editor uses it to save edits
+// to global/*.md from the browser.
+type Writer interface {
+	// Write replaces relPath with data, creating parent directories
+	// as needed. It refuses to overwrite a directory.
+	Write(relPath string, data []byte) error
+}
+
+// Entry describes one path under the memory repo as returned by Walk.
+// Path is forward-slash relative to the repo root.
+type Entry struct {
+	Path string
+	Dir  bool
+	Size int64
+}
+
 // DirReader serves files from a directory on the local filesystem. It is
 // the concrete Reader used in production; tests can use an in-memory fake
 // that implements the same interface.
@@ -61,13 +93,16 @@ type DirReader struct {
 }
 
 // Compile-time assertions that *DirReader satisfies Reader and the
-// optional DirLister/DirCreator capabilities, per the Uber Go style
-// guide's "Verify Interface Compliance" rule. Keeping each on its own
-// line surfaces the missing method when one interface drifts.
+// optional DirLister/DirCreator/Walker/Writer capabilities, per the
+// Uber Go style guide's "Verify Interface Compliance" rule. Keeping
+// each on its own line surfaces the missing method when one interface
+// drifts.
 var (
 	_ Reader     = (*DirReader)(nil)
 	_ DirLister  = (*DirReader)(nil)
 	_ DirCreator = (*DirReader)(nil)
+	_ Walker     = (*DirReader)(nil)
+	_ Writer     = (*DirReader)(nil)
 )
 
 // NewDirReader returns a DirReader rooted at root.
@@ -173,6 +208,77 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 	}
 	sort.Strings(matches)
 	return matches, nil
+}
+
+// Walk implements Walker. The .git directory is pruned so the editor
+// never sees git plumbing, even when memory/ is a real git repo.
+func (r *DirReader) Walk(relPath string) ([]Entry, error) {
+	if relPath != "" {
+		if err := checkRel(relPath); err != nil {
+			return nil, err
+		}
+	}
+	absRoot := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	var out []Entry
+	err := filepath.WalkDir(absRoot, func(absPath string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if absPath == absRoot {
+			return nil
+		}
+		rel, err := filepath.Rel(r.Root, absPath)
+		if err != nil {
+			return err
+		}
+		relSlash := filepath.ToSlash(rel)
+		// Prune .git anywhere under the repo - the memory directory is
+		// itself a git repo (M3) and we never want plumbing in the UI.
+		if d.Name() == ".git" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		out = append(out, Entry{
+			Path: relSlash,
+			Dir:  d.IsDir(),
+			Size: info.Size(),
+		})
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
+}
+
+// Write implements Writer. It refuses to overwrite a directory and
+// creates any missing parent directories so a fresh repo can be
+// populated from the editor without scaffolding first.
+func (r *DirReader) Write(relPath string, data []byte) error {
+	if err := checkRel(relPath); err != nil {
+		return err
+	}
+	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	if info, err := os.Stat(abs); err == nil && info.IsDir() {
+		return fmt.Errorf("memory: %s is a directory", relPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return fmt.Errorf("memory: create parent of %s: %w", relPath, err)
+	}
+	if err := os.WriteFile(abs, data, 0o644); err != nil {
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	return nil
 }
 
 // resolve turns a forward-slash relative path into an absolute OS path.
