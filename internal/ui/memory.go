@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/vrnc/harness/internal/memory"
@@ -262,6 +263,13 @@ func buildMemoryTree(store MemoryStore) ([]*memoryTreeNode, int, error) {
 	if err != nil {
 		return nil, 0, err
 	}
+	// Sort by path so a parent dir is always processed before any of
+	// its children. attachToParent looks the parent up in `nodes`, and
+	// a missing parent forces the child into the root list - which
+	// silently breaks directory token sums. DirReader.Walk happens to
+	// sort already, but the interface doesn't promise it, so guard
+	// here rather than rely on every implementation getting it right.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	nodes := make(map[string]*memoryTreeNode, len(entries))
 	var roots []*memoryTreeNode
 
