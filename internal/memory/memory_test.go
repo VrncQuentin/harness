@@ -342,6 +342,66 @@ func TestDirReader_WriteFileOverDirectoryFails(t *testing.T) {
 	}
 }
 
+func TestDirReader_RemoveAllRemovesSubtree(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"agents/coder/persona.md":          "p",
+		"agents/coder/notes.md":            "n",
+		"agents/coder/episodes/2026-01.md": "e1",
+		"agents/reviewer/persona.md":       "r",
+	})
+	if err := r.RemoveAll("agents/coder"); err != nil {
+		t.Fatalf("RemoveAll: %v", err)
+	}
+	got, err := r.ListDirs("agents")
+	if err != nil {
+		t.Fatalf("ListDirs: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"reviewer"}) {
+		t.Errorf("ListDirs after RemoveAll = %v, want [reviewer]", got)
+	}
+	if _, err := os.Stat(filepath.Join(r.Root, "agents", "coder")); !os.IsNotExist(err) {
+		t.Errorf("agents/coder still exists: stat err = %v", err)
+	}
+}
+
+func TestDirReader_RemoveAllMissingPathIsNoError(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"global/rules.md": "x",
+	})
+	if err := r.RemoveAll("agents/coder"); err != nil {
+		t.Errorf("RemoveAll on missing path: %v", err)
+	}
+}
+
+func TestDirReader_RemoveAllRejectsBadPaths(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"agents/coder/persona.md": "x",
+	})
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"empty", ""},
+		{"dotdot prefix", "../outside"},
+		{"dotdot middle", "agents/../../etc"},
+		{"backslash dotdot", "agents\\..\\..\\etc"},
+		{"unix absolute", "/etc/passwd"},
+		{"windows absolute", "C:/windows/system32"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := r.RemoveAll(tc.path); err == nil {
+				t.Errorf("RemoveAll(%q): expected error, got nil", tc.path)
+			}
+		})
+	}
+	// The well-formed file the bad inputs were trying to dodge into must
+	// still be readable - i.e. nothing was deleted in the rejection path.
+	if got, err := r.Read("agents/coder/persona.md"); err != nil || string(got) != "x" {
+		t.Errorf("persona.md tampered: got %q err=%v, want %q", string(got), err, "x")
+	}
+}
+
 func TestDirReader_WalkReturnsEverythingSorted(t *testing.T) {
 	r := newTestRepo(t, map[string]string{
 		"global/rules.md":         "rules",
