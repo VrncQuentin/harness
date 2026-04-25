@@ -40,6 +40,11 @@ type AgentRegistry interface {
 	WriteRules(name string, body []byte) error
 	// WriteNotes replaces the active agent's notes.md with body.
 	WriteNotes(name string, body []byte) error
+	// Delete removes the agent named name. Implementations are
+	// responsible for clearing the active selection if it pointed at
+	// the removed agent so the UI never has to coordinate the two
+	// state changes itself.
+	Delete(name string) error
 }
 
 // SetAgentRegistry installs the registry used by the /agents page. Safe to
@@ -70,6 +75,9 @@ type agentsView struct {
 	// CreatedName is set after a successful create, surfaced to the user
 	// as a one-shot "Created agent X" banner. Empty otherwise.
 	CreatedName string
+	// DeletedName is set after a successful delete, surfaced as a
+	// one-shot "Deleted agent X" banner. Empty otherwise.
+	DeletedName string
 	// CreateErr is the validation/IO error from a failed create, rendered
 	// next to the form so the user can correct and resubmit.
 	CreateErr string
@@ -100,6 +108,9 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	data := s.buildAgentsView()
 	if name := strings.TrimSpace(r.URL.Query().Get("created")); name != "" {
 		data.CreatedName = name
+	}
+	if name := strings.TrimSpace(r.URL.Query().Get("deleted")); name != "" {
+		data.DeletedName = name
 	}
 	switch r.URL.Query().Get("saved") {
 	case "persona", "rules", "notes":
@@ -322,4 +333,43 @@ func (s *Server) handleAgentsEdit(
 	// Stay in edit mode after save so the user can keep tweaking
 	// without re-clicking Edit on every save.
 	http.Redirect(w, r, "/agents?edit="+url.QueryEscape(name)+"&saved="+kind, http.StatusSeeOther)
+}
+
+// handleAgentsDelete removes an agent. The page is the only entry
+// point so we treat any GET as 405; the confirmation popup posts the
+// agent name from a hidden field. On success we PRG to /agents with
+// a ?deleted= flash so the success banner survives a reload without
+// resubmitting on refresh.
+func (s *Server) handleAgentsDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	reg := s.agentRegistry()
+	if reg == nil {
+		http.Error(w, "agent registry not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "could not parse form: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		http.Error(w, "missing agent name", http.StatusBadRequest)
+		return
+	}
+	if _, err := reg.Get(name); err != nil {
+		http.Error(w, "unknown agent: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := reg.Delete(name); err != nil {
+		http.Error(w, "could not delete agent: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/agents?deleted="+url.QueryEscape(name), http.StatusSeeOther)
 }

@@ -20,6 +20,15 @@
 </div>
 {{end}}
 
+{{if .DeletedName}}
+<div class="alert alert-ok">
+  <div class="alert-head">
+    <h2>Deleted agent <code>{{.DeletedName}}</code></h2>
+    <p class="alert-sub">Removed <code>agents/{{.DeletedName}}/</code> and all its files.</p>
+  </div>
+</div>
+{{end}}
+
 {{if eq .Saved "persona"}}
 <div class="alert alert-ok">
   <div class="alert-head">
@@ -74,8 +83,21 @@
           {{else}}
           <a class="btn btn-ghost btn-sm" href="/agents?edit={{.Name}}">Edit</a>
           {{end}}
+          <button type="button" class="btn btn-danger btn-sm" data-open-dialog="delete-{{.Name}}">Delete</button>
         </div>
       </header>
+
+      <dialog id="delete-{{.Name}}" class="modal">
+        <form method="post" action="/agents/delete" class="modal-form">
+          <input type="hidden" name="name" value="{{.Name}}">
+          <h3 class="modal-title">Delete agent <code>{{.Name}}</code>?</h3>
+          <p class="modal-body">This permanently removes <code>agents/{{.Name}}/</code> and every file under it (persona, rules, notes, episodes). This cannot be undone from the UI.</p>
+          <div class="modal-actions">
+            <button type="button" class="btn btn-ghost" data-close-dialog>Cancel</button>
+            <button type="submit" class="btn btn-danger">Delete agent</button>
+          </div>
+        </form>
+      </dialog>
 
       {{if and $editing $.SaveErr}}
       <div class="alert alert-warn">
