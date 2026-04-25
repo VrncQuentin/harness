@@ -144,6 +144,50 @@ func TestHandleMemory_RendersTreeAndTokens(t *testing.T) {
 	}
 }
 
+func TestHandleMemory_InlinesFileContent(t *testing.T) {
+	s := NewServer(3000)
+	store := newStubMemoryStore(map[string]string{
+		"global/rules.md":         "be helpful and terse",
+		"agents/coder/persona.md": "you are a coder",
+	})
+	s.SetMemoryStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemory(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		// File bodies are inlined inside the expandable <details> block
+		// so the user can read them without leaving /memory.
+		"be helpful and terse",
+		"you are a coder",
+		`<details class="tree-file">`,
+		`<pre class="tree-content">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("memory body missing %q", want)
+		}
+	}
+}
+
+func TestHandleMemory_EmptyFileShowsHint(t *testing.T) {
+	s := NewServer(3000)
+	store := newStubMemoryStore(map[string]string{
+		"global/rules.md": "",
+	})
+	s.SetMemoryStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemory(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "(empty file)") {
+		t.Errorf("expected empty-file hint, got:\n%s", body)
+	}
+}
+
 func TestHandleMemory_ShowsSavedFlash(t *testing.T) {
 	s := NewServer(3000)
 	store := newStubMemoryStore(nil)

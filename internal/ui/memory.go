@@ -100,6 +100,10 @@ type memoryTreeNode struct {
 	Missing  bool
 	Editable bool
 	Tokens   int
+	// Content is the file body, captured during the walk so the tree
+	// page can inline it under an expandable row without a second read.
+	// Empty for directories and for missing virtual nodes.
+	Content  string
 	Children []*memoryTreeNode
 }
 
@@ -285,7 +289,8 @@ func buildMemoryTree(store MemoryStore) ([]*memoryTreeNode, int, error) {
 			}
 			b, rerr := store.Read(e.Path)
 			if rerr == nil {
-				node.Tokens = prompt.EstimateTokens(string(b))
+				node.Content = string(b)
+				node.Tokens = prompt.EstimateTokens(node.Content)
 			}
 		}
 		nodes[e.Path] = node
