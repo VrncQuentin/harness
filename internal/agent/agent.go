@@ -39,6 +39,11 @@ var errNoDirCreator = errors.New("agent: memory.Reader must also implement memor
 // error keeps test fakes that forget the capability discoverable.
 var errNoFileWriter = errors.New("agent: memory.Reader must also implement memory.FileWriter")
 
+// errNoDirRemover is returned by Delete when the underlying Reader
+// does not implement memory.DirRemover. Same shape as the writer/
+// creator counterparts above.
+var errNoDirRemover = errors.New("agent: memory.Reader must also implement memory.DirRemover")
+
 // ErrInvalidName is returned by Create when the requested agent name
 // fails validation (empty, too long, or contains disallowed
 // characters). Wrapped so callers can use errors.Is.
@@ -79,6 +84,12 @@ type Registry interface {
 	// WriteNotes replaces agents/<name>/notes.md with body. Same
 	// rules as WritePersona.
 	WriteNotes(name string, body []byte) error
+	// Delete removes agents/<name>/ and every file under it. The
+	// active agent is cleared before removal if it matched name so
+	// the prompt assembler is never left pointing at a vanished
+	// directory. Unknown agents return an error wrapping
+	// fs.ErrNotExist.
+	Delete(name string) error
 }
 
 // DiskRegistry lists agents by scanning agents/ in the memory repo.
@@ -89,6 +100,7 @@ type DiskRegistry struct {
 	lister    memory.DirLister
 	creator   memory.DirCreator
 	writer    memory.FileWriter
+	remover   memory.DirRemover
 	mu        sync.Mutex
 	getActive func() string
 	setActive func(string) error
@@ -110,10 +122,12 @@ func NewDiskRegistry(mem memory.Reader, getActive func() string, setActive func(
 	dl, _ := mem.(memory.DirLister)
 	dc, _ := mem.(memory.DirCreator)
 	fw, _ := mem.(memory.FileWriter)
+	dr, _ := mem.(memory.DirRemover)
 	return &DiskRegistry{
 		lister:    dl,
 		creator:   dc,
 		writer:    fw,
+		remover:   dr,
 		getActive: getActive,
 		setActive: setActive,
 	}
@@ -279,6 +293,57 @@ func (r *DiskRegistry) WriteNotes(name string, body []byte) error {
 	}
 	if err := r.writer.WriteFile(a.NotesPath, body); err != nil {
 		return fmt.Errorf("agent: write notes %q: %w", name, err)
+	}
+	return nil
+}
+
+// Delete removes agents/<name>/ and any files under it. The name is
+// validated so a malformed string can never escape the agents/ root.
+// If the requested agent is currently active, the active selection
+// is cleared first so the prompt assembler and hot-reload watcher
+// are never left pointing at a vanished directory.
+func (r *DiskRegistry) Delete(name string) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
+	if r.lister == nil {
+		return errNoDirLister
+	}
+	if r.remover == nil {
+		return errNoDirRemover
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	existing, err := r.lister.ListDirs(agentsDir)
+	if err != nil {
+		return fmt.Errorf("agent: delete %q: %w", name, err)
+	}
+	found := false
+	for _, n := range existing {
+		if n == name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("agent: %q: %w", name, fs.ErrNotExist)
+	}
+
+	// Clear active before removing the directory so anything that
+	// observes the active value (prompt assembler, hot-reload
+	// watcher) sees a consistent state - never "active points at a
+	// missing folder". The callbacks are optional in test setups, so
+	// only act when both are wired.
+	if r.getActive != nil && r.setActive != nil && r.getActive() == name {
+		if err := r.setActive(""); err != nil {
+			return fmt.Errorf("agent: delete %q: clear active: %w", name, err)
+		}
+	}
+
+	if err := r.remover.RemoveAll(path.Join(agentsDir, name)); err != nil {
+		return fmt.Errorf("agent: delete %q: %w", name, err)
 	}
 	return nil
 }
