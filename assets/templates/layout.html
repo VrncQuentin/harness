@@ -19,8 +19,22 @@
       <a href="/memory" class="nav-link {{if eq .Page "memory"}}active{{end}}">Memory</a>
       <a href="/config" class="nav-link {{if eq .Page "config"}}active{{end}}">Config</a>
     </nav>
+    <div class="topbar-actions">
+      <button type="button" class="btn btn-danger btn-sm" data-open-dialog="harness-shutdown" data-confirm-text="Shut down the harness?">Shut down</button>
+    </div>
   </div>
 </header>
+
+<dialog id="harness-shutdown" class="modal">
+  <form method="post" action="/shutdown" class="modal-form">
+    <h3 class="modal-title">Shut down the harness?</h3>
+    <p class="modal-body">Stops the API server, drains the queue, terminates llama-server and the embedder, flushes the database, and exits the process. The browser tab will lose its connection.</p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-close-dialog>Cancel</button>
+      <button type="submit" class="btn btn-danger">Shut down</button>
+    </div>
+  </form>
+</dialog>
 
 <main class="wrap main">
 {{template "content" .}}
