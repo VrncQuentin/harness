@@ -16,8 +16,12 @@ import (
 
 // Request is a single queued inference request.
 type Request struct {
-	ID       string
-	Messages []inference.Message
+	ID          string
+	Model       string
+	Messages    []inference.Message
+	Temperature float64
+	TopP        float64
+	MaxTokens   int
 	// Response is closed after the last token or on error.
 	Response chan<- inference.Token
 	Ctx      context.Context
@@ -30,6 +34,8 @@ var (
 	// ErrNoClient is returned to dispatched requests when no inference
 	// client is configured.
 	ErrNoClient = errors.New("queue: no inference client configured")
+	// ErrStopped is returned when callers try to enqueue after Stop begins.
+	ErrStopped = errors.New("queue: stopped")
 )
 
 // walRecord is a single WAL entry, JSON-encoded.
@@ -44,6 +50,9 @@ type Queue struct {
 	maxDepth int
 	ch       chan Request
 	depth    atomic.Int64
+	stopped  atomic.Bool
+	stopOnce sync.Once
+	enqMu    sync.RWMutex
 
 	walPath string
 	walMu   sync.Mutex
@@ -83,18 +92,31 @@ func (q *Queue) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop waits for the worker to drain and finish.
+// Stop closes the intake channel, waits for the worker to drain accepted
+// requests, then closes the WAL.
 func (q *Queue) Stop() {
-	q.wg.Wait()
-	if q.walFile != nil {
-		q.walMu.Lock()
-		_ = q.walFile.Close()
-		q.walMu.Unlock()
-	}
+	q.stopOnce.Do(func() {
+		q.enqMu.Lock()
+		q.stopped.Store(true)
+		close(q.ch)
+		q.enqMu.Unlock()
+
+		q.wg.Wait()
+		if q.walFile != nil {
+			q.walMu.Lock()
+			_ = q.walFile.Close()
+			q.walMu.Unlock()
+		}
+	})
 }
 
 // Enqueue adds a request to the queue. Returns ErrQueueFull if at capacity.
 func (q *Queue) Enqueue(req Request) error {
+	q.enqMu.RLock()
+	defer q.enqMu.RUnlock()
+	if q.stopped.Load() {
+		return ErrStopped
+	}
 	select {
 	case q.ch <- req:
 		q.depth.Add(1)
@@ -145,29 +167,49 @@ func (q *Queue) dispatch(req Request) {
 	q.clientMu.RUnlock()
 
 	if client == nil {
-		req.Response <- inference.Token{Err: ErrNoClient}
+		q.send(req.Ctx, req.Response, inference.Token{Err: ErrNoClient})
 		return
 	}
 
 	tokenCh, err := client.Complete(req.Ctx, inference.CompletionRequest{
-		Messages: req.Messages,
-		Stream:   true,
+		Model:       req.Model,
+		Messages:    req.Messages,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		MaxTokens:   req.MaxTokens,
+		Stream:      true,
 	})
 	if err != nil {
-		req.Response <- inference.Token{Err: fmt.Errorf("queue: inference: %w", err)}
+		q.send(req.Ctx, req.Response, inference.Token{Err: fmt.Errorf("queue: inference: %w", err)})
 		return
 	}
 
 	for tok := range tokenCh {
 		select {
 		case <-req.Ctx.Done():
-			req.Response <- inference.Token{Err: req.Ctx.Err()}
+			q.trySend(req.Response, inference.Token{Err: req.Ctx.Err()})
 			return
 		case req.Response <- tok:
 		}
 		if tok.Done || tok.Err != nil {
 			return
 		}
+	}
+}
+
+func (q *Queue) send(ctx context.Context, resp chan<- inference.Token, tok inference.Token) bool {
+	select {
+	case resp <- tok:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func (q *Queue) trySend(resp chan<- inference.Token, tok inference.Token) {
+	select {
+	case resp <- tok:
+	default:
 	}
 }
 

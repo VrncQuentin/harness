@@ -122,8 +122,13 @@ func run() error {
 	// Root context - cancelled when tray quit is triggered.
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 
-	// Step 3: Start UI server - must succeed before we proceed.
-	uiServer := ui.NewServer(3000)
+	// Step 3: Start UI server - must succeed before we proceed. The port is
+	// the only config value we peek before the UI is live, because the browser
+	// and tray need to target the listener that actually starts.
+	dbPath := filepath.Join(binDir, dbFilename)
+	uiPort := db.PeekUIPort(dbPath, config.Defaults().UI.Port)
+	uiURL := fmt.Sprintf("http://localhost:%d", uiPort)
+	uiServer := ui.NewServer(uiPort)
 	uiServer.SetBinDir(binDir)
 	uiServer.SetLogRing(logRing)
 	uiServer.SetLlamaOutputRing(llamaRing)
@@ -132,10 +137,9 @@ func run() error {
 		rootCancel()
 		return fmt.Errorf("UI server start: %w", err)
 	}
-	slog.Info("ui server listening", "url", "http://localhost:3000")
+	slog.Info("ui server listening", "url", uiURL)
 
 	// Step 4: Open the shared harness database.
-	dbPath := filepath.Join(binDir, dbFilename)
 	harnessDB, cfgStore, metricsStore := openDB(uiServer, dbPath)
 	if harnessDB != nil {
 		slog.Info("harness.db opened", "path", dbPath)
@@ -213,14 +217,13 @@ func run() error {
 	if cfg.UI.OpenOnStart {
 		go func() {
 			time.Sleep(200 * time.Millisecond)
-			exec.Command("cmd", "/c", "start", "http://localhost:3000").Run() //nolint:errcheck
+			exec.Command("cmd", "/c", "start", uiURL).Run() //nolint:errcheck
 		}()
 	}
 
 	// Shutdown function called by tray Quit.
 	onQuit := func() {
 		slog.Info("harness shutting down")
-		rootCancel()
 		rt.mu.Lock()
 		q := rt.reqQueue
 		apiSrv := rt.apiServer
@@ -229,13 +232,14 @@ func run() error {
 		if apiSrv != nil {
 			apiSrv.Stop()
 		}
+		if q != nil {
+			q.Stop()
+		}
+		rootCancel()
 		if hr != nil {
 			if err := hr.Close(); err != nil {
 				slog.Warn("prompt hot-reload close", "err", err)
 			}
-		}
-		if q != nil {
-			q.Stop()
 		}
 		if harnessDB != nil {
 			_ = harnessDB.Close()
@@ -243,7 +247,6 @@ func run() error {
 	}
 
 	// Step 9: Hand off to tray.Run() - this blocks until Quit.
-	uiURL := fmt.Sprintf("http://localhost:%d", cfg.UI.Port)
 	tray.Run(uiURL, onQuit)
 	return nil
 }
