@@ -135,6 +135,14 @@ func defaultTokenize(s string) int {
 	return (utf8.RuneCountInString(s) + 3) / 4
 }
 
+// EstimateTokens returns the rune-quarter token estimate for s. It is
+// the same heuristic the assembler uses internally, exposed so other
+// callers (the UI memory page) can show consistent numbers without
+// pulling in a real tokenizer.
+func EstimateTokens(s string) int {
+	return defaultTokenize(s)
+}
+
 // Assemble builds the final message slice for agentName given
 // conversation. It returns the system prompt prepended to the
 // conversation, the per-layer token counts, and any error that halts

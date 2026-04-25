@@ -4,7 +4,9 @@
 package memory
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -52,8 +54,8 @@ type DirCreator interface {
 }
 
 // FileWriter is an optional capability some Readers expose for
-// writing files under the repo root. The agent registry uses this
-// when available to persist edits to persona.md and notes.md;
+// writing files under the repo root. The agent registry and the UI
+// memory editor both use this to persist edits to markdown files;
 // callers can type-assert on it.
 type FileWriter interface {
 	// WriteFile writes data to relPath, replacing any existing file
@@ -62,6 +64,27 @@ type FileWriter interface {
 	// concurrent readers (e.g. the prompt hot-reload watcher) never
 	// observe a partial write.
 	WriteFile(relPath string, data []byte) error
+}
+
+// Walker is an optional capability some Readers expose for enumerating
+// every entry under a path. The UI memory page uses it to render the
+// repo as a tree with token estimates per file.
+type Walker interface {
+	// Walk returns all entries under relPath (excluding relPath
+	// itself), depth-first, sorted lexicographically. An empty
+	// relPath enumerates the whole repo. A missing relPath yields
+	// an empty slice and no error so callers can tolerate a
+	// partially-scaffolded repo. The .git directory is skipped so
+	// internal git plumbing never leaks into the UI.
+	Walk(relPath string) ([]Entry, error)
+}
+
+// Entry describes one path under the memory repo as returned by Walk.
+// Path is forward-slash relative to the repo root.
+type Entry struct {
+	Path string
+	Dir  bool
+	Size int64
 }
 
 // DirReader serves files from a directory on the local filesystem. It is
@@ -74,14 +97,16 @@ type DirReader struct {
 }
 
 // Compile-time assertions that *DirReader satisfies Reader and the
-// optional DirLister/DirCreator capabilities, per the Uber Go style
-// guide's "Verify Interface Compliance" rule. Keeping each on its own
-// line surfaces the missing method when one interface drifts.
+// optional DirLister/DirCreator/FileWriter/Walker capabilities, per
+// the Uber Go style guide's "Verify Interface Compliance" rule.
+// Keeping each on its own line surfaces the missing method when one
+// interface drifts.
 var (
 	_ Reader     = (*DirReader)(nil)
 	_ DirLister  = (*DirReader)(nil)
 	_ DirCreator = (*DirReader)(nil)
 	_ FileWriter = (*DirReader)(nil)
+	_ Walker     = (*DirReader)(nil)
 )
 
 // NewDirReader returns a DirReader rooted at root.
@@ -226,6 +251,57 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 	}
 	sort.Strings(matches)
 	return matches, nil
+}
+
+// Walk implements Walker. The .git directory is pruned so the editor
+// never sees git plumbing, even when memory/ is a real git repo.
+func (r *DirReader) Walk(relPath string) ([]Entry, error) {
+	if relPath != "" {
+		if err := checkRel(relPath); err != nil {
+			return nil, err
+		}
+	}
+	absRoot := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	var out []Entry
+	err := filepath.WalkDir(absRoot, func(absPath string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if absPath == absRoot {
+			return nil
+		}
+		rel, err := filepath.Rel(r.Root, absPath)
+		if err != nil {
+			return err
+		}
+		relSlash := filepath.ToSlash(rel)
+		// Prune .git anywhere under the repo - the memory directory is
+		// itself a git repo (M3) and we never want plumbing in the UI.
+		if d.Name() == ".git" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		out = append(out, Entry{
+			Path: relSlash,
+			Dir:  d.IsDir(),
+			Size: info.Size(),
+		})
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	return out, nil
 }
 
 // resolve turns a forward-slash relative path into an absolute OS path.
