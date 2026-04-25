@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // LayoutItem describes one entry the canonical memory layout requires.
@@ -51,14 +52,9 @@ func MissingItems(root string) ([]LayoutItem, error) {
 	if root == "" {
 		return nil, errors.New("memory: repo path is empty")
 	}
-	info, err := os.Stat(root)
-	if err != nil {
-		return nil, fmt.Errorf("memory: stat repo root %s: %w", root, err)
+	if err := validateRootDir(root); err != nil {
+		return nil, err
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("memory: repo path is not a directory: %s", root)
-	}
-
 	expected := ExpectedLayout()
 	var missing []LayoutItem
 	for _, item := range expected {
@@ -92,12 +88,8 @@ func CreateMissing(root string, items []LayoutItem) error {
 	if root == "" {
 		return errors.New("memory: repo path is empty")
 	}
-	info, err := os.Stat(root)
-	if err != nil {
-		return fmt.Errorf("memory: stat repo root %s: %w", root, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("memory: repo path is not a directory: %s", root)
+	if err := validateRootDir(root); err != nil {
+		return err
 	}
 
 	for _, item := range items {
@@ -139,4 +131,62 @@ func CreateMissing(root string, items []LayoutItem) error {
 		}
 	}
 	return nil
+}
+
+// ValidateRepo verifies that root is a usable memory repo for prompt assembly
+// and API serving. Unlike MissingItems, missing canonical layout entries are
+// an error here because the API cannot assemble prompts without them.
+func ValidateRepo(root string) error {
+	if root == "" {
+		return errors.New("memory: memory.repo_path is required")
+	}
+	if err := validateRootDir(root); err != nil {
+		return err
+	}
+	if err := validateGitDir(root); err != nil {
+		return err
+	}
+
+	missing, err := MissingItems(root)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("memory: repo layout incomplete: missing %s", layoutPaths(missing))
+	}
+	return nil
+}
+
+func validateRootDir(root string) error {
+	info, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("memory: stat repo root %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("memory: repo path is not a directory: %s", root)
+	}
+	return nil
+}
+
+func validateGitDir(root string) error {
+	gitPath := filepath.Join(root, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("memory: repo path is not a git repo: %s (missing .git)", root)
+		}
+		return fmt.Errorf("memory: stat .git in %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("memory: repo path is not a plain git repo: %s (.git is not a directory)", root)
+	}
+	return nil
+}
+
+func layoutPaths(items []LayoutItem) string {
+	paths := make([]string, 0, len(items))
+	for _, item := range items {
+		paths = append(paths, item.Path)
+	}
+	return strings.Join(paths, ", ")
 }
