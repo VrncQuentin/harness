@@ -562,7 +562,25 @@ func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
 	}
 	out := make([]ui.AgentInfo, 0, len(agents))
 	for _, a := range agents {
-		out = append(out, ui.AgentInfo{Name: a.Name, PersonaPath: a.PersonaPath})
+		info := ui.AgentInfo{
+			Name:        a.Name,
+			PersonaPath: a.PersonaPath,
+			RulesPath:   a.RulesPath,
+			NotesPath:   a.NotesPath,
+		}
+		// Hydrate file contents so the /agents page can render each
+		// card inline without re-fetching. Missing files surface as
+		// empty strings rather than aborting the whole list.
+		if persona, err := readOptional(ad.mem, a.PersonaPath); err == nil {
+			info.Persona = persona
+		}
+		if rules, err := readOptional(ad.mem, a.RulesPath); err == nil {
+			info.Rules = rules
+		}
+		if notes, err := readOptional(ad.mem, a.NotesPath); err == nil {
+			info.Notes = notes
+		}
+		out = append(out, info)
 	}
 	return out, nil
 }

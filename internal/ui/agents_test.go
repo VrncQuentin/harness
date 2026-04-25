@@ -479,7 +479,7 @@ func TestHandleAgents_GETShowsCreatedFlash(t *testing.T) {
 	}
 }
 
-func TestHandleAgents_GETRendersEditableTextareas(t *testing.T) {
+func TestHandleAgents_GETRendersEditableTextareasInEditMode(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{
 		Name:        "coder",
@@ -492,7 +492,7 @@ func TestHandleAgents_GETRendersEditableTextareas(t *testing.T) {
 	})
 	s.SetAgentRegistry(reg)
 
-	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
+	req := httptest.NewRequest(http.MethodGet, "/agents?edit=coder", nil)
 	rec := httptest.NewRecorder()
 	s.handleAgents(rec, req)
 
@@ -504,6 +504,7 @@ func TestHandleAgents_GETRendersEditableTextareas(t *testing.T) {
 		`action="/agents/persona"`,
 		`action="/agents/rules"`,
 		`action="/agents/notes"`,
+		`name="name" value="coder"`,
 		"current persona",
 		"current rules",
 		"current notes",
@@ -515,9 +516,17 @@ func TestHandleAgents_GETRendersEditableTextareas(t *testing.T) {
 	}
 }
 
-func TestHandleAgents_GETHidesEditorsWhenNoActive(t *testing.T) {
+func TestHandleAgents_GETShowsViewModeByDefault(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("", AgentInfo{Name: "coder"}))
+	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{
+		Name:        "coder",
+		PersonaPath: "agents/coder/persona.md",
+		Persona:     "p",
+		RulesPath:   "agents/coder/rules.md",
+		Rules:       "r",
+		NotesPath:   "agents/coder/notes.md",
+		Notes:       "n",
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
 	rec := httptest.NewRecorder()
@@ -527,17 +536,50 @@ func TestHandleAgents_GETHidesEditorsWhenNoActive(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
+	for _, banned := range []string{
+		`action="/agents/persona"`,
+		`action="/agents/rules"`,
+		`action="/agents/notes"`,
+	} {
+		if strings.Contains(body, banned) {
+			t.Errorf("expected edit form %q hidden in view mode, got:\n%s", banned, body)
+		}
+	}
+	if !strings.Contains(body, `href="/agents?edit=coder"`) {
+		t.Errorf("expected Edit link to enter edit mode, got:\n%s", body)
+	}
+}
+
+func TestHandleAgents_GETUnknownEditQueryFallsBackToView(t *testing.T) {
+	s := NewServer(3000)
+	s.SetAgentRegistry(newStubRegistry("", AgentInfo{Name: "coder", Persona: "p"}))
+
+	req := httptest.NewRequest(http.MethodGet, "/agents?edit=ghost", nil)
+	rec := httptest.NewRecorder()
+	s.handleAgents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
 	if strings.Contains(body, `action="/agents/persona"`) {
-		t.Errorf("expected persona form hidden when no active, got:\n%s", body)
+		t.Errorf("expected no edit form for unknown agent, got:\n%s", body)
 	}
-	if strings.Contains(body, `action="/agents/rules"`) {
-		t.Errorf("expected rules form hidden when no active, got:\n%s", body)
+}
+
+func TestHandleAgents_GETOmitsNoneOption(t *testing.T) {
+	s := NewServer(3000)
+	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+
+	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
+	rec := httptest.NewRecorder()
+	s.handleAgents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if strings.Contains(body, `action="/agents/notes"`) {
-		t.Errorf("expected notes form hidden when no active, got:\n%s", body)
-	}
-	if !strings.Contains(body, "No active agent selected") {
-		t.Errorf("expected empty-state hint, got:\n%s", body)
+	if strings.Contains(rec.Body.String(), "(none)") {
+		t.Errorf("expected (none) option removed, got:\n%s", rec.Body.String())
 	}
 }
 
@@ -547,6 +589,7 @@ func TestHandleAgentsPersona_POSTRedirectsAndWrites(t *testing.T) {
 	s.SetAgentRegistry(reg)
 
 	form := url.Values{}
+	form.Set("name", "coder")
 	form.Set("body", "new persona body")
 	req := httptest.NewRequest(http.MethodPost, "/agents/persona", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -556,7 +599,7 @@ func TestHandleAgentsPersona_POSTRedirectsAndWrites(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
-	if got, want := rec.Header().Get("Location"), "/agents?saved=persona"; got != want {
+	if got, want := rec.Header().Get("Location"), "/agents?edit=coder&saved=persona"; got != want {
 		t.Errorf("Location = %q, want %q", got, want)
 	}
 	if got := reg.personaCalls.Load(); got != 1 {
@@ -571,12 +614,41 @@ func TestHandleAgentsPersona_POSTRedirectsAndWrites(t *testing.T) {
 	}
 }
 
+func TestHandleAgentsPersona_POSTWritesNonActiveAgent(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("coder",
+		AgentInfo{Name: "coder"},
+		AgentInfo{Name: "reviewer"},
+	)
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("name", "reviewer")
+	form.Set("body", "for the reviewer")
+	req := httptest.NewRequest(http.MethodPost, "/agents/persona", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsPersona(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	gotName, gotBody := reg.lastPersonaWrite()
+	if gotName != "reviewer" {
+		t.Errorf("WritePersona name = %q, want reviewer", gotName)
+	}
+	if gotBody != "for the reviewer" {
+		t.Errorf("WritePersona body = %q, want %q", gotBody, "for the reviewer")
+	}
+}
+
 func TestHandleAgentsRules_POSTRedirectsAndWrites(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
 	s.SetAgentRegistry(reg)
 
 	form := url.Values{}
+	form.Set("name", "coder")
 	form.Set("body", "new rules body")
 	req := httptest.NewRequest(http.MethodPost, "/agents/rules", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -586,7 +658,7 @@ func TestHandleAgentsRules_POSTRedirectsAndWrites(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
-	if got, want := rec.Header().Get("Location"), "/agents?saved=rules"; got != want {
+	if got, want := rec.Header().Get("Location"), "/agents?edit=coder&saved=rules"; got != want {
 		t.Errorf("Location = %q, want %q", got, want)
 	}
 	if got := reg.rulesCalls.Load(); got != 1 {
@@ -607,6 +679,7 @@ func TestHandleAgentsNotes_POSTRedirectsAndWrites(t *testing.T) {
 	s.SetAgentRegistry(reg)
 
 	form := url.Values{}
+	form.Set("name", "coder")
 	form.Set("body", "new notes body")
 	req := httptest.NewRequest(http.MethodPost, "/agents/notes", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -616,7 +689,7 @@ func TestHandleAgentsNotes_POSTRedirectsAndWrites(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
-	if got, want := rec.Header().Get("Location"), "/agents?saved=notes"; got != want {
+	if got, want := rec.Header().Get("Location"), "/agents?edit=coder&saved=notes"; got != want {
 		t.Errorf("Location = %q, want %q", got, want)
 	}
 	if got := reg.notesCalls.Load(); got != 1 {
@@ -631,9 +704,9 @@ func TestHandleAgentsNotes_POSTRedirectsAndWrites(t *testing.T) {
 	}
 }
 
-func TestHandleAgentsPersona_POSTNoActiveReturns400(t *testing.T) {
+func TestHandleAgentsPersona_POSTMissingNameReturns400(t *testing.T) {
 	s := NewServer(3000)
-	reg := newStubRegistry("", AgentInfo{Name: "coder"})
+	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
 	s.SetAgentRegistry(reg)
 
 	form := url.Values{}
@@ -651,9 +724,30 @@ func TestHandleAgentsPersona_POSTNoActiveReturns400(t *testing.T) {
 	}
 }
 
-func TestHandleAgentsRules_POSTNoActiveReturns400(t *testing.T) {
+func TestHandleAgentsPersona_POSTUnknownNameReturns400(t *testing.T) {
 	s := NewServer(3000)
-	reg := newStubRegistry("", AgentInfo{Name: "coder"})
+	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("name", "ghost")
+	form.Set("body", "x")
+	req := httptest.NewRequest(http.MethodPost, "/agents/persona", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsPersona(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	if got := reg.personaCalls.Load(); got != 0 {
+		t.Errorf("expected WritePersona not called, got %d", got)
+	}
+}
+
+func TestHandleAgentsRules_POSTMissingNameReturns400(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
 	s.SetAgentRegistry(reg)
 
 	form := url.Values{}
@@ -671,9 +765,9 @@ func TestHandleAgentsRules_POSTNoActiveReturns400(t *testing.T) {
 	}
 }
 
-func TestHandleAgentsNotes_POSTNoActiveReturns400(t *testing.T) {
+func TestHandleAgentsNotes_POSTMissingNameReturns400(t *testing.T) {
 	s := NewServer(3000)
-	reg := newStubRegistry("", AgentInfo{Name: "coder"})
+	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
 	s.SetAgentRegistry(reg)
 
 	form := url.Values{}
@@ -698,6 +792,7 @@ func TestHandleAgentsPersona_POSTRegistryErrorRendersForm(t *testing.T) {
 	s.SetAgentRegistry(reg)
 
 	form := url.Values{}
+	form.Set("name", "coder")
 	form.Set("body", "in-flight body")
 	req := httptest.NewRequest(http.MethodPost, "/agents/persona", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -722,6 +817,7 @@ func TestHandleAgentsRules_POSTRegistryErrorRendersForm(t *testing.T) {
 	s.SetAgentRegistry(reg)
 
 	form := url.Values{}
+	form.Set("name", "coder")
 	form.Set("body", "in-flight rules")
 	req := httptest.NewRequest(http.MethodPost, "/agents/rules", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -746,6 +842,7 @@ func TestHandleAgentsNotes_POSTRegistryErrorRendersForm(t *testing.T) {
 	s.SetAgentRegistry(reg)
 
 	form := url.Values{}
+	form.Set("name", "coder")
 	form.Set("body", "in-flight notes")
 	req := httptest.NewRequest(http.MethodPost, "/agents/notes", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

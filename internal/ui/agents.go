@@ -60,12 +60,9 @@ func (s *Server) agentRegistry() AgentRegistry {
 // agentsView is the template context for the /agents page.
 type agentsView struct {
 	basePage
-	Agents        []AgentInfo
-	Active        string
-	ActivePersona string
-	ActiveRules   string
-	ActiveNotes   string
-	Error         string
+	Agents []AgentInfo
+	Active string
+	Error  string
 	// Configured is false when no registry has been wired up yet (typically
 	// because memory.repo_path is unset or invalid). The template then
 	// swaps the normal cards for a setup CTA.
@@ -82,8 +79,13 @@ type agentsView struct {
 	// Saved drives a one-shot "saved" flash after a successful edit.
 	// Values are "persona", "rules", or "notes"; empty otherwise.
 	Saved string
-	// SaveErr is set when an edit POST fails, rendered next to the
-	// editor so the user can correct and resubmit.
+	// EditName is the agent currently in edit mode (from the ?edit=
+	// query param or set by an edit POST that failed). Empty means
+	// every card is in view mode.
+	EditName string
+	// SaveErr is set when an edit POST fails, rendered above the
+	// editor so the user can correct and resubmit. Pairs with
+	// EditName so the failed agent's card stays in edit mode.
 	SaveErr string
 }
 
@@ -103,13 +105,27 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 	case "persona", "rules", "notes":
 		data.Saved = r.URL.Query().Get("saved")
 	}
+	if edit := strings.TrimSpace(r.URL.Query().Get("edit")); edit != "" {
+		// Only enter edit mode if the named agent actually exists -
+		// a stale or hand-edited URL silently falls back to view mode
+		// rather than rendering an empty editor for a ghost agent.
+		for _, a := range data.Agents {
+			if a.Name == edit {
+				data.EditName = edit
+				break
+			}
+		}
+	}
 	s.renderAgents(w, data)
 }
 
 // buildAgentsView assembles the registry-backed fields of agentsView. It
-// is shared by handleAgents (GET render) and handleAgentsCreate (POST
-// validation-error re-render) so both paths show the same list and
-// active persona without duplicating the resolution logic.
+// is shared by handleAgents (GET render) and the create/edit POST
+// re-render paths so all of them show the same list without
+// duplicating the resolution logic. Persona/rules/notes are sourced
+// from the registry's List() output, which the adapter hydrates with
+// file contents - that lets each card render inline without an extra
+// Get() per agent.
 func (s *Server) buildAgentsView() agentsView {
 	data := agentsView{basePage: s.newBasePage("agents")}
 	reg := s.agentRegistry()
@@ -123,24 +139,7 @@ func (s *Server) buildAgentsView() agentsView {
 		data.Error = err.Error()
 	}
 	data.Agents = list
-
-	active := reg.Active()
-	data.Active = active
-	if active != "" {
-		info, err := reg.Get(active)
-		if err != nil {
-			// Keep the previous error (if any) visible; otherwise surface
-			// this one. Listing succeeding but Get failing is a weird
-			// state worth telling the user about.
-			if data.Error == "" {
-				data.Error = err.Error()
-			}
-		} else {
-			data.ActivePersona = info.Persona
-			data.ActiveRules = info.Rules
-			data.ActiveNotes = info.Notes
-		}
-	}
+	data.Active = reg.Active()
 	return data
 }
 
@@ -253,9 +252,12 @@ func (s *Server) handleAgentsNotes(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAgentsEdit is the shared body for handleAgentsPersona and
-// handleAgentsNotes - they differ only in which writer they call and
-// the saved-flash key returned in the redirect URL.
+// handleAgentsEdit is the shared body for handleAgentsPersona,
+// handleAgentsRules, and handleAgentsNotes - they differ only in
+// which writer they call and the saved-flash key returned in the
+// redirect URL. The agent name is read from the form so the page can
+// edit any agent (not just the active one); each card embeds its own
+// name as a hidden field.
 func (s *Server) handleAgentsEdit(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -281,9 +283,13 @@ func (s *Server) handleAgentsEdit(
 		return
 	}
 
-	name := reg.Active()
+	name := strings.TrimSpace(r.FormValue("name"))
 	if name == "" {
-		http.Error(w, "no active agent", http.StatusBadRequest)
+		http.Error(w, "missing agent name", http.StatusBadRequest)
+		return
+	}
+	if _, err := reg.Get(name); err != nil {
+		http.Error(w, "unknown agent: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -291,20 +297,29 @@ func (s *Server) handleAgentsEdit(
 	if err := write(reg, name, body); err != nil {
 		data := s.buildAgentsView()
 		data.SaveErr = err.Error()
+		data.EditName = name
 		// Show what the user just typed so they don't lose work
 		// after a write failure on the relevant editor.
-		switch kind {
-		case "persona":
-			data.ActivePersona = string(body)
-		case "rules":
-			data.ActiveRules = string(body)
-		case "notes":
-			data.ActiveNotes = string(body)
+		for i := range data.Agents {
+			if data.Agents[i].Name != name {
+				continue
+			}
+			switch kind {
+			case "persona":
+				data.Agents[i].Persona = string(body)
+			case "rules":
+				data.Agents[i].Rules = string(body)
+			case "notes":
+				data.Agents[i].Notes = string(body)
+			}
+			break
 		}
 		w.WriteHeader(http.StatusBadRequest)
 		s.renderAgents(w, data)
 		return
 	}
 
-	http.Redirect(w, r, "/agents?saved="+kind, http.StatusSeeOther)
+	// Stay in edit mode after save so the user can keep tweaking
+	// without re-clicking Edit on every save.
+	http.Redirect(w, r, "/agents?edit="+url.QueryEscape(name)+"&saved="+kind, http.StatusSeeOther)
 }
