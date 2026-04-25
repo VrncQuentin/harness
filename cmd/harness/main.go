@@ -447,8 +447,9 @@ func (rt *runtime) getManagers() (*proc.Manager, *proc.Manager) {
 
 // startMemoryAndAPI brings up the memory reader, agent registry, prompt
 // assembler, hot-reload watcher, and (when enabled) the API server based
-// on rt.cfg. A missing memory.repo_path leaves every M2 field nil so the
-// /agents page renders the setup CTA instead of crashing.
+// on rt.cfg. An invalid memory.repo_path leaves every M2 field nil and
+// surfaces a startup error instead of binding an API that cannot assemble
+// prompts.
 //
 // Caller must hold rt.mu.
 func (rt *runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server) {
@@ -457,9 +458,13 @@ func (rt *runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server) {
 	// scaffold them. An empty path here clears the previous value, which
 	// suppresses the prompt entirely.
 	uiServer.SetMemoryRepoPath(rt.cfg.Memory.RepoPath)
-	if rt.cfg.Memory.RepoPath == "" {
+	if err := memory.ValidateRepo(rt.cfg.Memory.RepoPath); err != nil {
 		uiServer.SetAgentRegistry(nil)
 		uiServer.SetMemoryStore(nil)
+		uiServer.AddStartupError(fmt.Errorf("memory repo: %w", err))
+		if rt.cfg.API.Enabled {
+			uiServer.AddStartupError(errors.New("api server disabled: memory repo is not valid"))
+		}
 		return
 	}
 
