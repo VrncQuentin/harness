@@ -199,3 +199,55 @@ func TestDirReader_ListDirsRejectsTraversal(t *testing.T) {
 		t.Error("ListDirs with traversal: expected error, got nil")
 	}
 }
+
+func TestDirReader_MkdirAllCreatesNested(t *testing.T) {
+	r := newTestRepo(t, nil)
+	if err := r.MkdirAll("agents/coder"); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	got, err := r.ListDirs("agents")
+	if err != nil {
+		t.Fatalf("ListDirs: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{"coder"}) {
+		t.Errorf("ListDirs after MkdirAll = %v, want [coder]", got)
+	}
+}
+
+func TestDirReader_MkdirAllIdempotent(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"agents/coder/persona.md": "x",
+	})
+	if err := r.MkdirAll("agents/coder"); err != nil {
+		t.Fatalf("MkdirAll on existing dir: %v", err)
+	}
+	// File under it should be untouched.
+	body, err := r.Read("agents/coder/persona.md")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(body) != "x" {
+		t.Errorf("MkdirAll clobbered file: got %q, want %q", string(body), "x")
+	}
+}
+
+func TestDirReader_MkdirAllRejectsTraversal(t *testing.T) {
+	r := newTestRepo(t, nil)
+	tests := []string{"", "../outside", "/etc/passwd", "agents/../..", "agents/..\\..\\etc"}
+	for _, p := range tests {
+		t.Run(p, func(t *testing.T) {
+			if err := r.MkdirAll(p); err == nil {
+				t.Errorf("MkdirAll(%q): expected error, got nil", p)
+			}
+		})
+	}
+}
+
+func TestDirReader_MkdirAllOverFileFails(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"agents/coder": "this is a file, not a dir",
+	})
+	if err := r.MkdirAll("agents/coder"); err == nil {
+		t.Error("MkdirAll over a file: expected error, got nil")
+	}
+}

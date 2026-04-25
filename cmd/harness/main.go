@@ -591,6 +591,11 @@ func (ad *uiAgentRegistryAdapter) SetActive(name string) error {
 	return ad.reg.SetActive(name)
 }
 
+func (ad *uiAgentRegistryAdapter) Create(name string) error {
+	_, err := ad.reg.Create(name)
+	return err
+}
+
 // errNoActiveAgent is surfaced when the OpenAI request omits the agent
 // field/header AND no active agent is configured. The message is
 // deliberately operator-facing so the API client sees a useful clue

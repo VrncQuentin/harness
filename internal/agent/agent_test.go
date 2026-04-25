@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/vrnc/harness/internal/memory"
@@ -188,5 +189,94 @@ func TestDiskRegistry_SetActivePropagatesPersistError(t *testing.T) {
 	err := reg.SetActive("coder")
 	if err == nil {
 		t.Fatal("SetActive: expected error from setErr callback, got nil")
+	}
+}
+
+func TestDiskRegistry_CreateMakesDirAndIsDiscoverable(t *testing.T) {
+	mem := newRepoWithAgents(t, nil)
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	got, err := reg.Create("coder")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	want := Agent{Name: "coder", PersonaPath: "agents/coder/persona.md", NotesPath: "agents/coder/notes.md"}
+	if got != want {
+		t.Errorf("Create =\n\t%v\nwant\n\t%v", got, want)
+	}
+
+	list, err := reg.List()
+	if err != nil {
+		t.Fatalf("List after Create: %v", err)
+	}
+	if !reflect.DeepEqual(list, []Agent{want}) {
+		t.Errorf("List after Create = %v, want %v", list, []Agent{want})
+	}
+	if _, err := reg.Get("coder"); err != nil {
+		t.Errorf("Get after Create: %v", err)
+	}
+}
+
+func TestDiskRegistry_CreateRejectsDuplicate(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md": "c",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	_, err := reg.Create("coder")
+	if err == nil {
+		t.Fatal("Create on existing agent: expected error, got nil")
+	}
+	if !errors.Is(err, ErrAgentExists) {
+		t.Errorf("Create duplicate: errors.Is(err, ErrAgentExists) = false, err = %v", err)
+	}
+}
+
+func TestDiskRegistry_CreateRejectsInvalidNames(t *testing.T) {
+	mem := newRepoWithAgents(t, nil)
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{"empty", ""},
+		{"slash", "foo/bar"},
+		{"backslash", "foo\\bar"},
+		{"space", "my agent"},
+		{"leading dot", ".hidden"},
+		{"leading dash", "-coder"},
+		{"dot only", "."},
+		{"dotdot", ".."},
+		{"unicode", "réviseur"},
+		{"too long", strings.Repeat("a", 65)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := reg.Create(tc.in)
+			if err == nil {
+				t.Fatalf("Create(%q): expected error, got nil", tc.in)
+			}
+			if !errors.Is(err, ErrInvalidName) {
+				t.Errorf("Create(%q): errors.Is(err, ErrInvalidName) = false, err = %v", tc.in, err)
+			}
+		})
+	}
+}
+
+func TestDiskRegistry_CreateAcceptsAllowedNames(t *testing.T) {
+	mem := newRepoWithAgents(t, nil)
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	for _, n := range []string{"coder", "code-reviewer", "agent_2", "agent.v2", "Z9"} {
+		t.Run(n, func(t *testing.T) {
+			if _, err := reg.Create(n); err != nil {
+				t.Fatalf("Create(%q): %v", n, err)
+			}
+		})
 	}
 }
