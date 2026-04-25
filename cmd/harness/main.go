@@ -45,14 +45,10 @@ type runtime struct {
 	logRing   *logbuf.Ring
 	llamaRing *logbuf.Ring
 	embedRing *logbuf.Ring
-	// logSink is the harness-wide log path (stderr + logRing). Child process
-	// output is tee'd through it as a fallback so the harness log card keeps
-	// the lines even when the proc-specific SSE pipeline drops on a burst.
-	logSink  io.Writer
-	llamaMgr *proc.Manager
-	embedMgr *proc.Manager
-	reqQueue *queue.Queue
-	started  bool
+	llamaMgr  *proc.Manager
+	embedMgr  *proc.Manager
+	reqQueue  *queue.Queue
+	started   bool
 }
 
 func main() {
@@ -161,7 +157,6 @@ func run() error {
 		logRing:   logRing,
 		llamaRing: llamaRing,
 		embedRing: embedRing,
-		logSink:   logSink,
 	}
 
 	// Boot-time start: if the user has previously saved config, bring services
@@ -252,11 +247,7 @@ func (rt *runtime) startServices(
 		Events:      events,
 		CheckPeriod: 5 * time.Second,
 		HTTPClient:  httpclient.New(),
-		// Fan child output to the proc card ring AND the harness log sink
-		// (stderr + harness ring). The proc card stays the primary view, but
-		// the harness log card keeps the lines too if its proc-specific SSE
-		// subscriber happens to drop on a burst.
-		Output: tee(rt.llamaRing, rt.logSink),
+		Output:      rt.llamaRing,
 	})
 	go rt.llamaMgr.Run(ctx)
 
@@ -274,7 +265,7 @@ func (rt *runtime) startServices(
 		Events:      events,
 		CheckPeriod: 5 * time.Second,
 		HTTPClient:  httpclient.New(),
-		Output:      tee(rt.embedRing, rt.logSink),
+		Output:      rt.embedRing,
 	})
 	go rt.embedMgr.Run(ctx)
 
