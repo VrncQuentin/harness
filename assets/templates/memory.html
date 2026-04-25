@@ -51,6 +51,21 @@
 
 {{define "memnode"}}
 <li class="tree-row">
+  {{if and (not .Dir) (not .Missing)}}
+  <details class="tree-file">
+    <summary>
+      <span class="tree-label">
+        <span class="tree-kind">file</span>
+        <span class="tree-name">{{.Name}}</span>
+      </span>
+      <span class="tree-meta">
+        <span class="tree-tokens mono">~{{.Tokens}} tok</span>
+        {{if .Editable}}<a class="tree-edit" href="/memory/edit?path={{.Path}}" onclick="event.stopPropagation()">edit</a>{{end}}
+      </span>
+    </summary>
+    {{if .Content}}<pre class="tree-content">{{.Content}}</pre>{{else}}<p class="tree-content-empty fg-hint">(empty file)</p>{{end}}
+  </details>
+  {{else}}
   <span class="tree-label{{if .Dir}} tree-dir{{end}}{{if .Missing}} tree-missing{{end}}">
     <span class="tree-kind">{{if .Dir}}dir{{else}}file{{end}}</span>
     <span class="tree-name">{{.Name}}</span>
@@ -60,6 +75,7 @@
     {{if not .Dir}}<span class="tree-tokens mono">~{{.Tokens}} tok</span>{{else if .Tokens}}<span class="tree-tokens mono">~{{.Tokens}} tok</span>{{end}}
     {{if .Editable}}<a class="tree-edit" href="/memory/edit?path={{.Path}}">{{if .Missing}}create{{else}}edit{{end}}</a>{{end}}
   </span>
+  {{end}}
   {{if .Children}}
   <ul class="tree">
     {{range .Children}}{{template "memnode" .}}{{end}}
