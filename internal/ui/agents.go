@@ -6,14 +6,16 @@ import (
 	"strings"
 )
 
-// AgentInfo describes a single discovered agent. Persona and Notes
-// hold the raw file contents (each may be empty when the corresponding
-// file is missing) so the page can render them without the handler
-// performing a second lookup.
+// AgentInfo describes a single discovered agent. Persona, Rules, and
+// Notes hold the raw file contents (each may be empty when the
+// corresponding file is missing) so the page can render them without
+// the handler performing a second lookup.
 type AgentInfo struct {
 	Name        string
 	PersonaPath string
 	Persona     string
+	RulesPath   string
+	Rules       string
 	NotesPath   string
 	Notes       string
 }
@@ -34,6 +36,8 @@ type AgentRegistry interface {
 	// The agent must already exist; the handler surfaces the error
 	// verbatim if it does not.
 	WritePersona(name string, body []byte) error
+	// WriteRules replaces the active agent's rules.md with body.
+	WriteRules(name string, body []byte) error
 	// WriteNotes replaces the active agent's notes.md with body.
 	WriteNotes(name string, body []byte) error
 }
@@ -59,6 +63,7 @@ type agentsView struct {
 	Agents        []AgentInfo
 	Active        string
 	ActivePersona string
+	ActiveRules   string
 	ActiveNotes   string
 	Error         string
 	// Configured is false when no registry has been wired up yet (typically
@@ -75,7 +80,7 @@ type agentsView struct {
 	// so they don't have to retype after a validation bounce.
 	CreateName string
 	// Saved drives a one-shot "saved" flash after a successful edit.
-	// Values are "persona" or "notes"; empty otherwise.
+	// Values are "persona", "rules", or "notes"; empty otherwise.
 	Saved string
 	// SaveErr is set when an edit POST fails, rendered next to the
 	// editor so the user can correct and resubmit.
@@ -95,7 +100,7 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 		data.CreatedName = name
 	}
 	switch r.URL.Query().Get("saved") {
-	case "persona", "notes":
+	case "persona", "rules", "notes":
 		data.Saved = r.URL.Query().Get("saved")
 	}
 	s.renderAgents(w, data)
@@ -132,6 +137,7 @@ func (s *Server) buildAgentsView() agentsView {
 			}
 		} else {
 			data.ActivePersona = info.Persona
+			data.ActiveRules = info.Rules
 			data.ActiveNotes = info.Notes
 		}
 	}
@@ -231,6 +237,14 @@ func (s *Server) handleAgentsPersona(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleAgentsRules writes the active agent's rules.md from the
+// posted form.
+func (s *Server) handleAgentsRules(w http.ResponseWriter, r *http.Request) {
+	s.handleAgentsEdit(w, r, "rules", func(reg AgentRegistry, name string, body []byte) error {
+		return reg.WriteRules(name, body)
+	})
+}
+
 // handleAgentsNotes writes the active agent's notes.md from the
 // posted form.
 func (s *Server) handleAgentsNotes(w http.ResponseWriter, r *http.Request) {
@@ -282,6 +296,8 @@ func (s *Server) handleAgentsEdit(
 		switch kind {
 		case "persona":
 			data.ActivePersona = string(body)
+		case "rules":
+			data.ActiveRules = string(body)
 		case "notes":
 			data.ActiveNotes = string(body)
 		}

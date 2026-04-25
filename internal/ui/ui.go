@@ -316,6 +316,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/agents/active", s.handleAgentsActive)
 	mux.HandleFunc("/agents/create", s.handleAgentsCreate)
 	mux.HandleFunc("/agents/persona", s.handleAgentsPersona)
+	mux.HandleFunc("/agents/rules", s.handleAgentsRules)
 	mux.HandleFunc("/agents/notes", s.handleAgentsNotes)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)

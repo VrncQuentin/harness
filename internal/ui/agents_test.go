@@ -23,6 +23,8 @@ type stubRegistry struct {
 	lastCreate   atomic.Value // string
 	personaCalls atomic.Int32
 	lastPersona  atomic.Value // [2]string {name, body}
+	rulesCalls   atomic.Int32
+	lastRules    atomic.Value // [2]string {name, body}
 	notesCalls   atomic.Int32
 	lastNotes    atomic.Value // [2]string {name, body}
 
@@ -31,6 +33,7 @@ type stubRegistry struct {
 	setErr     error
 	createErr  error
 	personaErr error
+	rulesErr   error
 	notesErr   error
 }
 
@@ -40,6 +43,7 @@ func newStubRegistry(active string, agents ...AgentInfo) *stubRegistry {
 	r.lastSet.Store("")
 	r.lastCreate.Store("")
 	r.lastPersona.Store([2]string{"", ""})
+	r.lastRules.Store([2]string{"", ""})
 	r.lastNotes.Store([2]string{"", ""})
 	return r
 }
@@ -117,6 +121,23 @@ func (r *stubRegistry) WritePersona(name string, body []byte) error {
 	return errors.New("agent not found: " + name)
 }
 
+func (r *stubRegistry) WriteRules(name string, body []byte) error {
+	r.rulesCalls.Add(1)
+	r.lastRules.Store([2]string{name, string(body)})
+	if r.rulesErr != nil {
+		return r.rulesErr
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, a := range r.agents {
+		if a.Name == name {
+			r.agents[i].Rules = string(body)
+			return nil
+		}
+	}
+	return errors.New("agent not found: " + name)
+}
+
 func (r *stubRegistry) WriteNotes(name string, body []byte) error {
 	r.notesCalls.Add(1)
 	r.lastNotes.Store([2]string{name, string(body)})
@@ -146,6 +167,11 @@ func (r *stubRegistry) lastCreated() string {
 
 func (r *stubRegistry) lastPersonaWrite() (string, string) {
 	v, _ := r.lastPersona.Load().([2]string)
+	return v[0], v[1]
+}
+
+func (r *stubRegistry) lastRulesWrite() (string, string) {
+	v, _ := r.lastRules.Load().([2]string)
 	return v[0], v[1]
 }
 
@@ -459,6 +485,8 @@ func TestHandleAgents_GETRendersEditableTextareas(t *testing.T) {
 		Name:        "coder",
 		PersonaPath: "agents/coder/persona.md",
 		Persona:     "current persona",
+		RulesPath:   "agents/coder/rules.md",
+		Rules:       "current rules",
 		NotesPath:   "agents/coder/notes.md",
 		Notes:       "current notes",
 	})
@@ -474,8 +502,10 @@ func TestHandleAgents_GETRendersEditableTextareas(t *testing.T) {
 	body := rec.Body.String()
 	wants := []string{
 		`action="/agents/persona"`,
+		`action="/agents/rules"`,
 		`action="/agents/notes"`,
 		"current persona",
+		"current rules",
 		"current notes",
 	}
 	for _, want := range wants {
@@ -499,6 +529,9 @@ func TestHandleAgents_GETHidesEditorsWhenNoActive(t *testing.T) {
 	body := rec.Body.String()
 	if strings.Contains(body, `action="/agents/persona"`) {
 		t.Errorf("expected persona form hidden when no active, got:\n%s", body)
+	}
+	if strings.Contains(body, `action="/agents/rules"`) {
+		t.Errorf("expected rules form hidden when no active, got:\n%s", body)
 	}
 	if strings.Contains(body, `action="/agents/notes"`) {
 		t.Errorf("expected notes form hidden when no active, got:\n%s", body)
@@ -535,6 +568,36 @@ func TestHandleAgentsPersona_POSTRedirectsAndWrites(t *testing.T) {
 	}
 	if gotBody != "new persona body" {
 		t.Errorf("WritePersona body = %q, want %q", gotBody, "new persona body")
+	}
+}
+
+func TestHandleAgentsRules_POSTRedirectsAndWrites(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("body", "new rules body")
+	req := httptest.NewRequest(http.MethodPost, "/agents/rules", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsRules(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Header().Get("Location"), "/agents?saved=rules"; got != want {
+		t.Errorf("Location = %q, want %q", got, want)
+	}
+	if got := reg.rulesCalls.Load(); got != 1 {
+		t.Errorf("expected WriteRules called once, got %d", got)
+	}
+	gotName, gotBody := reg.lastRulesWrite()
+	if gotName != "coder" {
+		t.Errorf("WriteRules name = %q, want coder", gotName)
+	}
+	if gotBody != "new rules body" {
+		t.Errorf("WriteRules body = %q, want %q", gotBody, "new rules body")
 	}
 }
 
@@ -588,6 +651,26 @@ func TestHandleAgentsPersona_POSTNoActiveReturns400(t *testing.T) {
 	}
 }
 
+func TestHandleAgentsRules_POSTNoActiveReturns400(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("", AgentInfo{Name: "coder"})
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("body", "x")
+	req := httptest.NewRequest(http.MethodPost, "/agents/rules", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsRules(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	if got := reg.rulesCalls.Load(); got != 0 {
+		t.Errorf("expected WriteRules not called, got %d", got)
+	}
+}
+
 func TestHandleAgentsNotes_POSTNoActiveReturns400(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("", AgentInfo{Name: "coder"})
@@ -632,6 +715,30 @@ func TestHandleAgentsPersona_POSTRegistryErrorRendersForm(t *testing.T) {
 	}
 }
 
+func TestHandleAgentsRules_POSTRegistryErrorRendersForm(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("coder", AgentInfo{Name: "coder", Rules: "old"})
+	reg.rulesErr = errors.New("memory: write failed: disk full")
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("body", "in-flight rules")
+	req := httptest.NewRequest(http.MethodPost, "/agents/rules", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsRules(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"disk full", "in-flight rules"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected body to contain %q, got:\n%s", want, body)
+		}
+	}
+}
+
 func TestHandleAgentsNotes_POSTRegistryErrorRendersForm(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder", Notes: "old"})
@@ -669,6 +776,19 @@ func TestHandleAgentsPersona_GETMethodNotAllowed(t *testing.T) {
 	}
 }
 
+func TestHandleAgentsRules_GETMethodNotAllowed(t *testing.T) {
+	s := NewServer(3000)
+	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+
+	req := httptest.NewRequest(http.MethodGet, "/agents/rules", nil)
+	rec := httptest.NewRecorder()
+	s.handleAgentsRules(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for GET /agents/rules, got %d", rec.Code)
+	}
+}
+
 func TestHandleAgentsNotes_GETMethodNotAllowed(t *testing.T) {
 	s := NewServer(3000)
 	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
@@ -689,6 +809,19 @@ func TestHandleAgentsPersona_POSTNoRegistryReturns503(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	s.handleAgentsPersona(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when registry is nil, got %d", rec.Code)
+	}
+}
+
+func TestHandleAgentsRules_POSTNoRegistryReturns503(t *testing.T) {
+	s := NewServer(3000)
+
+	req := httptest.NewRequest(http.MethodPost, "/agents/rules", strings.NewReader("body=x"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsRules(rec, req)
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 when registry is nil, got %d", rec.Code)
@@ -722,6 +855,23 @@ func TestHandleAgents_GETShowsSavedPersonaFlash(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "Saved persona") {
 		t.Errorf("expected saved-persona flash, got:\n%s", body)
+	}
+}
+
+func TestHandleAgents_GETShowsSavedRulesFlash(t *testing.T) {
+	s := NewServer(3000)
+	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+
+	req := httptest.NewRequest(http.MethodGet, "/agents?saved=rules", nil)
+	rec := httptest.NewRecorder()
+	s.handleAgents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Saved rules") {
+		t.Errorf("expected saved-rules flash, got:\n%s", body)
 	}
 }
 

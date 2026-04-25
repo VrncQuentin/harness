@@ -572,6 +572,7 @@ func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
 	info := ui.AgentInfo{
 		Name:        a.Name,
 		PersonaPath: a.PersonaPath,
+		RulesPath:   a.RulesPath,
 		NotesPath:   a.NotesPath,
 	}
 	persona, err := readOptional(ad.mem, a.PersonaPath)
@@ -579,6 +580,11 @@ func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
 		return info, err
 	}
 	info.Persona = persona
+	rules, err := readOptional(ad.mem, a.RulesPath)
+	if err != nil {
+		return info, err
+	}
+	info.Rules = rules
 	notes, err := readOptional(ad.mem, a.NotesPath)
 	if err != nil {
 		return info, err
@@ -615,6 +621,10 @@ func (ad *uiAgentRegistryAdapter) Create(name string) error {
 
 func (ad *uiAgentRegistryAdapter) WritePersona(name string, body []byte) error {
 	return ad.reg.WritePersona(name, body)
+}
+
+func (ad *uiAgentRegistryAdapter) WriteRules(name string, body []byte) error {
+	return ad.reg.WriteRules(name, body)
 }
 
 func (ad *uiAgentRegistryAdapter) WriteNotes(name string, body []byte) error {
