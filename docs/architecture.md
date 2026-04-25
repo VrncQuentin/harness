@@ -99,14 +99,15 @@ Builds the final context sent to the model. Layers assembled in order:
 1. global/rules.md       — always injected, never trimmed
 2. global/user.md        — always injected, never trimmed
 3. agents/<n>/persona.md — always injected, never trimmed
-4. global/facts.md       — always injected (keep lean by design)
-5. agents/<n>/notes.md   — always injected (keep lean by design)
-6. retrieved episodes    — top-K by blended score, trimmed oldest-first
-7. conversation turns    — current session history
+4. agents/<n>/rules.md   — always injected, never trimmed (optional; per-agent behavioural rules)
+5. global/facts.md       — always injected (keep lean by design)
+6. agents/<n>/notes.md   — always injected (keep lean by design)
+7. retrieved episodes    — top-K by blended score, trimmed oldest-first
+8. conversation turns    — current session history
 ```
 
 Responsibilities:
-- **Total memory cap:** sum of layers 4–6 must not exceed `memory_token_budget` (default 6144). Episodes are trimmed oldest-first to fit. Layers 1–3 are never trimmed — keep them small by convention.
+- **Total memory cap:** sum of layers 5–7 must not exceed `memory_token_budget` (default 6144). Episodes are trimmed oldest-first to fit. Layers 1–4 are never trimmed — keep them small by convention.
 - **Conversation reserve:** always guarantee `conversation_reserve` tokens (default 8192) for live turns. If memory + conversation would exceed ctx_size, reduce episode count further.
 - Apply Qwen3 prompt template formatting
 - Hot-reload rule and persona files on change via fsnotify
@@ -244,7 +245,8 @@ memory/
     facts.md              ← promoted cross-agent facts, kept lean
   agents/
     <n>/
-      persona.md          ← agent-specific role and behavior rules
+      persona.md          ← agent-specific role and identity
+      rules.md            ← agent-specific behavioural rules (optional, never trimmed)
       notes.md            ← persistent facts for this agent
       episodes/
         2026-04-20T14:32.md   ← one file per session summary

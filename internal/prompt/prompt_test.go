@@ -98,6 +98,7 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		"global/user.md":                      "USER",
 		"global/facts.md":                     "FACTS",
 		"agents/coder/persona.md":             "PERSONA",
+		"agents/coder/rules.md":               "AGENTRULES",
 		"agents/coder/notes.md":               "NOTES",
 		"agents/coder/episodes/2026-01-01.md": "EP1",
 		"agents/coder/episodes/2026-02-01.md": "EP2",
@@ -108,8 +109,9 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		t.Fatalf("Assemble: %v", err)
 	}
 	sys := msgs[0].Content
-	// Verify section order by checking indices.
-	headers := []string{"# Rules", "# User", "# Persona", "# Facts", "# Notes", "# Episodes"}
+	// Verify section order by checking indices. Agent Rules sits
+	// between Persona and Facts in the mandatory-layer block.
+	headers := []string{"# Rules", "# User", "# Persona", "# Agent Rules", "# Facts", "# Notes", "# Episodes"}
 	lastIdx := -1
 	for _, h := range headers {
 		idx := strings.Index(sys, h)
@@ -131,7 +133,7 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		t.Errorf("episodes not ordered oldest-first; ep1=%d ep2=%d", ep1Idx, ep2Idx)
 	}
 
-	if stats.Rules == 0 || stats.Persona == 0 || stats.Episodes == 0 {
+	if stats.Rules == 0 || stats.Persona == 0 || stats.AgentRules == 0 || stats.Episodes == 0 {
 		t.Errorf("stats missing counts: %+v", stats)
 	}
 }
@@ -203,14 +205,15 @@ func TestAssemble_TrimsEpisodesOldestFirstForMemoryBudget(t *testing.T) {
 	}
 }
 
-func TestAssemble_RulesPersonaUserNeverTrimmed(t *testing.T) {
-	// Set a memory budget that is smaller than rules+user+persona
-	// together; these must still be present.
+func TestAssemble_MandatoryLayersNeverTrimmed(t *testing.T) {
+	// Set a memory budget smaller than the mandatory layers combined;
+	// these must still be present, including the per-agent rules.
 	mem := writeRepo(t, map[string]string{
 		"global/rules.md":         strings.Repeat("R", 400), // 100 tokens
 		"global/user.md":          strings.Repeat("U", 400),
 		"global/facts.md":         strings.Repeat("F", 400),
 		"agents/coder/persona.md": strings.Repeat("P", 400),
+		"agents/coder/rules.md":   strings.Repeat("A", 400),
 		"agents/coder/notes.md":   strings.Repeat("N", 400),
 	})
 	cfg := baseCfg()
@@ -222,7 +225,7 @@ func TestAssemble_RulesPersonaUserNeverTrimmed(t *testing.T) {
 		t.Fatalf("Assemble: %v", err)
 	}
 	sys := msgs[0].Content
-	for _, section := range []string{"# Rules", "# User", "# Persona"} {
+	for _, section := range []string{"# Rules", "# User", "# Persona", "# Agent Rules"} {
 		if !strings.Contains(sys, section) {
 			t.Errorf("mandatory %q missing when budget pressure is high", section)
 		}
@@ -304,6 +307,7 @@ func TestAssemble_TotalEqualsSum(t *testing.T) {
 		"global/user.md":          "USER",
 		"global/facts.md":         "FACTS",
 		"agents/coder/persona.md": "PERSONA",
+		"agents/coder/rules.md":   "AGENTRULES",
 		"agents/coder/notes.md":   "NOTES",
 	})
 	asm := newAssembler(t, mem, baseCfg())
@@ -312,7 +316,7 @@ func TestAssemble_TotalEqualsSum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
-	want := stats.Rules + stats.User + stats.Persona + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
+	want := stats.Rules + stats.User + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
 	if stats.Total != want {
 		t.Errorf("Total = %d, want sum = %d", stats.Total, want)
 	}
@@ -327,6 +331,7 @@ func TestAssemble_SkipsEmptyOptionalLayers(t *testing.T) {
 		"global/user.md":          "   \n\n\n   ", // whitespace only
 		"global/facts.md":         "",
 		"agents/coder/persona.md": "PERSONA",
+		"agents/coder/rules.md":   "", // empty agent rules → no header
 	})
 	asm := newAssembler(t, mem, baseCfg())
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
@@ -339,6 +344,90 @@ func TestAssemble_SkipsEmptyOptionalLayers(t *testing.T) {
 	}
 	if strings.Contains(sys, "# Facts") {
 		t.Errorf("expected # Facts header to be skipped for empty body; got:\n%s", sys)
+	}
+	if strings.Contains(sys, "# Agent Rules") {
+		t.Errorf("expected # Agent Rules header to be skipped for empty body; got:\n%s", sys)
+	}
+}
+
+// TestAssemble_AgentRulesOptional verifies an agent without a rules.md
+// file assembles without error and omits the section.
+func TestAssemble_AgentRulesOptional(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":         "RULES",
+		"agents/coder/persona.md": "PERSONA",
+		// agents/coder/rules.md missing on purpose
+	})
+	asm := newAssembler(t, mem, baseCfg())
+	msgs, stats, err := asm.Assemble(context.Background(), "coder", nil)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sys := msgs[0].Content
+	if strings.Contains(sys, "# Agent Rules") {
+		t.Errorf("expected # Agent Rules to be absent when rules.md missing; got:\n%s", sys)
+	}
+	if stats.AgentRules != 0 {
+		t.Errorf("AgentRules tokens = %d, want 0 when missing", stats.AgentRules)
+	}
+}
+
+// TestAssemble_AgentRulesRenderedBetweenPersonaAndFacts pins the layer
+// position: after persona, before facts. Persona defines identity,
+// agent rules constrain behaviour, then global facts follow.
+func TestAssemble_AgentRulesRenderedBetweenPersonaAndFacts(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":         "GLOBALRULES",
+		"global/facts.md":         "GLOBALFACTS",
+		"agents/coder/persona.md": "PERSONABODY",
+		"agents/coder/rules.md":   "PLANBEFOREEDIT",
+	})
+	asm := newAssembler(t, mem, baseCfg())
+	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sys := msgs[0].Content
+	personaBody := strings.Index(sys, "PERSONABODY")
+	rulesBody := strings.Index(sys, "PLANBEFOREEDIT")
+	factsBody := strings.Index(sys, "GLOBALFACTS")
+	if personaBody < 0 || rulesBody < 0 || factsBody < 0 {
+		t.Fatalf("layer body missing; persona=%d rules=%d facts=%d\n%s", personaBody, rulesBody, factsBody, sys)
+	}
+	if personaBody >= rulesBody || rulesBody >= factsBody {
+		t.Errorf("expected persona < agent rules < facts; got persona=%d rules=%d facts=%d", personaBody, rulesBody, factsBody)
+	}
+}
+
+// TestAssemble_AgentRulesCountedAgainstCtxLimit verifies agent rules
+// participate in the ctx-size guardrail (they're mandatory, never
+// trimmed, but still count toward the budget that triggers episode
+// trimming).
+func TestAssemble_AgentRulesCountedAgainstCtxLimit(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":             "r",                      // 1 token
+		"agents/coder/persona.md":     "p",                      // 1 token
+		"agents/coder/rules.md":       strings.Repeat("a", 400), // 100 tokens
+		"agents/coder/episodes/01.md": strings.Repeat("e", 400), // 100 tokens
+		"agents/coder/episodes/02.md": strings.Repeat("e", 400), // 100 tokens
+	})
+	cfg := config.PromptConfig{
+		CtxSize:             250, // limit minus reserve = 150 tokens
+		ConversationReserve: 100,
+		MemoryTokenBudget:   1000,
+	}
+	asm := newAssembler(t, mem, cfg)
+	_, stats, err := asm.Assemble(context.Background(), "coder", nil)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	// rules(1) + persona(1) + agentRules(100) = 102 fixed; 150 - 102 = 48
+	// tokens left for episodes, so neither 100-token episode fits.
+	if stats.Episodes != 0 {
+		t.Errorf("expected all episodes trimmed when agent rules consume the ctx budget; episodes=%d", stats.Episodes)
+	}
+	if stats.AgentRules == 0 {
+		t.Errorf("expected agent rules to be counted; AgentRules=%d", stats.AgentRules)
 	}
 }
 

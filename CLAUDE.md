@@ -134,6 +134,7 @@ memory/
   agents/
     coder/
       persona.md
+      rules.md
       notes.md
       episodes/
   index/
