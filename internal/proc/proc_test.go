@@ -1,6 +1,7 @@
 package proc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -403,6 +404,41 @@ func TestCheckHealth_200IsHealthy(t *testing.T) {
 	if err := m.checkHealth(context.Background()); err != nil {
 		t.Fatalf("expected nil on 200, got %v", err)
 	}
+}
+
+func TestEmitExitLine_WritesToOutput(t *testing.T) {
+	var buf bytes.Buffer
+	m := NewManager(ManagerConfig{
+		Name:      "llama-server",
+		BuildArgs: func() (string, []string) { return "binary", nil },
+		HealthURL: "http://127.0.0.1:9999/health",
+		Output:    &buf,
+	})
+	code := -1073741819
+	m.mu.Lock()
+	m.exitCode = &code
+	m.mu.Unlock()
+
+	m.emitExitLine()
+
+	want := "[harness] llama-server exited (code -1073741819 / 0xC0000005)\n"
+	if got := buf.String(); got != want {
+		t.Errorf("emitExitLine wrote %q, want %q", got, want)
+	}
+}
+
+func TestEmitExitLine_NilOutputIsSafe(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		Name:      "llama-server",
+		BuildArgs: func() (string, []string) { return "binary", nil },
+		HealthURL: "http://127.0.0.1:9999/health",
+	})
+	// m.output defaults to io.Discard, but cover the path explicitly.
+	m.mu.Lock()
+	m.output = nil
+	m.mu.Unlock()
+	// Must not panic.
+	m.emitExitLine()
 }
 
 func TestRun_BlocksInFailedStateUntilReload(t *testing.T) {
