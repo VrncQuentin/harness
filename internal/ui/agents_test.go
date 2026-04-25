@@ -13,10 +13,10 @@ import (
 // stubRegistry is a test double that records the last SetActive call and can
 // be primed to return a scripted error from each method.
 type stubRegistry struct {
-	agents    []AgentInfo
-	active    atomic.Value // string
-	setCalls  atomic.Int32
-	lastSet   atomic.Value // string
+	agents   []AgentInfo
+	active   atomic.Value // string
+	setCalls atomic.Int32
+	lastSet  atomic.Value // string
 
 	listErr error
 	getErr  error

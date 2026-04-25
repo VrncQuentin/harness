@@ -32,8 +32,8 @@ func newRepoWithAgents(t *testing.T, files map[string]string) *memory.DirReader 
 // config column used by the DiskRegistry callbacks.
 type activeState struct{ name string }
 
-func (s *activeState) get() string          { return s.name }
-func (s *activeState) set(n string) error   { s.name = n; return nil }
+func (s *activeState) get() string           { return s.name }
+func (s *activeState) set(n string) error    { s.name = n; return nil }
 func (s *activeState) setErr(_ string) error { return errors.New("persist failed") }
 
 func TestDiskRegistry_ListEmptyWhenAgentsMissing(t *testing.T) {

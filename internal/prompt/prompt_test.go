@@ -179,13 +179,13 @@ func TestAssemble_TrimsEpisodesOldestFirstForMemoryBudget(t *testing.T) {
 	// Generate five episodes with increasing content size; use a
 	// deterministic tokenizer so we can reason about counts.
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                     "r",
-		"agents/coder/persona.md":             "p",
-		"agents/coder/episodes/01.md":         strings.Repeat("a", 200),
-		"agents/coder/episodes/02.md":         strings.Repeat("b", 200),
-		"agents/coder/episodes/03.md":         strings.Repeat("c", 200),
-		"agents/coder/episodes/04.md":         strings.Repeat("d", 200),
-		"agents/coder/episodes/05.md":         strings.Repeat("e", 200),
+		"global/rules.md":             "r",
+		"agents/coder/persona.md":     "p",
+		"agents/coder/episodes/01.md": strings.Repeat("a", 200),
+		"agents/coder/episodes/02.md": strings.Repeat("b", 200),
+		"agents/coder/episodes/03.md": strings.Repeat("c", 200),
+		"agents/coder/episodes/04.md": strings.Repeat("d", 200),
+		"agents/coder/episodes/05.md": strings.Repeat("e", 200),
 	})
 	cfg := baseCfg()
 	// Each episode is 200 runes => 50 tokens under the default heuristic.
@@ -244,8 +244,8 @@ func TestAssemble_RulesPersonaUserNeverTrimmed(t *testing.T) {
 
 func TestAssemble_CtxSizeTrimsAgainstConversationReserve(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":             "r",             // 1 token
-		"agents/coder/persona.md":     "p",             // 1 token
+		"global/rules.md":             "r",                      // 1 token
+		"agents/coder/persona.md":     "p",                      // 1 token
 		"agents/coder/episodes/01.md": strings.Repeat("a", 400), // 100 tokens
 		"agents/coder/episodes/02.md": strings.Repeat("b", 400),
 		"agents/coder/episodes/03.md": strings.Repeat("c", 400),

@@ -140,8 +140,8 @@ func TestDirReader_GlobMissingParent(t *testing.T) {
 
 func TestDirReader_GlobSkipsDirectories(t *testing.T) {
 	r := newTestRepo(t, map[string]string{
-		"agents/coder/episodes/real.md":           "x",
-		"agents/coder/episodes/sub/nested.md":     "y", // inside a subdir, not matched at this level
+		"agents/coder/episodes/real.md":       "x",
+		"agents/coder/episodes/sub/nested.md": "y", // inside a subdir, not matched at this level
 	})
 	got, err := r.Glob("agents/coder/episodes/*")
 	if err != nil {
