@@ -23,10 +23,21 @@ type Reader interface {
 	// returns false for directories, traversal attempts, and stat errors.
 	Exists(relPath string) bool
 
-	// Glob returns relative paths matching pattern (path.Match syntax),
-	// sorted lexicographically. A missing parent directory yields an
-	// empty slice and no error.
+	// Glob returns relative paths of files matching pattern
+	// (path.Match syntax), sorted lexicographically. Directories are
+	// not included. A missing parent directory yields an empty slice
+	// and no error.
 	Glob(pattern string) ([]string, error)
+}
+
+// DirLister is an optional capability some Readers expose for
+// enumerating subdirectory names. The agent registry uses this when
+// available to list agent folders; callers can type-assert on it.
+type DirLister interface {
+	// ListDirs returns the names of subdirectories directly under
+	// relPath, sorted lexicographically. A missing relPath yields an
+	// empty slice and no error.
+	ListDirs(relPath string) ([]string, error)
 }
 
 // DirReader serves files from a directory on the local filesystem. It is
@@ -67,6 +78,31 @@ func (r *DirReader) Exists(relPath string) bool {
 		return false
 	}
 	return !info.IsDir()
+}
+
+// ListDirs implements DirLister.
+func (r *DirReader) ListDirs(relPath string) ([]string, error) {
+	if relPath != "" {
+		if err := checkRel(relPath); err != nil {
+			return nil, err
+		}
+	}
+	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	entries, err := os.ReadDir(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("memory: list dirs %s: %w", relPath, err)
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			out = append(out, e.Name())
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // Glob implements Reader.

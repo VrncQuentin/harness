@@ -161,3 +161,41 @@ func TestDirReader_GlobRejectsTraversal(t *testing.T) {
 		t.Error("Glob with traversal: expected error, got nil")
 	}
 }
+
+func TestDirReader_ListDirs(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"agents/coder/persona.md":    "x",
+		"agents/reviewer/persona.md": "y",
+		"agents/README.md":           "z", // file at the enumerated level, skipped
+		"agents/zeta/notes.md":       "n",
+	})
+
+	got, err := r.ListDirs("agents")
+	if err != nil {
+		t.Fatalf("ListDirs: %v", err)
+	}
+	want := []string{"coder", "reviewer", "zeta"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ListDirs = %v, want %v", got, want)
+	}
+}
+
+func TestDirReader_ListDirsMissing(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"global/rules.md": "x",
+	})
+	got, err := r.ListDirs("agents")
+	if err != nil {
+		t.Fatalf("ListDirs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListDirs on missing dir = %v, want []", got)
+	}
+}
+
+func TestDirReader_ListDirsRejectsTraversal(t *testing.T) {
+	r := newTestRepo(t, nil)
+	if _, err := r.ListDirs("../outside"); err == nil {
+		t.Error("ListDirs with traversal: expected error, got nil")
+	}
+}
