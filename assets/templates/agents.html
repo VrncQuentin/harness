@@ -11,6 +11,15 @@
 </div>
 {{else}}
 
+{{if .CreatedName}}
+<div class="alert alert-ok">
+  <div class="alert-head">
+    <h2>Created agent <code>{{.CreatedName}}</code></h2>
+    <p class="alert-sub">Add a <code>persona.md</code> in <code>agents/{{.CreatedName}}/</code> and switch to it below.</p>
+  </div>
+</div>
+{{end}}
+
 {{if .Error}}
 <div class="alert alert-err">
   <div class="alert-head">
@@ -20,20 +29,13 @@
 </div>
 {{end}}
 
-{{if not .Agents}}
-<div class="alert alert-info">
-  <div class="alert-head">
-    <h2>No agents found</h2>
-    <p class="alert-sub">Create <code>agents/&lt;name&gt;/persona.md</code> in your memory repo, then reload this page.</p>
-  </div>
-</div>
-{{else}}
 <section class="grid">
   <div class="card">
     <header class="card-head">
       <h3>Available agents</h3>
       {{if .Active}}<span class="badge badge-ok">Active: {{.Active}}</span>{{end}}
     </header>
+    {{if .Agents}}
     <form method="post" action="/agents/active">
       <div class="fg">
         {{range .Agents}}
@@ -49,6 +51,32 @@
       </div>
       <div class="cfg-actions">
         <button type="submit" class="btn btn-primary">Switch active agent</button>
+      </div>
+    </form>
+    {{else}}
+    <p class="fg-hint">No agents yet. Use the form on the right to create one.</p>
+    {{end}}
+  </div>
+
+  <div class="card">
+    <header class="card-head">
+      <h3>Create agent</h3>
+    </header>
+    {{if .CreateErr}}
+    <div class="alert alert-warn">
+      <div class="alert-head">
+        <p class="alert-sub">{{.CreateErr}}</p>
+      </div>
+    </div>
+    {{end}}
+    <form method="post" action="/agents/create" autocomplete="off">
+      <div class="fg">
+        <label for="agent_name">Name</label>
+        <input type="text" id="agent_name" name="name" value="{{.CreateName}}" placeholder="coder" maxlength="64" required>
+        <p class="fg-hint">Letters, digits, dot, underscore, hyphen. Cannot start with a dot or hyphen.</p>
+      </div>
+      <div class="cfg-actions">
+        <button type="submit" class="btn btn-primary">Create agent</button>
       </div>
     </form>
   </div>
@@ -69,7 +97,6 @@
     {{end}}
   </div>
 </section>
-{{end}}
 
 {{end}}
 {{end}}

@@ -323,6 +323,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/config", s.handleConfig)
 	mux.HandleFunc("/agents", s.handleAgents)
 	mux.HandleFunc("/agents/active", s.handleAgentsActive)
+	mux.HandleFunc("/agents/create", s.handleAgentsCreate)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
