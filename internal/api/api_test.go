@@ -1,0 +1,583 @@
+package api
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/vrnc/harness/internal/inference"
+	"github.com/vrnc/harness/internal/queue"
+)
+
+// stubAssembler returns canned messages, records the last agent it saw, and
+// can be told to fail instead. Zero value assembles to a single user echo.
+type stubAssembler struct {
+	mu        sync.Mutex
+	lastAgent string
+	err       error
+	build     func(agent string, conv []inference.Message) []inference.Message
+}
+
+func (s *stubAssembler) Assemble(_ context.Context, agentName string, conversation []inference.Message) ([]inference.Message, error) {
+	s.mu.Lock()
+	s.lastAgent = agentName
+	s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.build != nil {
+		return s.build(agentName, conversation), nil
+	}
+	return append([]inference.Message{{Role: "system", Content: "sys"}}, conversation...), nil
+}
+
+func (s *stubAssembler) seenAgent() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastAgent
+}
+
+// stubEnqueuer captures the request and streams a pre-canned token script in
+// a background goroutine. tokens runs to completion, then the response chan
+// is closed. If err is non-nil, Enqueue returns it without spawning the
+// goroutine.
+type stubEnqueuer struct {
+	tokens   []inference.Token
+	err      error
+	captured chan queue.Request
+	// hold, when set, is closed by the test to release the streamer.
+	hold chan struct{}
+	// onDispatch is invoked from the streamer goroutine with the captured
+	// request context so tests can wait for it to be cancelled.
+	onDispatch func(context.Context)
+}
+
+func newStubEnqueuer(tokens []inference.Token) *stubEnqueuer {
+	return &stubEnqueuer{
+		tokens:   tokens,
+		captured: make(chan queue.Request, 1),
+	}
+}
+
+func (s *stubEnqueuer) Enqueue(req queue.Request) error {
+	if s.err != nil {
+		return s.err
+	}
+	select {
+	case s.captured <- req:
+	default:
+	}
+	go func() {
+		defer close(req.Response)
+		if s.hold != nil {
+			// Simulate a queue worker that is mid-flight: release only when
+			// the test closes hold or the client cancels ctx. Either way the
+			// goroutine eventually exits without leaking.
+			select {
+			case <-s.hold:
+			case <-req.Ctx.Done():
+				if s.onDispatch != nil {
+					s.onDispatch(req.Ctx)
+				}
+				return
+			}
+		}
+		if s.onDispatch != nil {
+			s.onDispatch(req.Ctx)
+		}
+		for _, tok := range s.tokens {
+			select {
+			case <-req.Ctx.Done():
+				return
+			case req.Response <- tok:
+			}
+		}
+	}()
+	return nil
+}
+
+// captureRequest returns the request submitted to Enqueue, waiting up to 1s.
+func (s *stubEnqueuer) captureRequest(t *testing.T) queue.Request {
+	t.Helper()
+	select {
+	case req := <-s.captured:
+		return req
+	case <-time.After(1 * time.Second):
+		t.Fatal("no request enqueued within 1s")
+		return queue.Request{}
+	}
+}
+
+// parsedEvent is a single SSE data: line decoded from the response body.
+type parsedEvent struct {
+	raw  string
+	done bool
+}
+
+// parseSSE splits an SSE body into its `data:` events. Blank-line separators
+// are stripped. Returns events in order.
+func parseSSE(t *testing.T, body io.Reader) []parsedEvent {
+	t.Helper()
+	var events []parsedEvent
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			events = append(events, parsedEvent{done: true})
+			continue
+		}
+		events = append(events, parsedEvent{raw: data})
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan SSE body: %v", err)
+	}
+	return events
+}
+
+// contentsOf extracts the delta.content field from every non-DONE event.
+func contentsOf(t *testing.T, events []parsedEvent) []string {
+	t.Helper()
+	out := make([]string, 0, len(events))
+	for _, e := range events {
+		if e.done {
+			continue
+		}
+		var c chatChunk
+		if err := json.Unmarshal([]byte(e.raw), &c); err != nil {
+			t.Fatalf("unmarshal chunk %q: %v", e.raw, err)
+		}
+		if len(c.Choices) == 0 {
+			continue
+		}
+		out = append(out, c.Choices[0].Delta.Content)
+	}
+	return out
+}
+
+// newTestServer spins up a Server under httptest.NewServer and returns it
+// plus a cleanup closer.
+func newTestServer(t *testing.T, asm Assembler, q Enqueuer) (*httptest.Server, func()) {
+	t.Helper()
+	srv := NewServer(0, asm, q)
+	ts := httptest.NewServer(srv.handler())
+	return ts, ts.Close
+}
+
+func TestChatCompletions_StreamingHappyPath(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer([]inference.Token{
+		{Content: "hello"},
+		{Content: " "},
+		{Content: "world"},
+		{Done: true},
+	})
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	body := bytes.NewBufferString(`{"model":"harness","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Errorf("Content-Type = %q, want text/event-stream", got)
+	}
+	if got := resp.Header.Get("X-Accel-Buffering"); got != "no" {
+		t.Errorf("X-Accel-Buffering = %q, want no", got)
+	}
+
+	events := parseSSE(t, resp.Body)
+	// 3 content chunks + 1 final (finish_reason) + 1 [DONE] = 5 events.
+	if len(events) != 5 {
+		t.Fatalf("got %d events, want 5: %+v", len(events), events)
+	}
+	if !events[len(events)-1].done {
+		t.Errorf("last event is not [DONE]: %+v", events[len(events)-1])
+	}
+
+	contents := contentsOf(t, events[:3])
+	if strings.Join(contents, "") != "hello world" {
+		t.Errorf("concatenated delta = %q, want 'hello world'", strings.Join(contents, ""))
+	}
+
+	// Final chunk carries finish_reason=stop and no content.
+	var finalChunk chatChunk
+	if err := json.Unmarshal([]byte(events[3].raw), &finalChunk); err != nil {
+		t.Fatalf("unmarshal final: %v", err)
+	}
+	if finalChunk.Choices[0].FinishReason == nil || *finalChunk.Choices[0].FinishReason != "stop" {
+		t.Errorf("finish_reason = %v, want 'stop'", finalChunk.Choices[0].FinishReason)
+	}
+	if finalChunk.Choices[0].Delta.Content != "" {
+		t.Errorf("final delta content = %q, want empty", finalChunk.Choices[0].Delta.Content)
+	}
+	if !strings.HasPrefix(finalChunk.ID, "chatcmpl-") {
+		t.Errorf("chunk ID = %q, want chatcmpl- prefix", finalChunk.ID)
+	}
+}
+
+func TestChatCompletions_QueueFull(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer(nil)
+	enq.err = queue.ErrQueueFull
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	body := bytes.NewBufferString(`{"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", resp.StatusCode)
+	}
+
+	var got apiError
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Error.Type != "rate_limit_error" {
+		t.Errorf("type = %q, want rate_limit_error", got.Error.Type)
+	}
+	if got.Error.Code != "queue_full" {
+		t.Errorf("code = %q, want queue_full", got.Error.Code)
+	}
+	if !strings.Contains(got.Error.Message, "capacity") {
+		t.Errorf("message = %q, want a capacity mention", got.Error.Message)
+	}
+}
+
+func TestChatCompletions_AssemblerError(t *testing.T) {
+	asm := &stubAssembler{err: errors.New("persona missing")}
+	enq := newStubEnqueuer(nil)
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	body := bytes.NewBufferString(`{"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	var got apiError
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Error.Type != "server_error" {
+		t.Errorf("type = %q, want server_error", got.Error.Type)
+	}
+	if got.Error.Message != "persona missing" {
+		t.Errorf("message = %q, want 'persona missing'", got.Error.Message)
+	}
+}
+
+func TestChatCompletions_BadJSON(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer(nil)
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", strings.NewReader("not-json"))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var got apiError
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Error.Type != "invalid_request_error" {
+		t.Errorf("type = %q, want invalid_request_error", got.Error.Type)
+	}
+}
+
+func TestChatCompletions_StreamFalseRejected(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer(nil)
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	body := bytes.NewBufferString(`{"stream":false,"messages":[{"role":"user","content":"hi"}]}`)
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var got apiError
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Error.Type != "invalid_request_error" {
+		t.Errorf("type = %q, want invalid_request_error", got.Error.Type)
+	}
+	if !strings.Contains(got.Error.Message, "non-streaming") {
+		t.Errorf("message = %q, want a non-streaming mention", got.Error.Message)
+	}
+}
+
+func TestChatCompletions_WrongMethod(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer(nil)
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	resp, err := http.Get(ts.URL + "/v1/chat/completions")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestChatCompletions_HeaderAgentPlumbing(t *testing.T) {
+	// Record the assembled messages the assembler returns (tagged with the
+	// agent name) so we can then verify the queue sees them unmodified.
+	asm := &stubAssembler{
+		build: func(agent string, _ []inference.Message) []inference.Message {
+			return []inference.Message{{Role: "system", Content: "persona:" + agent}}
+		},
+	}
+	enq := newStubEnqueuer([]inference.Token{{Done: true}})
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	body := bytes.NewBufferString(`{"stream":true,"agent":"ignored","messages":[{"role":"user","content":"hi"}]}`)
+	req, err := http.NewRequest(http.MethodPost, ts.URL+"/v1/chat/completions", body)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Harness-Agent", "coder")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// Drain so the server-side goroutine completes cleanly.
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if asm.seenAgent() != "coder" {
+		t.Errorf("assembler saw agent %q, want 'coder' (header should beat body)", asm.seenAgent())
+	}
+
+	captured := enq.captureRequest(t)
+	if len(captured.Messages) != 1 || captured.Messages[0].Content != "persona:coder" {
+		t.Errorf("enqueued messages = %+v, want persona:coder", captured.Messages)
+	}
+}
+
+func TestModels_OK(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer(nil)
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	resp, err := http.Get(ts.URL + "/v1/models")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	var got modelsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Object != "list" {
+		t.Errorf("object = %q, want list", got.Object)
+	}
+	if len(got.Data) != 1 {
+		t.Fatalf("data length = %d, want 1", len(got.Data))
+	}
+	if got.Data[0].ID != "harness" {
+		t.Errorf("id = %q, want harness", got.Data[0].ID)
+	}
+	if got.Data[0].OwnedBy != "harness" {
+		t.Errorf("owned_by = %q, want harness", got.Data[0].OwnedBy)
+	}
+}
+
+func TestModels_WrongMethod(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer(nil)
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	resp, err := http.Post(ts.URL+"/v1/models", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", resp.StatusCode)
+	}
+}
+
+func TestChatCompletions_ClientCancellationPropagates(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer(nil)
+	enq.hold = make(chan struct{})
+	// Ensure the streamer goroutine exits when the client disconnects so the
+	// test does not leak resources on failure paths.
+	defer close(enq.hold)
+
+	var ctxDone atomic.Bool
+	var wg sync.WaitGroup
+	wg.Add(1)
+	enq.onDispatch = func(ctx context.Context) {
+		defer wg.Done()
+		select {
+		case <-ctx.Done():
+			ctxDone.Store(true)
+		case <-time.After(5 * time.Second):
+		}
+	}
+
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	body := bytes.NewBufferString(`{"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ts.URL+"/v1/chat/completions", body)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	go func() {
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+		}
+	}()
+
+	// Wait for Enqueue to be called so we know the server is in the middle
+	// of streaming before we cancel.
+	_ = enq.captureRequest(t)
+	cancel()
+
+	// Give the ctx propagation a moment to land.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("streamer goroutine did not observe ctx cancellation in 2s")
+	}
+	if !ctxDone.Load() {
+		t.Fatal("queue request ctx was not cancelled by client disconnect")
+	}
+}
+
+func TestChatCompletions_DefaultModelEcho(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer([]inference.Token{{Content: "x"}, {Done: true}})
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	// No "model" in body - server should echo "harness".
+	body := bytes.NewBufferString(`{"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	events := parseSSE(t, resp.Body)
+	if len(events) == 0 {
+		t.Fatal("no events")
+	}
+	var c chatChunk
+	if err := json.Unmarshal([]byte(events[0].raw), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if c.Model != "harness" {
+		t.Errorf("model echo = %q, want 'harness'", c.Model)
+	}
+}
+
+// Sanity check that Stop is idempotent and safe before Start.
+func TestServer_StopIdempotent(t *testing.T) {
+	s := NewServer(0, &stubAssembler{}, newStubEnqueuer(nil))
+	s.Stop() // before Start: no-op
+	s.Stop() // again: no-op
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Bind to an arbitrary free port. If 0 is not legal on this platform we
+	// just skip the listen portion; the goal is to cover Stop-after-Start.
+	err := s.Start(ctx)
+	if err != nil {
+		t.Skipf("bind :0 failed (benign, environment dependent): %v", err)
+	}
+	s.Stop()
+	s.Stop()
+}
+
+// Guard test: the handler wires the right paths.
+func TestHandler_RoutesRegistered(t *testing.T) {
+	s := NewServer(0, &stubAssembler{}, newStubEnqueuer(nil))
+	h := s.handler()
+
+	cases := []struct {
+		method, path string
+		wantStatus   int
+	}{
+		{http.MethodGet, "/v1/models", http.StatusOK},
+		{http.MethodGet, "/v1/chat/completions", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/nope", http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%s %s", tc.method, tc.path), func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, req)
+			if rr.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rr.Code, tc.wantStatus)
+			}
+		})
+	}
+}
