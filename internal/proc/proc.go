@@ -397,17 +397,8 @@ func (m *Manager) healthLoop(ctx context.Context) {
 			m.mu.Lock()
 			m.running = false
 			m.healthy = false
-			code := m.exitCode
-			out := m.output
 			m.mu.Unlock()
-			line := formatExitLine(m.name, code)
-			if out != nil {
-				_, _ = io.WriteString(out, line)
-			}
-			// Also surface the exit through the harness log so it shows up
-			// outside the proc-specific SSE pipeline (which can drop on a
-			// burst). slog adds its own newline, so trim ours.
-			slog.Info(strings.TrimSuffix(line, "\n"))
+			m.emitExitLine()
 			m.emit(EventStop, "process exited")
 			return
 		case <-ticker.C:
@@ -427,6 +418,15 @@ func (m *Manager) healthLoop(ctx context.Context) {
 				m.emit(EventHealthFail, fmt.Sprintf("health check failed: %v", err))
 				// Kill the process so the outer loop restarts it.
 				m.stopProcess()
+				// Wait briefly for cmd.Wait to record the exit code
+				// before emitting the exit line, so the user sees the
+				// same artefact as on a natural exit. Bounded so a
+				// wedged kernel cannot hang the loop.
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+				}
+				m.emitExitLine()
 				return
 			}
 			m.mu.Lock()
@@ -435,6 +435,22 @@ func (m *Manager) healthLoop(ctx context.Context) {
 			m.emit(EventHealthOK, "healthy")
 		}
 	}
+}
+
+// emitExitLine writes the synthetic "[harness] <name> exited (code ...)"
+// line to the proc output ring and also slogs it (newline trimmed - slog
+// adds its own). Used by both the natural-exit and health-fail paths so
+// the exit code is visible regardless of how termination was triggered.
+func (m *Manager) emitExitLine() {
+	m.mu.Lock()
+	code := m.exitCode
+	out := m.output
+	m.mu.Unlock()
+	line := formatExitLine(m.name, code)
+	if out != nil {
+		_, _ = io.WriteString(out, line)
+	}
+	slog.Info(strings.TrimSuffix(line, "\n"))
 }
 
 // startProcess spawns the child process. Uses CommandContext so the OS kills
