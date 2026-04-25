@@ -9,27 +9,27 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 **Goal:** model runs, requests go through, harness owns the process.
 
 - [x] Config store (SQLite, single-row typed table in `harness.db`): model path, ctx size, GPU layers, etc., edited via the `/config` page
-- [ ] Process Manager: spawn llama-server, health check loop, restart with backoff
-- [ ] Inference Client: OpenAI-compatible HTTP, streaming, cancellation
-- [ ] Queue: bounded channel, backpressure, WAL for crash recovery
-- [ ] Process Manager: same pattern for Embedder sidecar (stub for now)
-- [ ] Minimal UI server: single status page showing model health and queue depth
-- [ ] System tray: single-instance lock, tray icon with Open UI + Quit, graceful shutdown on Quit
-- [ ] On first launch: browser opens automatically to UI; on subsequent double-click: do nothing
-- [ ] All startup errors (missing config, missing model file) surface in browser UI, not terminal
+- [x] Process Manager: spawn llama-server, health check loop, restart with backoff
+- [x] Inference Client: OpenAI-compatible HTTP, streaming, cancellation
+- [x] Queue: bounded channel, backpressure, WAL for crash recovery
+- [x] Process Manager: same pattern for Embedder sidecar (stub for now)
+- [x] Minimal UI server: single status page showing model health and queue depth
+- [x] System tray: single-instance lock, tray icon with Open UI + Quit, graceful shutdown on Quit
+- [x] On first launch: browser opens automatically to UI; on subsequent double-click: do nothing
+- [x] All startup errors (missing config, missing model file) surface in browser UI, not terminal
 
 **Acceptance tests:**
-- [ ] Start harness with valid config → llama-server process appears in OS process list, tray icon visible
+- [x] Start harness with valid config → llama-server process appears in OS process list, tray icon visible
 - [x] Double-click binary while already running → second instance exits silently, first instance unaffected
-- [ ] Kill llama-server manually → harness detects death within health check interval and restarts it
-- [ ] Send a streaming completion request → tokens arrive incrementally, request completes successfully
-- [ ] Fill the queue to max depth → next request returns a clear backpressure error, not a hang
-- [ ] Cancel a mid-flight request → llama-server is not left in a broken state, next request succeeds
+- [x] Kill llama-server manually → harness detects death within health check interval and restarts it
+- [x] Send a streaming completion request → tokens arrive incrementally, request completes successfully
+- [x] Fill the queue to max depth → next request returns a clear backpressure error, not a hang
+- [x] Cancel a mid-flight request → llama-server is not left in a broken state, next request succeeds
 - [x] Start harness with missing model file → browser status page shows error, binary does not crash
 - [x] Start harness on first run (no saved config) → status page shows "Set up your harness" CTA linking to /config
-- [ ] Click Quit in system tray → in-flight requests drain, child processes terminate, binary exits cleanly
-- [ ] Open browser status page → shows llama-server as healthy and queue depth as 0
-- [ ] Kill llama-server → status page updates to unhealthy within one health check interval
+- [x] Click Quit in system tray → in-flight requests drain, child processes terminate, binary exits cleanly
+- [x] Open browser status page → shows llama-server as healthy and queue depth as 0
+- [x] Kill llama-server → status page updates to unhealthy within one health check interval
 
 ---
 
