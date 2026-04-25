@@ -137,6 +137,55 @@ func TestMissingItems_RootIsFile(t *testing.T) {
 	}
 }
 
+func TestValidateRepo_OK(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("MkdirAll .git: %v", err)
+	}
+	if err := CreateMissing(root, ExpectedLayout()); err != nil {
+		t.Fatalf("CreateMissing: %v", err)
+	}
+	if err := ValidateRepo(root); err != nil {
+		t.Fatalf("ValidateRepo: %v", err)
+	}
+}
+
+func TestValidateRepo_RequiresGitRepo(t *testing.T) {
+	root := t.TempDir()
+	if err := CreateMissing(root, ExpectedLayout()); err != nil {
+		t.Fatalf("CreateMissing: %v", err)
+	}
+	if err := ValidateRepo(root); err == nil {
+		t.Fatal("ValidateRepo without .git: expected error, got nil")
+	}
+}
+
+func TestValidateRepo_RejectsIncompleteLayout(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("MkdirAll .git: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "global"), 0o755); err != nil {
+		t.Fatalf("MkdirAll global: %v", err)
+	}
+	if err := ValidateRepo(root); err == nil {
+		t.Fatal("ValidateRepo on incomplete layout: expected error, got nil")
+	}
+}
+
+func TestValidateRepo_RejectsGitFile(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".git"), []byte("gitdir: elsewhere"), 0o644); err != nil {
+		t.Fatalf("WriteFile .git: %v", err)
+	}
+	if err := CreateMissing(root, ExpectedLayout()); err != nil {
+		t.Fatalf("CreateMissing: %v", err)
+	}
+	if err := ValidateRepo(root); err == nil {
+		t.Fatal("ValidateRepo with .git file: expected error, got nil")
+	}
+}
+
 func TestCreateMissing_All(t *testing.T) {
 	root := t.TempDir()
 	if err := CreateMissing(root, ExpectedLayout()); err != nil {
