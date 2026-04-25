@@ -488,9 +488,14 @@ func (s *Server) streamRing(get func() *logbuf.Ring) http.HandlerFunc {
 		// Subscribe before the first flush so no entry written between "headers
 		// out" and "loop entered" is missed.
 		//
-		// Buffer 64 entries so a brief render hiccup doesn't drop bursts; the
-		// ring itself drops on overflow rather than blocking the writer.
-		ch := make(chan logbuf.Entry, 64)
+		// Buffer 10k entries to absorb verbose-mode bursts: llama.cpp emits
+		// dozens of lines per Write syscall during model load and SSE delivery
+		// (JSON encode + Fprintf + Flush per line) is much slower than the
+		// ring's append, so the channel has to bridge the rate mismatch. The
+		// ring drops on overflow rather than blocking the writer; with 10k
+		// slots a stalled subscriber loses lines instead of stalling
+		// llama-server's stdout pipe. Memory cost is ~400 KB per subscriber.
+		ch := make(chan logbuf.Entry, 10000)
 		cancel := ring.Subscribe(ch)
 		defer cancel()
 
