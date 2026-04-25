@@ -1,0 +1,129 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+
+	"github.com/vrnc/harness/internal/config"
+	"github.com/vrnc/harness/internal/inference"
+	"github.com/vrnc/harness/internal/metrics"
+	"github.com/vrnc/harness/internal/proc"
+	"github.com/vrnc/harness/internal/ui"
+	"github.com/vrnc/harness/pkg/httpclient"
+)
+
+// ApplyConfig reloads config from the store, validates it, and either starts
+// services for the first time or reconfigures the live ones to match. Tier-3
+// changes (UI port, queue) are returned as RestartNeeded so the UI can flag
+// them - no live apply path exists for those yet.
+func (rt *Runtime) ApplyConfig(
+	ctx context.Context,
+	uiServer *ui.Server,
+	events chan proc.Event,
+	metricsStore metrics.Store,
+) ui.ApplyResult {
+	uiServer.ClearStartupErrors()
+	if rt.cfgStore == nil {
+		uiServer.AddStartupError(ErrConfigStoreUnavailable)
+		return ui.ApplyResult{}
+	}
+	loaded, wasSaved, lerr := rt.cfgStore.Load()
+	if lerr != nil {
+		uiServer.AddStartupError(fmt.Errorf("config load: %w", lerr))
+		return ui.ApplyResult{}
+	}
+	uiServer.SetFirstRun(!wasSaved)
+	if !wasSaved {
+		return ui.ApplyResult{}
+	}
+	if verr := config.Validate(loaded); verr != nil {
+		uiServer.AddStartupError(verr)
+		return ui.ApplyResult{}
+	}
+	ValidatePaths(uiServer, loaded)
+
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+
+	old := rt.cfg
+	rt.cfg = *loaded
+
+	var result ui.ApplyResult
+
+	if !rt.started {
+		slog.Info("starting services", "model_port", loaded.Model.Port, "embed_port", loaded.Embedder.Port)
+		rt.startServices(ctx, uiServer, events, metricsStore)
+		rt.startMemoryAndAPI(ctx, uiServer)
+		result.LiveApplied = true
+	} else {
+		if old.Model != loaded.Model {
+			slog.Info("reconfiguring llama-server", "old_port", old.Model.Port, "new_port", loaded.Model.Port)
+			rt.llamaMgr.Reconfigure(func() (string, []string) {
+				return proc.LlamaArgs(
+					loaded.Model.Binary,
+					loaded.Model.ModelPath,
+					loaded.Model.CtxSize,
+					loaded.Model.GPULayers,
+					loaded.Model.NParallel,
+					loaded.Model.Port,
+					loaded.Model.Verbose,
+				)
+			}, fmt.Sprintf("http://127.0.0.1:%d/health", loaded.Model.Port))
+			result.LiveApplied = true
+		}
+		if old.Embedder != loaded.Embedder {
+			slog.Info("reconfiguring embedder", "old_port", old.Embedder.Port, "new_port", loaded.Embedder.Port)
+			rt.embedMgr.Reconfigure(func() (string, []string) {
+				return proc.EmbedderArgs(
+					loaded.Embedder.Binary,
+					loaded.Embedder.ModelPath,
+					loaded.Embedder.Port,
+					loaded.Embedder.Verbose,
+				)
+			}, fmt.Sprintf("http://127.0.0.1:%d/health", loaded.Embedder.Port))
+			result.LiveApplied = true
+		}
+		if old.Model.Port != loaded.Model.Port && rt.reqQueue != nil {
+			rt.reqQueue.SetClient(inference.NewClient(
+				fmt.Sprintf("http://127.0.0.1:%d", loaded.Model.Port),
+				httpclient.NewStreaming(),
+			))
+		}
+
+		if old.Memory != loaded.Memory ||
+			old.Prompt != loaded.Prompt ||
+			old.API != loaded.API ||
+			old.Agent.Active != loaded.Agent.Active {
+			slog.Info("rebuilding memory and api services")
+			rt.stopMemoryAndAPI(uiServer)
+			rt.startMemoryAndAPI(ctx, uiServer)
+			result.LiveApplied = true
+		}
+	}
+
+	if old.UI.Port != loaded.UI.Port {
+		result.RestartNeeded = append(result.RestartNeeded, "UI port")
+	}
+	if old.Queue.MaxDepth != loaded.Queue.MaxDepth {
+		result.RestartNeeded = append(result.RestartNeeded, "queue max depth")
+	}
+	if old.Queue.WALPath != loaded.Queue.WALPath {
+		result.RestartNeeded = append(result.RestartNeeded, "queue WAL path")
+	}
+	if old.Log.RingMaxEntries != loaded.Log.RingMaxEntries && rt.rings.Log != nil {
+		rt.rings.Log.Resize(loaded.Log.RingMaxEntries)
+		result.LiveApplied = true
+	}
+	if old.Log.ProcMaxLines != loaded.Log.ProcMaxLines {
+		if rt.rings.Llama != nil {
+			rt.rings.Llama.Resize(loaded.Log.ProcMaxLines)
+		}
+		if rt.rings.Embed != nil {
+			rt.rings.Embed.Resize(loaded.Log.ProcMaxLines)
+		}
+		result.LiveApplied = true
+	}
+
+	return result
+}

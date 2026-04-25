@@ -90,27 +90,22 @@ func logProcEvent(ev proc.Event) {
 
 func pushStatus(uiSrv *ui.Server, llamaMgr, embedMgr *proc.Manager) {
 	if llamaMgr != nil {
-		st := llamaMgr.Status()
-		uiSrv.SetLlamaStatus(ui.ProcessStatus{
-			Name:         "llama-server",
-			Running:      st.Running,
-			Healthy:      st.Healthy,
-			RestartCount: st.RestartCount,
-			LastError:    st.LastError,
-			ExitCode:     st.ExitCode,
-			Failed:       st.Failed,
-		})
+		uiSrv.SetLlamaStatus(processStatus(llamaMgr, "llama-server"))
 	}
 	if embedMgr != nil {
-		st := embedMgr.Status()
-		uiSrv.SetEmbedderStatus(ui.ProcessStatus{
-			Name:         "embedder",
-			Running:      st.Running,
-			Healthy:      st.Healthy,
-			RestartCount: st.RestartCount,
-			LastError:    st.LastError,
-			ExitCode:     st.ExitCode,
-			Failed:       st.Failed,
-		})
+		uiSrv.SetEmbedderStatus(processStatus(embedMgr, "embedder"))
+	}
+}
+
+func processStatus(m *proc.Manager, name string) ui.ProcessStatus {
+	st := m.Status()
+	return ui.ProcessStatus{
+		Name:         name,
+		Running:      st.Running,
+		Healthy:      st.Healthy,
+		RestartCount: st.RestartCount,
+		LastError:    st.LastError,
+		ExitCode:     st.ExitCode,
+		Failed:       st.Failed,
 	}
 }
