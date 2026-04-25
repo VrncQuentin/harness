@@ -197,12 +197,10 @@ func (q *Queue) dispatch(req Request) {
 	}
 }
 
-func (q *Queue) send(ctx context.Context, resp chan<- inference.Token, tok inference.Token) bool {
+func (q *Queue) send(ctx context.Context, resp chan<- inference.Token, tok inference.Token) {
 	select {
 	case resp <- tok:
-		return true
 	case <-ctx.Done():
-		return false
 	}
 }
 
