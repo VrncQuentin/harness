@@ -103,6 +103,9 @@ func TestConfigStore_LoadFreshReturnsDefaultsAndNotConfigured(t *testing.T) {
 	if cfg.Log.ProcMaxLines != defaults.Log.ProcMaxLines {
 		t.Errorf("Log.ProcMaxLines: got %d, want %d", cfg.Log.ProcMaxLines, defaults.Log.ProcMaxLines)
 	}
+	if cfg.Agent.Active != "" {
+		t.Errorf("Agent.Active default: got %q, want empty", cfg.Agent.Active)
+	}
 }
 
 func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
@@ -118,6 +121,7 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	cfg.Embedder.ModelPath = "C:\\e.gguf"
 	cfg.Embedder.Verbose = true
 	cfg.Memory.RepoPath = "C:\\memory"
+	cfg.Agent.Active = "coder"
 	cfg.UI.OpenOnStart = false
 	cfg.API.Enabled = true
 	cfg.API.Port = 9090
@@ -152,6 +156,9 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	}
 	if loaded.Memory.RepoPath != cfg.Memory.RepoPath {
 		t.Errorf("Memory.RepoPath roundtrip: got %q, want %q", loaded.Memory.RepoPath, cfg.Memory.RepoPath)
+	}
+	if loaded.Agent.Active != "coder" {
+		t.Errorf("Agent.Active roundtrip: got %q, want %q", loaded.Agent.Active, "coder")
 	}
 	if loaded.Log.RingMaxEntries != 1234 {
 		t.Errorf("Log.RingMaxEntries roundtrip: got %d, want 1234", loaded.Log.RingMaxEntries)
