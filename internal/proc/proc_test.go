@@ -350,6 +350,34 @@ func TestRestart_ClearsCircuitAndSignalsReload(t *testing.T) {
 	}
 }
 
+func TestMarkHealthy_ClearsLastError(t *testing.T) {
+	// On a llama-server Restart the old child is killed, which makes the
+	// next health tick fail with "connection refused" before the new child
+	// has bound the port. Once the new child is up the banner must clear -
+	// previously the stale error stuck around even though the badge had
+	// flipped back to Healthy.
+	m := NewManager(ManagerConfig{
+		Name:      "test",
+		BuildArgs: func() (string, []string) { return "binary", nil },
+		HealthURL: "http://127.0.0.1:9999/health",
+	})
+
+	m.mu.Lock()
+	m.healthy = false
+	m.lastError = errors.New("dial tcp 127.0.0.1:8081: connectex: No connection could be made")
+	m.mu.Unlock()
+
+	m.markHealthy()
+
+	s := m.Status()
+	if !s.Healthy {
+		t.Error("expected Healthy=true after markHealthy")
+	}
+	if s.LastError != nil {
+		t.Errorf("expected LastError cleared, got %v", s.LastError)
+	}
+}
+
 func TestCheckHealth_Returns503AsLoading(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

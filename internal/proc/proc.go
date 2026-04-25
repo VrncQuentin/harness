@@ -429,9 +429,7 @@ func (m *Manager) healthLoop(ctx context.Context) {
 				m.emitExitLine()
 				return
 			}
-			m.mu.Lock()
-			m.healthy = true
-			m.mu.Unlock()
+			m.markHealthy()
 			m.emit(EventHealthOK, "healthy")
 		}
 	}
@@ -527,6 +525,18 @@ func (m *Manager) checkHealth(ctx context.Context) error {
 func (m *Manager) setError(err error) {
 	m.mu.Lock()
 	m.lastError = err
+	m.mu.Unlock()
+}
+
+// markHealthy flips the manager into the healthy state and clears any prior
+// error. Without the clear, a transient failure (e.g. the brief connection
+// refusal between killing the old llama-server and the new one binding the
+// port on Restart) would leave its banner up forever even after the process
+// is back to serving traffic.
+func (m *Manager) markHealthy() {
+	m.mu.Lock()
+	m.healthy = true
+	m.lastError = nil
 	m.mu.Unlock()
 }
 
