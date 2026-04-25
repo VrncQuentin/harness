@@ -16,12 +16,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vrnc/harness/internal/agent"
+	"github.com/vrnc/harness/internal/api"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/logbuf"
+	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/proc"
+	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/queue"
 	"github.com/vrnc/harness/internal/tray"
 	"github.com/vrnc/harness/internal/ui"
@@ -42,6 +46,7 @@ const dbFilename = "harness.db"
 type runtime struct {
 	mu        sync.Mutex
 	cfg       config.Config
+	cfgStore  config.Store
 	logRing   *logbuf.Ring
 	llamaRing *logbuf.Ring
 	embedRing *logbuf.Ring
@@ -49,6 +54,14 @@ type runtime struct {
 	embedMgr  *proc.Manager
 	reqQueue  *queue.Queue
 	started   bool
+
+	// M2: memory + prompt + api. Built when cfg.Memory.RepoPath is set;
+	// torn down and rebuilt when memory/prompt/api config changes.
+	memReader *memory.DirReader
+	agentReg  *agent.DiskRegistry
+	assembler *prompt.DiskAssembler
+	hotReload *prompt.HotReload
+	apiServer *api.Server
 }
 
 func main() {
@@ -154,6 +167,7 @@ func run() error {
 	events := make(chan proc.Event, 64)
 	rt := &runtime{
 		cfg:       cfg,
+		cfgStore:  cfgStore,
 		logRing:   logRing,
 		llamaRing: llamaRing,
 		embedRing: embedRing,
@@ -165,6 +179,7 @@ func run() error {
 		validatePaths(uiServer, &cfg)
 		rt.mu.Lock()
 		rt.startServices(rootCtx, uiServer, events, metricsStore)
+		rt.startMemoryAndAPI(rootCtx, uiServer)
 		rt.mu.Unlock()
 	}
 
@@ -205,7 +220,17 @@ func run() error {
 		rootCancel()
 		rt.mu.Lock()
 		q := rt.reqQueue
+		apiSrv := rt.apiServer
+		hr := rt.hotReload
 		rt.mu.Unlock()
+		if apiSrv != nil {
+			apiSrv.Stop()
+		}
+		if hr != nil {
+			if err := hr.Close(); err != nil {
+				slog.Warn("prompt hot-reload close", "err", err)
+			}
+		}
 		if q != nil {
 			q.Stop()
 		}
@@ -327,6 +352,7 @@ func (rt *runtime) applyConfig(
 	if !rt.started {
 		slog.Info("starting services", "model_port", loaded.Model.Port, "embed_port", loaded.Embedder.Port)
 		rt.startServices(ctx, uiServer, events, metricsStore)
+		rt.startMemoryAndAPI(ctx, uiServer)
 		result.LiveApplied = true
 	} else {
 		if old.Model != loaded.Model {
@@ -365,6 +391,20 @@ func (rt *runtime) applyConfig(
 				httpclient.NewStreaming(),
 			))
 		}
+
+		// M2: rebuild memory + prompt + api when any of their inputs change.
+		// Cheap enough on a single-user box that we don't bother diffing
+		// each subsystem - the whole stack tears down and comes back with
+		// the new config in milliseconds.
+		if old.Memory != loaded.Memory ||
+			old.Prompt != loaded.Prompt ||
+			old.API != loaded.API ||
+			old.Agent.Active != loaded.Agent.Active {
+			slog.Info("rebuilding memory and api services")
+			rt.stopMemoryAndAPI(uiServer)
+			rt.startMemoryAndAPI(ctx, uiServer)
+			result.LiveApplied = true
+		}
 	}
 
 	if old.UI.Port != loaded.UI.Port {
@@ -397,6 +437,170 @@ func (rt *runtime) getManagers() (*proc.Manager, *proc.Manager) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.llamaMgr, rt.embedMgr
+}
+
+// startMemoryAndAPI brings up the memory reader, agent registry, prompt
+// assembler, hot-reload watcher, and (when enabled) the API server based
+// on rt.cfg. A missing memory.repo_path leaves every M2 field nil so the
+// /agents page renders the setup CTA instead of crashing.
+//
+// Caller must hold rt.mu.
+func (rt *runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server) {
+	if rt.cfg.Memory.RepoPath == "" {
+		uiServer.SetAgentRegistry(nil)
+		return
+	}
+
+	rt.memReader = memory.NewDirReader(rt.cfg.Memory.RepoPath)
+	rt.agentReg = agent.NewDiskRegistry(rt.memReader, rt.getActive, rt.setActive)
+	rt.assembler = prompt.NewDiskAssembler(rt.memReader, rt.agentReg, rt.cfg.Prompt)
+
+	hr, err := prompt.NewHotReload(rt.cfg.Memory.RepoPath, rt.cfg.Agent.Active, slog.Default())
+	if err != nil {
+		uiServer.AddStartupError(fmt.Errorf("prompt hot-reload: %w", err))
+	} else {
+		rt.hotReload = hr
+	}
+
+	uiServer.SetAgentRegistry(&uiAgentRegistryAdapter{reg: rt.agentReg, mem: rt.memReader})
+
+	if rt.cfg.API.Enabled && rt.reqQueue != nil {
+		srv := api.NewServer(rt.cfg.API.Port, &apiAssemblerAdapter{a: rt.assembler, rt: rt}, rt.reqQueue)
+		if err := srv.Start(ctx); err != nil {
+			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
+		} else {
+			rt.apiServer = srv
+			slog.Info("api server listening", "port", rt.cfg.API.Port)
+		}
+	}
+}
+
+// stopMemoryAndAPI tears down the M2 services. Caller must hold rt.mu.
+// The API server's Shutdown can take up to 5s; the hot-reload watcher
+// closes promptly. Both are idempotent.
+func (rt *runtime) stopMemoryAndAPI(uiServer *ui.Server) {
+	if rt.apiServer != nil {
+		rt.apiServer.Stop()
+		rt.apiServer = nil
+	}
+	if rt.hotReload != nil {
+		if err := rt.hotReload.Close(); err != nil {
+			slog.Warn("prompt hot-reload close", "err", err)
+		}
+		rt.hotReload = nil
+	}
+	rt.memReader = nil
+	rt.agentReg = nil
+	rt.assembler = nil
+	uiServer.SetAgentRegistry(nil)
+}
+
+// getActive returns the currently active agent name. Used as the
+// agent.DiskRegistry getActive callback. Reads rt.cfg under rt.mu so the
+// value is consistent with /config saves and /agents/active POSTs.
+func (rt *runtime) getActive() string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.cfg.Agent.Active
+}
+
+// setActive persists name as the active agent and rewires the hot-reload
+// watcher to follow the new agent's directory. The DB is the source of
+// truth: load → mutate → save so a concurrent /config form submit cannot
+// clobber the change (the form preserves agent_active by reading the row
+// before merging in form fields).
+func (rt *runtime) setActive(name string) error {
+	rt.mu.Lock()
+	store := rt.cfgStore
+	hr := rt.hotReload
+	rt.mu.Unlock()
+
+	if store == nil {
+		return errConfigStoreUnavailable
+	}
+	loaded, _, err := store.Load()
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	loaded.Agent.Active = name
+	if err := store.Save(loaded); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	rt.mu.Lock()
+	rt.cfg.Agent.Active = name
+	rt.mu.Unlock()
+
+	if hr != nil {
+		hr.SetActiveAgent(name)
+	}
+	return nil
+}
+
+// uiAgentRegistryAdapter bridges *agent.DiskRegistry (returns
+// agent.Agent values with file paths only) to ui.AgentRegistry (returns
+// ui.AgentInfo with persona content for the active-persona card). The
+// extra responsibility lives here rather than in either package so
+// neither needs to know about the other.
+type uiAgentRegistryAdapter struct {
+	reg agent.Registry
+	mem memory.Reader
+}
+
+func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
+	agents, err := ad.reg.List()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ui.AgentInfo, 0, len(agents))
+	for _, a := range agents {
+		out = append(out, ui.AgentInfo{Name: a.Name, PersonaPath: a.PersonaPath})
+	}
+	return out, nil
+}
+
+func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
+	a, err := ad.reg.Get(name)
+	if err != nil {
+		return ui.AgentInfo{}, err
+	}
+	info := ui.AgentInfo{Name: a.Name, PersonaPath: a.PersonaPath}
+	b, err := ad.mem.Read(a.PersonaPath)
+	if err != nil {
+		// A missing persona file is rendered as "(empty)" by the
+		// template; only surface real I/O failures to the caller.
+		if errors.Is(err, fs.ErrNotExist) {
+			return info, nil
+		}
+		return info, err
+	}
+	info.Persona = string(b)
+	return info, nil
+}
+
+func (ad *uiAgentRegistryAdapter) Active() string {
+	return ad.reg.Active()
+}
+
+func (ad *uiAgentRegistryAdapter) SetActive(name string) error {
+	return ad.reg.SetActive(name)
+}
+
+// apiAssemblerAdapter wraps *prompt.DiskAssembler (3-value return with
+// LayerStats) for the api package's 2-value Assembler interface. It also
+// applies the "active agent is the default" fallback so an OpenAI client
+// that doesn't know about agents still gets the persona injected.
+type apiAssemblerAdapter struct {
+	a  *prompt.DiskAssembler
+	rt *runtime
+}
+
+func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, conversation []inference.Message) ([]inference.Message, error) {
+	if agentName == "" {
+		agentName = ad.rt.getActive()
+	}
+	msgs, _, err := ad.a.Assemble(ctx, agentName, conversation)
+	return msgs, err
 }
 
 // openDB opens harness.db (running migrations + seed) and returns the handle
