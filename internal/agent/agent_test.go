@@ -286,3 +286,113 @@ func TestDiskRegistry_CreateAcceptsAllowedNames(t *testing.T) {
 		})
 	}
 }
+
+func TestDiskRegistry_WritePersonaPersists(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md": "old",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.WritePersona("coder", []byte("new persona")); err != nil {
+		t.Fatalf("WritePersona: %v", err)
+	}
+	got, err := mem.Read("agents/coder/persona.md")
+	if err != nil {
+		t.Fatalf("Read persona: %v", err)
+	}
+	if string(got) != "new persona" {
+		t.Errorf("persona = %q, want %q", string(got), "new persona")
+	}
+}
+
+func TestDiskRegistry_WritePersonaCreatesMissingFile(t *testing.T) {
+	// Agent dir exists (notes.md present) but no persona.md yet.
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/notes.md": "n",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.WritePersona("coder", []byte("body")); err != nil {
+		t.Fatalf("WritePersona: %v", err)
+	}
+	got, err := mem.Read("agents/coder/persona.md")
+	if err != nil {
+		t.Fatalf("Read persona: %v", err)
+	}
+	if string(got) != "body" {
+		t.Errorf("persona = %q, want %q", string(got), "body")
+	}
+}
+
+func TestDiskRegistry_WritePersonaUnknownWrapsErrNotExist(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md": "c",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	err := reg.WritePersona("ghost", []byte("body"))
+	if err == nil {
+		t.Fatal("WritePersona ghost: expected error, got nil")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("WritePersona ghost: errors.Is(err, fs.ErrNotExist) = false, err = %v", err)
+	}
+}
+
+func TestDiskRegistry_WritePersonaRejectsEmptyName(t *testing.T) {
+	mem := newRepoWithAgents(t, nil)
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.WritePersona("", []byte("x")); err == nil {
+		t.Fatal("WritePersona(\"\"): expected error, got nil")
+	}
+}
+
+func TestDiskRegistry_WriteNotesPersists(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md": "p",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.WriteNotes("coder", []byte("note body")); err != nil {
+		t.Fatalf("WriteNotes: %v", err)
+	}
+	got, err := mem.Read("agents/coder/notes.md")
+	if err != nil {
+		t.Fatalf("Read notes: %v", err)
+	}
+	if string(got) != "note body" {
+		t.Errorf("notes = %q, want %q", string(got), "note body")
+	}
+}
+
+func TestDiskRegistry_WriteNotesUnknownWrapsErrNotExist(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md": "c",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	err := reg.WriteNotes("ghost", []byte("x"))
+	if err == nil {
+		t.Fatal("WriteNotes ghost: expected error, got nil")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("WriteNotes ghost: errors.Is(err, fs.ErrNotExist) = false, err = %v", err)
+	}
+}
+
+func TestDiskRegistry_WriteNotesRejectsEmptyName(t *testing.T) {
+	mem := newRepoWithAgents(t, nil)
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.WriteNotes("", []byte("x")); err == nil {
+		t.Fatal("WriteNotes(\"\"): expected error, got nil")
+	}
+}
