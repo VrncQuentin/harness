@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/golang-migrate/migrate/v4"
 	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
@@ -51,6 +52,31 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 	return d, nil
+}
+
+// PeekUIPort reads the saved UI port from an existing harness.db without
+// running migrations or seeding defaults. It is intentionally best-effort:
+// startup still opens the real DB after the UI is serving, where any errors
+// are surfaced in the browser.
+func PeekUIPort(path string, fallback int) int {
+	if _, err := os.Stat(path); err != nil {
+		return fallback
+	}
+
+	sqldb, err := sql.Open("sqlite", path)
+	if err != nil {
+		return fallback
+	}
+	defer func() { _ = sqldb.Close() }()
+
+	var port int
+	if err := sqldb.QueryRow(`SELECT ui_port FROM config WHERE id = 1`).Scan(&port); err != nil {
+		return fallback
+	}
+	if port < 1 || port > 65535 {
+		return fallback
+	}
+	return port
 }
 
 // Close closes the underlying SQLite handle.
