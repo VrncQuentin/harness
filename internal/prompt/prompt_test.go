@@ -50,9 +50,14 @@ func baseCfg() config.PromptConfig {
 }
 
 func TestAssemble_MissingRulesIsRequired(t *testing.T) {
-	mem := writeRepo(t, map[string]string{})
+	mem := writeRepo(t, map[string]string{
+		// rules.md is missing on purpose; persona.md exists so we get
+		// past the agent-required check and surface the actual error
+		// the test exercises.
+		"agents/coder/persona.md": "p",
+	})
 	asm := newAssembler(t, mem, baseCfg())
-	_, _, err := asm.Assemble(context.Background(), "", nil)
+	_, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err == nil {
 		t.Fatal("expected error for missing rules.md")
 	}
@@ -61,33 +66,14 @@ func TestAssemble_MissingRulesIsRequired(t *testing.T) {
 	}
 }
 
-func TestAssemble_NoAgentSkipsPersonaLayers(t *testing.T) {
+func TestAssemble_RequiresAgentName(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md": "RULES BODY",
-		"global/user.md":  "USER BODY",
-		"global/facts.md": "FACTS BODY",
+		"global/rules.md": "RULES",
 	})
 	asm := newAssembler(t, mem, baseCfg())
-	msgs, stats, err := asm.Assemble(context.Background(), "", nil)
-	if err != nil {
-		t.Fatalf("Assemble: %v", err)
-	}
-	if len(msgs) != 1 {
-		t.Fatalf("expected 1 system message, got %d", len(msgs))
-	}
-	sys := msgs[0].Content
-	for _, want := range []string{"# Rules", "RULES BODY", "# User", "USER BODY", "# Facts", "FACTS BODY"} {
-		if !strings.Contains(sys, want) {
-			t.Errorf("system message missing %q; got:\n%s", want, sys)
-		}
-	}
-	for _, banned := range []string{"# Persona", "# Notes", "# Episodes"} {
-		if strings.Contains(sys, banned) {
-			t.Errorf("system message unexpectedly contains %q", banned)
-		}
-	}
-	if stats.Persona != 0 || stats.Notes != 0 || stats.Episodes != 0 {
-		t.Errorf("persona/notes/episodes stats not zero: %+v", stats)
+	_, _, err := asm.Assemble(context.Background(), "", nil)
+	if !errors.Is(err, ErrAgentRequired) {
+		t.Errorf("expected ErrAgentRequired, got %v", err)
 	}
 }
 
@@ -152,7 +138,8 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 
 func TestAssemble_ConversationAppendedVerbatim(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md": "RULES",
+		"global/rules.md":         "RULES",
+		"agents/coder/persona.md": "PERSONA",
 	})
 	asm := newAssembler(t, mem, baseCfg())
 
@@ -160,7 +147,7 @@ func TestAssemble_ConversationAppendedVerbatim(t *testing.T) {
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi"},
 	}
-	msgs, _, err := asm.Assemble(context.Background(), "", convo)
+	msgs, _, err := asm.Assemble(context.Background(), "coder", convo)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
@@ -281,10 +268,11 @@ func TestAssemble_CtxSizeTrimsAgainstConversationReserve(t *testing.T) {
 
 func TestAssemble_CustomTokenizer(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md": "abcd", // 4 runes, default tokenizer says 1
+		"global/rules.md":         "abcd", // 4 runes, default tokenizer says 1
+		"agents/coder/persona.md": "p",
 	})
 	asm := newAssembler(t, mem, baseCfg()).WithTokenizer(func(s string) int { return len(s) })
-	_, stats, err := asm.Assemble(context.Background(), "", nil)
+	_, stats, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
@@ -295,12 +283,13 @@ func TestAssemble_CustomTokenizer(t *testing.T) {
 
 func TestAssemble_CancelledContext(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md": "r",
+		"global/rules.md":         "r",
+		"agents/coder/persona.md": "p",
 	})
 	asm := newAssembler(t, mem, baseCfg())
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := asm.Assemble(ctx, "", nil)
+	_, _, err := asm.Assemble(ctx, "coder", nil)
 	if err == nil {
 		t.Fatal("expected cancellation error, got nil")
 	}
@@ -329,18 +318,18 @@ func TestAssemble_TotalEqualsSum(t *testing.T) {
 	}
 }
 
-// TestAssemble_NoSystemWhenEverythingEmpty should not actually occur
-// in production (rules.md is required), but verifies the render logic
-// skips layers with only whitespace rather than emitting a "# Rules"
+// TestAssemble_SkipsEmptyOptionalLayers verifies the render logic
+// skips layers with only whitespace rather than emitting a "# User"
 // header with no body.
 func TestAssemble_SkipsEmptyOptionalLayers(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md": "RULES",
-		"global/user.md":  "   \n\n\n   ", // whitespace only
-		"global/facts.md": "",
+		"global/rules.md":         "RULES",
+		"global/user.md":          "   \n\n\n   ", // whitespace only
+		"global/facts.md":         "",
+		"agents/coder/persona.md": "PERSONA",
 	})
 	asm := newAssembler(t, mem, baseCfg())
-	msgs, _, err := asm.Assemble(context.Background(), "", nil)
+	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
@@ -357,16 +346,14 @@ func TestAssemble_SkipsEmptyOptionalLayers(t *testing.T) {
 func TestAssemble_ReadErrorPropagates(t *testing.T) {
 	mem := errReader{
 		Reader: writeRepo(t, map[string]string{
-			"global/rules.md": "r",
+			"global/rules.md":         "r",
+			"agents/coder/persona.md": "p",
 		}),
 		failOn: "global/user.md",
 	}
-	// We deliberately violate the DiskLister requirement for the
-	// registry here by wrapping the reader; agent.NewDiskRegistry
-	// tolerates that because we never ask for agents in this test.
-	reg := agent.NewDiskRegistry(mem, func() string { return "" }, func(string) error { return nil })
+	reg := agent.NewDiskRegistry(mem, func() string { return "coder" }, func(string) error { return nil })
 	asm := NewDiskAssembler(mem, reg, baseCfg())
-	_, _, err := asm.Assemble(context.Background(), "", nil)
+	_, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err == nil {
 		t.Fatal("expected error from failing read, got nil")
 	}

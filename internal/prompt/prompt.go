@@ -24,7 +24,15 @@ import (
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/reqid"
 )
+
+// ErrAgentRequired is returned by Assemble when called with an empty
+// agent name. The persona layer is mandatory, so an empty agent means
+// either the user has not selected one yet or the API caller forgot to
+// set agent / X-Harness-Agent. Surface as an error rather than silently
+// dropping the persona section.
+var ErrAgentRequired = errors.New("prompt: agent name is required")
 
 // Well-known paths inside the memory repo. Kept as package-level
 // constants so tests and hot-reload share the same strings.
@@ -130,18 +138,34 @@ func defaultTokenize(s string) int {
 // conversation, the per-layer token counts, and any error that halts
 // assembly (missing required layer). Missing optional layers produce
 // empty sections rather than errors.
+//
+// agentName is required: the persona layer is mandatory, so callers
+// must resolve the active agent before invoking. ErrAgentRequired is
+// returned when it is empty.
+//
+// Log entries are tagged with the request id from ctx (see
+// internal/reqid) so the api handler, queue dispatcher, and assembler
+// share a correlation key in the logs.
 func (a *DiskAssembler) Assemble(ctx context.Context, agentName string, conversation []inference.Message) ([]inference.Message, LayerStats, error) {
+	logger := a.loggerFor(ctx)
+
 	if err := ctx.Err(); err != nil {
 		return nil, LayerStats{}, fmt.Errorf("prompt: assemble cancelled: %w", err)
 	}
+	if agentName == "" {
+		return nil, LayerStats{}, ErrAgentRequired
+	}
+
+	logger.Debug("prompt: assembling", "agent", agentName, "conversation_messages", len(conversation))
 
 	layers, err := a.loadLayers(agentName)
 	if err != nil {
+		logger.Debug("prompt: load layers failed", "agent", agentName, "err", err)
 		return nil, LayerStats{}, err
 	}
 
 	convoTokens := a.countMessages(conversation)
-	stats := a.trim(&layers, convoTokens)
+	stats := a.trim(logger, &layers, convoTokens)
 	stats.Conversation = convoTokens
 	stats.Total = stats.Rules + stats.User + stats.Persona + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
 
@@ -151,7 +175,31 @@ func (a *DiskAssembler) Assemble(ctx context.Context, agentName string, conversa
 		out = append(out, inference.Message{Role: "system", Content: system})
 	}
 	out = append(out, conversation...)
+
+	logger.Debug("prompt: assembled",
+		"agent", agentName,
+		"rules_tokens", stats.Rules,
+		"user_tokens", stats.User,
+		"persona_tokens", stats.Persona,
+		"facts_tokens", stats.Facts,
+		"notes_tokens", stats.Notes,
+		"episodes_tokens", stats.Episodes,
+		"conversation_tokens", stats.Conversation,
+		"total_tokens", stats.Total,
+		"episodes_kept", len(layers.episodes),
+	)
+
 	return out, stats, nil
+}
+
+// loggerFor returns the configured logger augmented with the request
+// id pulled from ctx. The id is omitted when ctx carries none so test
+// code without the api handler in front still gets clean output.
+func (a *DiskAssembler) loggerFor(ctx context.Context) *slog.Logger {
+	if id := reqid.From(ctx); id != "" {
+		return a.logger.With("request_id", id)
+	}
+	return a.logger
 }
 
 // rawLayers is the intermediate form - strings with their token counts -
@@ -295,13 +343,19 @@ func (a *DiskAssembler) countMessages(msgs []inference.Message) int {
 // user, persona) are never trimmed. Episodes are dropped oldest-first
 // until the memory budget is respected and the total budget fits.
 // Returns the stats computed against the final layer set.
-func (a *DiskAssembler) trim(lay *rawLayers, convoTokens int) LayerStats {
+func (a *DiskAssembler) trim(logger *slog.Logger, lay *rawLayers, convoTokens int) LayerStats {
 	stats := a.statsFor(lay)
 
 	memBudget := a.cfg.MemoryTokenBudget
 	if memBudget > 0 {
 		for stats.Facts+stats.Notes+stats.Episodes > memBudget && len(lay.episodes) > 0 {
+			dropped := lay.episodes[0]
 			lay.episodes = lay.episodes[1:]
+			logger.Debug("prompt: trimming episode for memory budget",
+				"path", dropped.path,
+				"tokens", dropped.tokens,
+				"memory_token_budget", memBudget,
+			)
 			stats = a.statsFor(lay)
 		}
 	}
@@ -316,7 +370,13 @@ func (a *DiskAssembler) trim(lay *rawLayers, convoTokens int) LayerStats {
 			limit = 0
 		}
 		for a.totalFixed(&stats)+convoTokens > limit && len(lay.episodes) > 0 {
+			dropped := lay.episodes[0]
 			lay.episodes = lay.episodes[1:]
+			logger.Debug("prompt: trimming episode for ctx limit",
+				"path", dropped.path,
+				"tokens", dropped.tokens,
+				"ctx_limit", limit,
+			)
 			stats = a.statsFor(lay)
 		}
 	}
@@ -325,7 +385,7 @@ func (a *DiskAssembler) trim(lay *rawLayers, convoTokens int) LayerStats {
 	// facts or notes - the roadmap is explicit: warn, don't silently
 	// collapse promoted knowledge.
 	if memBudget > 0 && stats.Facts+stats.Notes+stats.Episodes > memBudget {
-		a.logger.Warn("prompt: memory budget exceeded after trimming episodes",
+		logger.Warn("prompt: memory budget exceeded after trimming episodes",
 			"memory_token_budget", memBudget,
 			"facts_tokens", stats.Facts,
 			"notes_tokens", stats.Notes,

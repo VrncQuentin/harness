@@ -586,6 +586,12 @@ func (ad *uiAgentRegistryAdapter) SetActive(name string) error {
 	return ad.reg.SetActive(name)
 }
 
+// errNoActiveAgent is surfaced when the OpenAI request omits the agent
+// field/header AND no active agent is configured. The message is
+// deliberately operator-facing so the API client sees a useful clue
+// instead of "prompt: agent name is required".
+var errNoActiveAgent = errors.New("api: no agent specified and no active agent configured (set one in /agents)")
+
 // apiAssemblerAdapter wraps *prompt.DiskAssembler (3-value return with
 // LayerStats) for the api package's 2-value Assembler interface. It also
 // applies the "active agent is the default" fallback so an OpenAI client
@@ -598,6 +604,9 @@ type apiAssemblerAdapter struct {
 func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, conversation []inference.Message) ([]inference.Message, error) {
 	if agentName == "" {
 		agentName = ad.rt.getActive()
+	}
+	if agentName == "" {
+		return nil, errNoActiveAgent
 	}
 	msgs, _, err := ad.a.Assemble(ctx, agentName, conversation)
 	return msgs, err
