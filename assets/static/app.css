@@ -415,7 +415,8 @@ a:hover { text-decoration: underline; }
   color: var(--muted);
 }
 .fg input[type="text"],
-.fg input[type="number"] {
+.fg input[type="number"],
+.fg textarea {
   width: 100%;
   padding: 0.45rem 0.6rem;
   border: 1px solid var(--border-strong);
@@ -426,12 +427,18 @@ a:hover { text-decoration: underline; }
   font-size: 0.825rem;
   line-height: 1.4;
 }
-.fg input:focus {
+.fg textarea {
+  resize: vertical;
+  min-height: 6rem;
+}
+.fg input:focus,
+.fg textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.fg input::placeholder { color: #9ca3af; }
+.fg input::placeholder,
+.fg textarea::placeholder { color: #9ca3af; }
 .req { color: var(--err); font-weight: 600; }
 .cfg-actions {
   display: flex;
