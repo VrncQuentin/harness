@@ -281,6 +281,11 @@ a:hover { text-decoration: underline; }
   line-height: 1.7;
 }
 .error-list li + li { margin-top: 0.25rem; }
+.layout-kind {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
 
 /* Logs panel */
 .logs-card { margin-top: 1rem; }
