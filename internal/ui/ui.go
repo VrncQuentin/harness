@@ -116,6 +116,13 @@ type Server struct {
 	logRing   atomic.Pointer[logbuf.Ring]
 	llamaRing atomic.Pointer[logbuf.Ring]
 	embedRing atomic.Pointer[logbuf.Ring]
+
+	// quit is the callback that tears down the harness when the user
+	// confirms the shutdown dialog. Wired by main to tray.Quit so the
+	// /shutdown endpoint and the tray menu converge on one exit path.
+	quitMu   sync.RWMutex
+	quit     func()
+	quitOnce sync.Once
 }
 
 // NewServer creates a new UI server on the given port. The config store is
@@ -245,6 +252,21 @@ func (s *Server) getMemoryRepoPath() string {
 	return s.memRepo
 }
 
+// SetQuit installs the callback invoked when the user confirms the shutdown
+// dialog. Safe to call before or after Start; calls before it is set return
+// 503 from /shutdown so the user sees a clear failure rather than a no-op.
+func (s *Server) SetQuit(fn func()) {
+	s.quitMu.Lock()
+	s.quit = fn
+	s.quitMu.Unlock()
+}
+
+func (s *Server) getQuit() func() {
+	s.quitMu.RLock()
+	defer s.quitMu.RUnlock()
+	return s.quit
+}
+
 // SetLogRing wires the harness log ring into the UI so the status page can
 // show recent output and stream new entries over SSE. Safe to leave unset;
 // the log panel then renders empty and the SSE endpoint returns 503.
@@ -341,6 +363,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
 	mux.HandleFunc("/procs/embed/restart", s.handleProcRestart("embed"))
+	mux.HandleFunc("/shutdown", s.handleShutdown)
 	mux.Handle("/static/", http.FileServer(http.FS(assets.StaticFS)))
 
 	srv := &http.Server{
