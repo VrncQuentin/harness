@@ -1,0 +1,201 @@
+package memory
+
+import (
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+)
+
+// newTestRepo builds a memory repo under t.TempDir() from a map of
+// relative paths to file contents. Parent directories are created
+// automatically.
+func newTestRepo(t *testing.T, files map[string]string) *DirReader {
+	t.Helper()
+	root := t.TempDir()
+	for rel, body := range files {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", filepath.Dir(abs), err)
+		}
+		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", abs, err)
+		}
+	}
+	return NewDirReader(root)
+}
+
+func TestDirReader_Read(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"global/rules.md": "hello rules",
+	})
+
+	got, err := r.Read("global/rules.md")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(got) != "hello rules" {
+		t.Errorf("Read: got %q, want %q", string(got), "hello rules")
+	}
+}
+
+func TestDirReader_ReadMissingReturnsFsErrNotExist(t *testing.T) {
+	r := newTestRepo(t, nil)
+	_, err := r.Read("global/rules.md")
+	if err == nil {
+		t.Fatal("Read: expected error, got nil")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Read missing file: errors.Is(err, fs.ErrNotExist) = false, err = %v", err)
+	}
+}
+
+func TestDirReader_ReadRejectsTraversal(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"global/rules.md": "x",
+	})
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"dotdot prefix", "../secret"},
+		{"dotdot middle", "global/../../etc/passwd"},
+		{"backslash dotdot", "global\\..\\..\\etc"},
+		{"empty", ""},
+		{"unix absolute", "/etc/passwd"},
+		{"windows absolute", "C:/windows/system32"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := r.Read(tc.path)
+			if err == nil {
+				t.Fatalf("Read(%q): expected error, got nil", tc.path)
+			}
+		})
+	}
+}
+
+func TestDirReader_Exists(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"global/rules.md":    "x",
+		"agents/coder/a.txt": "y",
+	})
+
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"global/rules.md", true},
+		{"agents/coder/a.txt", true},
+		{"global/missing.md", false},
+		{"agents/coder", false}, // directory, not a file
+		{"../outside", false},
+		{"", false},
+	}
+	for _, tc := range tests {
+		if got := r.Exists(tc.path); got != tc.want {
+			t.Errorf("Exists(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestDirReader_Glob(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"agents/coder/episodes/2026-01-01.md": "one",
+		"agents/coder/episodes/2026-02-01.md": "two",
+		"agents/coder/episodes/2025-12-01.md": "zero",
+		"agents/coder/episodes/notes.txt":     "ignore",
+		"agents/coder/persona.md":             "persona",
+	})
+
+	got, err := r.Glob("agents/coder/episodes/*.md")
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	want := []string{
+		"agents/coder/episodes/2025-12-01.md",
+		"agents/coder/episodes/2026-01-01.md",
+		"agents/coder/episodes/2026-02-01.md",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Glob =\n\t%v\nwant\n\t%v", got, want)
+	}
+}
+
+func TestDirReader_GlobMissingParent(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"global/rules.md": "x",
+	})
+	got, err := r.Glob("agents/coder/episodes/*.md")
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Glob on missing parent = %v, want []", got)
+	}
+}
+
+func TestDirReader_GlobSkipsDirectories(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"agents/coder/episodes/real.md":       "x",
+		"agents/coder/episodes/sub/nested.md": "y", // inside a subdir, not matched at this level
+	})
+	got, err := r.Glob("agents/coder/episodes/*")
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	// Directories should not appear in the result list.
+	for _, p := range got {
+		if p == "agents/coder/episodes/sub" {
+			t.Errorf("Glob returned directory: %q", p)
+		}
+	}
+}
+
+func TestDirReader_GlobRejectsTraversal(t *testing.T) {
+	r := newTestRepo(t, nil)
+	if _, err := r.Glob("../*.md"); err == nil {
+		t.Error("Glob with traversal: expected error, got nil")
+	}
+}
+
+func TestDirReader_ListDirs(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"agents/coder/persona.md":    "x",
+		"agents/reviewer/persona.md": "y",
+		"agents/README.md":           "z", // file at the enumerated level, skipped
+		"agents/zeta/notes.md":       "n",
+	})
+
+	got, err := r.ListDirs("agents")
+	if err != nil {
+		t.Fatalf("ListDirs: %v", err)
+	}
+	want := []string{"coder", "reviewer", "zeta"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ListDirs = %v, want %v", got, want)
+	}
+}
+
+func TestDirReader_ListDirsMissing(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"global/rules.md": "x",
+	})
+	got, err := r.ListDirs("agents")
+	if err != nil {
+		t.Fatalf("ListDirs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListDirs on missing dir = %v, want []", got)
+	}
+}
+
+func TestDirReader_ListDirsRejectsTraversal(t *testing.T) {
+	r := newTestRepo(t, nil)
+	if _, err := r.ListDirs("../outside"); err == nil {
+		t.Error("ListDirs with traversal: expected error, got nil")
+	}
+}
