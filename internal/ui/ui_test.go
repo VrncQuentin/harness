@@ -793,3 +793,193 @@ func TestStart_ServerStarts(t *testing.T) {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
 }
+
+func TestHandleStatus_LayoutPromptHiddenWhenNoRepoConfigured(t *testing.T) {
+	s := NewServer(3000)
+	// memRepo is "" by default - the prompt must not render.
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "Memory layout incomplete") {
+		t.Error("layout prompt must not render when memory repo is unconfigured")
+	}
+}
+
+func TestHandleStatus_LayoutPromptHiddenWhenLayoutComplete(t *testing.T) {
+	s := NewServer(3000)
+	root := t.TempDir()
+	for _, item := range []string{"global", "agents", "index", "runtime"} {
+		if err := os.MkdirAll(filepath.Join(root, item), 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", item, err)
+		}
+	}
+	for _, f := range []string{"global/rules.md", "global/user.md", "global/facts.md"} {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(f)), nil, 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", f, err)
+		}
+	}
+	s.SetMemoryRepoPath(root)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "Memory layout incomplete") {
+		t.Errorf("layout prompt must not render when layout is complete:\n%s", body)
+	}
+}
+
+func TestHandleStatus_LayoutPromptShowsMissingItems(t *testing.T) {
+	s := NewServer(3000)
+	root := t.TempDir() // entirely empty repo
+	s.SetMemoryRepoPath(root)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Memory layout incomplete") {
+		t.Fatalf("expected layout prompt heading, body:\n%s", body)
+	}
+	// Each canonical item should appear in the listed missing entries.
+	for _, want := range []string{"global", "global/rules.md", "global/user.md", "global/facts.md", "agents", "index", "runtime"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected missing item %q in rendered body", want)
+		}
+	}
+	// The Create button must POST to /memory/scaffold.
+	if !strings.Contains(body, `action="/memory/scaffold"`) {
+		t.Error("expected create-missing form pointing at /memory/scaffold")
+	}
+}
+
+func TestHandleStatus_ShowsScaffoldCreatedToast(t *testing.T) {
+	s := NewServer(3000)
+
+	req := httptest.NewRequest(http.MethodGet, "/?scaffold_created=4", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Memory layout updated") {
+		t.Error("expected scaffold-success banner on ?scaffold_created>0")
+	}
+	if !strings.Contains(body, "Created 4 missing items") {
+		t.Errorf("expected pluralized count, body:\n%s", body)
+	}
+}
+
+func TestHandleStatus_ShowsScaffoldErrorBanner(t *testing.T) {
+	s := NewServer(3000)
+
+	req := httptest.NewRequest(http.MethodGet, "/?scaffold_err=permission+denied", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "Could not scaffold memory layout") {
+		t.Error("expected scaffold-error banner on ?scaffold_err=...")
+	}
+	if !strings.Contains(body, "permission denied") {
+		t.Error("expected scaffold error message rendered in banner")
+	}
+}
+
+func TestHandleMemoryScaffold_RejectsGET(t *testing.T) {
+	s := NewServer(3000)
+	req := httptest.NewRequest(http.MethodGet, "/memory/scaffold", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryScaffold(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for GET, got %d", rec.Code)
+	}
+}
+
+func TestHandleMemoryScaffold_NoPathConfigured(t *testing.T) {
+	s := NewServer(3000)
+	// memRepo is "".
+	req := httptest.NewRequest(http.MethodPost, "/memory/scaffold", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryScaffold(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/?scaffold_err=") {
+		t.Errorf("expected redirect to scaffold_err, got %q", loc)
+	}
+	if !strings.Contains(loc, "not+configured") {
+		t.Errorf("expected error message about missing path, got %q", loc)
+	}
+}
+
+func TestHandleMemoryScaffold_CreatesMissingItems(t *testing.T) {
+	s := NewServer(3000)
+	root := t.TempDir()
+	s.SetMemoryRepoPath(root)
+
+	req := httptest.NewRequest(http.MethodPost, "/memory/scaffold", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryScaffold(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/?scaffold_created=") {
+		t.Errorf("expected redirect to scaffold_created, got %q", loc)
+	}
+
+	// Re-check: every canonical item now exists on disk.
+	for _, item := range []string{"global", "agents", "index", "runtime", "global/rules.md", "global/user.md", "global/facts.md"} {
+		abs := filepath.Join(root, filepath.FromSlash(item))
+		if _, err := os.Stat(abs); err != nil {
+			t.Errorf("expected %s to exist after scaffold: %v", item, err)
+		}
+	}
+}
+
+func TestHandleMemoryScaffold_NoMissingItemsRedirectsCleanly(t *testing.T) {
+	s := NewServer(3000)
+	root := t.TempDir()
+	for _, item := range []string{"global", "agents", "index", "runtime"} {
+		_ = os.MkdirAll(filepath.Join(root, item), 0o755)
+	}
+	for _, f := range []string{"global/rules.md", "global/user.md", "global/facts.md"} {
+		_ = os.WriteFile(filepath.Join(root, filepath.FromSlash(f)), nil, 0o644)
+	}
+	s.SetMemoryRepoPath(root)
+
+	req := httptest.NewRequest(http.MethodPost, "/memory/scaffold", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryScaffold(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if loc != "/" {
+		t.Errorf("expected plain redirect to / when nothing to do, got %q", loc)
+	}
+}
+
+func TestSetMemoryRepoPath_Roundtrip(t *testing.T) {
+	s := NewServer(3000)
+	if got := s.getMemoryRepoPath(); got != "" {
+		t.Errorf("default memRepo should be empty, got %q", got)
+	}
+	s.SetMemoryRepoPath("C:\\repo")
+	if got := s.getMemoryRepoPath(); got != "C:\\repo" {
+		t.Errorf("getMemoryRepoPath after set: got %q, want %q", got, "C:\\repo")
+	}
+	s.SetMemoryRepoPath("")
+	if got := s.getMemoryRepoPath(); got != "" {
+		t.Errorf("getMemoryRepoPath after clear: got %q, want \"\"", got)
+	}
+}
