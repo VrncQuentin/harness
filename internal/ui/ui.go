@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -513,6 +514,12 @@ func (s *Server) streamRing(get func() *logbuf.Ring) http.HandlerFunc {
 		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 
+		// Per-iteration batch cap. Each entry is one Fprintf; flushing once
+		// per batch is the whole point of this loop, but a hard cap keeps the
+		// inner drain bounded so ctx cancellation and the heartbeat ticker
+		// stay responsive when the producer is on a sustained burst.
+		const maxBatch = 256
+
 		for {
 			select {
 			case <-r.Context().Done():
@@ -526,23 +533,55 @@ func (s *Server) streamRing(get func() *logbuf.Ring) http.HandlerFunc {
 				if !ok {
 					return
 				}
-				payload, err := json.Marshal(struct {
-					Time string `json:"time"`
-					Line string `json:"line"`
-				}{
-					Time: e.Time.Format("15:04:05"),
-					Line: e.Line,
-				})
-				if err != nil {
-					continue
+				// Drain anything else already buffered so a single Flush
+				// covers the batch. One Flush per line was strictly slower
+				// than the ring's append, which let the channel fill on
+				// verbose-mode bursts and triggered drop-on-full in the
+				// fanout. Batching lets the consumer keep pace with the
+				// producer at the cost of a tiny per-batch latency.
+				batch := []logbuf.Entry{e}
+			drain:
+				for len(batch) < maxBatch {
+					select {
+					case e2, ok := <-ch:
+						if !ok {
+							break drain
+						}
+						batch = append(batch, e2)
+					default:
+						break drain
+					}
 				}
-				if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+				if writeBatch(w, batch) != nil {
 					return
 				}
 				flusher.Flush()
 			}
 		}
 	}
+}
+
+// writeBatch encodes each entry as one SSE event into w. A marshal failure
+// drops the offending entry rather than the whole batch; a write failure
+// aborts so the caller can return and let the SSE loop tear down. Extracted
+// so the streaming loop stays scannable.
+func writeBatch(w io.Writer, batch []logbuf.Entry) error {
+	for _, e := range batch {
+		payload, err := json.Marshal(struct {
+			Time string `json:"time"`
+			Line string `json:"line"`
+		}{
+			Time: e.Time.Format("15:04:05"),
+			Line: e.Line,
+		})
+		if err != nil {
+			continue
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // handleSSE streams JSON state updates to the client via Server-Sent Events.
