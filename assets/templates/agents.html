@@ -83,7 +83,7 @@
           {{else}}
           <a class="btn btn-ghost btn-sm" href="/agents?edit={{.Name}}">Edit</a>
           {{end}}
-          <button type="button" class="btn btn-danger btn-sm" data-open-dialog="delete-{{.Name}}">Delete</button>
+          <button type="button" class="btn btn-danger btn-sm" data-open-dialog="delete-{{.Name}}" data-confirm-text="Delete agent {{.Name}}? This cannot be undone.">Delete</button>
         </div>
       </header>
 

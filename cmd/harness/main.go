@@ -205,6 +205,9 @@ func run() error {
 			}
 		},
 	)
+	// Wire the topbar Shut down button to the tray's quit signal so the UI
+	// path runs the same onQuit cleanup as the tray menu.
+	uiServer.SetQuit(tray.Quit)
 
 	// Open browser to UI unless disabled by saved config.
 	if cfg.UI.OpenOnStart {

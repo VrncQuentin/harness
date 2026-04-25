@@ -17,3 +17,6 @@ func Run(uiURL string, onQuit func()) {
 	// Block forever (or until the caller's context is done).
 	select {}
 }
+
+// Quit is a no-op stub on non-Windows platforms.
+func Quit() {}
