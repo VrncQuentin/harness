@@ -142,7 +142,7 @@ func readSSE(ctx context.Context, r io.Reader, ch chan<- Token) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		if ctx.Err() != nil {
-			ch <- Token{Err: ctx.Err()}
+			emitToken(ctx, ch, Token{Err: ctx.Err()})
 			return
 		}
 
@@ -153,7 +153,7 @@ func readSSE(ctx context.Context, r io.Reader, ch chan<- Token) {
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
-			ch <- Token{Done: true}
+			emitToken(ctx, ch, Token{Done: true})
 			return
 		}
 
@@ -165,21 +165,31 @@ func readSSE(ctx context.Context, r io.Reader, ch chan<- Token) {
 
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
-				select {
-				case ch <- Token{Content: choice.Delta.Content}:
-				case <-ctx.Done():
-					ch <- Token{Err: ctx.Err()}
+				if !emitToken(ctx, ch, Token{Content: choice.Delta.Content}) {
 					return
 				}
 			}
 			if choice.FinishReason != nil {
-				ch <- Token{Done: true}
+				emitToken(ctx, ch, Token{Done: true})
 				return
 			}
 		}
 	}
 
 	if err := scanner.Err(); err != nil && ctx.Err() == nil {
-		ch <- Token{Err: fmt.Errorf("inference: SSE read error: %w", err)}
+		emitToken(ctx, ch, Token{Err: fmt.Errorf("inference: SSE read error: %w", err)})
+		return
+	}
+	if ctx.Err() == nil {
+		emitToken(ctx, ch, Token{Err: fmt.Errorf("inference: SSE ended before completion: %w", io.ErrUnexpectedEOF)})
+	}
+}
+
+func emitToken(ctx context.Context, ch chan<- Token, tok Token) bool {
+	select {
+	case ch <- tok:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }

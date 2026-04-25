@@ -404,6 +404,42 @@ func TestChatCompletions_HeaderAgentPlumbing(t *testing.T) {
 	}
 }
 
+func TestChatCompletions_ForwardsRequestParams(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer([]inference.Token{{Done: true}})
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	body := bytes.NewBufferString(`{
+		"model":"qwen-local",
+		"stream":true,
+		"temperature":0.7,
+		"top_p":0.9,
+		"max_tokens":123,
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	captured := enq.captureRequest(t)
+	if captured.Model != "qwen-local" {
+		t.Errorf("model = %q, want qwen-local", captured.Model)
+	}
+	if captured.Temperature != 0.7 {
+		t.Errorf("temperature = %v, want 0.7", captured.Temperature)
+	}
+	if captured.TopP != 0.9 {
+		t.Errorf("top_p = %v, want 0.9", captured.TopP)
+	}
+	if captured.MaxTokens != 123 {
+		t.Errorf("max_tokens = %d, want 123", captured.MaxTokens)
+	}
+}
+
 func TestModels_OK(t *testing.T) {
 	asm := &stubAssembler{}
 	enq := newStubEnqueuer(nil)

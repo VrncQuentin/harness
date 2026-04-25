@@ -67,6 +67,39 @@ func TestOpen_Idempotent(t *testing.T) {
 	}
 }
 
+func TestPeekUIPort(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "harness.db")
+
+	if got := PeekUIPort(path, 3000); got != 3000 {
+		t.Fatalf("missing DB port = %d, want fallback 3000", got)
+	}
+
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	cfg, _, err := d.Config().Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.Model.Binary = "C:\\llama.exe"
+	cfg.Model.ModelPath = "C:\\model.gguf"
+	cfg.Embedder.Binary = "C:\\embed.exe"
+	cfg.Embedder.ModelPath = "C:\\embed.gguf"
+	cfg.UI.Port = 31337
+	if err := d.Config().Save(cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if got := PeekUIPort(path, 3000); got != 31337 {
+		t.Fatalf("saved DB port = %d, want 31337", got)
+	}
+}
+
 func TestConfigStore_LoadFreshReturnsDefaultsAndNotConfigured(t *testing.T) {
 	d := newTestDB(t)
 
