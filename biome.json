@@ -12,10 +12,16 @@
       "recommended": true,
       "style": {
         "useConst": "off",
-        "useTemplate": "off"
+        "useTemplate": "off",
+        "noDescendingSpecificity": "off"
+      },
+      "complexity": {
+        "useArrowFunction": "off",
+        "useOptionalChain": "off"
       },
       "correctness": {
-        "noUnusedVariables": "off"
+        "noUnusedVariables": "off",
+        "noInnerDeclarations": "off"
       }
     }
   }
