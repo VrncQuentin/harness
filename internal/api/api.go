@@ -140,9 +140,9 @@ type chatChunk struct {
 }
 
 type chunkChoice struct {
-	Index        int         `json:"index"`
-	Delta        chunkDelta  `json:"delta"`
-	FinishReason *string     `json:"finish_reason"`
+	Index        int        `json:"index"`
+	Delta        chunkDelta `json:"delta"`
+	FinishReason *string    `json:"finish_reason"`
 }
 
 type chunkDelta struct {
