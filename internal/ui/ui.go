@@ -19,6 +19,7 @@ import (
 	"github.com/vrnc/harness/assets"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/logbuf"
+	"github.com/vrnc/harness/internal/memory"
 )
 
 // statusLogTail is the number of recent log entries shown server-rendered on
@@ -115,6 +116,12 @@ type Server struct {
 
 	binDirMu sync.RWMutex
 	binDir   string
+
+	// memRepo is the configured memory repo path. Empty means the user
+	// has not set one yet, in which case the status page suppresses the
+	// layout-scaffolding prompt entirely.
+	memRepoMu sync.RWMutex
+	memRepo   string
 
 	logRing   atomic.Pointer[logbuf.Ring]
 	llamaRing atomic.Pointer[logbuf.Ring]
@@ -216,6 +223,22 @@ func (s *Server) getBinDir() string {
 	return s.binDir
 }
 
+// SetMemoryRepoPath records the configured memory repo path. The status
+// page uses it to detect a missing canonical layout (global/, agents/,
+// etc.) and surface a prompt to scaffold what is missing. Pass "" to
+// clear (e.g. when the user removes the path from /config).
+func (s *Server) SetMemoryRepoPath(path string) {
+	s.memRepoMu.Lock()
+	s.memRepo = path
+	s.memRepoMu.Unlock()
+}
+
+func (s *Server) getMemoryRepoPath() string {
+	s.memRepoMu.RLock()
+	defer s.memRepoMu.RUnlock()
+	return s.memRepo
+}
+
 // SetLogRing wires the harness log ring into the UI so the status page can
 // show recent output and stream new entries over SSE. Safe to leave unset;
 // the log panel then renders empty and the SSE endpoint returns 503.
@@ -301,6 +324,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/agents", s.handleAgents)
 	mux.HandleFunc("/agents/active", s.handleAgentsActive)
 	mux.HandleFunc("/retry", s.handleRetry)
+	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
 	mux.HandleFunc("/procs/embed/restart", s.handleProcRestart("embed"))
 	mux.Handle("/static/", http.FileServer(http.FS(assets.StaticFS)))
@@ -348,12 +372,33 @@ func (s *Server) newBasePage(page string) basePage {
 type statusPageData struct {
 	basePage
 	stateSnapshot
-	QueuePct       int
-	HasRetry       bool
-	StartupErrText []string
-	HarnessLog     logboxData
-	LlamaLog       logboxData
-	EmbedLog       logboxData
+	QueuePct        int
+	HasRetry        bool
+	StartupErrText  []string
+	MemoryLayout    memoryLayoutView
+	ScaffoldErr     string
+	ScaffoldCreated int
+	HarnessLog      logboxData
+	LlamaLog        logboxData
+	EmbedLog        logboxData
+}
+
+// memoryLayoutView is the template-friendly form of the missing-items
+// list. Show is the gating boolean - the template uses it instead of
+// `{{if .MemoryLayout.Items}}` so a non-error "no missing items" outcome
+// reads as a single explicit flag.
+type memoryLayoutView struct {
+	Show     bool
+	RepoPath string
+	Items    []memoryLayoutItemView
+}
+
+// memoryLayoutItemView mirrors memory.LayoutItem with a label the
+// template can render directly without calling a helper.
+type memoryLayoutItemView struct {
+	Path string
+	Kind string
+	Desc string
 }
 
 // logboxData is the data passed to the shared "logbox" template partial. One
@@ -396,20 +441,60 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		errTexts = append(errTexts, e.Error())
 	}
 
+	scaffoldCreated := 0
+	if v := r.URL.Query().Get("scaffold_created"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			scaffoldCreated = n
+		}
+	}
+
 	data := statusPageData{
-		basePage:       s.newBasePage("status"),
-		stateSnapshot:  snap,
-		QueuePct:       queuePct(snap.QueueDepth, snap.QueueMax),
-		HasRetry:       s.hasRetry(),
-		StartupErrText: errTexts,
-		HarnessLog:     logboxData{BodyID: "harness-log", Entries: recentEntries(s.getLogRing(), statusLogTail)},
-		LlamaLog:       logboxData{BodyID: "llama-log", Entries: recentEntries(s.getLlamaRing(), procLogTail)},
-		EmbedLog:       logboxData{BodyID: "embed-log", Entries: recentEntries(s.getEmbedRing(), procLogTail)},
+		basePage:        s.newBasePage("status"),
+		stateSnapshot:   snap,
+		QueuePct:        queuePct(snap.QueueDepth, snap.QueueMax),
+		HasRetry:        s.hasRetry(),
+		StartupErrText:  errTexts,
+		MemoryLayout:    s.memoryLayoutView(),
+		ScaffoldErr:     r.URL.Query().Get("scaffold_err"),
+		ScaffoldCreated: scaffoldCreated,
+		HarnessLog:      logboxData{BodyID: "harness-log", Entries: recentEntries(s.getLogRing(), statusLogTail)},
+		LlamaLog:        logboxData{BodyID: "llama-log", Entries: recentEntries(s.getLlamaRing(), procLogTail)},
+		EmbedLog:        logboxData{BodyID: "embed-log", Entries: recentEntries(s.getEmbedRing(), procLogTail)},
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.statusTmpl.ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+// memoryLayoutView computes the template view of the missing canonical
+// items in the configured memory repo. The prompt is only shown when:
+//   - a memory repo path is configured,
+//   - the path resolves to an existing directory, AND
+//   - one or more canonical items are missing.
+//
+// Errors stating the path is missing/unreadable are deliberately
+// swallowed: those conditions are surfaced separately as startup errors
+// (M3) or via the agents page setup CTA. We do not want two different
+// alerts pointing at the same root cause on the status page.
+func (s *Server) memoryLayoutView() memoryLayoutView {
+	path := s.getMemoryRepoPath()
+	if path == "" {
+		return memoryLayoutView{}
+	}
+	missing, err := memory.MissingItems(path)
+	if err != nil || len(missing) == 0 {
+		return memoryLayoutView{}
+	}
+	items := make([]memoryLayoutItemView, 0, len(missing))
+	for _, m := range missing {
+		kind := "file"
+		if m.Dir {
+			kind = "directory"
+		}
+		items = append(items, memoryLayoutItemView{Path: m.Path, Kind: kind, Desc: m.Desc})
+	}
+	return memoryLayoutView{Show: true, RepoPath: path, Items: items}
 }
 
 func (s *Server) hasRetry() bool {
@@ -791,6 +876,42 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 	}
 	s.callRetry()
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleMemoryScaffold is POST /memory/scaffold - creates each missing
+// canonical item under the configured memory.repo_path. The redirect
+// always lands back on the status page; a non-empty scaffold_err query
+// param causes the prompt to render an error banner above the (now
+// possibly shorter) missing-items list.
+//
+// The handler refuses to act if no path is configured or the path no
+// longer points at a directory; in either case the user is redirected
+// with an explanatory message so the action is not silently swallowed.
+func (s *Server) handleMemoryScaffold(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path := s.getMemoryRepoPath()
+	if path == "" {
+		http.Redirect(w, r, "/?scaffold_err="+url.QueryEscape("memory repo path is not configured"), http.StatusSeeOther)
+		return
+	}
+	missing, err := memory.MissingItems(path)
+	if err != nil {
+		http.Redirect(w, r, "/?scaffold_err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	if len(missing) == 0 {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	if err := memory.CreateMissing(path, missing); err != nil {
+		http.Redirect(w, r, "/?scaffold_err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	target := "/?scaffold_created=" + strconv.Itoa(len(missing))
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 // handleProcRestart is POST /procs/{name}/restart - invokes the manager's

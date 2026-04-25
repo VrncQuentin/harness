@@ -7,6 +7,42 @@
 {{define "content"}}
 <h1 class="page-title">Status</h1>
 
+{{if .ScaffoldCreated}}
+<div class="alert alert-ok">
+  <div class="alert-head">
+    <h2>Memory layout updated</h2>
+    <p class="alert-sub">Created {{.ScaffoldCreated}} missing item{{if ne .ScaffoldCreated 1}}s{{end}} in your memory repo.</p>
+  </div>
+</div>
+{{end}}
+
+{{if .ScaffoldErr}}
+<div class="alert alert-err">
+  <div class="alert-head">
+    <h2>Could not scaffold memory layout</h2>
+    <p class="alert-sub">{{.ScaffoldErr}}</p>
+  </div>
+</div>
+{{end}}
+
+{{if .MemoryLayout.Show}}
+<div class="alert alert-info">
+  <div class="alert-head">
+    <h2>Memory layout incomplete</h2>
+    <p class="alert-sub">Your memory repo at <code>{{.MemoryLayout.RepoPath}}</code> is missing the following canonical items. The harness can create them empty for you - existing files will not be touched.</p>
+  </div>
+  <ul class="error-list">
+    {{range .MemoryLayout.Items}}<li><code>{{.Path}}</code> <span class="layout-kind">({{.Kind}})</span> - {{.Desc}}</li>{{end}}
+  </ul>
+  <div class="alert-actions">
+    <form method="post" action="/memory/scaffold" style="display:inline">
+      <button type="submit" class="btn btn-primary">Create missing items</button>
+    </form>
+    <a href="/config" class="btn btn-ghost">Edit config</a>
+  </div>
+</div>
+{{end}}
+
 {{if .FirstRun}}
 <div class="alert alert-info">
   <div class="alert-head">

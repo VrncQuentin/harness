@@ -446,6 +446,11 @@ func (rt *runtime) getManagers() (*proc.Manager, *proc.Manager) {
 //
 // Caller must hold rt.mu.
 func (rt *runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server) {
+	// Mirror the configured path into the UI so the status page can
+	// detect missing canonical layout items and prompt the user to
+	// scaffold them. An empty path here clears the previous value, which
+	// suppresses the prompt entirely.
+	uiServer.SetMemoryRepoPath(rt.cfg.Memory.RepoPath)
 	if rt.cfg.Memory.RepoPath == "" {
 		uiServer.SetAgentRegistry(nil)
 		return
