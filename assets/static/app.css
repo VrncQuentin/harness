@@ -82,6 +82,12 @@ a:hover { text-decoration: underline; }
 }
 .nav-link:hover { color: var(--text); background: var(--bg); text-decoration: none; }
 .nav-link.active { color: var(--accent); background: var(--accent-soft); }
+.topbar-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
 
 .main {
   padding-top: 2rem;

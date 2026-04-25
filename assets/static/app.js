@@ -132,11 +132,14 @@ document.addEventListener('click', function (evt) {
     }
     // Browser without <dialog>: submit the form directly after a
     // native confirm. The button lives in a card next to its dialog
-    // form, so resolve the form by id of the dialog.
+    // form, so resolve the form by id of the dialog. The button can
+    // declare a custom prompt via data-confirm-text; otherwise fall
+    // back to a generic message.
     if (dlg) {
       evt.preventDefault();
       var form = dlg.querySelector('form');
-      if (form && window.confirm('Delete this agent? This cannot be undone.')) {
+      var msg = (evt.target.getAttribute && evt.target.getAttribute('data-confirm-text')) || 'Are you sure?';
+      if (form && window.confirm(msg)) {
         form.submit();
       }
     }

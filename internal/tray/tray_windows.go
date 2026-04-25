@@ -49,6 +49,16 @@ func Run(uiURL string, onQuit func()) {
 	})
 }
 
+// Quit signals the tray loop to exit. The onExit callback registered via Run
+// fires the same shutdown closure as the tray's Quit menu item, so the UI
+// shutdown button and the tray menu converge on one cleanup path.
+//
+// Safe to call from any goroutine. Returns immediately; the actual exit
+// happens once the systray loop drains.
+func Quit() {
+	systray.Quit()
+}
+
 // onReady configures the tray icon and menu.
 func onReady(uiURL string, onQuit func()) {
 	systray.SetIcon(iconICO)
