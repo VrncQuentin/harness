@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -118,6 +119,132 @@ func TestSetClient_Swaps(t *testing.T) {
 		t.Errorf("expected swapped client output %q, got %q", "new", got)
 	}
 }
+
+func TestStop_DrainsAcceptedRequests(t *testing.T) {
+	client := &fakeClient{tokens: []string{"done"}}
+	q := New(4, "", client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := q.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := make(chan inference.Token, 4)
+	if err := q.Enqueue(Request{
+		ID:       "drain-test",
+		Messages: []inference.Message{{Role: "user", Content: "hi"}},
+		Response: resp,
+		Ctx:      context.Background(),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		q.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not drain accepted request")
+	}
+
+	var got string
+	for tok := range resp {
+		if tok.Err != nil {
+			t.Fatalf("token error: %v", tok.Err)
+		}
+		got += tok.Content
+	}
+	if got != "done" {
+		t.Fatalf("drained response = %q, want done", got)
+	}
+	if err := q.Enqueue(Request{ID: "after-stop", Response: make(chan inference.Token, 1), Ctx: context.Background()}); !errors.Is(err, ErrStopped) {
+		t.Fatalf("enqueue after Stop = %v, want ErrStopped", err)
+	}
+}
+
+func TestDispatch_CancelledFullResponseDoesNotWedgeWorker(t *testing.T) {
+	stream := make(chan inference.Token, 2)
+	client := &streamClient{tokens: stream, started: make(chan struct{})}
+	q := New(2, "", client)
+
+	ctx, cancelWorker := context.WithCancel(context.Background())
+	defer cancelWorker()
+	if err := q.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer q.Stop()
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	fullResp := make(chan inference.Token, 1)
+	if err := q.Enqueue(Request{
+		ID:       "cancel-test",
+		Messages: []inference.Message{{Role: "user", Content: "hi"}},
+		Response: fullResp,
+		Ctx:      reqCtx,
+	}); err != nil {
+		t.Fatalf("enqueue first: %v", err)
+	}
+
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("client was not called")
+	}
+	stream <- inference.Token{Content: "one"}
+	deadline := time.After(time.Second)
+	for len(fullResp) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("first token did not fill response buffer")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	stream <- inference.Token{Content: "two"}
+	time.Sleep(50 * time.Millisecond)
+	cancelReq()
+
+	q.SetClient(&fakeClient{tokens: []string{"next"}})
+	resp := make(chan inference.Token, 4)
+	if err := q.Enqueue(Request{
+		ID:       "next-test",
+		Messages: []inference.Message{{Role: "user", Content: "hi again"}},
+		Response: resp,
+		Ctx:      context.Background(),
+	}); err != nil {
+		t.Fatalf("enqueue second: %v", err)
+	}
+
+	select {
+	case tok, ok := <-resp:
+		if !ok {
+			t.Fatal("second response closed before token")
+		}
+		if tok.Err != nil {
+			t.Fatalf("second token error: %v", tok.Err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queue worker wedged after cancelled full response")
+	}
+}
+
+type streamClient struct {
+	tokens  chan inference.Token
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *streamClient) Complete(_ context.Context, _ inference.CompletionRequest) (<-chan inference.Token, error) {
+	s.once.Do(func() { close(s.started) })
+	return s.tokens, nil
+}
+
+func (s *streamClient) Health(_ context.Context) error { return nil }
 
 func TestEnqueue_ClientError(t *testing.T) {
 	errClient := &errInferenceClient{}

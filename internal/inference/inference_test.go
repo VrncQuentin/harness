@@ -2,6 +2,8 @@ package inference
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -69,6 +71,38 @@ func TestComplete_Streaming(t *testing.T) {
 	}
 	if content != "Hello world" {
 		t.Errorf("unexpected content: %q", content)
+	}
+}
+
+func TestComplete_TruncatedStreamReturnsError(t *testing.T) {
+	sseBody := strings.Join([]string{
+		`data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}`,
+		"",
+	}, "\n")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(200)
+		w.Write([]byte(sseBody)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil)
+	ch, err := c.Complete(context.Background(), CompletionRequest{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var gotErr error
+	for tok := range ch {
+		if tok.Err != nil {
+			gotErr = tok.Err
+		}
+	}
+	if !errors.Is(gotErr, io.ErrUnexpectedEOF) {
+		t.Fatalf("stream error = %v, want unexpected EOF", gotErr)
 	}
 }
 

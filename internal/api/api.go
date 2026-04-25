@@ -223,10 +223,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	respCh := make(chan inference.Token, 64)
 
 	qReq := queue.Request{
-		ID:       reqID,
-		Messages: assembled,
-		Response: respCh,
-		Ctx:      ctx,
+		ID:          reqID,
+		Model:       req.Model,
+		Messages:    assembled,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		MaxTokens:   req.MaxTokens,
+		Response:    respCh,
+		Ctx:         ctx,
 	}
 
 	if err := s.q.Enqueue(qReq); err != nil {
@@ -235,6 +239,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				Message: "queue at capacity",
 				Type:    "rate_limit_error",
 				Code:    "queue_full",
+			})
+			return
+		}
+		if errors.Is(err, queue.ErrStopped) {
+			writeJSONError(w, http.StatusServiceUnavailable, apiErrorBody{
+				Message: "queue is shutting down",
+				Type:    "server_error",
+				Code:    "queue_stopped",
 			})
 			return
 		}
