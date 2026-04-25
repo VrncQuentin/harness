@@ -1,9 +1,20 @@
-// Live status stream. Patches badge/running/restart/queue/uptime nodes by id
-// whenever the server broadcasts a new state frame.
+// Live updates. One EventSource carries every server-pushed update so we
+// don't burn 4 of the browser's ~6 HTTP/1.1 connection slots per origin and
+// stall navigation behind held-open SSE connections.
+//
+// The server tags each frame with `event: <type>`:
+//   - state        → patches status-page badges, counters, queue, uptime
+//   - llama-log    → appended to the llama log card (status page only)
+//   - embed-log    → appended to the embedder log card (status page only)
+//   - harness-log  → appended to the harness log card (status page only)
+//
+// Log handlers no-op when their target DOM nodes don't exist, so non-status
+// pages still get state updates over the same connection at no extra cost.
 (function () {
   if (typeof EventSource === 'undefined') return;
   var es = new EventSource('/events');
-  es.onmessage = function (evt) {
+
+  es.addEventListener('state', function (evt) {
     var d;
     try { d = JSON.parse(evt.data); } catch (e) { return; }
     setBadge('llama-badge', d.llama_healthy, d.llama_failed);
@@ -16,8 +27,25 @@
     toggleHidden('embed-restart-form', !d.embed_failed);
     setQueue(d.queue_depth, d.queue_max);
     setUptime(d.uptime_seconds);
-  };
+  });
+
+  es.addEventListener('llama-log', logEventHandler('llama-log'));
+  es.addEventListener('embed-log', logEventHandler('embed-log'));
+  es.addEventListener('harness-log', logEventHandler('harness-log'));
+
+  // The harness log card has a connection indicator. With one shared stream
+  // it now reflects the /events connection itself.
+  es.onopen = function () { setHarnessConnState('live', false); };
+  es.onerror = function () { setHarnessConnState('disconnected', true); };
 })();
+
+function setHarnessConnState(text, disconnected) {
+  var el = document.getElementById('harness-log-status');
+  if (!el) return;
+  el.textContent = text;
+  if (disconnected) el.classList.add('is-disconnected');
+  else el.classList.remove('is-disconnected');
+}
 
 function setBadge(id, ok, failed) {
   var el = document.getElementById(id);
