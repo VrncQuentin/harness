@@ -453,12 +453,14 @@ func (rt *runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server) {
 	uiServer.SetMemoryRepoPath(rt.cfg.Memory.RepoPath)
 	if rt.cfg.Memory.RepoPath == "" {
 		uiServer.SetAgentRegistry(nil)
+		uiServer.SetMemoryStore(nil)
 		return
 	}
 
 	rt.memReader = memory.NewDirReader(rt.cfg.Memory.RepoPath)
 	rt.agentReg = agent.NewDiskRegistry(rt.memReader, rt.getActive, rt.setActive)
 	rt.assembler = prompt.NewDiskAssembler(rt.memReader, rt.agentReg, rt.cfg.Prompt)
+	uiServer.SetMemoryStore(rt.memReader)
 
 	hr, err := prompt.NewHotReload(rt.cfg.Memory.RepoPath, rt.cfg.Agent.Active, slog.Default())
 	if err != nil {
@@ -498,6 +500,7 @@ func (rt *runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	rt.agentReg = nil
 	rt.assembler = nil
 	uiServer.SetAgentRegistry(nil)
+	uiServer.SetMemoryStore(nil)
 }
 
 // getActive returns the currently active agent name. Used as the

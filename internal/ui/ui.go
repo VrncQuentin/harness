@@ -79,9 +79,11 @@ type Server struct {
 	// Each page has its own template set because status.html, config.html,
 	// and agents.html all define "title" and "content" - sharing one set
 	// would let the later parse clobber the earlier one.
-	statusTmpl *template.Template
-	configTmpl *template.Template
-	agentsTmpl *template.Template
+	statusTmpl     *template.Template
+	configTmpl     *template.Template
+	agentsTmpl     *template.Template
+	memoryTmpl     *template.Template
+	memoryEditTmpl *template.Template
 
 	retryMu sync.RWMutex
 	retry   RetryFunc
@@ -107,6 +109,9 @@ type Server struct {
 	// layout-scaffolding prompt entirely.
 	memRepoMu sync.RWMutex
 	memRepo   string
+
+	memStoreMu sync.RWMutex
+	memStore   MemoryStore
 
 	logRing   atomic.Pointer[logbuf.Ring]
 	llamaRing atomic.Pointer[logbuf.Ring]
@@ -134,6 +139,16 @@ func NewServer(port int) *Server {
 		assets.TemplateFS,
 		"templates/layout.html",
 		"templates/agents.html",
+	))
+	s.memoryTmpl = template.Must(template.ParseFS(
+		assets.TemplateFS,
+		"templates/layout.html",
+		"templates/memory.html",
+	))
+	s.memoryEditTmpl = template.Must(template.ParseFS(
+		assets.TemplateFS,
+		"templates/layout.html",
+		"templates/memory_edit.html",
 	))
 	return s
 }
@@ -315,6 +330,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/agents", s.handleAgents)
 	mux.HandleFunc("/agents/active", s.handleAgentsActive)
 	mux.HandleFunc("/agents/create", s.handleAgentsCreate)
+	mux.HandleFunc("/memory", s.handleMemory)
+	mux.HandleFunc("/memory/edit", s.handleMemoryEdit)
+	mux.HandleFunc("/memory/save", s.handleMemorySave)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
