@@ -703,18 +703,6 @@ func TestHandleStatus_NoLogRingRendersEmpty(t *testing.T) {
 	}
 }
 
-func TestStreamRing_NoRingReturns503(t *testing.T) {
-	s := NewServer(3000)
-
-	req := httptest.NewRequest(http.MethodGet, "/logs/harness", nil)
-	rec := httptest.NewRecorder()
-	s.streamRing(s.getLogRing)(rec, req)
-
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("expected 503 with no ring, got %d", rec.Code)
-	}
-}
-
 // flushRecorder is a ResponseRecorder that satisfies http.Flusher so streaming
 // handlers don't bail out on the type assertion. Flush is a no-op because the
 // recorder always has the bytes available immediately.
@@ -724,27 +712,26 @@ type flushRecorder struct {
 
 func (f *flushRecorder) Flush() {}
 
-func TestStreamRing_StreamsNewEntries(t *testing.T) {
-	s := NewServer(3000)
-	ring := logbuf.New(10)
-	s.SetLogRing(ring)
-
+// runSSE drives handleSSE in a goroutine, lets the caller publish, and tears
+// down via context cancel. Returns the captured response body. The 50 ms
+// pauses on either side of publish are enough for the subscription to
+// register and for the fan-out + write to land on the recorder.
+func runSSE(t *testing.T, s *Server, publish func()) string {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	req := httptest.NewRequest(http.MethodGet, "/logs/harness", nil).WithContext(ctx)
+	req := httptest.NewRequest(http.MethodGet, "/events", nil).WithContext(ctx)
 	rec := &flushRecorder{httptest.NewRecorder()}
 
 	done := make(chan struct{})
 	go func() {
-		s.streamRing(s.getLogRing)(rec, req)
+		s.handleSSE(rec, req)
 		close(done)
 	}()
 
-	// Give the handler time to register its subscription before we publish.
 	time.Sleep(50 * time.Millisecond)
-	if _, err := ring.Write([]byte("hello sse\n")); err != nil {
-		t.Fatalf("ring write: %v", err)
+	if publish != nil {
+		publish()
 	}
-	// Allow the fan-out + write to land before we tear down.
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 
@@ -753,18 +740,79 @@ func TestStreamRing_StreamsNewEntries(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler did not return after context cancel")
 	}
+	return rec.Body.String()
+}
 
-	body := rec.Body.String()
-	if !strings.Contains(body, "hello sse") {
-		t.Errorf("SSE payload missing line, got: %q", body)
-	}
-	// The stream opens with a ": connected" comment so headers flush
-	// immediately and the browser fires onopen; the real entry follows.
+func TestSSE_EmitsConnectedAndInitialState(t *testing.T) {
+	s := NewServer(3000)
+	s.SetLlamaStatus(ProcessStatus{Running: true, Healthy: true})
+
+	body := runSSE(t, s, nil)
+
 	if !strings.HasPrefix(body, ": connected\n\n") {
 		t.Errorf("SSE payload did not begin with connected comment, got: %q", body)
 	}
-	if !strings.Contains(body, "data: ") {
-		t.Errorf("SSE payload missing data frame, got: %q", body)
+	if !strings.Contains(body, "event: state\n") {
+		t.Errorf("SSE payload missing initial state event, got: %q", body)
+	}
+	if !strings.Contains(body, `"llama_healthy":true`) {
+		t.Errorf("SSE payload missing state JSON, got: %q", body)
+	}
+}
+
+func TestSSE_EmitsHarnessLogEntries(t *testing.T) {
+	s := NewServer(3000)
+	ring := logbuf.New(10)
+	s.SetLogRing(ring)
+
+	body := runSSE(t, s, func() {
+		if _, err := ring.Write([]byte("hello sse\n")); err != nil {
+			t.Fatalf("ring write: %v", err)
+		}
+	})
+
+	if !strings.Contains(body, "event: harness-log\n") {
+		t.Errorf("SSE payload missing harness-log event, got: %q", body)
+	}
+	if !strings.Contains(body, "hello sse") {
+		t.Errorf("SSE payload missing line, got: %q", body)
+	}
+}
+
+func TestSSE_EmitsLlamaAndEmbedLogEntries(t *testing.T) {
+	s := NewServer(3000)
+	llama := logbuf.New(10)
+	embed := logbuf.New(10)
+	s.SetLlamaOutputRing(llama)
+	s.SetEmbedOutputRing(embed)
+
+	body := runSSE(t, s, func() {
+		if _, err := llama.Write([]byte("from llama\n")); err != nil {
+			t.Fatalf("llama write: %v", err)
+		}
+		if _, err := embed.Write([]byte("from embed\n")); err != nil {
+			t.Fatalf("embed write: %v", err)
+		}
+	})
+
+	for _, want := range []string{"event: llama-log\n", "from llama", "event: embed-log\n", "from embed"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SSE payload missing %q, got: %q", want, body)
+		}
+	}
+}
+
+func TestSSE_NoRingsStillStreamsState(t *testing.T) {
+	// No log rings wired - the connection should still open and emit state.
+	s := NewServer(3000)
+
+	body := runSSE(t, s, nil)
+
+	if !strings.HasPrefix(body, ": connected\n\n") {
+		t.Errorf("SSE payload did not begin with connected comment, got: %q", body)
+	}
+	if !strings.Contains(body, "event: state\n") {
+		t.Errorf("SSE payload missing state event when no rings are wired, got: %q", body)
 	}
 }
 
