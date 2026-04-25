@@ -1,0 +1,68 @@
+{{define "title"}}Memory{{end}}
+{{define "content"}}
+<h1 class="page-title">Memory</h1>
+
+{{if not .Configured}}
+<div class="alert alert-info">
+  <div class="alert-head">
+    <h2>Memory repo not configured</h2>
+    <p class="alert-sub">Set <code>memory.repo_path</code> in <a href="/config">/config</a> so the harness can read and edit your memory tree.</p>
+  </div>
+</div>
+{{else}}
+
+{{if .SavedPath}}
+<div class="alert alert-ok">
+  <div class="alert-head">
+    <h2>Saved <code>{{.SavedPath}}</code></h2>
+  </div>
+</div>
+{{end}}
+
+{{if .LoadErr}}
+<div class="alert alert-err">
+  <div class="alert-head">
+    <h2>Could not read memory tree</h2>
+    <p class="alert-sub">{{.LoadErr}}</p>
+  </div>
+</div>
+{{end}}
+
+<section class="grid">
+  <div class="card">
+    <header class="card-head">
+      <h3>Tree</h3>
+      <span class="logs-meta mono">~{{.TotalTokens}} tok total</span>
+    </header>
+    <p class="card-meta">Repo: <code>{{.RepoPath}}</code></p>
+    {{if .Tree}}
+    <ul class="tree">
+      {{range .Tree}}{{template "memnode" .}}{{end}}
+    </ul>
+    {{else}}
+    <p class="fg-hint">Empty repo. Use <a href="/">/status</a> to scaffold the canonical layout.</p>
+    {{end}}
+  </div>
+</section>
+
+{{end}}
+{{end}}
+
+{{define "memnode"}}
+<li class="tree-row">
+  <span class="tree-label{{if .Dir}} tree-dir{{end}}{{if .Missing}} tree-missing{{end}}">
+    <span class="tree-kind">{{if .Dir}}dir{{else}}file{{end}}</span>
+    <span class="tree-name">{{.Name}}</span>
+    {{if .Missing}}<span class="badge badge-err">missing</span>{{end}}
+  </span>
+  <span class="tree-meta">
+    {{if not .Dir}}<span class="tree-tokens mono">~{{.Tokens}} tok</span>{{else if .Tokens}}<span class="tree-tokens mono">~{{.Tokens}} tok</span>{{end}}
+    {{if .Editable}}<a class="tree-edit" href="/memory/edit?path={{.Path}}">{{if .Missing}}create{{else}}edit{{end}}</a>{{end}}
+  </span>
+  {{if .Children}}
+  <ul class="tree">
+    {{range .Children}}{{template "memnode" .}}{{end}}
+  </ul>
+  {{end}}
+</li>
+{{end}}

@@ -455,6 +455,82 @@ code {
   font-size: 0.85em;
 }
 
+/* Memory tree */
+.tree {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+}
+.tree .tree {
+  margin-top: 0.15rem;
+  padding-left: 1.25rem;
+  border-left: 1px solid var(--border);
+}
+.tree-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.2rem 0.1rem;
+}
+.tree-row + .tree-row { border-top: 1px dashed transparent; }
+.tree-label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.tree-kind {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+}
+.tree-name {
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+.tree-dir .tree-name { font-weight: 600; }
+.tree-missing .tree-name { color: var(--muted); font-style: italic; }
+.tree-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  white-space: nowrap;
+}
+.tree-tokens {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.tree-edit {
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* Memory editor textarea */
+.mem-edit {
+  width: 100%;
+  min-height: 24rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.825rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+.mem-edit:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 /* Footer */
 .footer {
   border-top: 1px solid var(--border);

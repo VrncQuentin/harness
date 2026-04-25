@@ -341,3 +341,82 @@ func TestDirReader_WriteFileOverDirectoryFails(t *testing.T) {
 		t.Error("WriteFile over a directory: expected error, got nil")
 	}
 }
+
+func TestDirReader_WalkReturnsEverythingSorted(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"global/rules.md":         "rules",
+		"global/user.md":          "user",
+		"agents/coder/persona.md": "p",
+		"agents/coder/notes.md":   "n",
+	})
+
+	got, err := r.Walk("")
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	wantPaths := []string{
+		"agents",
+		"agents/coder",
+		"agents/coder/notes.md",
+		"agents/coder/persona.md",
+		"global",
+		"global/rules.md",
+		"global/user.md",
+	}
+	gotPaths := make([]string, len(got))
+	for i, e := range got {
+		gotPaths[i] = e.Path
+	}
+	if !reflect.DeepEqual(gotPaths, wantPaths) {
+		t.Errorf("Walk paths =\n\t%v\nwant\n\t%v", gotPaths, wantPaths)
+	}
+	// Spot-check: rules.md must report a non-zero size and Dir=false.
+	for _, e := range got {
+		if e.Path == "global/rules.md" {
+			if e.Dir {
+				t.Error("Walk: global/rules.md reported Dir=true")
+			}
+			if e.Size != int64(len("rules")) {
+				t.Errorf("Walk: global/rules.md size=%d, want %d", e.Size, len("rules"))
+			}
+		}
+		if e.Path == "global" && !e.Dir {
+			t.Error("Walk: global reported Dir=false")
+		}
+	}
+}
+
+func TestDirReader_WalkSkipsGitDir(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"global/rules.md": "x",
+		".git/HEAD":       "ref: refs/heads/main",
+		".git/config":     "[core]",
+	})
+	got, err := r.Walk("")
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	for _, e := range got {
+		if strings.HasPrefix(e.Path, ".git") {
+			t.Errorf("Walk leaked git plumbing: %s", e.Path)
+		}
+	}
+}
+
+func TestDirReader_WalkMissingRoot(t *testing.T) {
+	r := NewDirReader(filepath.Join(t.TempDir(), "does-not-exist"))
+	got, err := r.Walk("")
+	if err != nil {
+		t.Fatalf("Walk on missing root: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Walk on missing root = %v, want empty", got)
+	}
+}
+
+func TestDirReader_WalkRejectsTraversal(t *testing.T) {
+	r := newTestRepo(t, nil)
+	if _, err := r.Walk("../outside"); err == nil {
+		t.Error("Walk with traversal: expected error, got nil")
+	}
+}
