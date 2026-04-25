@@ -253,6 +253,95 @@ func TestDirReader_MkdirAllOverFileFails(t *testing.T) {
 	}
 }
 
+func TestDirReader_WriteFileCreatesNew(t *testing.T) {
+	r := newTestRepo(t, nil)
+	if err := r.WriteFile("agents/coder/persona.md", []byte("hello")); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := r.Read("agents/coder/persona.md")
+	if err != nil {
+		t.Fatalf("Read after WriteFile: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Errorf("Read after WriteFile = %q, want %q", string(got), "hello")
+	}
+}
+
+func TestDirReader_WriteFileOverwritesAtomic(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"agents/coder/persona.md": "old",
+	})
+	if err := r.WriteFile("agents/coder/persona.md", []byte("new")); err != nil {
+		t.Fatalf("WriteFile overwrite: %v", err)
+	}
+	got, err := r.Read("agents/coder/persona.md")
+	if err != nil {
+		t.Fatalf("Read after WriteFile: %v", err)
+	}
+	if string(got) != "new" {
+		t.Errorf("Read after WriteFile = %q, want %q", string(got), "new")
+	}
+
+	// Confirm the atomic rename did not leave a .harness-* tempfile behind.
+	parent := filepath.Join(r.Root, "agents", "coder")
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatalf("ReadDir parent: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".harness-") {
+			t.Errorf("WriteFile left tempfile behind: %s", e.Name())
+		}
+	}
+}
+
+func TestDirReader_WriteFileCreatesParentDir(t *testing.T) {
+	r := newTestRepo(t, nil)
+	if err := r.WriteFile("agents/new/notes.md", []byte("body")); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := r.Read("agents/new/notes.md")
+	if err != nil {
+		t.Fatalf("Read after WriteFile: %v", err)
+	}
+	if string(got) != "body" {
+		t.Errorf("Read after WriteFile = %q, want %q", string(got), "body")
+	}
+}
+
+func TestDirReader_WriteFileRejectsBadPaths(t *testing.T) {
+	r := newTestRepo(t, nil)
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"empty", ""},
+		{"dotdot prefix", "../secret"},
+		{"dotdot middle", "agents/../../etc/passwd"},
+		{"backslash dotdot", "agents\\..\\..\\etc"},
+		{"unix absolute", "/etc/passwd"},
+		{"windows absolute", "C:/windows/system32"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := r.WriteFile(tc.path, []byte("x")); err == nil {
+				t.Errorf("WriteFile(%q): expected error, got nil", tc.path)
+			}
+		})
+	}
+}
+
+func TestDirReader_WriteFileOverDirectoryFails(t *testing.T) {
+	r := newTestRepo(t, map[string]string{
+		"agents/coder/persona.md": "x",
+	})
+	// Targeting an existing directory must fail; the rename cannot
+	// replace a non-empty directory with a regular file on any OS.
+	if err := r.WriteFile("agents/coder", []byte("body")); err == nil {
+		t.Error("WriteFile over a directory: expected error, got nil")
+	}
+}
+
 func TestDirReader_WalkReturnsEverythingSorted(t *testing.T) {
 	r := newTestRepo(t, map[string]string{
 		"global/rules.md":         "rules",
@@ -329,55 +418,5 @@ func TestDirReader_WalkRejectsTraversal(t *testing.T) {
 	r := newTestRepo(t, nil)
 	if _, err := r.Walk("../outside"); err == nil {
 		t.Error("Walk with traversal: expected error, got nil")
-	}
-}
-
-func TestDirReader_WriteCreatesFileAndParents(t *testing.T) {
-	r := newTestRepo(t, nil)
-	if err := r.Write("global/rules.md", []byte("hello")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	got, err := r.Read("global/rules.md")
-	if err != nil {
-		t.Fatalf("Read after Write: %v", err)
-	}
-	if string(got) != "hello" {
-		t.Errorf("Read after Write = %q, want %q", string(got), "hello")
-	}
-}
-
-func TestDirReader_WriteOverwrites(t *testing.T) {
-	r := newTestRepo(t, map[string]string{
-		"global/rules.md": "old",
-	})
-	if err := r.Write("global/rules.md", []byte("new")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	got, err := r.Read("global/rules.md")
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	if string(got) != "new" {
-		t.Errorf("Read after overwrite = %q, want %q", string(got), "new")
-	}
-}
-
-func TestDirReader_WriteRefusesDirectory(t *testing.T) {
-	r := newTestRepo(t, map[string]string{
-		"global/rules.md": "x",
-	})
-	if err := r.Write("global", []byte("nope")); err == nil {
-		t.Error("Write over directory: expected error, got nil")
-	}
-}
-
-func TestDirReader_WriteRejectsTraversal(t *testing.T) {
-	r := newTestRepo(t, nil)
-	for _, p := range []string{"", "../outside", "/etc/passwd", "global/../../etc"} {
-		t.Run(p, func(t *testing.T) {
-			if err := r.Write(p, []byte("x")); err == nil {
-				t.Errorf("Write(%q): expected error, got nil", p)
-			}
-		})
 	}
 }

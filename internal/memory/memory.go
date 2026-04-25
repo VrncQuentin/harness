@@ -53,6 +53,19 @@ type DirCreator interface {
 	MkdirAll(relPath string) error
 }
 
+// FileWriter is an optional capability some Readers expose for
+// writing files under the repo root. The agent registry and the UI
+// memory editor both use this to persist edits to markdown files;
+// callers can type-assert on it.
+type FileWriter interface {
+	// WriteFile writes data to relPath, replacing any existing file
+	// at that path. The parent directory is created if missing.
+	// Implementations must publish the new content atomically so
+	// concurrent readers (e.g. the prompt hot-reload watcher) never
+	// observe a partial write.
+	WriteFile(relPath string, data []byte) error
+}
+
 // Walker is an optional capability some Readers expose for enumerating
 // every entry under a path. The UI memory page uses it to render the
 // repo as a tree with token estimates per file.
@@ -64,15 +77,6 @@ type Walker interface {
 	// partially-scaffolded repo. The .git directory is skipped so
 	// internal git plumbing never leaks into the UI.
 	Walk(relPath string) ([]Entry, error)
-}
-
-// Writer is an optional capability some Readers expose for replacing
-// the contents of a file. The UI memory editor uses it to save edits
-// to global/*.md from the browser.
-type Writer interface {
-	// Write replaces relPath with data, creating parent directories
-	// as needed. It refuses to overwrite a directory.
-	Write(relPath string, data []byte) error
 }
 
 // Entry describes one path under the memory repo as returned by Walk.
@@ -93,16 +97,16 @@ type DirReader struct {
 }
 
 // Compile-time assertions that *DirReader satisfies Reader and the
-// optional DirLister/DirCreator/Walker/Writer capabilities, per the
-// Uber Go style guide's "Verify Interface Compliance" rule. Keeping
-// each on its own line surfaces the missing method when one interface
-// drifts.
+// optional DirLister/DirCreator/FileWriter/Walker capabilities, per
+// the Uber Go style guide's "Verify Interface Compliance" rule.
+// Keeping each on its own line surfaces the missing method when one
+// interface drifts.
 var (
 	_ Reader     = (*DirReader)(nil)
 	_ DirLister  = (*DirReader)(nil)
 	_ DirCreator = (*DirReader)(nil)
+	_ FileWriter = (*DirReader)(nil)
 	_ Walker     = (*DirReader)(nil)
-	_ Writer     = (*DirReader)(nil)
 )
 
 // NewDirReader returns a DirReader rooted at root.
@@ -169,6 +173,45 @@ func (r *DirReader) MkdirAll(relPath string) error {
 	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
+	}
+	return nil
+}
+
+// WriteFile implements FileWriter. It writes via a temp file in the
+// same directory followed by os.Rename so the prompt hot-reload watcher
+// (fsnotify) never observes a partial write mid-flight.
+func (r *DirReader) WriteFile(relPath string, data []byte) error {
+	if err := checkRel(relPath); err != nil {
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	parent := filepath.Dir(abs)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+
+	tmp, err := os.CreateTemp(parent, ".harness-*")
+	if err != nil {
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	tmpPath := tmp.Name()
+	// cleanup runs on every error path before the rename succeeds; once
+	// the rename lands the temp file no longer exists under tmpPath.
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	if err := os.Rename(tmpPath, abs); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
 	return nil
 }
@@ -259,26 +302,6 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
-}
-
-// Write implements Writer. It refuses to overwrite a directory and
-// creates any missing parent directories so a fresh repo can be
-// populated from the editor without scaffolding first.
-func (r *DirReader) Write(relPath string, data []byte) error {
-	if err := checkRel(relPath); err != nil {
-		return err
-	}
-	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
-	if info, err := os.Stat(abs); err == nil && info.IsDir() {
-		return fmt.Errorf("memory: %s is a directory", relPath)
-	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return fmt.Errorf("memory: create parent of %s: %w", relPath, err)
-	}
-	if err := os.WriteFile(abs, data, 0o644); err != nil {
-		return fmt.Errorf("memory: write %s: %w", relPath, err)
-	}
-	return nil
 }
 
 // resolve turns a forward-slash relative path into an absolute OS path.

@@ -33,6 +33,12 @@ var errNoDirLister = errors.New("agent: memory.Reader must also implement memory
 // future test fake forgets the capability.
 var errNoDirCreator = errors.New("agent: memory.Reader must also implement memory.DirCreator")
 
+// errNoFileWriter is returned by WritePersona/WriteNotes when the
+// underlying Reader does not implement memory.FileWriter. Mirrors
+// errNoDirCreator: production always satisfies it; the explicit
+// error keeps test fakes that forget the capability discoverable.
+var errNoFileWriter = errors.New("agent: memory.Reader must also implement memory.FileWriter")
+
 // ErrInvalidName is returned by Create when the requested agent name
 // fails validation (empty, too long, or contains disallowed
 // characters). Wrapped so callers can use errors.Is.
@@ -44,10 +50,14 @@ var ErrInvalidName = errors.New("agent: invalid name")
 var ErrAgentExists = errors.New("agent: already exists")
 
 // Agent is the minimal metadata the prompt assembler needs: the agent's
-// name and the repo-relative paths of its persona and notes files.
+// name and the repo-relative paths of its persona, rules, and notes
+// files. Rules are an optional per-agent layer analogous to
+// global/rules.md - always-on behavioural constraints scoped to this
+// agent (e.g. "make a plan before any edit").
 type Agent struct {
 	Name        string
 	PersonaPath string
+	RulesPath   string
 	NotesPath   string
 }
 
@@ -59,6 +69,16 @@ type Registry interface {
 	Active() string
 	SetActive(name string) error
 	Create(name string) (Agent, error)
+	// WritePersona replaces agents/<name>/persona.md with body. The
+	// agent must already exist; an unknown name returns an error
+	// wrapping fs.ErrNotExist.
+	WritePersona(name string, body []byte) error
+	// WriteRules replaces agents/<name>/rules.md with body. Same
+	// rules as WritePersona.
+	WriteRules(name string, body []byte) error
+	// WriteNotes replaces agents/<name>/notes.md with body. Same
+	// rules as WritePersona.
+	WriteNotes(name string, body []byte) error
 }
 
 // DiskRegistry lists agents by scanning agents/ in the memory repo.
@@ -68,6 +88,7 @@ type Registry interface {
 type DiskRegistry struct {
 	lister    memory.DirLister
 	creator   memory.DirCreator
+	writer    memory.FileWriter
 	mu        sync.Mutex
 	getActive func() string
 	setActive func(string) error
@@ -80,16 +101,19 @@ var _ Registry = (*DiskRegistry)(nil)
 // registry is agnostic to where that value is stored (in practice,
 // internal/db's config row).
 //
-// mem must also implement memory.DirLister and memory.DirCreator (the
-// production *memory.DirReader does). If it does not, the affected
-// calls return an error - this trades a startup panic for a
-// deterministic failure mode that the UI can render.
+// mem must also implement memory.DirLister, memory.DirCreator, and
+// memory.FileWriter (the production *memory.DirReader does). If it
+// does not, the affected calls return an error - this trades a
+// startup panic for a deterministic failure mode that the UI can
+// render.
 func NewDiskRegistry(mem memory.Reader, getActive func() string, setActive func(string) error) *DiskRegistry {
 	dl, _ := mem.(memory.DirLister)
 	dc, _ := mem.(memory.DirCreator)
+	fw, _ := mem.(memory.FileWriter)
 	return &DiskRegistry{
 		lister:    dl,
 		creator:   dc,
+		writer:    fw,
 		getActive: getActive,
 		setActive: setActive,
 	}
@@ -174,6 +198,7 @@ func newAgent(name string) Agent {
 	return Agent{
 		Name:        name,
 		PersonaPath: path.Join(agentsDir, name, "persona.md"),
+		RulesPath:   path.Join(agentsDir, name, "rules.md"),
 		NotesPath:   path.Join(agentsDir, name, "notes.md"),
 	}
 }
@@ -216,6 +241,62 @@ func (r *DiskRegistry) Create(name string) (Agent, error) {
 		return Agent{}, fmt.Errorf("agent: create %q: %w", name, err)
 	}
 	return newAgent(name), nil
+}
+
+// WritePersona replaces the agent's persona.md with body. The file is
+// created if missing. Errors from validation, lookup, or the
+// underlying writer are wrapped with package context.
+func (r *DiskRegistry) WritePersona(name string, body []byte) error {
+	a, err := r.resolveForWrite(name)
+	if err != nil {
+		return err
+	}
+	if err := r.writer.WriteFile(a.PersonaPath, body); err != nil {
+		return fmt.Errorf("agent: write persona %q: %w", name, err)
+	}
+	return nil
+}
+
+// WriteRules replaces the agent's rules.md with body. The file is
+// created if missing.
+func (r *DiskRegistry) WriteRules(name string, body []byte) error {
+	a, err := r.resolveForWrite(name)
+	if err != nil {
+		return err
+	}
+	if err := r.writer.WriteFile(a.RulesPath, body); err != nil {
+		return fmt.Errorf("agent: write rules %q: %w", name, err)
+	}
+	return nil
+}
+
+// WriteNotes replaces the agent's notes.md with body. The file is
+// created if missing.
+func (r *DiskRegistry) WriteNotes(name string, body []byte) error {
+	a, err := r.resolveForWrite(name)
+	if err != nil {
+		return err
+	}
+	if err := r.writer.WriteFile(a.NotesPath, body); err != nil {
+		return fmt.Errorf("agent: write notes %q: %w", name, err)
+	}
+	return nil
+}
+
+// resolveForWrite verifies the writer is wired and the named agent
+// exists, returning the metadata used to derive on-disk paths.
+func (r *DiskRegistry) resolveForWrite(name string) (Agent, error) {
+	if name == "" {
+		return Agent{}, fmt.Errorf("agent: name is empty")
+	}
+	if r.writer == nil {
+		return Agent{}, errNoFileWriter
+	}
+	a, err := r.Get(name)
+	if err != nil {
+		return Agent{}, err
+	}
+	return a, nil
 }
 
 // validateName enforces a conservative agent-name policy: 1-64 chars

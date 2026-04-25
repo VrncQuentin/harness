@@ -72,7 +72,7 @@ func (s *stubMemoryStore) Read(p string) ([]byte, error) {
 	return []byte(body), nil
 }
 
-func (s *stubMemoryStore) Write(p string, data []byte) error {
+func (s *stubMemoryStore) WriteFile(p string, data []byte) error {
 	if s.writeErr != nil {
 		return s.writeErr
 	}

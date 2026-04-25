@@ -20,6 +20,29 @@
 </div>
 {{end}}
 
+{{if eq .Saved "persona"}}
+<div class="alert alert-ok">
+  <div class="alert-head">
+    <h2>Saved persona</h2>
+    <p class="alert-sub">Wrote <code>agents/{{.Active}}/persona.md</code>.</p>
+  </div>
+</div>
+{{else if eq .Saved "rules"}}
+<div class="alert alert-ok">
+  <div class="alert-head">
+    <h2>Saved rules</h2>
+    <p class="alert-sub">Wrote <code>agents/{{.Active}}/rules.md</code>.</p>
+  </div>
+</div>
+{{else if eq .Saved "notes"}}
+<div class="alert alert-ok">
+  <div class="alert-head">
+    <h2>Saved notes</h2>
+    <p class="alert-sub">Wrote <code>agents/{{.Active}}/notes.md</code>.</p>
+  </div>
+</div>
+{{end}}
+
 {{if .Error}}
 <div class="alert alert-err">
   <div class="alert-head">
@@ -81,21 +104,69 @@
     </form>
   </div>
 
+  {{if .Active}}
   <div class="card">
     <header class="card-head">
       <h3>Active persona</h3>
-      {{if .Active}}<span class="logs-meta mono">{{.Active}}</span>{{end}}
+      <span class="logs-meta mono">agents/{{.Active}}/persona.md</span>
     </header>
-    {{if .Active}}
-      {{if .ActivePersona}}
-      <pre class="mono logs-body">{{.ActivePersona}}</pre>
-      {{else}}
-      <p class="fg-hint">Persona file is empty or missing.</p>
-      {{end}}
-    {{else}}
-    <p class="fg-hint">No active agent selected.</p>
+    {{if .SaveErr}}
+    <div class="alert alert-warn">
+      <div class="alert-head">
+        <p class="alert-sub">{{.SaveErr}}</p>
+      </div>
+    </div>
     {{end}}
+    <form method="post" action="/agents/persona">
+      <div class="fg">
+        <textarea name="body" rows="14">{{.ActivePersona}}</textarea>
+        <p class="fg-hint">Injected verbatim into every prompt for the active agent.</p>
+      </div>
+      <div class="cfg-actions">
+        <button type="submit" class="btn btn-primary">Save persona</button>
+      </div>
+    </form>
   </div>
+
+  <div class="card">
+    <header class="card-head">
+      <h3>Active rules</h3>
+      <span class="logs-meta mono">agents/{{.Active}}/rules.md</span>
+    </header>
+    <form method="post" action="/agents/rules">
+      <div class="fg">
+        <textarea name="body" rows="14">{{.ActiveRules}}</textarea>
+        <p class="fg-hint">Always-on behavioural constraints scoped to this agent.</p>
+      </div>
+      <div class="cfg-actions">
+        <button type="submit" class="btn btn-primary">Save rules</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <header class="card-head">
+      <h3>Active notes</h3>
+      <span class="logs-meta mono">agents/{{.Active}}/notes.md</span>
+    </header>
+    <form method="post" action="/agents/notes">
+      <div class="fg">
+        <textarea name="body" rows="14">{{.ActiveNotes}}</textarea>
+        <p class="fg-hint">Persistent facts for this agent. Kept short by convention.</p>
+      </div>
+      <div class="cfg-actions">
+        <button type="submit" class="btn btn-primary">Save notes</button>
+      </div>
+    </form>
+  </div>
+  {{else}}
+  <div class="card">
+    <header class="card-head">
+      <h3>Active agent files</h3>
+    </header>
+    <p class="fg-hint">No active agent selected.</p>
+  </div>
+  {{end}}
 </section>
 
 {{end}}

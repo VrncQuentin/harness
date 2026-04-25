@@ -24,7 +24,7 @@ const maxMemoryFileBytes = 1 << 20 // 1 MiB
 type MemoryStore interface {
 	Walk(relPath string) ([]memory.Entry, error)
 	Read(relPath string) ([]byte, error)
-	Write(relPath string, data []byte) error
+	WriteFile(relPath string, data []byte) error
 }
 
 // editableGlobalFiles enumerates the files the UI lets the user create
@@ -210,7 +210,7 @@ func (s *Server) handleMemorySave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := store.Write(p, []byte(content)); err != nil {
+	if err := store.WriteFile(p, []byte(content)); err != nil {
 		data := memoryEditView{
 			basePage: s.newBasePage("memory"),
 			Path:     p,
