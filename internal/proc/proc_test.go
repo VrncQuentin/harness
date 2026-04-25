@@ -2,6 +2,9 @@ package proc
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -343,6 +346,62 @@ func TestRestart_ClearsCircuitAndSignalsReload(t *testing.T) {
 	case <-m.reloadCh:
 	default:
 		t.Error("Restart should signal reloadCh so Run wakes up")
+	}
+}
+
+func TestCheckHealth_Returns503AsLoading(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	m := NewManager(ManagerConfig{
+		Name:      "test",
+		BuildArgs: func() (string, []string) { return "binary", nil },
+		HealthURL: srv.URL,
+	})
+
+	err := m.checkHealth(context.Background())
+	if !errors.Is(err, errLoading) {
+		t.Fatalf("expected errLoading on 503, got %v", err)
+	}
+}
+
+func TestCheckHealth_OtherStatusIsFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	m := NewManager(ManagerConfig{
+		Name:      "test",
+		BuildArgs: func() (string, []string) { return "binary", nil },
+		HealthURL: srv.URL,
+	})
+
+	err := m.checkHealth(context.Background())
+	if err == nil {
+		t.Fatal("expected error on 500")
+	}
+	if errors.Is(err, errLoading) {
+		t.Fatalf("500 must not be classified as loading: %v", err)
+	}
+}
+
+func TestCheckHealth_200IsHealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	m := NewManager(ManagerConfig{
+		Name:      "test",
+		BuildArgs: func() (string, []string) { return "binary", nil },
+		HealthURL: srv.URL,
+	})
+
+	if err := m.checkHealth(context.Background()); err != nil {
+		t.Fatalf("expected nil on 200, got %v", err)
 	}
 }
 
