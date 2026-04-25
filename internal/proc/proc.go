@@ -5,6 +5,7 @@ package proc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +18,14 @@ import (
 
 	"github.com/vrnc/harness/pkg/httpclient"
 )
+
+// errLoading is returned by checkHealth when the child reports that the
+// model is still loading (HTTP 503 from llama-server / embedder during the
+// load phase). The caller treats it as "keep polling, do not restart" -
+// loading a multi-GB model can take longer than several check periods, so
+// counting it as a failure tripped the breaker before the model was ever
+// ready.
+var errLoading = errors.New("proc: still loading")
 
 // EventKind classifies a process manager event.
 type EventKind string
@@ -402,7 +411,15 @@ func (m *Manager) healthLoop(ctx context.Context) {
 			m.emit(EventStop, "process exited")
 			return
 		case <-ticker.C:
-			if err := m.checkHealth(ctx); err != nil {
+			err := m.checkHealth(ctx)
+			switch {
+			case errors.Is(err, errLoading):
+				// Model is still loading (503). Keep polling; do not
+				// kill or count as a failure - the load can take
+				// minutes for multi-GB weights and we'd otherwise trip
+				// the breaker before the model was ever ready.
+				continue
+			case err != nil:
 				m.mu.Lock()
 				m.healthy = false
 				m.lastError = err
@@ -478,6 +495,12 @@ func (m *Manager) checkHealth(ctx context.Context) error {
 	}
 	_ = resp.Body.Close()
 
+	// llama-server / embedder return 503 specifically while the model is
+	// loading. Surface it as a typed sentinel so the caller can keep
+	// polling instead of treating it as a failure.
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		return errLoading
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= 300 {
 		return fmt.Errorf("proc: health check returned status %d", resp.StatusCode)
 	}
