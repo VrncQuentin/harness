@@ -49,6 +49,15 @@ type DirReader struct {
 	Root string
 }
 
+// Compile-time assertions that *DirReader satisfies both Reader and the
+// optional DirLister capability, per the Uber Go style guide's "Verify
+// Interface Compliance" rule. Keeping each on its own line surfaces the
+// missing method when one interface drifts.
+var (
+	_ Reader    = (*DirReader)(nil)
+	_ DirLister = (*DirReader)(nil)
+)
+
 // NewDirReader returns a DirReader rooted at root.
 func NewDirReader(root string) *DirReader {
 	return &DirReader{Root: root}
