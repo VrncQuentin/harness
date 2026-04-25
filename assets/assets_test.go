@@ -50,3 +50,17 @@ func TestStaticAssetsPresent(t *testing.T) {
 		}
 	}
 }
+
+func TestAppJSUsesMultiplexedEventsOnly(t *testing.T) {
+	b, err := fs.ReadFile(StaticFS, "static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	body := string(b)
+	if !strings.Contains(body, "new EventSource('/events')") {
+		t.Fatal("app.js does not subscribe to multiplexed /events stream")
+	}
+	if strings.Contains(body, "/logs/") {
+		t.Fatal("app.js still references removed /logs/* streams")
+	}
+}
