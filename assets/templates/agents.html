@@ -1,0 +1,75 @@
+{{define "title"}}Agents{{end}}
+{{define "content"}}
+<h1 class="page-title">Agents</h1>
+
+{{if not .Configured}}
+<div class="alert alert-info">
+  <div class="alert-head">
+    <h2>Memory repo not configured</h2>
+    <p class="alert-sub">Set <code>memory.repo_path</code> in <a href="/config">/config</a> so the harness can discover agents under <code>agents/</code>.</p>
+  </div>
+</div>
+{{else}}
+
+{{if .Error}}
+<div class="alert alert-err">
+  <div class="alert-head">
+    <h2>Registry error</h2>
+    <p class="alert-sub">{{.Error}}</p>
+  </div>
+</div>
+{{end}}
+
+{{if not .Agents}}
+<div class="alert alert-info">
+  <div class="alert-head">
+    <h2>No agents found</h2>
+    <p class="alert-sub">Create <code>agents/&lt;name&gt;/persona.md</code> in your memory repo, then reload this page.</p>
+  </div>
+</div>
+{{else}}
+<section class="grid">
+  <div class="card">
+    <header class="card-head">
+      <h3>Available agents</h3>
+      {{if .Active}}<span class="badge badge-ok">Active: {{.Active}}</span>{{end}}
+    </header>
+    <form method="post" action="/agents/active">
+      <div class="fg">
+        {{range .Agents}}
+        <label class="checkbox">
+          <input type="radio" name="name" value="{{.Name}}"{{if eq .Name $.Active}} checked{{end}}>
+          <span>{{.Name}}{{if eq .Name $.Active}} <span class="badge badge-ok">active</span>{{end}}</span>
+        </label>
+        {{end}}
+        <label class="checkbox">
+          <input type="radio" name="name" value=""{{if eq "" .Active}} checked{{end}}>
+          <span>(none)</span>
+        </label>
+      </div>
+      <div class="cfg-actions">
+        <button type="submit" class="btn btn-primary">Switch active agent</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <header class="card-head">
+      <h3>Active persona</h3>
+      {{if .Active}}<span class="logs-meta mono">{{.Active}}</span>{{end}}
+    </header>
+    {{if .Active}}
+      {{if .ActivePersona}}
+      <pre class="mono logs-body">{{.ActivePersona}}</pre>
+      {{else}}
+      <p class="fg-hint">Persona file is empty or missing.</p>
+      {{end}}
+    {{else}}
+    <p class="fg-hint">No active agent selected.</p>
+    {{end}}
+  </div>
+</section>
+{{end}}
+
+{{end}}
+{{end}}

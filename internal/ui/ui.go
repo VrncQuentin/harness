@@ -90,11 +90,12 @@ type Server struct {
 	// sseClients maps chan string → struct{} for active SSE subscribers.
 	sseClients sync.Map
 
-	// Each page has its own template set because status.html and config.html
-	// both define "title" and "content" - sharing one set would let the later
-	// parse clobber the earlier one.
+	// Each page has its own template set because status.html, config.html,
+	// and agents.html all define "title" and "content" - sharing one set
+	// would let the later parse clobber the earlier one.
 	statusTmpl *template.Template
 	configTmpl *template.Template
+	agentsTmpl *template.Template
 
 	retryMu sync.RWMutex
 	retry   RetryFunc
@@ -108,6 +109,9 @@ type Server struct {
 
 	storeMu sync.RWMutex
 	store   config.Store
+
+	agentRegMu sync.RWMutex
+	agentReg   AgentRegistry
 
 	binDirMu sync.RWMutex
 	binDir   string
@@ -133,6 +137,11 @@ func NewServer(port int) *Server {
 		assets.TemplateFS,
 		"templates/layout.html",
 		"templates/config.html",
+	))
+	s.agentsTmpl = template.Must(template.ParseFS(
+		assets.TemplateFS,
+		"templates/layout.html",
+		"templates/agents.html",
 	))
 	return s
 }
@@ -289,6 +298,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/logs/llama", s.streamRing(s.getLlamaRing))
 	mux.HandleFunc("/logs/embed", s.streamRing(s.getEmbedRing))
 	mux.HandleFunc("/config", s.handleConfig)
+	mux.HandleFunc("/agents", s.handleAgents)
+	mux.HandleFunc("/agents/active", s.handleAgentsActive)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
 	mux.HandleFunc("/procs/embed/restart", s.handleProcRestart("embed"))
