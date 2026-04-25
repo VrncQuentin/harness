@@ -18,6 +18,7 @@ import (
 
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/queue"
+	"github.com/vrnc/harness/internal/reqid"
 )
 
 // Assembler builds the final message list (rules/persona/memory/conversation)
@@ -198,9 +199,17 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	assembled, err := s.asm.Assemble(r.Context(), agent, req.Messages)
+	// Mint the request id up front so prompt assembly, queue dispatch,
+	// and inference all log under the same correlation key. The id
+	// doubles as the OpenAI-shaped chat completion id echoed in the
+	// streamed chunks.
+	reqID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
+	ctx := reqid.WithID(r.Context(), reqID)
+	logger := s.logger.With(slog.String("request_id", reqID))
+
+	assembled, err := s.asm.Assemble(ctx, agent, req.Messages)
 	if err != nil {
-		s.logger.Error("assemble failed", slog.String("agent", agent), slog.Any("err", err))
+		logger.Error("assemble failed", slog.String("agent", agent), slog.Any("err", err))
 		writeJSONError(w, http.StatusInternalServerError, apiErrorBody{
 			Message: err.Error(),
 			Type:    "server_error",
@@ -212,13 +221,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// the HTTP response loop drains this at its own pace and client disconnect
 	// cancels r.Context() which the queue honours via the Request.Ctx field.
 	respCh := make(chan inference.Token, 64)
-	reqID := fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano())
 
 	qReq := queue.Request{
 		ID:       reqID,
 		Messages: assembled,
 		Response: respCh,
-		Ctx:      r.Context(),
+		Ctx:      ctx,
 	}
 
 	if err := s.q.Enqueue(qReq); err != nil {
@@ -230,7 +238,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		s.logger.Error("enqueue failed", slog.Any("err", err))
+		logger.Error("enqueue failed", slog.Any("err", err))
 		writeJSONError(w, http.StatusInternalServerError, apiErrorBody{
 			Message: err.Error(),
 			Type:    "server_error",
