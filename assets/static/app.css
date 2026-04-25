@@ -356,6 +356,104 @@ a:hover { text-decoration: underline; }
   border-color: var(--border-strong);
 }
 .btn-ghost:hover { background: var(--bg); }
+.btn-sm {
+  padding: 0.3rem 0.65rem;
+  font-size: 0.8rem;
+}
+
+/* Agent cards */
+.agent-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.agent-head {
+  margin-bottom: 0;
+  align-items: center;
+}
+.agent-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.agent-name {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-transform: none;
+  color: var(--text);
+}
+.agent-actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.agent-inline-form { margin: 0; }
+.agent-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.agent-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.agent-section-head h4 {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.agent-text {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+.agent-toggle {
+  border-top: 1px solid var(--border);
+  padding-top: 0.6rem;
+}
+.agent-toggle > summary {
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  list-style: none;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.agent-toggle > summary::-webkit-details-marker { display: none; }
+.agent-toggle > summary::before {
+  content: "▸";
+  font-size: 0.7rem;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.agent-toggle[open] > summary::before { transform: rotate(90deg); }
+.agent-toggle > .logs-meta { display: block; margin-top: 0.35rem; }
+.agent-toggle > form,
+.agent-toggle > .agent-text,
+.agent-toggle > .fg-hint { margin-top: 0.5rem; }
 
 /* Config form */
 .cfg-form {

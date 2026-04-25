@@ -15,7 +15,7 @@
 <div class="alert alert-ok">
   <div class="alert-head">
     <h2>Created agent <code>{{.CreatedName}}</code></h2>
-    <p class="alert-sub">Add a <code>persona.md</code> in <code>agents/{{.CreatedName}}/</code> and switch to it below.</p>
+    <p class="alert-sub">Click <em>Edit</em> on the new card to fill in <code>persona.md</code>, then make it active.</p>
   </div>
 </div>
 {{end}}
@@ -24,21 +24,21 @@
 <div class="alert alert-ok">
   <div class="alert-head">
     <h2>Saved persona</h2>
-    <p class="alert-sub">Wrote <code>agents/{{.Active}}/persona.md</code>.</p>
+    {{if .EditName}}<p class="alert-sub">Wrote <code>agents/{{.EditName}}/persona.md</code>.</p>{{end}}
   </div>
 </div>
 {{else if eq .Saved "rules"}}
 <div class="alert alert-ok">
   <div class="alert-head">
     <h2>Saved rules</h2>
-    <p class="alert-sub">Wrote <code>agents/{{.Active}}/rules.md</code>.</p>
+    {{if .EditName}}<p class="alert-sub">Wrote <code>agents/{{.EditName}}/rules.md</code>.</p>{{end}}
   </div>
 </div>
 {{else if eq .Saved "notes"}}
 <div class="alert alert-ok">
   <div class="alert-head">
     <h2>Saved notes</h2>
-    <p class="alert-sub">Wrote <code>agents/{{.Active}}/notes.md</code>.</p>
+    {{if .EditName}}<p class="alert-sub">Wrote <code>agents/{{.EditName}}/notes.md</code>.</p>{{end}}
   </div>
 </div>
 {{end}}
@@ -53,33 +53,110 @@
 {{end}}
 
 <section class="grid">
-  <div class="card">
-    <header class="card-head">
-      <h3>Available agents</h3>
-      {{if .Active}}<span class="badge badge-ok">Active: {{.Active}}</span>{{end}}
-    </header>
-    {{if .Agents}}
-    <form method="post" action="/agents/active">
-      <div class="fg">
-        {{range .Agents}}
-        <label class="checkbox">
-          <input type="radio" name="name" value="{{.Name}}"{{if eq .Name $.Active}} checked{{end}}>
-          <span>{{.Name}}{{if eq .Name $.Active}} <span class="badge badge-ok">active</span>{{end}}</span>
-        </label>
+  {{if .Agents}}
+    {{range .Agents}}
+    {{$editing := eq .Name $.EditName}}
+    <div class="card agent-card">
+      <header class="card-head agent-head">
+        <div class="agent-title">
+          <h3 class="agent-name">{{.Name}}</h3>
+          {{if eq .Name $.Active}}<span class="badge badge-ok">active</span>{{end}}
+        </div>
+        <div class="agent-actions">
+          {{if ne .Name $.Active}}
+          <form method="post" action="/agents/active" class="agent-inline-form">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit" class="btn btn-ghost btn-sm">Set active</button>
+          </form>
+          {{end}}
+          {{if $editing}}
+          <a class="btn btn-ghost btn-sm" href="/agents">Done</a>
+          {{else}}
+          <a class="btn btn-ghost btn-sm" href="/agents?edit={{.Name}}">Edit</a>
+          {{end}}
+        </div>
+      </header>
+
+      {{if and $editing $.SaveErr}}
+      <div class="alert alert-warn">
+        <div class="alert-head">
+          <p class="alert-sub">{{$.SaveErr}}</p>
+        </div>
+      </div>
+      {{end}}
+
+      <section class="agent-section">
+        <div class="agent-section-head">
+          <h4>Persona</h4>
+          <span class="logs-meta mono">{{.PersonaPath}}</span>
+        </div>
+        {{if $editing}}
+        <form method="post" action="/agents/persona">
+          <input type="hidden" name="name" value="{{.Name}}">
+          <div class="fg">
+            <textarea name="body" rows="10">{{.Persona}}</textarea>
+            <p class="fg-hint">Injected verbatim into every prompt for this agent.</p>
+          </div>
+          <div class="cfg-actions">
+            <button type="submit" class="btn btn-primary">Save persona</button>
+          </div>
+        </form>
+        {{else if .Persona}}
+        <pre class="agent-text">{{.Persona}}</pre>
+        {{else}}
+        <p class="fg-hint">Empty. Click <em>Edit</em> to write a persona.</p>
         {{end}}
-        <label class="checkbox">
-          <input type="radio" name="name" value=""{{if eq "" .Active}} checked{{end}}>
-          <span>(none)</span>
-        </label>
-      </div>
-      <div class="cfg-actions">
-        <button type="submit" class="btn btn-primary">Switch active agent</button>
-      </div>
-    </form>
-    {{else}}
-    <p class="fg-hint">No agents yet. Use the form on the right to create one.</p>
+      </section>
+
+      <details class="agent-toggle"{{if $editing}} open{{end}}>
+        <summary>Rules</summary>
+        <span class="logs-meta mono">{{.RulesPath}}</span>
+        {{if $editing}}
+        <form method="post" action="/agents/rules">
+          <input type="hidden" name="name" value="{{.Name}}">
+          <div class="fg">
+            <textarea name="body" rows="10">{{.Rules}}</textarea>
+            <p class="fg-hint">Always-on behavioural constraints scoped to this agent.</p>
+          </div>
+          <div class="cfg-actions">
+            <button type="submit" class="btn btn-primary">Save rules</button>
+          </div>
+        </form>
+        {{else if .Rules}}
+        <pre class="agent-text">{{.Rules}}</pre>
+        {{else}}
+        <p class="fg-hint">No rules yet.</p>
+        {{end}}
+      </details>
+
+      <details class="agent-toggle"{{if $editing}} open{{end}}>
+        <summary>Notes</summary>
+        <span class="logs-meta mono">{{.NotesPath}}</span>
+        {{if $editing}}
+        <form method="post" action="/agents/notes">
+          <input type="hidden" name="name" value="{{.Name}}">
+          <div class="fg">
+            <textarea name="body" rows="10">{{.Notes}}</textarea>
+            <p class="fg-hint">Persistent facts for this agent. Kept short by convention.</p>
+          </div>
+          <div class="cfg-actions">
+            <button type="submit" class="btn btn-primary">Save notes</button>
+          </div>
+        </form>
+        {{else if .Notes}}
+        <pre class="agent-text">{{.Notes}}</pre>
+        {{else}}
+        <p class="fg-hint">No notes yet.</p>
+        {{end}}
+      </details>
+    </div>
     {{end}}
+  {{else}}
+  <div class="card">
+    <header class="card-head"><h3>Available agents</h3></header>
+    <p class="fg-hint">No agents yet. Use the form below to create one.</p>
   </div>
+  {{end}}
 
   <div class="card">
     <header class="card-head">
@@ -103,70 +180,6 @@
       </div>
     </form>
   </div>
-
-  {{if .Active}}
-  <div class="card">
-    <header class="card-head">
-      <h3>Active persona</h3>
-      <span class="logs-meta mono">agents/{{.Active}}/persona.md</span>
-    </header>
-    {{if .SaveErr}}
-    <div class="alert alert-warn">
-      <div class="alert-head">
-        <p class="alert-sub">{{.SaveErr}}</p>
-      </div>
-    </div>
-    {{end}}
-    <form method="post" action="/agents/persona">
-      <div class="fg">
-        <textarea name="body" rows="14">{{.ActivePersona}}</textarea>
-        <p class="fg-hint">Injected verbatim into every prompt for the active agent.</p>
-      </div>
-      <div class="cfg-actions">
-        <button type="submit" class="btn btn-primary">Save persona</button>
-      </div>
-    </form>
-  </div>
-
-  <div class="card">
-    <header class="card-head">
-      <h3>Active rules</h3>
-      <span class="logs-meta mono">agents/{{.Active}}/rules.md</span>
-    </header>
-    <form method="post" action="/agents/rules">
-      <div class="fg">
-        <textarea name="body" rows="14">{{.ActiveRules}}</textarea>
-        <p class="fg-hint">Always-on behavioural constraints scoped to this agent.</p>
-      </div>
-      <div class="cfg-actions">
-        <button type="submit" class="btn btn-primary">Save rules</button>
-      </div>
-    </form>
-  </div>
-
-  <div class="card">
-    <header class="card-head">
-      <h3>Active notes</h3>
-      <span class="logs-meta mono">agents/{{.Active}}/notes.md</span>
-    </header>
-    <form method="post" action="/agents/notes">
-      <div class="fg">
-        <textarea name="body" rows="14">{{.ActiveNotes}}</textarea>
-        <p class="fg-hint">Persistent facts for this agent. Kept short by convention.</p>
-      </div>
-      <div class="cfg-actions">
-        <button type="submit" class="btn btn-primary">Save notes</button>
-      </div>
-    </form>
-  </div>
-  {{else}}
-  <div class="card">
-    <header class="card-head">
-      <h3>Active agent files</h3>
-    </header>
-    <p class="fg-hint">No active agent selected.</p>
-  </div>
-  {{end}}
 </section>
 
 {{end}}
