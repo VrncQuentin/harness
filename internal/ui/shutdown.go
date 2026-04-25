@@ -10,28 +10,6 @@ import (
 // enough; the margin only protects a slow loopback under load.
 const shutdownDelay = 200 * time.Millisecond
 
-// shutdownPage is the standalone HTML the user sees after confirming. It
-// inlines its own styles so a successful render does not depend on the
-// /static fileserver still being up by the time the browser fetches them.
-const shutdownPage = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Harness - shutting down</title>
-<style>
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; background: #fafafa; color: #111827; padding: 3rem 1.5rem; max-width: 32rem; margin: 0 auto; }
-h1 { font-size: 1.25rem; margin: 0 0 0.5rem; letter-spacing: -0.015em; }
-p { margin: 0.4rem 0; color: #374151; line-height: 1.5; font-size: 0.9rem; }
-p.muted { color: #6b7280; font-size: 0.8rem; margin-top: 1rem; }
-</style>
-</head>
-<body>
-<h1>Harness is shutting down</h1>
-<p>Stopping the API server, draining the queue, terminating llama-server and the embedder, and flushing the database.</p>
-<p class="muted">You can close this tab. Double-click the harness binary to start it again.</p>
-</body>
-</html>`
-
 // handleShutdown is POST /shutdown - tears the harness down via the wired
 // quit callback (typically tray.Quit). The response is written and flushed
 // before the callback fires so the browser sees the "shutting down" page
@@ -52,7 +30,7 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if _, err := w.Write([]byte(shutdownPage)); err != nil {
+	if err := s.shutdownTmpl.Execute(w, nil); err != nil {
 		// The connection dropped mid-write. Still trigger shutdown -
 		// the user clicked confirm and will not see the page anyway,
 		// but the harness should still exit.

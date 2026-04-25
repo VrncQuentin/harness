@@ -84,6 +84,10 @@ type Server struct {
 	agentsTmpl     *template.Template
 	memoryTmpl     *template.Template
 	memoryEditTmpl *template.Template
+	// shutdownTmpl is intentionally standalone (no layout.html) so the
+	// rendered page does not load /static/* — by the time the browser
+	// fetches stylesheets the listener may already be gone.
+	shutdownTmpl *template.Template
 
 	retryMu sync.RWMutex
 	retry   RetryFunc
@@ -156,6 +160,10 @@ func NewServer(port int) *Server {
 		assets.TemplateFS,
 		"templates/layout.html",
 		"templates/memory_edit.html",
+	))
+	s.shutdownTmpl = template.Must(template.ParseFS(
+		assets.TemplateFS,
+		"templates/shutdown.html",
 	))
 	return s
 }
