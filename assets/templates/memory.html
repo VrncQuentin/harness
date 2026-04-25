@@ -32,9 +32,10 @@
   <div class="card">
     <header class="card-head">
       <h3>Tree</h3>
-      <span class="logs-meta mono">~{{.TotalTokens}} tok total</span>
+      <span class="logs-meta mono">~{{.TotalTokens}} tok (biggest agent)</span>
     </header>
     <p class="card-meta">Repo: <code>{{.RepoPath}}</code></p>
+    {{if .AgentsPath}}<p class="card-meta">Agents: <code>{{.AgentsPath}}</code></p>{{end}}
     {{if .Tree}}
     <ul class="tree">
       {{range .Tree}}{{template "memnode" .}}{{end}}

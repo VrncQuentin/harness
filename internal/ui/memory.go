@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/vrnc/harness/internal/memory"
@@ -17,6 +18,13 @@ import (
 // almost certainly a paste accident or a wrong path. Reject early so
 // the user gets a clear error instead of a silent truncation later.
 const maxMemoryFileBytes = 1 << 20 // 1 MiB
+
+// agentsDirName is the top-level directory under the memory repo that
+// holds per-agent files (persona, rules, notes, episodes). The /memory
+// page treats it specially when totalling tokens: at most one agent's
+// content lands in any single prompt, so the displayed total uses the
+// largest single agent rather than the sum across agents.
+const agentsDirName = "agents"
 
 // MemoryStore is the surface the /memory page needs from the memory
 // repo. Implemented by *memory.DirReader; broken out so tests can stub
@@ -74,6 +82,7 @@ type memoryView struct {
 	basePage
 	Configured  bool
 	RepoPath    string
+	AgentsPath  string // absolute path to <RepoPath>/agents (empty when RepoPath is unset)
 	Tree        []*memoryTreeNode
 	TotalTokens int
 	LoadErr     string
@@ -120,6 +129,9 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	if store != nil {
 		data.Configured = true
 		data.RepoPath = s.getMemoryRepoPath()
+		if data.RepoPath != "" {
+			data.AgentsPath = filepath.Join(data.RepoPath, agentsDirName)
+		}
 		tree, total, err := buildMemoryTree(store)
 		if err != nil {
 			data.LoadErr = err.Error()
@@ -295,7 +307,7 @@ func buildMemoryTree(store MemoryStore) ([]*memoryTreeNode, int, error) {
 
 	total := 0
 	for _, root := range roots {
-		total += sumTokens(root)
+		total += promptTokens(root)
 	}
 	return roots, total, nil
 }
@@ -364,16 +376,30 @@ func treeLess(a, b *memoryTreeNode) bool {
 	return a.Name < b.Name
 }
 
-// sumTokens fills in Tokens for directories as the sum of their file
-// descendants and returns the total for n. Missing virtual files
-// contribute zero (they have no content yet).
-func sumTokens(n *memoryTreeNode) int {
+// promptTokens fills in Tokens for directories and returns the value
+// for n. Most directories sum their file descendants. The top-level
+// agents/ dir is the exception: only one agent's content is loaded
+// into any single prompt, so its token total is the largest single
+// agent rather than the sum across all agents. Subdirectories under
+// agents/<name>/ still sum normally - the special case applies only at
+// the agents/ root.
+func promptTokens(n *memoryTreeNode) int {
 	if !n.Dir {
 		return n.Tokens
 	}
+	if n.Path == agentsDirName {
+		biggest := 0
+		for _, c := range n.Children {
+			if t := promptTokens(c); t > biggest {
+				biggest = t
+			}
+		}
+		n.Tokens = biggest
+		return biggest
+	}
 	total := 0
 	for _, c := range n.Children {
-		total += sumTokens(c)
+		total += promptTokens(c)
 	}
 	n.Tokens = total
 	return total
