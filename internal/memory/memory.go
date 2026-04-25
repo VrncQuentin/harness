@@ -66,6 +66,19 @@ type FileWriter interface {
 	WriteFile(relPath string, data []byte) error
 }
 
+// DirRemover is an optional capability some Readers expose for
+// removing a subtree under the repo root. The agent registry uses it
+// to delete an agent folder when available; callers can type-assert
+// on it.
+type DirRemover interface {
+	// RemoveAll removes relPath and any contents underneath it. A
+	// missing path is not an error so callers may treat removal as
+	// idempotent. Implementations must reject empty, absolute, and
+	// traversing paths so a caller cannot delete files outside the
+	// repo root.
+	RemoveAll(relPath string) error
+}
+
 // Walker is an optional capability some Readers expose for enumerating
 // every entry under a path. The UI memory page uses it to render the
 // repo as a tree with token estimates per file.
@@ -106,6 +119,7 @@ var (
 	_ DirLister  = (*DirReader)(nil)
 	_ DirCreator = (*DirReader)(nil)
 	_ FileWriter = (*DirReader)(nil)
+	_ DirRemover = (*DirReader)(nil)
 	_ Walker     = (*DirReader)(nil)
 )
 
@@ -212,6 +226,23 @@ func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	if err := os.Rename(tmpPath, abs); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	return nil
+}
+
+// RemoveAll implements DirRemover. It refuses paths that resolve to
+// the repo root itself so a caller cannot wipe the whole memory repo
+// by passing "." or "" past the validator.
+func (r *DirReader) RemoveAll(relPath string) error {
+	if err := checkRel(relPath); err != nil {
+		return fmt.Errorf("memory: remove %s: %w", relPath, err)
+	}
+	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	if abs == r.Root {
+		return fmt.Errorf("memory: remove %s: refusing to remove repo root", relPath)
+	}
+	if err := os.RemoveAll(abs); err != nil {
+		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
 	return nil
 }

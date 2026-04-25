@@ -330,6 +330,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/agents", s.handleAgents)
 	mux.HandleFunc("/agents/active", s.handleAgentsActive)
 	mux.HandleFunc("/agents/create", s.handleAgentsCreate)
+	mux.HandleFunc("/agents/delete", s.handleAgentsDelete)
 	mux.HandleFunc("/agents/persona", s.handleAgentsPersona)
 	mux.HandleFunc("/agents/rules", s.handleAgentsRules)
 	mux.HandleFunc("/agents/notes", s.handleAgentsNotes)

@@ -461,3 +461,120 @@ func TestDiskRegistry_WriteNotesRejectsEmptyName(t *testing.T) {
 		t.Fatal("WriteNotes(\"\"): expected error, got nil")
 	}
 }
+
+func TestDiskRegistry_DeleteRemovesDirAndFiles(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md":          "p",
+		"agents/coder/notes.md":            "n",
+		"agents/coder/episodes/2026-01.md": "e",
+		"agents/reviewer/persona.md":       "r",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.Delete("coder"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	list, err := reg.List()
+	if err != nil {
+		t.Fatalf("List after Delete: %v", err)
+	}
+	want := []Agent{{
+		Name:        "reviewer",
+		PersonaPath: "agents/reviewer/persona.md",
+		RulesPath:   "agents/reviewer/rules.md",
+		NotesPath:   "agents/reviewer/notes.md",
+	}}
+	if !reflect.DeepEqual(list, want) {
+		t.Errorf("List after Delete = %v, want %v", list, want)
+	}
+	if _, err := os.Stat(filepath.Join(mem.Root, "agents", "coder")); !os.IsNotExist(err) {
+		t.Errorf("agents/coder not removed: stat err = %v", err)
+	}
+}
+
+func TestDiskRegistry_DeleteClearsActiveWhenMatching(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md":    "c",
+		"agents/reviewer/persona.md": "r",
+	})
+	st := &activeState{name: "coder"}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.Delete("coder"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if st.name != "" {
+		t.Errorf("active state = %q, want cleared", st.name)
+	}
+}
+
+func TestDiskRegistry_DeleteLeavesActiveWhenDifferent(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md":    "c",
+		"agents/reviewer/persona.md": "r",
+	})
+	st := &activeState{name: "reviewer"}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	if err := reg.Delete("coder"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if st.name != "reviewer" {
+		t.Errorf("active state = %q, want reviewer", st.name)
+	}
+}
+
+func TestDiskRegistry_DeleteUnknownWrapsErrNotExist(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md": "c",
+	})
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	err := reg.Delete("ghost")
+	if err == nil {
+		t.Fatal("Delete ghost: expected error, got nil")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("Delete ghost: errors.Is(err, fs.ErrNotExist) = false, err = %v", err)
+	}
+}
+
+func TestDiskRegistry_DeleteRejectsInvalidNames(t *testing.T) {
+	mem := newRepoWithAgents(t, nil)
+	st := &activeState{}
+	reg := NewDiskRegistry(mem, st.get, st.set)
+
+	tests := []string{"", "..", ".", "foo/bar", "foo\\bar", ".hidden", "-coder"}
+	for _, n := range tests {
+		t.Run(n, func(t *testing.T) {
+			err := reg.Delete(n)
+			if err == nil {
+				t.Fatalf("Delete(%q): expected error, got nil", n)
+			}
+			if !errors.Is(err, ErrInvalidName) {
+				t.Errorf("Delete(%q): errors.Is(err, ErrInvalidName) = false, err = %v", n, err)
+			}
+		})
+	}
+}
+
+func TestDiskRegistry_DeletePropagatesActiveClearError(t *testing.T) {
+	mem := newRepoWithAgents(t, map[string]string{
+		"agents/coder/persona.md": "c",
+	})
+	st := &activeState{name: "coder"}
+	reg := NewDiskRegistry(mem, st.get, st.setErr)
+
+	err := reg.Delete("coder")
+	if err == nil {
+		t.Fatal("Delete: expected error from setErr callback, got nil")
+	}
+	// The directory should still exist - we abort before RemoveAll on
+	// a setActive failure so the user can retry without losing data.
+	if _, statErr := os.Stat(filepath.Join(mem.Root, "agents", "coder")); statErr != nil {
+		t.Errorf("agents/coder removed despite setActive failure: stat err = %v", statErr)
+	}
+}

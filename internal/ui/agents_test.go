@@ -27,6 +27,8 @@ type stubRegistry struct {
 	lastRules    atomic.Value // [2]string {name, body}
 	notesCalls   atomic.Int32
 	lastNotes    atomic.Value // [2]string {name, body}
+	deleteCalls  atomic.Int32
+	lastDelete   atomic.Value // string
 
 	listErr    error
 	getErr     error
@@ -35,6 +37,7 @@ type stubRegistry struct {
 	personaErr error
 	rulesErr   error
 	notesErr   error
+	deleteErr  error
 }
 
 func newStubRegistry(active string, agents ...AgentInfo) *stubRegistry {
@@ -45,6 +48,7 @@ func newStubRegistry(active string, agents ...AgentInfo) *stubRegistry {
 	r.lastPersona.Store([2]string{"", ""})
 	r.lastRules.Store([2]string{"", ""})
 	r.lastNotes.Store([2]string{"", ""})
+	r.lastDelete.Store("")
 	return r
 }
 
@@ -178,6 +182,31 @@ func (r *stubRegistry) lastRulesWrite() (string, string) {
 func (r *stubRegistry) lastNotesWrite() (string, string) {
 	v, _ := r.lastNotes.Load().([2]string)
 	return v[0], v[1]
+}
+
+func (r *stubRegistry) Delete(name string) error {
+	r.deleteCalls.Add(1)
+	r.lastDelete.Store(name)
+	if r.deleteErr != nil {
+		return r.deleteErr
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i, a := range r.agents {
+		if a.Name == name {
+			r.agents = append(r.agents[:i], r.agents[i+1:]...)
+			if v, _ := r.active.Load().(string); v == name {
+				r.active.Store("")
+			}
+			return nil
+		}
+	}
+	return errors.New("agent not found: " + name)
+}
+
+func (r *stubRegistry) lastDeleted() string {
+	v, _ := r.lastDelete.Load().(string)
+	return v
 }
 
 func TestHandleAgents_GETRendersList(t *testing.T) {
@@ -969,6 +998,159 @@ func TestHandleAgents_GETShowsSavedRulesFlash(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "Saved rules") {
 		t.Errorf("expected saved-rules flash, got:\n%s", body)
+	}
+}
+
+func TestHandleAgentsDelete_POSTRedirectsAndDeletes(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("coder",
+		AgentInfo{Name: "coder"},
+		AgentInfo{Name: "reviewer"},
+	)
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("name", "coder")
+	req := httptest.NewRequest(http.MethodPost, "/agents/delete", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsDelete(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if got, want := rec.Header().Get("Location"), "/agents?deleted=coder"; got != want {
+		t.Errorf("Location = %q, want %q", got, want)
+	}
+	if got := reg.deleteCalls.Load(); got != 1 {
+		t.Errorf("expected Delete called once, got %d", got)
+	}
+	if got := reg.lastDeleted(); got != "coder" {
+		t.Errorf("expected Delete(\"coder\"), got %q", got)
+	}
+}
+
+func TestHandleAgentsDelete_POSTMissingNameReturns400(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
+	s.SetAgentRegistry(reg)
+
+	req := httptest.NewRequest(http.MethodPost, "/agents/delete", strings.NewReader(""))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsDelete(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	if got := reg.deleteCalls.Load(); got != 0 {
+		t.Errorf("expected Delete not called, got %d", got)
+	}
+}
+
+func TestHandleAgentsDelete_POSTUnknownNameReturns400(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("name", "ghost")
+	req := httptest.NewRequest(http.MethodPost, "/agents/delete", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsDelete(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	if got := reg.deleteCalls.Load(); got != 0 {
+		t.Errorf("expected Delete not called for unknown agent, got %d", got)
+	}
+}
+
+func TestHandleAgentsDelete_POSTRegistryErrorReturns500(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
+	reg.deleteErr = errors.New("memory: remove failed: disk full")
+	s.SetAgentRegistry(reg)
+
+	form := url.Values{}
+	form.Set("name", "coder")
+	req := httptest.NewRequest(http.MethodPost, "/agents/delete", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsDelete(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "disk full") {
+		t.Errorf("expected delete error surfaced, got:\n%s", rec.Body.String())
+	}
+}
+
+func TestHandleAgentsDelete_POSTNoRegistryReturns503(t *testing.T) {
+	s := NewServer(3000)
+
+	req := httptest.NewRequest(http.MethodPost, "/agents/delete", strings.NewReader("name=coder"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAgentsDelete(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 when registry is nil, got %d", rec.Code)
+	}
+}
+
+func TestHandleAgentsDelete_GETMethodNotAllowed(t *testing.T) {
+	s := NewServer(3000)
+	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+
+	req := httptest.NewRequest(http.MethodGet, "/agents/delete", nil)
+	rec := httptest.NewRecorder()
+	s.handleAgentsDelete(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405 for GET /agents/delete, got %d", rec.Code)
+	}
+}
+
+func TestHandleAgents_GETShowsDeletedFlash(t *testing.T) {
+	s := NewServer(3000)
+	s.SetAgentRegistry(newStubRegistry("", AgentInfo{Name: "reviewer"}))
+
+	req := httptest.NewRequest(http.MethodGet, "/agents?deleted=coder", nil)
+	rec := httptest.NewRecorder()
+	s.handleAgents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Deleted agent") {
+		t.Errorf("expected deleted flash, got:\n%s", body)
+	}
+	if !strings.Contains(body, "coder") {
+		t.Errorf("expected deleted flash to mention coder, got:\n%s", body)
+	}
+}
+
+func TestHandleAgents_GETRendersDeleteButton(t *testing.T) {
+	s := NewServer(3000)
+	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+
+	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
+	rec := httptest.NewRecorder()
+	s.handleAgents(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{`action="/agents/delete"`, "Delete agent", `name="name" value="coder"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected body to contain %q, got:\n%s", want, body)
+		}
 	}
 }
 

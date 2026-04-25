@@ -115,3 +115,38 @@ function subscribeLogStream(bodyId, statusId, url) {
 subscribeLogStream('llama-log', null, '/logs/llama');
 subscribeLogStream('embed-log', null, '/logs/embed');
 subscribeLogStream('harness-log', 'harness-log-status', '/logs/harness');
+
+// Modal dialog wiring. Buttons with data-open-dialog="<id>" call
+// showModal() on the matching <dialog>; buttons with data-close-dialog
+// close the nearest enclosing dialog. Falls back to a confirm() popup
+// if the browser does not support <dialog>, so the delete flow still
+// asks for confirmation either way.
+document.addEventListener('click', function (evt) {
+  var openId = evt.target.getAttribute && evt.target.getAttribute('data-open-dialog');
+  if (openId) {
+    var dlg = document.getElementById(openId);
+    if (dlg && typeof dlg.showModal === 'function') {
+      evt.preventDefault();
+      dlg.showModal();
+      return;
+    }
+    // Browser without <dialog>: submit the form directly after a
+    // native confirm. The button lives in a card next to its dialog
+    // form, so resolve the form by id of the dialog.
+    if (dlg) {
+      evt.preventDefault();
+      var form = dlg.querySelector('form');
+      if (form && window.confirm('Delete this agent? This cannot be undone.')) {
+        form.submit();
+      }
+    }
+    return;
+  }
+  if (evt.target.hasAttribute && evt.target.hasAttribute('data-close-dialog')) {
+    var nearest = evt.target.closest('dialog');
+    if (nearest && typeof nearest.close === 'function') {
+      evt.preventDefault();
+      nearest.close();
+    }
+  }
+});

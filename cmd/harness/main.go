@@ -652,6 +652,10 @@ func (ad *uiAgentRegistryAdapter) WriteNotes(name string, body []byte) error {
 	return ad.reg.WriteNotes(name, body)
 }
 
+func (ad *uiAgentRegistryAdapter) Delete(name string) error {
+	return ad.reg.Delete(name)
+}
+
 // errNoActiveAgent is surfaced when the OpenAI request omits the agent
 // field/header AND no active agent is configured. The message is
 // deliberately operator-facing so the API client sees a useful clue
