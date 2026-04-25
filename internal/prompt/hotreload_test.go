@@ -165,6 +165,34 @@ func TestHotReload_DebounceCollapsesBurst(t *testing.T) {
 	}
 }
 
+func TestHotReload_EmitsOnAgentRulesChange(t *testing.T) {
+	root := makeRepo(t, map[string]string{
+		"global/rules.md":         "r",
+		"agents/coder/persona.md": "p",
+		"agents/coder/rules.md":   "before",
+	})
+	logger, buf := captureLogger(t)
+	h, err := NewHotReload(root, "coder", logger)
+	if err != nil {
+		t.Fatalf("NewHotReload: %v", err)
+	}
+	defer func() { _ = h.Close() }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	rulesPath := filepath.Join(root, "agents", "coder", "rules.md")
+	if err := os.WriteFile(rulesPath, []byte("after"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if !waitForLog(buf, "prompt: file changed") {
+		t.Fatalf("expected file-changed log entry, got:\n%s", buf.String())
+	}
+	if !waitForLog(buf, "rules.md") {
+		t.Errorf("expected rules.md in log, got:\n%s", buf.String())
+	}
+}
+
 func TestHotReload_SetActiveAgentSwapsWatches(t *testing.T) {
 	root := makeRepo(t, map[string]string{
 		"global/rules.md":            "r",
