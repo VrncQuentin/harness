@@ -849,6 +849,52 @@ code {
   color: var(--muted);
 }
 
+/* M3 session controls */
+.chat-saved {
+  margin: 0.5rem 1.1rem 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--accent-soft);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.chat-resume {
+  margin: 0.5rem 1.1rem 0;
+}
+.chat-resume summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--muted);
+  padding: 0.35rem 0;
+}
+.chat-resume-body {
+  padding: 0.4rem 0;
+}
+.chat-resume-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.chat-resume-list li {
+  border-bottom: 1px dashed var(--border);
+}
+.chat-resume-list .btn-link {
+  background: none;
+  border: none;
+  padding: 0.2rem 0;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.chat-resume-list .btn-link:hover {
+  text-decoration: underline;
+}
+
 /* Footer */
 .footer {
   border-top: 1px solid var(--border);

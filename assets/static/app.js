@@ -168,8 +168,10 @@ document.addEventListener('click', function (evt) {
 });
 
 // Chat page wiring. Activates when the chat shell is on the page; the
-// transcript lives in this module's `messages` array, posted in full
-// each turn since the server is stateless until M3 sessions land.
+// transcript lives in this module's `messages` array. M3 adds explicit
+// session handling: each /chat/stream POST carries the current
+// session_id, the server returns one as the first SSE event, and the
+// Save/New/Resume controls let the user persist and revisit episodes.
 (function () {
   var root = document.getElementById('chat-root');
   if (!root) return;
@@ -182,10 +184,19 @@ document.addEventListener('click', function (evt) {
   var statusEl = document.getElementById('chat-status');
   var errorEl = document.getElementById('chat-error');
   var clearBtn = document.getElementById('chat-clear');
+  var saveBtn = document.getElementById('chat-save');
+  var newBtn = document.getElementById('chat-new');
+  var savedEl = document.getElementById('chat-saved');
+  var sessionIDEl = document.getElementById('chat-session-id');
+  var resumeEl = document.getElementById('chat-resume');
+  var resumeBodyEl = document.getElementById('chat-resume-body');
 
   var agent = root.getAttribute('data-agent') || '';
   var messages = [];
   var inFlight = null; // AbortController while a request is open.
+  var currentSessionID = '';
+  var dirty = false;
+  var resumeLoaded = false;
 
   formEl.addEventListener('submit', function (evt) {
     evt.preventDefault();
@@ -214,7 +225,49 @@ document.addEventListener('click', function (evt) {
     messages = [];
     transcriptEl.innerHTML = '<p class="chat-empty">Send a message to begin.</p>';
     clearError();
+    clearSaved();
     setStatus('');
+  });
+
+  if (saveBtn) {
+    saveBtn.addEventListener('click', function () {
+      if (!currentSessionID) {
+        showError('Send at least one message before saving.');
+        return;
+      }
+      saveSession();
+    });
+  }
+
+  if (newBtn) {
+    newBtn.addEventListener('click', function () {
+      if (inFlight) inFlight.abort();
+      // Best-effort save of the current session before resetting so
+      // users do not lose work by clicking "New" too quickly.
+      if (currentSessionID && dirty) {
+        saveSession({ silent: true }).finally(resetSession);
+      } else {
+        resetSession();
+      }
+    });
+  }
+
+  if (resumeEl) {
+    resumeEl.addEventListener('toggle', function () {
+      if (resumeEl.open && !resumeLoaded) {
+        loadResumeList();
+      }
+    });
+  }
+
+  // beforeunload beacon: persist the live session before the tab is
+  // closed or navigated away. sendBeacon keeps the request alive past
+  // the page teardown without blocking it.
+  window.addEventListener('beforeunload', function () {
+    if (currentSessionID && dirty && navigator && typeof navigator.sendBeacon === 'function') {
+      var blob = new Blob([JSON.stringify({ session_id: currentSessionID })], { type: 'application/json' });
+      navigator.sendBeacon('/chat/save/beacon', blob);
+    }
   });
 
   function pushMessage(role, content) {
@@ -233,6 +286,7 @@ document.addEventListener('click', function (evt) {
     el.appendChild(bodyEl);
     transcriptEl.appendChild(el);
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    dirty = true;
     return { el: el, body: bodyEl };
   }
 
@@ -245,6 +299,22 @@ document.addEventListener('click', function (evt) {
     errorEl.textContent = '';
     errorEl.setAttribute('hidden', '');
   }
+  function setSaved(msg) {
+    if (!savedEl) return;
+    savedEl.textContent = msg;
+    savedEl.removeAttribute('hidden');
+  }
+  function clearSaved() {
+    if (!savedEl) return;
+    savedEl.textContent = '';
+    savedEl.setAttribute('hidden', '');
+  }
+  function setSessionID(id) {
+    currentSessionID = id || '';
+    if (sessionIDEl) {
+      sessionIDEl.textContent = currentSessionID || '(unsaved)';
+    }
+  }
 
   function setBusy(busy) {
     sendBtn.disabled = busy;
@@ -253,8 +323,20 @@ document.addEventListener('click', function (evt) {
     else stopBtn.setAttribute('hidden', '');
   }
 
+  function resetSession() {
+    setSessionID('');
+    messages = [];
+    transcriptEl.innerHTML = '<p class="chat-empty">Send a message to begin.</p>';
+    clearError();
+    clearSaved();
+    setStatus('');
+    dirty = false;
+    resumeLoaded = false;
+  }
+
   function sendChat() {
     clearError();
+    clearSaved();
     setBusy(true);
     setStatus('thinking...');
 
@@ -262,7 +344,11 @@ document.addEventListener('click', function (evt) {
     assistant.el.classList.add('is-streaming');
     // The server sees the assistant placeholder we just appended so we
     // strip it from the request body - only completed turns go up.
-    var payload = { agent: agent, messages: messages.slice(0, -1) };
+    var payload = {
+      agent: agent,
+      session_id: currentSessionID,
+      messages: messages.slice(0, -1),
+    };
 
     inFlight = new AbortController();
     fetch('/chat/stream', {
@@ -324,10 +410,15 @@ document.addEventListener('click', function (evt) {
     }
 
     function handleFrame(frame, assistant) {
-      // SSE frame may have several `data:` lines; concatenate per spec.
+      // SSE frames may carry an `event:` tag and one or more `data:`
+      // lines. We treat the session frame specially so the browser can
+      // pin subsequent calls without parsing every JSON payload.
+      var eventName = '';
       var dataLines = [];
       frame.split('\n').forEach(function (line) {
-        if (line.indexOf('data:') === 0) {
+        if (line.indexOf('event:') === 0) {
+          eventName = line.slice(6).replace(/^ /, '').trim();
+        } else if (line.indexOf('data:') === 0) {
           dataLines.push(line.slice(5).replace(/^ /, ''));
         }
       });
@@ -335,6 +426,15 @@ document.addEventListener('click', function (evt) {
       var data = dataLines.join('\n');
       var obj;
       try { obj = JSON.parse(data); } catch (e) { return; }
+      if (eventName === 'session') {
+        if (obj && obj.id) {
+          setSessionID(obj.id);
+          // A new session id means the resume list will be stale next
+          // time the picker opens.
+          resumeLoaded = false;
+        }
+        return;
+      }
       if (obj.error) {
         streamErr = new Error(obj.error);
         throw streamErr;
@@ -361,5 +461,133 @@ document.addEventListener('click', function (evt) {
     if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
       messages[messages.length - 1].content = assistant.body.textContent;
     }
+    dirty = true;
+  }
+
+  function saveSession(opts) {
+    opts = opts || {};
+    setStatus('saving...');
+    if (saveBtn) saveBtn.disabled = true;
+    return fetch('/chat/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: currentSessionID }),
+    }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.text().then(function (body) {
+          var msg = body;
+          try { msg = JSON.parse(body).error || body; } catch (e) { /* keep raw */ }
+          throw new Error(msg || ('HTTP ' + resp.status));
+        });
+      }
+      return resp.json();
+    }).then(function (res) {
+      if (!opts.silent) {
+        setSaved('Saved session ' + (res.id || '') + ' (seq ' + (res.save_seq || 1) + ').');
+      }
+      setStatus('saved');
+      dirty = false;
+      // The picker now needs a refresh next time it opens.
+      resumeLoaded = false;
+    }).catch(function (err) {
+      showError('Save failed: ' + (err.message || String(err)));
+      setStatus('save failed');
+    }).finally(function () {
+      if (saveBtn) saveBtn.disabled = false;
+    });
+  }
+
+  function loadResumeList() {
+    resumeLoaded = true;
+    resumeBodyEl.textContent = 'Loading...';
+    fetch('/chat/sessions?agent=' + encodeURIComponent(agent), { method: 'GET' })
+      .then(function (resp) {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        var records = (data && data.records) || [];
+        renderResumeList(records);
+      })
+      .catch(function (err) {
+        resumeBodyEl.textContent = 'Could not load sessions: ' + (err.message || String(err));
+      });
+  }
+
+  function renderResumeList(records) {
+    resumeBodyEl.innerHTML = '';
+    if (records.length === 0) {
+      var empty = document.createElement('p');
+      empty.className = 'fg-hint';
+      empty.textContent = 'No saved sessions for this agent yet.';
+      resumeBodyEl.appendChild(empty);
+      return;
+    }
+    var list = document.createElement('ul');
+    list.className = 'chat-resume-list';
+    records.forEach(function (rec) {
+      var item = document.createElement('li');
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-link';
+      btn.textContent = rec.id + ' (saved ' + (rec.saved_at || '') + ', seq ' + (rec.save_seq || 1) + ')';
+      btn.addEventListener('click', function () {
+        resumeSession(rec.id, rec.agent);
+      });
+      item.appendChild(btn);
+      list.appendChild(item);
+    });
+    resumeBodyEl.appendChild(list);
+  }
+
+  function resumeSession(id, recAgent) {
+    setStatus('resuming...');
+    fetch('/chat/session?agent=' + encodeURIComponent(recAgent) + '&id=' + encodeURIComponent(id))
+      .then(function (resp) {
+        if (resp.status === 404) {
+          throw new Error('Conversation history not available for this session.');
+        }
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.json();
+      })
+      .then(function (data) {
+        messages = (data.messages || []).slice();
+        transcriptEl.innerHTML = '';
+        if (messages.length === 0) {
+          transcriptEl.innerHTML = '<p class="chat-empty">Send a message to begin.</p>';
+        } else {
+          messages.forEach(function (m) {
+            // pushMessage appends to messages too; rebuild manually.
+            renderMessage(m.role, m.content);
+          });
+        }
+        setSessionID(id);
+        clearError();
+        clearSaved();
+        setStatus('resumed');
+        dirty = false;
+        if (resumeEl) resumeEl.open = false;
+      })
+      .catch(function (err) {
+        showError('Resume failed: ' + (err.message || String(err)));
+        setStatus('resume failed');
+      });
+  }
+
+  function renderMessage(role, content) {
+    var empty = transcriptEl.querySelector('.chat-empty');
+    if (empty) empty.remove();
+    var el = document.createElement('div');
+    el.className = 'chat-msg is-' + role;
+    var roleEl = document.createElement('span');
+    roleEl.className = 'chat-msg-role';
+    roleEl.textContent = role === 'user' ? 'You' : (role === 'assistant' ? agent : role);
+    var bodyEl = document.createElement('span');
+    bodyEl.className = 'chat-msg-body';
+    bodyEl.textContent = content;
+    el.appendChild(roleEl);
+    el.appendChild(bodyEl);
+    transcriptEl.appendChild(el);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
 })();
