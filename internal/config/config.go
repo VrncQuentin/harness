@@ -16,6 +16,17 @@ var (
 	ErrEmbedderPathRequired   = errors.New("config: embedder.model_path is required")
 )
 
+// defaultSummarizerPrompt is the system prompt the M3 session summarizer
+// (Track C) feeds to the model when writing an episode. The user can
+// override it via the /config page; an empty value tells the summarizer
+// to fall back to this string.
+const defaultSummarizerPrompt = `You are summarizing a conversation between a user and an AI agent. Produce a concise third-person summary capturing:
+- the user's goal or question
+- key decisions, code paths, or facts established
+- unresolved questions or follow-ups
+
+Write 3-8 short paragraphs in plain markdown. Do not include the conversation verbatim. Do not address the user directly.`
+
 // Config is the top-level configuration structure for the harness.
 type Config struct {
 	Model    ModelConfig
@@ -82,6 +93,14 @@ type PromptConfig struct {
 	CtxSize             int
 	MemoryTokenBudget   int
 	ConversationReserve int
+	// RecencyN caps the number of most-recent episodes injected by the
+	// assembler. <= 0 means unlimited (the memory budget remains the
+	// hard ceiling).
+	RecencyN int
+	// SummarizerPrompt is the system prompt the session summarizer feeds
+	// to the model when writing an episode. An empty string lets the
+	// summarizer fall back to its built-in default.
+	SummarizerPrompt string
 }
 
 // QueueConfig holds queue configuration.
@@ -141,6 +160,8 @@ func Defaults() Config {
 			CtxSize:             32768,
 			MemoryTokenBudget:   6144,
 			ConversationReserve: 8192,
+			RecencyN:            5,
+			SummarizerPrompt:    defaultSummarizerPrompt,
 		},
 		Queue: QueueConfig{
 			MaxDepth: 8,
@@ -225,6 +246,9 @@ func Validate(cfg *Config) error {
 	if cfg.Prompt.CtxSize > 0 && cfg.Prompt.MemoryTokenBudget+cfg.Prompt.ConversationReserve > cfg.Prompt.CtxSize {
 		return fmt.Errorf("config: prompt.memory_token_budget (%d) + prompt.conversation_reserve (%d) exceed prompt.ctx_size (%d)",
 			cfg.Prompt.MemoryTokenBudget, cfg.Prompt.ConversationReserve, cfg.Prompt.CtxSize)
+	}
+	if cfg.Prompt.RecencyN < 0 {
+		return fmt.Errorf("config: prompt.recency_n must be >= 0 (0 means unlimited), got %d", cfg.Prompt.RecencyN)
 	}
 
 	if cfg.Queue.MaxDepth < 1 {

@@ -20,21 +20,29 @@ type LayoutItem struct {
 }
 
 // ExpectedLayout returns the canonical list of items the memory repo
-// should contain. Runtime artifacts (index/vectors.bin, index/manifest.json,
-// runtime/sessions.jsonl, runtime/queue.wal) are intentionally excluded -
-// each is owned by the subsystem that writes it (embedder, session
-// manager, queue) and gets created on first use. Per-agent files under
-// agents/<n>/ are also excluded; agents are created by the user, so the
-// scaffolder only ensures the parent directory exists.
+// should contain. Project-scoped runtime artifacts (sessions.jsonl,
+// queue.wal, index vectors.bin/manifest.json) are intentionally excluded -
+// each is owned by the subsystem that writes it (session manager, queue,
+// embedder) and gets created on first use under projects/global/.
+// Per-agent definition files under agents/<n>/ are also excluded; agents
+// are created by the user, so the scaffolder only ensures the parent
+// directory exists.
+//
+// Top-level agents/<n>/ holds the global agents library (persona, rules,
+// notes only - definition data). Episodes for the system project live
+// under projects/global/episodes/<agent>/, not under the agents/ tree.
 func ExpectedLayout() []LayoutItem {
 	return []LayoutItem{
 		{Path: "global", Dir: true, Desc: "Global prompt content"},
 		{Path: "global/rules.md", Dir: false, Desc: "Always-on base prompt"},
 		{Path: "global/user.md", Dir: false, Desc: "Hand-authored facts about the user"},
 		{Path: "global/facts.md", Dir: false, Desc: "Promoted cross-agent facts"},
-		{Path: "agents", Dir: true, Desc: "Agent personas, notes and episodes"},
-		{Path: "index", Dir: true, Desc: "Semantic search index"},
-		{Path: "runtime", Dir: true, Desc: "Session log and queue WAL"},
+		{Path: "agents", Dir: true, Desc: "Global agents library (definition only)"},
+		{Path: "projects", Dir: true, Desc: "Per-project session/episode/queue/index data"},
+		{Path: "projects/global", Dir: true, Desc: "System project (default scope)"},
+		{Path: "projects/global/episodes", Dir: true, Desc: "Session episode files for the system project"},
+		{Path: "projects/global/index", Dir: true, Desc: "Semantic search indexes for the system project"},
+		{Path: "projects/global/index/_episodes", Dir: true, Desc: "Embeddings of the system project's episodes"},
 	}
 }
 

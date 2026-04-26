@@ -162,6 +162,8 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	form.Set("prompt_ctx_size", "8192")
 	form.Set("prompt_memory_budget", "2048")
 	form.Set("prompt_conversation_reserve", "4096")
+	form.Set("prompt_recency_n", "7")
+	form.Set("prompt_summarizer_prompt", "summarize the user's intent in one paragraph.")
 	form.Set("queue_max_depth", "8")
 	form.Set("metrics_retention_days", "30")
 
@@ -192,6 +194,12 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	}
 	if !loaded.Embedder.Verbose {
 		t.Error("expected Embedder.Verbose=true after POST with embed_verbose=on")
+	}
+	if loaded.Prompt.RecencyN != 7 {
+		t.Errorf("Prompt.RecencyN not persisted: got %d, want 7", loaded.Prompt.RecencyN)
+	}
+	if loaded.Prompt.SummarizerPrompt != "summarize the user's intent in one paragraph." {
+		t.Errorf("Prompt.SummarizerPrompt not persisted: got %q", loaded.Prompt.SummarizerPrompt)
 	}
 
 	if atomic.LoadInt32(&retryCalls) != 1 {
@@ -859,7 +867,15 @@ func TestHandleStatus_LayoutPromptHiddenWhenNoRepoConfigured(t *testing.T) {
 func TestHandleStatus_LayoutPromptHiddenWhenLayoutComplete(t *testing.T) {
 	s := NewServer(3000)
 	root := t.TempDir()
-	for _, item := range []string{"global", "agents", "index", "runtime"} {
+	for _, item := range []string{
+		"global",
+		"agents",
+		"projects",
+		"projects/global",
+		"projects/global/episodes",
+		"projects/global/index",
+		"projects/global/index/_episodes",
+	} {
 		if err := os.MkdirAll(filepath.Join(root, item), 0o755); err != nil {
 			t.Fatalf("MkdirAll %s: %v", item, err)
 		}
@@ -895,7 +911,12 @@ func TestHandleStatus_LayoutPromptShowsMissingItems(t *testing.T) {
 		t.Fatalf("expected layout prompt heading, body:\n%s", body)
 	}
 	// Each canonical item should appear in the listed missing entries.
-	for _, want := range []string{"global", "global/rules.md", "global/user.md", "global/facts.md", "agents", "index", "runtime"} {
+	for _, want := range []string{
+		"global", "global/rules.md", "global/user.md", "global/facts.md",
+		"agents",
+		"projects", "projects/global", "projects/global/episodes",
+		"projects/global/index", "projects/global/index/_episodes",
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected missing item %q in rendered body", want)
 		}
@@ -985,7 +1006,12 @@ func TestHandleMemoryScaffold_CreatesMissingItems(t *testing.T) {
 	}
 
 	// Re-check: every canonical item now exists on disk.
-	for _, item := range []string{"global", "agents", "index", "runtime", "global/rules.md", "global/user.md", "global/facts.md"} {
+	for _, item := range []string{
+		"global", "agents",
+		"projects", "projects/global", "projects/global/episodes",
+		"projects/global/index", "projects/global/index/_episodes",
+		"global/rules.md", "global/user.md", "global/facts.md",
+	} {
 		abs := filepath.Join(root, filepath.FromSlash(item))
 		if _, err := os.Stat(abs); err != nil {
 			t.Errorf("expected %s to exist after scaffold: %v", item, err)
@@ -996,7 +1022,11 @@ func TestHandleMemoryScaffold_CreatesMissingItems(t *testing.T) {
 func TestHandleMemoryScaffold_NoMissingItemsRedirectsCleanly(t *testing.T) {
 	s := NewServer(3000)
 	root := t.TempDir()
-	for _, item := range []string{"global", "agents", "index", "runtime"} {
+	for _, item := range []string{
+		"global", "agents",
+		"projects", "projects/global", "projects/global/episodes",
+		"projects/global/index", "projects/global/index/_episodes",
+	} {
 		_ = os.MkdirAll(filepath.Join(root, item), 0o755)
 	}
 	for _, f := range []string{"global/rules.md", "global/user.md", "global/facts.md"} {
