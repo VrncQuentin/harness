@@ -79,12 +79,14 @@ type Server struct {
 	// Each page has its own template set because status.html, config.html,
 	// and agents.html all define "title" and "content" - sharing one set
 	// would let the later parse clobber the earlier one.
-	statusTmpl     *template.Template
-	configTmpl     *template.Template
-	agentsTmpl     *template.Template
-	chatTmpl       *template.Template
-	memoryTmpl     *template.Template
-	memoryEditTmpl *template.Template
+	statusTmpl             *template.Template
+	configTmpl             *template.Template
+	agentsTmpl             *template.Template
+	chatTmpl               *template.Template
+	memoryTmpl             *template.Template
+	memoryEditTmpl         *template.Template
+	memoryEpisodesTmpl     *template.Template
+	memoryEpisodeViewTmpl  *template.Template
 	// shutdownTmpl is intentionally standalone (no layout.html) so the
 	// rendered page does not load /static/* — by the time the browser
 	// fetches stylesheets the listener may already be gone.
@@ -169,6 +171,16 @@ func NewServer(port int) *Server {
 		assets.TemplateFS,
 		"templates/layout.html",
 		"templates/memory_edit.html",
+	))
+	s.memoryEpisodesTmpl = template.Must(template.ParseFS(
+		assets.TemplateFS,
+		"templates/layout.html",
+		"templates/memory_episodes.html",
+	))
+	s.memoryEpisodeViewTmpl = template.Must(template.ParseFS(
+		assets.TemplateFS,
+		"templates/layout.html",
+		"templates/memory_episode_view.html",
 	))
 	s.shutdownTmpl = template.Must(template.ParseFS(
 		assets.TemplateFS,
@@ -375,6 +387,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/memory", s.handleMemory)
 	mux.HandleFunc("/memory/edit", s.handleMemoryEdit)
 	mux.HandleFunc("/memory/save", s.handleMemorySave)
+	mux.HandleFunc("/memory/episodes", s.handleMemoryEpisodes)
+	mux.HandleFunc("/memory/episodes/view", s.handleMemoryEpisodeView)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
