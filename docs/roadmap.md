@@ -61,23 +61,25 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 
 **Goal:** sessions are summarized and committed. Recency retrieval works.
 
+M3 stages the project-scoped layout that M3b later formalizes: sessions, episodes, queue WAL, and indexes live under `projects/global/` from day one (`global` is a hardcoded slug at this milestone; the `projects` table and multi-project plumbing are introduced in M3b). Top-level `agents/<n>/` holds definition only — episodes live under the project.
+
 - [ ] Git Backend: go-git wrapper, commit, log query, blob fetch
 - [ ] Startup check: if `memory.repo_path` unset or path missing, refuse to start and prompt user to set it or run `init-memory <path>`
-- [ ] `init-memory <path>` command: explicit one-time scaffold of directory structure + initial commit
+- [ ] `init-memory <path>` command: explicit one-time scaffold of directory structure (including `projects/global/`) + initial commit
 - [ ] Session lifecycle: on-end → summarize via Qwen → write episode file → commit
-- [ ] `runtime/sessions.jsonl`: append-only session log
+- [ ] `projects/global/sessions.jsonl`: append-only session log
 - [ ] Recency retrieval: inject last N episodes on session start
 - [ ] UI: memory browser page — episode list by agent/date, view episode content
 
 **Acceptance tests:**
 - [ ] Start harness with no `memory.repo_path` set → startup refuses with actionable error message
 - [ ] Start harness with a path that does not exist → startup refuses with actionable error message
-- [ ] Run `init-memory ~/memory` → directory structure is created, git repo initialized, initial commit present
-- [ ] Complete a session → episode file appears in `agents/<n>/episodes/`, committed to git
+- [ ] Run `init-memory ~/memory` → directory structure is created (including `projects/global/{sessions.jsonl, episodes/, queue.wal placeholder}`), git repo initialized, initial commit present
+- [ ] Complete a session → episode file appears at `projects/global/episodes/<agent>/<timestamp>.md`, committed to git
 - [ ] Episode commit message matches format `[agent:x] [type:episode] ...`
 - [ ] Start a new session → previous episode content appears in the assembled prompt
-- [ ] Complete 10 sessions → all 10 episode files present in git log, `sessions.jsonl` has 10 entries
-- [ ] Corrupt `sessions.jsonl` by appending garbage → harness starts without crashing, logs a warning
+- [ ] Complete 10 sessions → all 10 episode files present in git log, `projects/global/sessions.jsonl` has 10 entries
+- [ ] Corrupt `projects/global/sessions.jsonl` by appending garbage → harness starts without crashing, logs a warning
 - [ ] UI memory browser → lists episodes for active agent, click one to view content
 
 ---
