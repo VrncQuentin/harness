@@ -100,8 +100,8 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		"agents/coder/persona.md":             "PERSONA",
 		"agents/coder/rules.md":               "AGENTRULES",
 		"agents/coder/notes.md":               "NOTES",
-		"agents/coder/episodes/2026-01-01.md": "EP1",
-		"agents/coder/episodes/2026-02-01.md": "EP2",
+		"projects/global/episodes/coder/2026-01-01.md": "EP1",
+		"projects/global/episodes/coder/2026-02-01.md": "EP2",
 	})
 	asm := newAssembler(t, mem, baseCfg())
 	msgs, stats, err := asm.Assemble(context.Background(), "coder", nil)
@@ -170,11 +170,11 @@ func TestAssemble_TrimsEpisodesOldestFirstForMemoryBudget(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
 		"global/rules.md":             "r",
 		"agents/coder/persona.md":     "p",
-		"agents/coder/episodes/01.md": strings.Repeat("a", 200),
-		"agents/coder/episodes/02.md": strings.Repeat("b", 200),
-		"agents/coder/episodes/03.md": strings.Repeat("c", 200),
-		"agents/coder/episodes/04.md": strings.Repeat("d", 200),
-		"agents/coder/episodes/05.md": strings.Repeat("e", 200),
+		"projects/global/episodes/coder/01.md": strings.Repeat("a", 200),
+		"projects/global/episodes/coder/02.md": strings.Repeat("b", 200),
+		"projects/global/episodes/coder/03.md": strings.Repeat("c", 200),
+		"projects/global/episodes/coder/04.md": strings.Repeat("d", 200),
+		"projects/global/episodes/coder/05.md": strings.Repeat("e", 200),
 	})
 	cfg := baseCfg()
 	// Each episode is 200 runes => 50 tokens under the default heuristic.
@@ -202,6 +202,83 @@ func TestAssemble_TrimsEpisodesOldestFirstForMemoryBudget(t *testing.T) {
 	}
 	if stats.Episodes > cfg.MemoryTokenBudget {
 		t.Errorf("episodes tokens (%d) exceed memory budget (%d)", stats.Episodes, cfg.MemoryTokenBudget)
+	}
+}
+
+// TestAssemble_RecencyNCapsEpisodeCount exercises the recency cap that
+// fires before any token-budget trimming. With seven episodes on disk
+// and RecencyN=3, only the three newest survive; with RecencyN=0 the
+// cap is disabled and all seven land.
+func TestAssemble_RecencyNCapsEpisodeCount(t *testing.T) {
+	files := map[string]string{
+		"global/rules.md":         "r",
+		"agents/coder/persona.md": "p",
+	}
+	for i := 1; i <= 7; i++ {
+		files[fmt.Sprintf("projects/global/episodes/coder/2026-01-%02d.md", i)] = fmt.Sprintf("EP%d", i)
+	}
+
+	tests := []struct {
+		name      string
+		recencyN  int
+		wantCount int
+		wantKept  []string
+		wantDrop  []string
+	}{
+		{
+			name:      "cap to last 3",
+			recencyN:  3,
+			wantCount: 3,
+			wantKept:  []string{"2026-01-05.md", "2026-01-06.md", "2026-01-07.md"},
+			wantDrop:  []string{"2026-01-01.md", "2026-01-02.md", "2026-01-03.md", "2026-01-04.md"},
+		},
+		{
+			name:      "zero means unlimited",
+			recencyN:  0,
+			wantCount: 7,
+			wantKept:  []string{"2026-01-01.md", "2026-01-04.md", "2026-01-07.md"},
+		},
+		{
+			name:      "cap larger than corpus is a no-op",
+			recencyN:  100,
+			wantCount: 7,
+			wantKept:  []string{"2026-01-01.md", "2026-01-07.md"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mem := writeRepo(t, files)
+			cfg := baseCfg()
+			cfg.RecencyN = tc.recencyN
+			asm := newAssembler(t, mem, cfg)
+
+			msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
+			if err != nil {
+				t.Fatalf("Assemble: %v", err)
+			}
+			sys := msgs[0].Content
+
+			gotCount := 0
+			for i := 1; i <= 7; i++ {
+				if strings.Contains(sys, fmt.Sprintf("2026-01-%02d.md", i)) {
+					gotCount++
+				}
+			}
+			if gotCount != tc.wantCount {
+				t.Errorf("episode count: got %d, want %d\nsys:\n%s", gotCount, tc.wantCount, sys)
+			}
+			for _, kept := range tc.wantKept {
+				if !strings.Contains(sys, kept) {
+					t.Errorf("expected %s to be kept, but absent", kept)
+				}
+			}
+			for _, dropped := range tc.wantDrop {
+				if strings.Contains(sys, dropped) {
+					t.Errorf("expected %s to be dropped, but present", dropped)
+				}
+			}
+		})
 	}
 }
 
@@ -236,9 +313,9 @@ func TestAssemble_CtxSizeTrimsAgainstConversationReserve(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
 		"global/rules.md":             "r",                      // 1 token
 		"agents/coder/persona.md":     "p",                      // 1 token
-		"agents/coder/episodes/01.md": strings.Repeat("a", 400), // 100 tokens
-		"agents/coder/episodes/02.md": strings.Repeat("b", 400),
-		"agents/coder/episodes/03.md": strings.Repeat("c", 400),
+		"projects/global/episodes/coder/01.md": strings.Repeat("a", 400), // 100 tokens
+		"projects/global/episodes/coder/02.md": strings.Repeat("b", 400),
+		"projects/global/episodes/coder/03.md": strings.Repeat("c", 400),
 	})
 	cfg := config.PromptConfig{
 		CtxSize:             250, // effective limit 250 - 100 = 150 tokens for layers+convo
@@ -408,8 +485,8 @@ func TestAssemble_AgentRulesCountedAgainstCtxLimit(t *testing.T) {
 		"global/rules.md":             "r",                      // 1 token
 		"agents/coder/persona.md":     "p",                      // 1 token
 		"agents/coder/rules.md":       strings.Repeat("a", 400), // 100 tokens
-		"agents/coder/episodes/01.md": strings.Repeat("e", 400), // 100 tokens
-		"agents/coder/episodes/02.md": strings.Repeat("e", 400), // 100 tokens
+		"projects/global/episodes/coder/01.md": strings.Repeat("e", 400), // 100 tokens
+		"projects/global/episodes/coder/02.md": strings.Repeat("e", 400), // 100 tokens
 	})
 	cfg := config.PromptConfig{
 		CtxSize:             250, // limit minus reserve = 150 tokens

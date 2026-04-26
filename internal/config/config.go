@@ -82,6 +82,14 @@ type PromptConfig struct {
 	CtxSize             int
 	MemoryTokenBudget   int
 	ConversationReserve int
+	// RecencyN caps the number of most-recent episodes injected by the
+	// assembler. <= 0 means unlimited (the memory budget remains the
+	// hard ceiling).
+	RecencyN int
+	// SummarizerPrompt is the system prompt the session summarizer feeds
+	// to the model when writing an episode. An empty string lets the
+	// summarizer fall back to its built-in default.
+	SummarizerPrompt string
 }
 
 // QueueConfig holds queue configuration.
