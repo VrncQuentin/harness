@@ -19,8 +19,9 @@ Identified by an immutable lowercase-dashed **slug** (used in filesystem paths a
 A project owns:
 
 - **Rules** — `projects/<slug>/rules.md`. Layered into the prompt between global rules and agent persona.
-- **Agents** — `projects/<slug>/agents/<name>/`. Either *extends* a global agent of the same name, or is a *project-only* agent invisible elsewhere.
+- **Agents** — `projects/<slug>/agents/<name>/{persona.md, rules.md, notes.md}`. Either *extends* a global agent of the same name, or is a *project-only* agent invisible elsewhere. Agent dirs hold definition only — episodes live under the project, not under the agent.
 - **Sessions** — `projects/<slug>/sessions.jsonl`. Append-only, per-project.
+- **Episodes** — `projects/<slug>/episodes/<agent-name>/<timestamp>.md`. Session summaries written when a session ends. Project-owned and organized by agent for retrieval; agent directories no longer host episodes.
 - **Directories** — 0+ paths to git repos on disk. Indexed independently. Belong to exactly one project (no sharing in this milestone).
 - **Optional model overrides** — nullable per-project copies of model config fields. NULL means inherit from global.
 
@@ -169,7 +170,12 @@ The session record gains a `project` field — always set to the active project'
 
 ## Memory Repo Layout
 
-The previous top-level `index/` and `runtime/` directories are folded into `projects/global/`. Cross-project base content (`global/`, `agents/`) stays at the top level.
+Two structural changes from the M3 layout:
+
+1. The previous top-level `index/` and `runtime/` directories fold into `projects/global/`.
+2. Episodes move out of `agents/<name>/episodes/` and into `projects/<slug>/episodes/<agent-name>/`. Agent directories now hold definition only (persona, rules, notes); episodes are session artifacts and belong to the project that owned the session.
+
+Cross-project base content (`global/` rules/user/facts and the global `agents/` library) stays at the top level.
 
 ```
 memory/
@@ -177,16 +183,18 @@ memory/
     rules.md
     user.md
     facts.md
-  agents/                              (unchanged — global agents library)
+  agents/                              (global agents library — definition only, no episodes)
     <name>/
       persona.md
       rules.md
       notes.md
-      episodes/
   projects/                            ← NEW
     global/                            ← system project; replaces previous top-level `index/` and `runtime/`
       sessions.jsonl                       (was runtime/sessions.jsonl)
       queue.wal                            (was runtime/queue.wal)
+      episodes/                            (was agents/<name>/episodes/, now project-owned)
+        <agent-name>/
+          <timestamp>.md
       index/                               (was top-level index/)
         <dir-slug>/
           vectors.bin
@@ -198,16 +206,18 @@ memory/
           persona.md
           rules.md
           notes.md
-          episodes/
       sessions.jsonl
       queue.wal
+      episodes/
+        <agent-name>/
+          <timestamp>.md
       index/
         <dir-slug>/
           vectors.bin
           manifest.json
 ```
 
-Each indexable tree gets its own subdirectory under the project's `index/` so refresh, rebuild, and removal are localized. Every project — including `global` — owns its own `sessions.jsonl`, `queue.wal`, and `index/`, so there is no special-cased path in the memory layer.
+Each indexable tree gets its own subdirectory under the project's `index/` so refresh, rebuild, and removal are localized. Every project — including `global` — owns its own `sessions.jsonl`, `queue.wal`, `episodes/`, and `index/`, so there is no special-cased path in the memory layer. Episode retrieval defaults to the active project's own `episodes/<agent-name>/` directory; cross-agent reads within a project remain explicit (per the existing M6 design).
 
 ---
 
@@ -276,6 +286,8 @@ Switching to the global project runs the same flow — there is no special path.
 - [ ] Hide a non-global project → it disappears from the topbar switcher and the default `/projects` list, data and sessions remain on disk
 - [ ] Unhide a project → re-appears in pickers, all data intact
 - [ ] Project rules file present → `projects/<slug>/rules.md` is injected into the prompt between global rules and agent persona (verify via logs page token breakdown)
+- [ ] Complete a session in a user project with agent `coder` → episode file appears at `projects/<slug>/episodes/coder/<timestamp>.md` (and **not** at `agents/coder/episodes/` — that path no longer exists)
+- [ ] Complete a session in the global project with agent `coder` → episode file appears at `projects/global/episodes/coder/<timestamp>.md`
 - [ ] Switch projects mid-session → active session ends, new fresh session starts in destination project; previous session still reachable via picker
 - [ ] First-run user with no user-created projects → remains in the global project indefinitely, no auto-seeded "Untitled" project beyond `global` itself
 - [ ] Two directories configured for one project → both create distinct subdirectories at `projects/<slug>/index/<dir-slug>/` (manifest only in M3b; vectors in M5)
