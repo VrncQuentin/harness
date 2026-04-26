@@ -143,15 +143,20 @@ memory/
       episodes/
         coder/
           2026-04-20T14:32.md
-      index/
-        vectors.bin
-        manifest.json
+      index/                   ← one entry per indexable tree
+        _episodes/             ← reserved: embeddings of this project's episodes
+          vectors.bin
+          manifest.json
+        <dir-slug>/             ← embeddings of one attached directory
+          vectors.bin
+          manifest.json
     <slug>/                    ← user-created projects (M3b)
       rules.md
       agents/coder/{persona.md, rules.md, notes.md}
       sessions.jsonl
       queue.wal
       episodes/coder/<timestamp>.md
+      index/_episodes/{vectors.bin, manifest.json}
       index/<dir-slug>/{vectors.bin, manifest.json}
 ```
 

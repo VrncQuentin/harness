@@ -255,15 +255,20 @@ memory/
       episodes/
         <n>/
           2026-04-20T14:32.md  ← one file per session summary
-      index/                   ← ANN index, scoped to this project (M5)
-        vectors.bin
-        manifest.json
+      index/                   ← ANN indexes, one entry per indexable tree (M5)
+        _episodes/             ← reserved slot: embeddings of this project's episodes
+          vectors.bin
+          manifest.json
+        <dir-slug>/             ← embeddings of one attached directory
+          vectors.bin
+          manifest.json
     <slug>/                    ← user-created projects (M3b)
       rules.md                 ← project-specific rules
       agents/<n>/{persona.md, rules.md, notes.md}   ← optional project agent overrides/additions
       sessions.jsonl
       queue.wal
       episodes/<n>/<timestamp>.md
+      index/_episodes/{vectors.bin, manifest.json}
       index/<dir-slug>/{vectors.bin, manifest.json}
 ```
 

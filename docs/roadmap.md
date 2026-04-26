@@ -133,16 +133,17 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 **Goal:** embedding-based retrieval blended with recency.
 
 - [ ] Embedder sidecar: nomic-embed-text, health check, restart on crash
-- [ ] Embed-on-commit pipeline: new episode → embed chunks → update `index/vectors.bin` + `index/manifest.json` → commit
+- [ ] Embed-on-commit pipeline (episodes): new episode → embed chunks → update `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` → commit
+- [ ] Embed-on-commit pipeline (attached directories): for each tree configured on the active project, walk by HEAD → embed chunks → update `projects/<active>/index/<dir-slug>/{vectors.bin, manifest.json}` → commit
 - [ ] ANN search: flat scan initially, upgrade to usearch if latency becomes a problem
 - [ ] Blended retrieval: `score = (semantic_weight * similarity) + (recency_weight * recency_decay)`
-- [ ] Index rebuild command: walk commits, re-embed missing SHAs (idempotent)
+- [ ] Index rebuild command: walk commits, re-embed missing SHAs (idempotent), per-tree
 - [ ] UI: memory browser shows retrieval scores per episode
 
 **Acceptance tests:**
 - [ ] Start embedder sidecar → appears healthy in UI status page
 - [ ] Kill embedder → harness detects and restarts it, same as llama-server
-- [ ] Complete a session → `index/vectors.bin` and `index/manifest.json` updated and committed
+- [ ] Complete a session → `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` updated and committed
 - [ ] Ask a question referencing content from session N-10 → that episode is retrieved despite not being the most recent
 - [ ] Ask a question with no relevant past sessions → retrieval returns empty gracefully, no crash
 - [ ] Run index rebuild on a fresh clone of the memory repo → index reconstructed correctly, retrieval works

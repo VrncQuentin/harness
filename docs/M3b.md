@@ -21,7 +21,7 @@ A project owns:
 - **Rules** — `projects/<slug>/rules.md`. Layered into the prompt between global rules and agent persona.
 - **Agents** — `projects/<slug>/agents/<name>/{persona.md, rules.md, notes.md}`. Either *extends* a global agent of the same name, or is a *project-only* agent invisible elsewhere. Agent dirs hold definition only — episodes live under the project, not under the agent.
 - **Sessions** — `projects/<slug>/sessions.jsonl`. Append-only, per-project.
-- **Episodes** — `projects/<slug>/episodes/<agent-name>/<timestamp>.md`. Session summaries written when a session ends. Project-owned and organized by agent for retrieval; agent directories no longer host episodes.
+- **Episodes** — `projects/<slug>/episodes/<agent-name>/<timestamp>.md`. Session summaries written when a session ends. Project-owned and organized by agent for retrieval; agent directories no longer host episodes. Their embeddings (M5) live at `projects/<slug>/index/_episodes/`, alongside the embeddings of attached directories — every indexable tree is a peer entry under the project's `index/`.
 - **Directories** — 0+ paths to git repos on disk. Indexed independently. Belong to exactly one project (no sharing in this milestone).
 - **Optional model overrides** — nullable per-project copies of model config fields. NULL means inherit from global.
 
@@ -196,7 +196,10 @@ memory/
         <agent-name>/
           <timestamp>.md
       index/                               (was top-level index/)
-        <dir-slug>/
+        _episodes/                         (M5: embeddings of this project's episodes; reserved slot)
+          vectors.bin
+          manifest.json
+        <dir-slug>/                        (M5: embeddings of one attached directory)
           vectors.bin
           manifest.json
     <slug>/                            ← user-created projects
@@ -212,12 +215,15 @@ memory/
         <agent-name>/
           <timestamp>.md
       index/
+        _episodes/
+          vectors.bin
+          manifest.json
         <dir-slug>/
           vectors.bin
           manifest.json
 ```
 
-Each indexable tree gets its own subdirectory under the project's `index/` so refresh, rebuild, and removal are localized. Every project — including `global` — owns its own `sessions.jsonl`, `queue.wal`, `episodes/`, and `index/`, so there is no special-cased path in the memory layer. Episode retrieval defaults to the active project's own `episodes/<agent-name>/` directory; cross-agent reads within a project remain explicit (per the existing M6 design).
+Each indexable tree gets its own subdirectory under the project's `index/` so refresh, rebuild, and removal are localized. Episode embeddings sit in the reserved `_episodes/` slot alongside `<dir-slug>/` entries for attached directories — both are peer indexable trees from the embedder's perspective, just with different sources (the project's own `episodes/` subtree vs. an external git repo). The leading underscore marks `_episodes` as system-reserved so it cannot collide with a user-chosen directory slug. Every project — including `global` — owns its own `sessions.jsonl`, `queue.wal`, `episodes/`, and `index/`, so there is no special-cased path in the memory layer. Episode retrieval defaults to the active project's own `episodes/<agent-name>/` directory; cross-agent reads within a project remain explicit (per the existing M6 design).
 
 ---
 
