@@ -1,0 +1,32 @@
+{{define "title"}}Episodes - {{.Agent}}{{end}}
+{{define "content"}}
+<h1 class="page-title">Episodes</h1>
+
+<section class="grid">
+  <div class="card">
+    <header class="card-head">
+      <h3>{{.Agent}}</h3>
+      <span class="logs-meta mono">{{len .Episodes}} episode{{if ne (len .Episodes) 1}}s{{end}}</span>
+    </header>
+    <p class="card-meta"><a href="/memory">&larr; Back to memory</a></p>
+
+    {{if .Episodes}}
+    <ul class="tree">
+      {{range .Episodes}}
+      <li class="tree-row">
+        <span class="tree-label">
+          <span class="tree-kind">file</span>
+          <span class="tree-name"><a href="/memory/episodes/view?path={{.Path}}">{{.Name}}</a></span>
+        </span>
+        <span class="tree-meta">
+          <span class="tree-tokens mono">~{{.Tokens}} tok</span>
+        </span>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <p class="fg-hint">No episodes yet for <code>{{.Agent}}</code>. Sessions create episode files when they end.</p>
+    {{end}}
+  </div>
+</section>
+{{end}}

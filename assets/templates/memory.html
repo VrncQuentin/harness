@@ -31,6 +31,31 @@
 <section class="grid">
   <div class="card">
     <header class="card-head">
+      <h3>Episodes by agent</h3>
+    </header>
+    {{if .EpisodesLoadErr}}
+    <p class="fg-hint">Could not list episodes: {{.EpisodesLoadErr}}</p>
+    {{else if .EpisodesByAgent}}
+    <ul class="tree">
+      {{range .EpisodesByAgent}}
+      <li class="tree-row">
+        <span class="tree-label">
+          <span class="tree-kind">agent</span>
+          <span class="tree-name"><a href="/memory/episodes?agent={{.Name}}">{{.Name}}</a></span>
+        </span>
+        <span class="tree-meta">
+          <span class="tree-tokens mono">{{.Count}} episode{{if ne .Count 1}}s{{end}}</span>
+        </span>
+      </li>
+      {{end}}
+    </ul>
+    {{else}}
+    <p class="fg-hint">No sessions saved yet. Episodes appear here once a session ends.</p>
+    {{end}}
+  </div>
+
+  <div class="card">
+    <header class="card-head">
       <h3>Tree</h3>
       <span class="logs-meta mono">~{{.TotalTokens}} tok (biggest agent)</span>
     </header>

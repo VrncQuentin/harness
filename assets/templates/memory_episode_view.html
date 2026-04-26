@@ -1,0 +1,18 @@
+{{define "title"}}Episode - {{.Name}}{{end}}
+{{define "content"}}
+<h1 class="page-title">Episode</h1>
+
+<section class="grid">
+  <div class="card">
+    <header class="card-head">
+      <h3>{{.Name}}</h3>
+      <span class="logs-meta mono">~{{.Tokens}} tok</span>
+    </header>
+    <p class="card-meta">Agent: <code>{{.Agent}}</code></p>
+    <p class="card-meta"><code>{{.Path}}</code></p>
+    <p class="card-meta"><a href="/memory/episodes?agent={{.Agent}}">&larr; Back to episodes</a></p>
+
+    <pre class="tree-content">{{.Content}}</pre>
+  </div>
+</section>
+{{end}}
