@@ -64,8 +64,6 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 M3 stages the project-scoped layout that M3b later formalizes: sessions, episodes, queue WAL, and indexes live under `projects/global/` from day one (`global` is a hardcoded slug at this milestone; the `projects` table and multi-project plumbing are introduced in M3b). Top-level `agents/<n>/` holds definition only — episodes live under the project.
 
 - [ ] Git Backend: go-git wrapper, commit, log query, blob fetch
-- [ ] Startup check: if `memory.repo_path` unset or path missing, refuse to start and prompt user to set it or run `init-memory <path>`
-- [ ] `init-memory <path>` command: explicit one-time scaffold of directory structure (including `projects/global/`) + initial commit
 - [ ] Session lifecycle: on-end → summarize via Qwen → write episode file → commit
 - [ ] `projects/global/sessions.jsonl`: append-only session log
 - [ ] Recency retrieval: inject last N episodes on session start
