@@ -146,4 +146,73 @@ func TestRecorder_PropagatesStoreError(t *testing.T) {
 	if err := r.ProcessRestartCount("p", 1); !errors.Is(err, want) {
 		t.Errorf("ProcessRestartCount: want %v, got %v", want, err)
 	}
+	if err := r.SessionCount(1); !errors.Is(err, want) {
+		t.Errorf("SessionCount: want %v, got %v", want, err)
+	}
+	if err := r.EpisodeCount(1); !errors.Is(err, want) {
+		t.Errorf("EpisodeCount: want %v, got %v", want, err)
+	}
+	if err := r.GitCommitLatencyMS(time.Millisecond); !errors.Is(err, want) {
+		t.Errorf("GitCommitLatencyMS: want %v, got %v", want, err)
+	}
+}
+
+func TestRecorder_SessionCount(t *testing.T) {
+	fs := &fakeStore{}
+	r := NewRecorder(fs)
+
+	if err := r.SessionCount(4); err != nil {
+		t.Fatalf("SessionCount: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(fs.calls))
+	}
+	c := fs.calls[0]
+	if c.name != MetricSessionCount {
+		t.Errorf("name: want %q, got %q", MetricSessionCount, c.name)
+	}
+	if c.value != 4.0 {
+		t.Errorf("value: want 4, got %v", c.value)
+	}
+	if c.tags != nil {
+		t.Errorf("tags: want nil, got %v", c.tags)
+	}
+}
+
+func TestRecorder_EpisodeCount(t *testing.T) {
+	fs := &fakeStore{}
+	r := NewRecorder(fs)
+
+	if err := r.EpisodeCount(11); err != nil {
+		t.Fatalf("EpisodeCount: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(fs.calls))
+	}
+	c := fs.calls[0]
+	if c.name != MetricEpisodeCount {
+		t.Errorf("name: want %q, got %q", MetricEpisodeCount, c.name)
+	}
+	if c.value != 11.0 {
+		t.Errorf("value: want 11, got %v", c.value)
+	}
+}
+
+func TestRecorder_GitCommitLatencyMS(t *testing.T) {
+	fs := &fakeStore{}
+	r := NewRecorder(fs)
+
+	if err := r.GitCommitLatencyMS(250 * time.Millisecond); err != nil {
+		t.Fatalf("GitCommitLatencyMS: %v", err)
+	}
+	if len(fs.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(fs.calls))
+	}
+	c := fs.calls[0]
+	if c.name != MetricGitCommitLatencyMS {
+		t.Errorf("name: want %q, got %q", MetricGitCommitLatencyMS, c.name)
+	}
+	if c.value != 250.0 {
+		t.Errorf("value: want 250, got %v", c.value)
+	}
 }
