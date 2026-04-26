@@ -156,6 +156,11 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.Prompt.CtxSize = atoiOr(r.FormValue("prompt_ctx_size"), cfg.Prompt.CtxSize)
 	cfg.Prompt.MemoryTokenBudget = atoiOr(r.FormValue("prompt_memory_budget"), cfg.Prompt.MemoryTokenBudget)
 	cfg.Prompt.ConversationReserve = atoiOr(r.FormValue("prompt_conversation_reserve"), cfg.Prompt.ConversationReserve)
+	cfg.Prompt.RecencyN = atoiOr(r.FormValue("prompt_recency_n"), cfg.Prompt.RecencyN)
+	// Trim trailing whitespace so an empty textarea (which browsers may
+	// pad with a stray newline) is treated as "use the built-in default"
+	// rather than persisting whitespace.
+	cfg.Prompt.SummarizerPrompt = strings.TrimSpace(r.FormValue("prompt_summarizer_prompt"))
 
 	cfg.Queue.MaxDepth = atoiOr(r.FormValue("queue_max_depth"), cfg.Queue.MaxDepth)
 	cfg.Queue.WALPath = strings.TrimSpace(r.FormValue("queue_wal_path"))

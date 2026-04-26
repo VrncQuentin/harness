@@ -162,6 +162,8 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	form.Set("prompt_ctx_size", "8192")
 	form.Set("prompt_memory_budget", "2048")
 	form.Set("prompt_conversation_reserve", "4096")
+	form.Set("prompt_recency_n", "7")
+	form.Set("prompt_summarizer_prompt", "summarize the user's intent in one paragraph.")
 	form.Set("queue_max_depth", "8")
 	form.Set("metrics_retention_days", "30")
 
@@ -192,6 +194,12 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	}
 	if !loaded.Embedder.Verbose {
 		t.Error("expected Embedder.Verbose=true after POST with embed_verbose=on")
+	}
+	if loaded.Prompt.RecencyN != 7 {
+		t.Errorf("Prompt.RecencyN not persisted: got %d, want 7", loaded.Prompt.RecencyN)
+	}
+	if loaded.Prompt.SummarizerPrompt != "summarize the user's intent in one paragraph." {
+		t.Errorf("Prompt.SummarizerPrompt not persisted: got %q", loaded.Prompt.SummarizerPrompt)
 	}
 
 	if atomic.LoadInt32(&retryCalls) != 1 {
