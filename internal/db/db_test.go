@@ -139,6 +139,15 @@ func TestConfigStore_LoadFreshReturnsDefaultsAndNotConfigured(t *testing.T) {
 	if cfg.Agent.Active != "" {
 		t.Errorf("Agent.Active default: got %q, want empty", cfg.Agent.Active)
 	}
+	if cfg.Prompt.RecencyN != defaults.Prompt.RecencyN {
+		t.Errorf("Prompt.RecencyN default: got %d, want %d", cfg.Prompt.RecencyN, defaults.Prompt.RecencyN)
+	}
+	if cfg.Prompt.SummarizerPrompt != defaults.Prompt.SummarizerPrompt {
+		t.Errorf("Prompt.SummarizerPrompt default: got %q, want %q", cfg.Prompt.SummarizerPrompt, defaults.Prompt.SummarizerPrompt)
+	}
+	if cfg.Prompt.SummarizerPrompt == "" {
+		t.Error("Prompt.SummarizerPrompt default must not be empty")
+	}
 }
 
 func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
@@ -158,6 +167,8 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	cfg.UI.OpenOnStart = false
 	cfg.API.Enabled = true
 	cfg.API.Port = 9090
+	cfg.Prompt.RecencyN = 13
+	cfg.Prompt.SummarizerPrompt = "summarize the conversation as one short paragraph."
 	cfg.Log.RingMaxEntries = 1234
 	cfg.Log.ProcMaxLines = 99
 
@@ -192,6 +203,12 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	}
 	if loaded.Agent.Active != "coder" {
 		t.Errorf("Agent.Active roundtrip: got %q, want %q", loaded.Agent.Active, "coder")
+	}
+	if loaded.Prompt.RecencyN != 13 {
+		t.Errorf("Prompt.RecencyN roundtrip: got %d, want 13", loaded.Prompt.RecencyN)
+	}
+	if loaded.Prompt.SummarizerPrompt != cfg.Prompt.SummarizerPrompt {
+		t.Errorf("Prompt.SummarizerPrompt roundtrip: got %q, want %q", loaded.Prompt.SummarizerPrompt, cfg.Prompt.SummarizerPrompt)
 	}
 	if loaded.Log.RingMaxEntries != 1234 {
 		t.Errorf("Log.RingMaxEntries roundtrip: got %d, want 1234", loaded.Log.RingMaxEntries)
