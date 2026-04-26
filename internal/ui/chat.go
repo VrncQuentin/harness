@@ -29,8 +29,12 @@ type ChatToken struct {
 // the UI deliberately avoids importing inference/queue, so the runner
 // translates between those layers and the small DTOs above. Same pattern
 // as AgentRegistry.
+//
+// M3 extends Run to take and return a session id so the browser can pin
+// every turn to one persistent session and so the assistant turn is
+// captured by the session manager as it streams.
 type ChatRunner interface {
-	Run(ctx context.Context, agent string, conversation []ChatMessage) (<-chan ChatToken, error)
+	Run(ctx context.Context, agent, sessionID string, conversation []ChatMessage) (string, <-chan ChatToken, error)
 }
 
 // Sentinel errors a ChatRunner may return so the handler can pick the
@@ -39,6 +43,13 @@ var (
 	ErrChatNoAgent     = errors.New("no active agent: pick one on /agents or send {\"agent\": ...} in the request body")
 	ErrChatQueueFull   = errors.New("inference queue is at capacity, try again in a moment")
 	ErrChatUnavailable = errors.New("chat backend is not available")
+)
+
+// Sentinel errors a SessionStore may return.
+var (
+	ErrSessionUnavailable      = errors.New("session manager not available")
+	ErrSessionUnknown          = errors.New("session unknown")
+	ErrSessionConversationLost = errors.New("session conversation history not available - only the summary survives in git")
 )
 
 // SetChatRunner installs the runner used by /chat/stream. Safe to leave
@@ -95,9 +106,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 // chatStreamRequest is the JSON body of POST /chat/stream. Agent is
 // optional; an empty value defers to the runner's active-agent default.
+// SessionID is also optional - empty means "start a new session"; a
+// non-empty value resumes the session minted on a previous turn.
 type chatStreamRequest struct {
-	Agent    string        `json:"agent,omitempty"`
-	Messages []ChatMessage `json:"messages"`
+	Agent     string        `json:"agent,omitempty"`
+	SessionID string        `json:"session_id,omitempty"`
+	Messages  []ChatMessage `json:"messages"`
 }
 
 // chatStreamMaxBytes caps the request body so a runaway transcript does
@@ -145,7 +159,7 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	tokens, err := runner.Run(ctx, req.Agent, req.Messages)
+	sessionID, tokens, err := runner.Run(ctx, req.Agent, req.SessionID, req.Messages)
 	if err != nil {
 		writeChatJSONError(w, statusFromChatErr(err), err.Error())
 		return
@@ -157,6 +171,14 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
+
+	// Emit the session id as the first SSE event so the browser can
+	// pin subsequent stream and save calls to the same id. This always
+	// lands before any token frames, giving the client a chance to
+	// stash the id even if the user navigates away mid-stream.
+	if sessionID != "" {
+		writeChatSSEEvent(w, flusher, "session", map[string]any{"id": sessionID})
+	}
 
 	for tok := range tokens {
 		if tok.Err != nil {
@@ -207,6 +229,21 @@ func writeChatSSE(w http.ResponseWriter, flusher http.Flusher, payload map[strin
 		return false
 	}
 	if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+		return false
+	}
+	flusher.Flush()
+	return true
+}
+
+// writeChatSSEEvent is writeChatSSE with an explicit event: name. Used
+// to tag the session-id frame so the browser can pin subsequent calls
+// without parsing every JSON payload.
+func writeChatSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, payload map[string]any) bool {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return false
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil {
 		return false
 	}
 	flusher.Flush()

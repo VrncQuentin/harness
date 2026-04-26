@@ -25,7 +25,7 @@ func (rt *Runtime) Start(
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	rt.startServices(ctx, uiServer, events, metricsStore)
-	rt.startMemoryAndAPI(ctx, uiServer)
+	rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
 }
 
 // Managers returns the process managers currently owned by the runtime.
@@ -50,6 +50,14 @@ func (rt *Runtime) RestartEmbedder() {
 }
 
 // Stop tears down runtime-owned services that need explicit shutdown.
+//
+// Live sessions are flushed first so the summarizer can still reach
+// the live llama-server. The flush has its own context with a 10s
+// timeout - if llama-server is unhealthy, the summarizer call will
+// error and the flush will return an error, which we log and continue
+// rather than block shutdown indefinitely. The .json sidecars survive
+// in the working tree for next-session resume even if the summary
+// commit never lands.
 func (rt *Runtime) Stop() {
 	rt.mu.Lock()
 	q := rt.reqQueue
@@ -57,6 +65,13 @@ func (rt *Runtime) Stop() {
 	hr := rt.hotReload
 	rt.mu.Unlock()
 
+	if mgr := rt.SessionManager(); mgr != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := mgr.FlushAll(ctx); err != nil {
+			slog.Warn("session flush on shutdown", "err", err)
+		}
+		cancel()
+	}
 	if apiSrv != nil {
 		apiSrv.Stop()
 	}

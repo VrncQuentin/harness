@@ -1,0 +1,246 @@
+package ui
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// SessionStore is the surface the chat page uses to save, list, and
+// resume sessions. The concrete implementation lives in
+// internal/runtime; this interface keeps the ui package free of
+// session/git/inference imports.
+type SessionStore interface {
+	// Save persists the session identified by id, regenerates the
+	// summary, commits the .md, and appends a record to sessions.jsonl.
+	Save(ctx context.Context, id string) (SessionSaveResult, error)
+	// Records returns the most recent saved sessions for agent. An
+	// empty agent uses the active agent.
+	Records(agent string) ([]SessionRecord, error)
+	// Conversation hydrates the .json sidecar for one session record.
+	// Returns ErrSessionConversationLost when the sidecar is missing
+	// (typical on a fresh clone) so the UI can disable the resume row.
+	Conversation(agent, id string) ([]ChatMessage, error)
+	// Resume registers id with the manager so the next /chat/stream
+	// call appends onto the resumed conversation.
+	Resume(id string) error
+}
+
+// SessionSaveResult is the small slice of the manager's SaveResult the
+// UI surfaces back to the browser.
+type SessionSaveResult struct {
+	ID          string    `json:"id"`
+	EpisodePath string    `json:"episode_path"`
+	Summary     string    `json:"summary"`
+	SavedAt     time.Time `json:"saved_at"`
+	SaveSeq     int       `json:"save_seq"`
+}
+
+// SessionRecord is one saved-session entry rendered by the resume
+// picker. Mirrors session.Record verbatim minus the project field
+// (hardcoded to "global" in M3).
+type SessionRecord struct {
+	ID          string    `json:"id"`
+	Agent       string    `json:"agent"`
+	StartedAt   time.Time `json:"started_at"`
+	SavedAt     time.Time `json:"saved_at"`
+	SaveSeq     int       `json:"save_seq"`
+	EpisodePath string    `json:"episode_path"`
+}
+
+// SetSessionStore installs the store used by /chat/save and friends.
+// Pass nil to detach (e.g. when the memory repo is invalidated); the
+// handlers then return 503 until a valid store is wired back in.
+func (s *Server) SetSessionStore(store SessionStore) {
+	s.sessionStoreMu.Lock()
+	s.sessionStore = store
+	s.sessionStoreMu.Unlock()
+}
+
+func (s *Server) getSessionStore() SessionStore {
+	s.sessionStoreMu.RLock()
+	defer s.sessionStoreMu.RUnlock()
+	return s.sessionStore
+}
+
+// chatSaveRequest is the JSON body of POST /chat/save and
+// /chat/save/beacon. SessionID is required.
+type chatSaveRequest struct {
+	SessionID string `json:"session_id"`
+}
+
+// chatSaveMaxBytes caps the save request body. The body is tiny by
+// design (just the session id), so a generous limit still rejects
+// runaway payloads from a misbehaving extension.
+const chatSaveMaxBytes = 8 * 1024
+
+// handleChatSave persists the live session and returns the SaveResult
+// JSON. Used by the explicit Save button on /chat.
+func (s *Server) handleChatSave(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store := s.getSessionStore()
+	if store == nil {
+		writeChatJSONError(w, http.StatusServiceUnavailable, "session manager not available")
+		return
+	}
+	id, ok := decodeSaveRequest(w, r)
+	if !ok {
+		return
+	}
+	res, err := store.Save(r.Context(), id)
+	if err != nil {
+		writeChatJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(res)
+}
+
+// handleChatSaveBeacon mirrors handleChatSave but always returns 204 -
+// navigator.sendBeacon ignores the response anyway, so a 200 OK with a
+// body would just be wasted bytes. Errors are silently swallowed; the
+// next explicit Save (or the Quit flush) will cover for it.
+func (s *Server) handleChatSaveBeacon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store := s.getSessionStore()
+	if store == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	id, ok := decodeSaveRequest(w, r)
+	if !ok {
+		// decodeSaveRequest already wrote a 400; the beacon endpoint
+		// prefers 204 but the body has already shipped, so just bail.
+		return
+	}
+	// 8s hedge: the browser will be tearing down regardless. Keep the
+	// timeout short of the 10s shutdown flush so a beacon never
+	// out-survives the Quit path.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if _, err := store.Save(ctx, id); err != nil {
+		// The beacon path is best-effort by design: the user has
+		// already navigated away. Logging is too aggressive (every
+		// page-switch would warn), so we only surface the failure when
+		// the manager is wired up but rejected the request.
+		_ = err
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// decodeSaveRequest reads the small JSON body and pulls out the
+// session id, writing a 400 on parse failure. Returns the id and true
+// on success.
+func decodeSaveRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, chatSaveMaxBytes)
+	var req chatSaveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeChatJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return "", false
+	}
+	id := strings.TrimSpace(req.SessionID)
+	if id == "" {
+		writeChatJSONError(w, http.StatusBadRequest, "session_id is required")
+		return "", false
+	}
+	return id, true
+}
+
+// chatSessionsResponse is the JSON body of GET /chat/sessions. Records
+// is sorted newest-first and capped to RecentSessionLimit.
+type chatSessionsResponse struct {
+	Records []SessionRecord `json:"records"`
+}
+
+// RecentSessionLimit is the cap on how many records the resume picker
+// shows. M3 defaults to 10 because the picker is a small dropdown; a
+// future iteration may surface a paginated browser instead.
+const RecentSessionLimit = 10
+
+// handleChatSessions returns the recent saved sessions for agent so
+// the resume picker can populate itself.
+func (s *Server) handleChatSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store := s.getSessionStore()
+	if store == nil {
+		writeChatJSONError(w, http.StatusServiceUnavailable, "session manager not available")
+		return
+	}
+	agent := strings.TrimSpace(r.URL.Query().Get("agent"))
+	records, err := store.Records(agent)
+	if err != nil {
+		writeChatJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(records) > RecentSessionLimit {
+		records = records[:RecentSessionLimit]
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(chatSessionsResponse{Records: records})
+}
+
+// chatSessionResponse is the JSON body of GET /chat/session.
+type chatSessionResponse struct {
+	ID       string        `json:"id"`
+	Agent    string        `json:"agent"`
+	Messages []ChatMessage `json:"messages"`
+}
+
+// handleChatSessionResume hydrates one session's conversation from the
+// .json sidecar so the browser can replace its transcript.
+func (s *Server) handleChatSessionResume(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store := s.getSessionStore()
+	if store == nil {
+		writeChatJSONError(w, http.StatusServiceUnavailable, "session manager not available")
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	agent := strings.TrimSpace(r.URL.Query().Get("agent"))
+	if id == "" || agent == "" {
+		writeChatJSONError(w, http.StatusBadRequest, "id and agent are required")
+		return
+	}
+	msgs, err := store.Conversation(agent, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrSessionConversationLost):
+			writeChatJSONError(w, http.StatusNotFound, err.Error())
+		default:
+			writeChatJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	if err := store.Resume(id); err != nil {
+		switch {
+		case errors.Is(err, ErrSessionConversationLost):
+			writeChatJSONError(w, http.StatusNotFound, err.Error())
+		case errors.Is(err, ErrSessionUnknown):
+			writeChatJSONError(w, http.StatusNotFound, err.Error())
+		default:
+			writeChatJSONError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(chatSessionResponse{
+		ID:       id,
+		Agent:    agent,
+		Messages: msgs,
+	})
+}
