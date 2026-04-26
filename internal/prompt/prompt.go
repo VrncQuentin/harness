@@ -41,7 +41,12 @@ const (
 	userPath  = "global/user.md"
 	factsPath = "global/facts.md"
 
-	episodesGlob = "agents/%s/episodes/*.md"
+	// episodesGlob points at the system project's episode tree. M3
+	// staged the project-scoped layout so per-agent episodes live under
+	// projects/global/, with top-level agents/<n>/ holding definition
+	// only (persona, rules, notes). M3b will replace the hardcoded
+	// "global" slug with the active project's slug.
+	episodesGlob = "projects/global/episodes/%s/*.md"
 )
 
 // Static markdown section headers. Each optional layer is skipped if
@@ -198,6 +203,7 @@ func (a *DiskAssembler) Assemble(ctx context.Context, agentName string, conversa
 		"conversation_tokens", stats.Conversation,
 		"total_tokens", stats.Total,
 		"episodes_kept", len(layers.episodes),
+		"recency_n", a.cfg.RecencyN,
 	)
 
 	return out, stats, nil
@@ -290,9 +296,13 @@ func (a *DiskAssembler) loadLayers(agentName string) (rawLayers, error) {
 	return lay, nil
 }
 
-// loadEpisodes reads every *.md file under agents/<name>/episodes/
+// loadEpisodes reads every *.md file under projects/global/episodes/<name>/
 // sorted oldest-first (lexicographic file name matches the ISO
 // timestamp naming convention from docs/architecture.md).
+//
+// When PromptConfig.RecencyN > 0 only the last N entries (the newest)
+// are returned, so the budget-driven trim further down sees a slice
+// already capped to recency. RecencyN <= 0 means unlimited.
 func (a *DiskAssembler) loadEpisodes(agentName string) ([]episode, error) {
 	pattern := fmt.Sprintf(episodesGlob, agentName)
 	paths, err := a.mem.Glob(pattern)
@@ -316,6 +326,9 @@ func (a *DiskAssembler) loadEpisodes(agentName string) ([]episode, error) {
 			content: content,
 			tokens:  a.tokenizer(content),
 		})
+	}
+	if n := a.cfg.RecencyN; n > 0 && len(out) > n {
+		out = out[len(out)-n:]
 	}
 	return out, nil
 }

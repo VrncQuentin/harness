@@ -11,17 +11,21 @@ import (
 func TestExpectedLayout_StableContent(t *testing.T) {
 	got := ExpectedLayout()
 	// Mirror the canonical layout from docs/architecture.md so a future
-	// edit there forces a deliberate update here too. Runtime artifacts
-	// (vectors.bin, manifest.json, sessions.jsonl, queue.wal) are
-	// intentionally absent: they are owned by other subsystems.
+	// edit there forces a deliberate update here too. Project-scoped
+	// runtime artifacts (sessions.jsonl, queue.wal, vectors.bin,
+	// manifest.json) are intentionally absent: they are owned by other
+	// subsystems and live under projects/global/.
 	want := []LayoutItem{
 		{Path: "global", Dir: true, Desc: "Global prompt content"},
 		{Path: "global/rules.md", Dir: false, Desc: "Always-on base prompt"},
 		{Path: "global/user.md", Dir: false, Desc: "Hand-authored facts about the user"},
 		{Path: "global/facts.md", Dir: false, Desc: "Promoted cross-agent facts"},
-		{Path: "agents", Dir: true, Desc: "Agent personas, notes and episodes"},
-		{Path: "index", Dir: true, Desc: "Semantic search index"},
-		{Path: "runtime", Dir: true, Desc: "Session log and queue WAL"},
+		{Path: "agents", Dir: true, Desc: "Global agents library (definition only)"},
+		{Path: "projects", Dir: true, Desc: "Per-project session/episode/queue/index data"},
+		{Path: "projects/global", Dir: true, Desc: "System project (default scope)"},
+		{Path: "projects/global/episodes", Dir: true, Desc: "Session episode files for the system project"},
+		{Path: "projects/global/index", Dir: true, Desc: "Semantic search indexes for the system project"},
+		{Path: "projects/global/index/_episodes", Dir: true, Desc: "Embeddings of the system project's episodes"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ExpectedLayout =\n\t%v\nwant\n\t%v", got, want)
@@ -83,7 +87,16 @@ func TestMissingItems_PartialRoot(t *testing.T) {
 		gotPaths = append(gotPaths, item.Path)
 	}
 	sort.Strings(gotPaths)
-	want := []string{"agents", "global/facts.md", "global/user.md", "index", "runtime"}
+	want := []string{
+		"agents",
+		"global/facts.md",
+		"global/user.md",
+		"projects",
+		"projects/global",
+		"projects/global/episodes",
+		"projects/global/index",
+		"projects/global/index/_episodes",
+	}
 	sort.Strings(want)
 	if !reflect.DeepEqual(gotPaths, want) {
 		t.Errorf("MissingItems partial: got %v, want %v", gotPaths, want)
