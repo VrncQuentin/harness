@@ -91,15 +91,15 @@ func (s *Server) memoryStore() MemoryStore {
 // memoryView is the template context for /memory.
 type memoryView struct {
 	basePage
-	Configured       bool
-	RepoPath         string
-	AgentsPath       string // absolute path to <RepoPath>/agents (empty when RepoPath is unset)
-	Tree             []*memoryTreeNode
-	TotalTokens      int
-	LoadErr          string
-	SavedPath        string // flash: file just saved
-	EpisodesByAgent  []agentEpisodeCount
-	EpisodesLoadErr  string
+	Configured      bool
+	RepoPath        string
+	AgentsPath      string // absolute path to <RepoPath>/agents (empty when RepoPath is unset)
+	Tree            []*memoryTreeNode
+	TotalTokens     int
+	LoadErr         string
+	SavedPath       string // flash: file just saved
+	EpisodesByAgent []agentEpisodeCount
+	EpisodesLoadErr string
 }
 
 // agentEpisodeCount counts how many .md episodes live under an agent's

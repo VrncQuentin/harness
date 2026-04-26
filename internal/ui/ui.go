@@ -79,14 +79,14 @@ type Server struct {
 	// Each page has its own template set because status.html, config.html,
 	// and agents.html all define "title" and "content" - sharing one set
 	// would let the later parse clobber the earlier one.
-	statusTmpl             *template.Template
-	configTmpl             *template.Template
-	agentsTmpl             *template.Template
-	chatTmpl               *template.Template
-	memoryTmpl             *template.Template
-	memoryEditTmpl         *template.Template
-	memoryEpisodesTmpl     *template.Template
-	memoryEpisodeViewTmpl  *template.Template
+	statusTmpl            *template.Template
+	configTmpl            *template.Template
+	agentsTmpl            *template.Template
+	chatTmpl              *template.Template
+	memoryTmpl            *template.Template
+	memoryEditTmpl        *template.Template
+	memoryEpisodesTmpl    *template.Template
+	memoryEpisodeViewTmpl *template.Template
 	// shutdownTmpl is intentionally standalone (no layout.html) so the
 	// rendered page does not load /static/* — by the time the browser
 	// fetches stylesheets the listener may already be gone.
