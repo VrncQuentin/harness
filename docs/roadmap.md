@@ -70,9 +70,6 @@ M3 stages the project-scoped layout that M3b later formalizes: sessions, episode
 - [ ] UI: memory browser page — episode list by agent/date, view episode content
 
 **Acceptance tests:**
-- [ ] Start harness with no `memory.repo_path` set → startup refuses with actionable error message
-- [ ] Start harness with a path that does not exist → startup refuses with actionable error message
-- [ ] Run `init-memory ~/memory` → directory structure is created (including `projects/global/{sessions.jsonl, episodes/, queue.wal placeholder}`), git repo initialized, initial commit present
 - [ ] Complete a session → episode file appears at `projects/global/episodes/<agent>/<timestamp>.md`, committed to git
 - [ ] Episode commit message matches format `[agent:x] [type:episode] ...`
 - [ ] Start a new session → previous episode content appears in the assembled prompt
@@ -135,7 +132,7 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 - [ ] Embed-on-commit pipeline (attached directories): for each tree configured on the active project, walk by HEAD → embed chunks → update `projects/<active>/index/<dir-slug>/{vectors.bin, manifest.json}` → commit
 - [ ] ANN search: flat scan initially, upgrade to usearch if latency becomes a problem
 - [ ] Blended retrieval: `score = (semantic_weight * similarity) + (recency_weight * recency_decay)`
-- [ ] Index rebuild command: walk commits, re-embed missing SHAs (idempotent), per-tree
+- [ ] Index rebuild (UI-triggered from memory browser): walk commits, re-embed missing SHAs (idempotent), per-tree
 - [ ] UI: memory browser shows retrieval scores per episode
 
 **Acceptance tests:**

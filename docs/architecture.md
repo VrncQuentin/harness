@@ -314,7 +314,7 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **Single SQLite file for all persistent state.** Config (single-row typed table) and metrics (time-series tables) share `harness.db` in the same directory as the binary. One `*sql.DB` handle is opened in `main` and passed to both subsystems — no per-package database connection, no lock contention. The UI reads metrics directly — no separate metrics server. Each milestone adds its own table(s). On restart, history is preserved. Prometheus export (M8) reads from the same database.
 
-**Memory repo is never auto-created.** If `memory.repo_path` is not set or the path does not exist, the harness refuses to start and prompts the user to either provide an existing repo path or run `init-memory <path>` explicitly. No silent creation.
+**Memory repo is never auto-created.** If `memory.repo_path` is not set or the path does not exist, the status page surfaces it as a setup error (the UI server is already up by then) and the user fixes it from the `/config` page — either by pointing at an existing repo or by creating one externally first. No silent creation, no terminal interaction.
 
 **Append-only sessions.jsonl.** Never mutate, only append. Trivial crash recovery, full audit log.
 
