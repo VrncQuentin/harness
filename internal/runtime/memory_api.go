@@ -41,8 +41,15 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server) {
 
 	uiServer.SetAgentRegistry(&uiAgentRegistryAdapter{reg: rt.agentReg, mem: rt.memReader})
 
+	asmAdapter := &apiAssemblerAdapter{a: rt.assembler, rt: rt}
+	if rt.reqQueue != nil {
+		uiServer.SetChatRunner(&chatRunnerAdapter{asm: asmAdapter, q: rt.reqQueue})
+	} else {
+		uiServer.SetChatRunner(nil)
+	}
+
 	if rt.cfg.API.Enabled && rt.reqQueue != nil {
-		srv := api.NewServer(rt.cfg.API.Port, &apiAssemblerAdapter{a: rt.assembler, rt: rt}, rt.reqQueue)
+		srv := api.NewServer(rt.cfg.API.Port, asmAdapter, rt.reqQueue)
 		if err := srv.Start(ctx); err != nil {
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
 		} else {
@@ -69,6 +76,7 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	rt.assembler = nil
 	uiServer.SetAgentRegistry(nil)
 	uiServer.SetMemoryStore(nil)
+	uiServer.SetChatRunner(nil)
 }
 
 func (rt *Runtime) getActiveAgent() string {
