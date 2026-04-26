@@ -82,6 +82,7 @@ type Server struct {
 	statusTmpl     *template.Template
 	configTmpl     *template.Template
 	agentsTmpl     *template.Template
+	chatTmpl       *template.Template
 	memoryTmpl     *template.Template
 	memoryEditTmpl *template.Template
 	// shutdownTmpl is intentionally standalone (no layout.html) so the
@@ -117,6 +118,9 @@ type Server struct {
 	memStoreMu sync.RWMutex
 	memStore   MemoryStore
 
+	chatRunnerMu sync.RWMutex
+	chatRunner   ChatRunner
+
 	logRing   atomic.Pointer[logbuf.Ring]
 	llamaRing atomic.Pointer[logbuf.Ring]
 	embedRing atomic.Pointer[logbuf.Ring]
@@ -150,6 +154,11 @@ func NewServer(port int) *Server {
 		assets.TemplateFS,
 		"templates/layout.html",
 		"templates/agents.html",
+	))
+	s.chatTmpl = template.Must(template.ParseFS(
+		assets.TemplateFS,
+		"templates/layout.html",
+		"templates/chat.html",
 	))
 	s.memoryTmpl = template.Must(template.ParseFS(
 		assets.TemplateFS,
@@ -361,6 +370,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/agents/persona", s.handleAgentsPersona)
 	mux.HandleFunc("/agents/rules", s.handleAgentsRules)
 	mux.HandleFunc("/agents/notes", s.handleAgentsNotes)
+	mux.HandleFunc("/chat", s.handleChat)
+	mux.HandleFunc("/chat/stream", s.handleChatStream)
 	mux.HandleFunc("/memory", s.handleMemory)
 	mux.HandleFunc("/memory/edit", s.handleMemoryEdit)
 	mux.HandleFunc("/memory/save", s.handleMemorySave)

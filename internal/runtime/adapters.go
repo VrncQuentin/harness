@@ -3,12 +3,16 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
+	"time"
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/prompt"
+	"github.com/vrnc/harness/internal/queue"
+	"github.com/vrnc/harness/internal/reqid"
 	"github.com/vrnc/harness/internal/ui"
 )
 
@@ -118,4 +122,64 @@ func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, c
 	}
 	msgs, _, err := ad.a.Assemble(ctx, agentName, conversation)
 	return msgs, err
+}
+
+// chatRunnerAdapter satisfies ui.ChatRunner against the same assembler +
+// queue used by the API server. It exists so the ui package never imports
+// inference or queue directly: this file translates between the small
+// ChatMessage/ChatToken DTOs and the runtime types.
+type chatRunnerAdapter struct {
+	asm *apiAssemblerAdapter
+	q   *queue.Queue
+}
+
+// Run assembles the prompt, enqueues a request, and returns a channel of
+// translated tokens. Errors before dispatch are returned synchronously
+// and mapped to the ui sentinel set so the handler can pick the right
+// HTTP status without inspecting queue/prompt error types.
+func (ad *chatRunnerAdapter) Run(ctx context.Context, agentName string, conversation []ui.ChatMessage) (<-chan ui.ChatToken, error) {
+	msgs := make([]inference.Message, len(conversation))
+	for i, m := range conversation {
+		msgs[i] = inference.Message{Role: m.Role, Content: m.Content}
+	}
+
+	reqID := fmt.Sprintf("uichat-%d", time.Now().UnixNano())
+	ctx = reqid.WithID(ctx, reqID)
+
+	assembled, err := ad.asm.Assemble(ctx, agentName, msgs)
+	if err != nil {
+		if errors.Is(err, errNoActiveAgent) {
+			return nil, ui.ErrChatNoAgent
+		}
+		return nil, err
+	}
+
+	respCh := make(chan inference.Token, 64)
+	if err := ad.q.Enqueue(queue.Request{
+		ID:       reqID,
+		Messages: assembled,
+		Response: respCh,
+		Ctx:      ctx,
+	}); err != nil {
+		switch {
+		case errors.Is(err, queue.ErrQueueFull):
+			return nil, ui.ErrChatQueueFull
+		case errors.Is(err, queue.ErrStopped), errors.Is(err, queue.ErrNoClient):
+			return nil, ui.ErrChatUnavailable
+		}
+		return nil, err
+	}
+
+	out := make(chan ui.ChatToken, 64)
+	go func() {
+		defer close(out)
+		for tok := range respCh {
+			select {
+			case out <- ui.ChatToken{Content: tok.Content, Done: tok.Done, Err: tok.Err}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
 }

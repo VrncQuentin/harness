@@ -1,0 +1,58 @@
+{{define "title"}}Chat{{end}}
+{{define "content"}}
+<h1 class="page-title">Chat</h1>
+
+{{if not .Configured}}
+<div class="alert alert-info">
+  <div class="alert-head">
+    <h2>Chat backend not ready</h2>
+    <p class="alert-sub">Make sure <code>memory.repo_path</code> is set on <a href="/config">/config</a> and that llama-server is running. The status page lists any startup errors.</p>
+  </div>
+</div>
+{{else if not .HasAgents}}
+<div class="alert alert-info">
+  <div class="alert-head">
+    <h2>No agents yet</h2>
+    <p class="alert-sub">Create one on <a href="/agents">/agents</a>, fill in its persona, and mark it active. The chat uses the active agent's persona + global rules + memory.</p>
+  </div>
+</div>
+{{else if eq .ActiveAgent ""}}
+<div class="alert alert-info">
+  <div class="alert-head">
+    <h2>No active agent</h2>
+    <p class="alert-sub">Pick an agent on <a href="/agents">/agents</a> (click <em>Set active</em>) before chatting.</p>
+  </div>
+</div>
+{{else}}
+
+<section class="chat" id="chat-root" data-agent="{{.ActiveAgent}}">
+  <header class="chat-head card-head">
+    <div class="chat-head-meta">
+      <h3 class="chat-agent">Active agent: <code>{{.ActiveAgent}}</code></h3>
+      <p class="fg-hint">Conversation lives in this tab only - reload clears it. Persistent sessions arrive in M3.</p>
+    </div>
+    <div class="chat-head-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="chat-clear">Clear</button>
+    </div>
+  </header>
+
+  <div class="chat-transcript" id="chat-transcript" aria-live="polite">
+    <p class="chat-empty">Send a message to begin.</p>
+  </div>
+
+  <div class="chat-error" id="chat-error" hidden></div>
+
+  <form id="chat-form" class="chat-form" autocomplete="off">
+    <div class="chat-input-wrap">
+      <textarea id="chat-input" name="message" rows="3" placeholder="Type a message. Enter sends, Shift+Enter inserts a newline." required></textarea>
+    </div>
+    <div class="chat-actions">
+      <button type="submit" class="btn btn-primary" id="chat-send">Send</button>
+      <button type="button" class="btn btn-danger btn-sm" id="chat-stop" hidden>Stop</button>
+      <span class="chat-status mono" id="chat-status"></span>
+    </div>
+  </form>
+</section>
+
+{{end}}
+{{end}}
