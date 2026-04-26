@@ -529,3 +529,264 @@ func TestSetMemoryStore_Roundtrip(t *testing.T) {
 		t.Errorf("memoryStore after clear: got %v, want nil", got)
 	}
 }
+
+func TestHandleMemoryEpisodes_ListsNewestFirst(t *testing.T) {
+	s := NewServer(3000)
+	// Three episode files for the coder agent at different timestamps.
+	// ISO 8601 timestamps sort lexicographically, so a reverse sort
+	// yields chronological newest-first.
+	store := newStubMemoryStore(map[string]string{
+		"projects/global/episodes/coder/2026-04-20T10:00:00Z.md": "first",
+		"projects/global/episodes/coder/2026-04-22T11:30:00Z.md": "middle",
+		"projects/global/episodes/coder/2026-04-25T09:15:00Z.md": "newest",
+		// Files for another agent must not leak into the coder list.
+		"projects/global/episodes/reviewer/2026-04-19T08:00:00Z.md": "other",
+	})
+	s.SetMemoryStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes?agent=coder", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryEpisodes(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"2026-04-20T10:00:00Z.md",
+		"2026-04-22T11:30:00Z.md",
+		"2026-04-25T09:15:00Z.md",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("episodes body missing %q", want)
+		}
+	}
+	// Reviewer's episode must not appear in the coder list.
+	if strings.Contains(body, "2026-04-19T08:00:00Z.md") {
+		t.Error("reviewer episode leaked into coder listing")
+	}
+	// Newest must appear before middle, which must appear before oldest.
+	idxNewest := strings.Index(body, "2026-04-25T09:15:00Z.md")
+	idxMiddle := strings.Index(body, "2026-04-22T11:30:00Z.md")
+	idxOldest := strings.Index(body, "2026-04-20T10:00:00Z.md")
+	if idxNewest >= idxMiddle || idxMiddle >= idxOldest {
+		t.Errorf("expected newest-first ordering; got positions newest=%d middle=%d oldest=%d", idxNewest, idxMiddle, idxOldest)
+	}
+}
+
+func TestHandleMemoryEpisodes_EmptyDirShowsHint(t *testing.T) {
+	s := NewServer(3000)
+	// No episodes at all: the agent dir does not exist on disk.
+	store := newStubMemoryStore(nil)
+	s.SetMemoryStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes?agent=coder", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryEpisodes(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "No episodes yet for") {
+		t.Errorf("expected empty-state hint, got:\n%s", body)
+	}
+}
+
+func TestHandleMemoryEpisodes_RejectsTraversalInAgent(t *testing.T) {
+	tests := []struct {
+		name  string
+		agent string
+	}{
+		{"empty", ""},
+		{"dotdot", ".."},
+		{"single dot", "."},
+		{"forward slash", "a/b"},
+		{"backslash", `a\b`},
+		{"traversal slash", "../etc"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(3000)
+			s.SetMemoryStore(newStubMemoryStore(nil))
+
+			req := httptest.NewRequest(http.MethodGet, "/memory/episodes?agent="+url.QueryEscape(tc.agent), nil)
+			rec := httptest.NewRecorder()
+			s.handleMemoryEpisodes(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("agent=%q: expected 400, got %d (body: %s)", tc.agent, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleMemoryEpisodes_NoStoreReturns503(t *testing.T) {
+	s := NewServer(3000)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes?agent=coder", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryEpisodes(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 with no store, got %d", rec.Code)
+	}
+}
+
+func TestHandleMemoryEpisodes_RejectsPOST(t *testing.T) {
+	s := NewServer(3000)
+	s.SetMemoryStore(newStubMemoryStore(nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/memory/episodes?agent=coder", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryEpisodes(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
+func TestHandleMemoryEpisodeView_RendersContent(t *testing.T) {
+	s := NewServer(3000)
+	store := newStubMemoryStore(map[string]string{
+		"projects/global/episodes/coder/2026-04-25T09:15:00Z.md": "## Episode body\nSome notes.",
+	})
+	s.SetMemoryStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=projects/global/episodes/coder/2026-04-25T09:15:00Z.md", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryEpisodeView(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"## Episode body",
+		"Some notes.",
+		"2026-04-25T09:15:00Z.md",
+		`href="/memory/episodes?agent=coder"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("episode view missing %q", want)
+		}
+	}
+}
+
+func TestHandleMemoryEpisodeView_RejectsNonEpisodePath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"empty", ""},
+		{"outside episodes root", "global/rules.md"},
+		{"agents tree", "agents/coder/persona.md"},
+		{"different project root", "projects/other/episodes/coder/x.md"},
+		{"traversal", "projects/global/episodes/coder/../../etc/passwd.md"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(3000)
+			s.SetMemoryStore(newStubMemoryStore(nil))
+
+			req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path="+url.QueryEscape(tc.path), nil)
+			rec := httptest.NewRecorder()
+			s.handleMemoryEpisodeView(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("path=%q: expected 400, got %d (body: %s)", tc.path, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestHandleMemoryEpisodeView_RejectsNonMarkdownSuffix(t *testing.T) {
+	s := NewServer(3000)
+	s.SetMemoryStore(newStubMemoryStore(nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=projects/global/episodes/coder/notes.txt", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryEpisodeView(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-.md path, got %d", rec.Code)
+	}
+}
+
+func TestHandleMemoryEpisodeView_MissingFileReturns404(t *testing.T) {
+	s := NewServer(3000)
+	store := newStubMemoryStore(nil)
+	s.SetMemoryStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=projects/global/episodes/coder/2026-04-25T09:15:00Z.md", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryEpisodeView(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing file, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleMemoryEpisodeView_NoStoreReturns503(t *testing.T) {
+	s := NewServer(3000)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=projects/global/episodes/coder/x.md", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryEpisodeView(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503 with no store, got %d", rec.Code)
+	}
+}
+
+func TestHandleMemory_RendersEpisodesByAgent(t *testing.T) {
+	s := NewServer(3000)
+	store := newStubMemoryStore(map[string]string{
+		"projects/global/episodes/coder/2026-04-20T10:00:00Z.md":    "a",
+		"projects/global/episodes/coder/2026-04-22T11:30:00Z.md":    "b",
+		"projects/global/episodes/reviewer/2026-04-19T08:00:00Z.md": "c",
+	})
+	s.SetMemoryStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemory(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Episodes by agent",
+		"coder",
+		"reviewer",
+		"2 episodes",
+		"1 episode",
+		// html/template percent-encodes "/" in href attributes; the
+		// browser decodes it back, so the route still matches.
+		`href="/memory/episodes?agent=coder"`,
+		`href="/memory/episodes?agent=reviewer"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("memory body missing %q", want)
+		}
+	}
+}
+
+func TestHandleMemory_EmptyEpisodesShowsHint(t *testing.T) {
+	s := NewServer(3000)
+	// Repo has global content but no episodes anywhere.
+	store := newStubMemoryStore(map[string]string{
+		"global/rules.md": "x",
+	})
+	s.SetMemoryStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemory(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "No sessions saved yet") {
+		t.Errorf("expected empty-episodes hint, got:\n%s", body)
+	}
+}
