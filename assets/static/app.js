@@ -311,12 +311,13 @@ document.addEventListener('click', function (evt) {
       return reader.read().then(function (chunk) {
         if (chunk.done) return;
         buffer += decoder.decode(chunk.value, { stream: true });
-        var idx;
-        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        var idx = buffer.indexOf('\n\n');
+        while (idx !== -1) {
           var frame = buffer.slice(0, idx);
           buffer = buffer.slice(idx + 2);
           handleFrame(frame, assistant);
           if (streamErr) return;
+          idx = buffer.indexOf('\n\n');
         }
         return pump();
       });
