@@ -8,7 +8,6 @@ import (
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/api"
-	"github.com/vrnc/harness/internal/config"
 	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
@@ -155,9 +154,6 @@ func (rt *Runtime) SessionManager() *session.Manager {
 	return rt.sessionMg
 }
 
-// silence the unused-package warning when config is referenced only
-// in the SummarizerPrompt closure path (Go's import-cycle dance).
-var _ = config.Defaults
 
 // stopMemoryAndAPI tears down the M2/M3 services. Caller must hold rt.mu.
 //
