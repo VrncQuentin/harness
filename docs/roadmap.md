@@ -37,23 +37,23 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 
 **Goal:** layered system prompt, agent personas, hot-reload.
 
-- [ ] Agent registry: named agents with their own persona file path
-- [ ] Prompt Assembler: layer ordering (`rules → user → persona → facts → notes → episodes → conversation`)
-- [ ] Total memory cap + conversation reserve enforcement, episode trim oldest-first
-- [ ] Qwen3 prompt template formatting
-- [ ] Hot-reload: fsnotify on rules and persona files, no restart needed
-- [ ] API Server: OpenAI-compatible `/v1/chat/completions` (streaming), disabled by default
-- [ ] UI: agents page — switch active agent, view active persona
+- [x] Agent registry: named agents with their own persona file path
+- [x] Prompt Assembler: layer ordering (`rules → user → persona → facts → notes → episodes → conversation`)
+- [x] Total memory cap + conversation reserve enforcement, episode trim oldest-first
+- [x] Qwen3 prompt template formatting
+- [x] Hot-reload: fsnotify on rules and persona files, no restart needed
+- [x] API Server: OpenAI-compatible `/v1/chat/completions` (streaming), disabled by default
+- [x] UI: agents page — switch active agent, view active persona
 
 **Acceptance tests:**
-- [ ] Send a request with agent `coder` → response reflects coder persona, not default
-- [ ] Switch active agent to `reviewer` via UI → next request uses reviewer persona
-- [ ] Edit `global/rules.md` on disk → next request without restarting reflects the change
-- [ ] Edit `agents/coder/persona.md` on disk → next request without restarting reflects the change
-- [ ] Construct a context that would exceed ctx_size → episodes are trimmed oldest-first until it fits, rules and persona are untouched
-- [ ] Set `memory_token_budget` to a small value → assembler respects it, does not overflow
-- [ ] Enable API server → `curl /v1/chat/completions` returns a valid streaming response
-- [ ] Disable API server in config → port is not open, connection refused
+- [x] Send a request with agent `coder` → response reflects coder persona, not default
+- [x] Switch active agent to `reviewer` via UI → next request uses reviewer persona
+- [x] Edit `global/rules.md` on disk → next request without restarting reflects the change
+- [x] Edit `agents/coder/persona.md` on disk → next request without restarting reflects the change
+- [x] Construct a context that would exceed ctx_size → episodes are trimmed oldest-first until it fits, rules and persona are untouched
+- [x] Set `memory_token_budget` to a small value → assembler respects it, does not overflow
+- [x] Enable API server → `curl /v1/chat/completions` returns a valid streaming response
+- [x] Disable API server in config → port is not open, connection refused
 
 ---
 
