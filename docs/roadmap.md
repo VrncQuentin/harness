@@ -82,6 +82,30 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 
 ---
 
+## M3b — Projects
+
+**Goal:** introduce project-scoped rules, agents, sessions, directories, and optional model overrides. The previous "no project" baseline is implemented as the always-present `global` project. Full design in [M3b.md](M3b.md).
+
+Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, git backend). Indexing of project directories is staged here (layout + activation check); vector refresh lands in M5.
+
+- [ ] `projects` and `project_directories` tables; system `global` row seeded on first run (cannot be hidden, deleted, or renamed)
+- [ ] `config` additions: `active_project_slug` (NOT NULL, default `'global'`) and `project_llama_on_switch` (`'keep' | 'reload'`, default `'reload'`)
+- [ ] Memory repo layout: top-level `runtime/` and `index/` fold into `projects/global/`; user projects live at `projects/<slug>/{rules.md, agents/, sessions.jsonl, queue.wal, index/<dir-slug>/}`
+- [ ] Prompt assembler: new `projects/<slug>/rules.md` layer between global rules and agent persona
+- [ ] Agent resolution: per-file override of the global agents library by `projects/<slug>/agents/<name>/`
+- [ ] Activation: eager git-repo check on configured directories (warn-and-continue), fresh session, conditional llama-server swap based on `llama_on_switch`
+- [ ] UI: `/projects` page (CRUD + hide), topbar switcher with `Global` always present, project-aware `/agents`, mismatch indicator on status page when `keep` causes a model/preference divergence
+
+**Acceptance tests:** see [M3b.md](M3b.md#acceptance-tests). Highlights:
+
+- [ ] First run seeds the `global` project; `global` cannot be hidden, deleted, or renamed
+- [ ] Switching projects with `llama_on_switch = reload` drains the queue and reloads the llama-server with the destination's effective model; identical effective configs are a no-op regardless of mode
+- [ ] Project agent overrides resolve per-file (project `persona.md` + global `rules.md` works)
+- [ ] Activating a project with a missing directory succeeds and surfaces a "directory missing" badge
+- [ ] Indexable trees produce manifest entries under `projects/<slug>/index/<dir-slug>/`; vector refresh deferred to M5
+
+---
+
 ## M4 — opencode Integration
 
 **Goal:** full agentic coding workflow via opencode, memory transparent to it.

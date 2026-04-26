@@ -2,7 +2,7 @@
 
 ## Goal
 
-Introduce a `Project` concept: a named container for rules, agents, sessions, and 0+ git directories. Projects scope memory, prompt layering, and (optionally) the active model. `(no project)` mode is a permanent, first-class state — existing single-user setups continue to work unchanged when this milestone lands.
+Introduce a `Project` concept: a named container for rules, agents, sessions, and 0+ git directories. Projects scope memory, prompt layering, and (optionally) the active model. The previous "no project" baseline is implemented as the always-present **global project** (slug `global`), so existing single-user setups continue to work unchanged when this milestone lands — they simply run inside the global project by default.
 
 ## Dependencies
 
@@ -26,16 +26,24 @@ A project owns:
 
 A project has a `hidden` boolean. Hidden projects are excluded from pickers and switchers; their data is preserved on disk. Hard delete is deferred to a later iteration.
 
-### `(no project)` mode
+### Global project (`slug = "global"`)
 
-The default state. No active project is selected.
+The system-default project, always present, seeded on first run. Acts as the active project when the user has not selected a more specific one — what was previously called "no project" mode is implemented as `active_project_slug = "global"`.
 
-- Sessions are written to `runtime/sessions.jsonl` (existing M3 location).
-- Only global agents are available.
-- Project rules are not applied.
-- Always defaults to a fresh session; the picker for previous sessions is deferred.
+Special properties:
 
-This mode is permanent — it does not disappear once projects exist. The user can return to it at any time.
+- Always exists: row is seeded on first run and cannot be deleted or hidden.
+- Slug is reserved and immutable; display name is editable.
+- Can carry model overrides like any other project (rare in practice — defaults inherit from `config`).
+
+Behavior:
+
+- Sessions are written to `projects/global/sessions.jsonl`.
+- Project rules from `projects/global/rules.md` are layered if the file exists; by default it does not.
+- Only the global agents library (top-level `agents/`) is visible by default; if the user populates `projects/global/agents/`, those layer on top like any other project.
+- Always defaults to a fresh session on activation; the previous-session picker for the global project is deferred to a later iteration.
+
+The user can return to the global project at any time from the project switcher.
 
 ### Indexable tree
 
@@ -59,18 +67,18 @@ The prompt assembler adds a project tier between global and agent:
 9. conversation turns                    — current session
 ```
 
-**Agent resolution rule:** if the active project has `agents/<name>/<file>.md`, use it; otherwise fall back to the global `agents/<name>/<file>.md`. Resolution is per-file, so a project agent can override `persona.md` while inheriting the global `rules.md`.
+**Agent resolution rule:** if the active project has `agents/<name>/<file>.md`, use it; otherwise fall back to the top-level `agents/<name>/<file>.md` (global agents library). Resolution is per-file, so a project agent can override `persona.md` while inheriting the global `rules.md`.
 
-In `(no project)` mode, layer 3 is omitted and only global agents are visible.
+In the global project, layer 3 is skipped unless `projects/global/rules.md` has been authored (uncommon).
 
 ---
 
 ## Agent Visibility
 
-| Context        | Visible agents                                  |
-|----------------|-------------------------------------------------|
-| In project DT  | Globals + DT-only agents + DT extensions        |
-| In `(no proj)` | Globals only                                    |
+| Context           | Visible agents                                  |
+|-------------------|-------------------------------------------------|
+| In project DT     | Globals + DT-only agents + DT extensions        |
+| In global project | Globals only (unless `projects/global/agents/` is populated) |
 
 The `/agents` and `/projects/<slug>` views badge each agent: `global`, `extends global`, `project-only`. Project-only agents are invisible outside their owning project.
 
@@ -78,23 +86,25 @@ The `/agents` and `/projects/<slug>` views badge each agent: `global`, `extends 
 
 ## Sessions
 
-- A session is bound to its project (or to `(no project)`) at creation. The binding is immutable — sessions never migrate between projects.
-- The session record carries `project: <slug>` (or `null`) in its header, in addition to the path encoding.
+- A session is bound to its project at creation (slug is always set, since `global` is itself a project). The binding is immutable — sessions never migrate between projects.
+- The session record carries `project: <slug>` in its header, in addition to the path encoding.
 - Switching projects always ends the active session; the destination project starts a fresh one.
-- Default on activation is to start a new session. Inside projects, a previous-session picker is available. In `(no project)` the picker is deferred — sessions still write to `runtime/sessions.jsonl` so the data is there when the picker arrives.
+- Default on activation is to start a new session. In user-created projects, a previous-session picker is available. In the global project the picker is deferred — sessions still write to `projects/global/sessions.jsonl` so the data is there when the picker arrives.
 
 ---
 
 ## Project Switch Behavior
 
-A new global config field, `project.on_switch`, controls what happens to the running model when the active project changes.
+A new config field, `project.llama_on_switch`, controls how the **llama-server process** is handled when the active project changes. The name and column explicitly target the llama-server lifecycle (rather than implying behavior through the value alone) so future fields covering the embedder, API server, or other subsystems can coexist without ambiguity.
 
-| Mode      | Behavior                                                                                  |
-|-----------|-------------------------------------------------------------------------------------------|
-| `reload`  | Default. Drain queue, unload current model, load destination project's effective model. Visible loading state in UI. |
-| `keep`    | Current model keeps running. Destination project's prompts are served by whatever model is loaded. UI surfaces the mismatch ("running: X / project preference: Y"). Manual reload required to actually switch the model. |
+| `llama_on_switch` | Behavior                                                                                  |
+|-------------------|-------------------------------------------------------------------------------------------|
+| `reload`          | Default. Drain queue, unload current model, load destination project's effective model. Visible loading state in UI. |
+| `keep`            | Current llama-server keeps running. Destination project's prompts are served by whatever model is loaded. UI surfaces the mismatch ("running: X / project preference: Y"). Manual reload required to actually switch the model. |
 
-The switch is a no-op for the model regardless of mode if the destination project's effective model config equals the currently running model.
+The switch is a no-op for the llama-server regardless of mode if the destination project's effective model config equals the currently running model.
+
+The embedder lifecycle is unaffected by this setting — there is one global embedder shared across all projects in M3b.
 
 `spawn_per_project` (one llama-server per project, port pool, idle eviction) is deferred. See "Future Iterations".
 
@@ -133,6 +143,8 @@ Stored as nullable columns in the `projects` table. NULL means "inherit from glo
 | `created_at`       | TIMESTAMP | Set on insert                                      |
 | `saved_at`         | TIMESTAMP | Updated on edit                                    |
 
+A row with `slug = "global"` is seeded on first run and is treated as a system row: cannot be deleted, cannot be hidden, slug is locked. Display name and model overrides remain editable.
+
 ### `project_directories` (new)
 
 | Column         | Type    | Notes                                              |
@@ -144,29 +156,42 @@ Composite PK `(project_slug, path)`.
 
 ### `config` additions
 
-| Column                | Type    | Notes                                |
-|-----------------------|---------|--------------------------------------|
-| `active_project_slug` | TEXT    | Nullable; NULL means `(no project)`  |
-| `project_on_switch`   | TEXT    | `'keep' \| 'reload'`, default `'reload'` |
+| Column                     | Type    | Notes                                                                                       |
+|----------------------------|---------|---------------------------------------------------------------------------------------------|
+| `active_project_slug`      | TEXT    | NOT NULL, default `'global'`. Always references a row in `projects`.                        |
+| `project_llama_on_switch`  | TEXT    | `'keep' \| 'reload'`, default `'reload'`. Controls llama-server lifecycle on project switch.|
 
 ### Sessions
 
-The session record gains a `project` field (slug string or `null`). For sessions stored in `runtime/sessions.jsonl`, this is always `null`. For sessions in `projects/<slug>/sessions.jsonl`, it matches the slug.
+The session record gains a `project` field — always set to the active project's slug, never null (since `global` is itself a project). The path encoding (`projects/<slug>/sessions.jsonl`) and the in-record `project: <slug>` field always agree.
 
 ---
 
-## Memory Repo Layout (additions)
+## Memory Repo Layout
+
+The previous top-level `index/` and `runtime/` directories are folded into `projects/global/`. Cross-project base content (`global/`, `agents/`) stays at the top level.
 
 ```
 memory/
-  global/         (unchanged)
-  agents/         (unchanged)
-  index/          (unchanged — global agents' episodes still indexed here)
-  runtime/
-    sessions.jsonl    (used by `(no project)` mode)
-    queue.wal
+  global/                              (unchanged — cross-project base content)
+    rules.md
+    user.md
+    facts.md
+  agents/                              (unchanged — global agents library)
+    <name>/
+      persona.md
+      rules.md
+      notes.md
+      episodes/
   projects/                            ← NEW
-    <slug>/
+    global/                            ← system project; replaces previous top-level `index/` and `runtime/`
+      sessions.jsonl                       (was runtime/sessions.jsonl)
+      queue.wal                            (was runtime/queue.wal)
+      index/                               (was top-level index/)
+        <dir-slug>/
+          vectors.bin
+          manifest.json
+    <slug>/                            ← user-created projects
       rules.md
       agents/
         <name>/
@@ -175,13 +200,14 @@ memory/
           notes.md
           episodes/
       sessions.jsonl
+      queue.wal
       index/
         <dir-slug>/
           vectors.bin
           manifest.json
 ```
 
-Each indexable tree gets its own subdirectory under the project's `index/` so refresh, rebuild, and removal are localized.
+Each indexable tree gets its own subdirectory under the project's `index/` so refresh, rebuild, and removal are localized. Every project — including `global` — owns its own `sessions.jsonl`, `queue.wal`, and `index/`, so there is no special-cased path in the memory layer.
 
 ---
 
@@ -191,12 +217,12 @@ When a project is activated (selected via UI, or loaded from `active_project_slu
 
 1. **Eager directory check.** All configured directories must exist and be valid git repos (resolved via `go-git`). Missing or invalid directories are flagged with a per-project UI badge ("directory missing"); queries against those trees skip silently. Activation still succeeds — the project is usable, the user is told which directories are unhealthy.
 2. **Session start.** A fresh session is created in `projects/<slug>/sessions.jsonl`. Previous sessions remain available via the picker.
-3. **Model swap (if needed).** Per `project.on_switch`:
+3. **llama-server swap (if needed).** Per `project.llama_on_switch`:
    - `reload` — drain queue, stop llama-server, start with the project's effective model config. Skip if the effective config matches the currently running model.
-   - `keep` — no model action. UI surfaces the mismatch when the running model differs from the project's preferred model.
+   - `keep` — no llama-server action. UI surfaces the mismatch when the running model differs from the project's preferred model.
 4. **Index check.** For each tree, compare HEAD commit against the manifest. The actual embedding refresh is part of M5 once the embedder pipeline lands; in M3b this step is a placeholder that records HEAD per tree.
 
-Switching to `(no project)` is symmetric: drain queue if `reload`, swap to global model config, write subsequent sessions to `runtime/sessions.jsonl`.
+Switching to the global project runs the same flow — there is no special path. Sessions then write to `projects/global/sessions.jsonl`, and the model swap follows `llama_on_switch` against the global project's effective config (which inherits from `config` unless overridden).
 
 ---
 
@@ -204,52 +230,56 @@ Switching to `(no project)` is symmetric: drain queue if `reload`, swap to globa
 
 ### `/projects` (new page)
 - Lists all non-hidden projects (display name, slug, directory count). Toggle to show hidden.
+- The `global` row is always present at the top, marked as the system project (no Hide / Delete actions; slug is locked).
 - **Create**: form with display name (slug auto-generated, editable), initial directory list, optional model overrides.
 - **Edit**: same fields, slug read-only.
-- **Hide / unhide** action.
+- **Hide / unhide** action (disabled for `global`).
 - Per-project indicator for missing directories.
 
 ### Topbar
-- Project switcher dropdown showing the active project (or "(no project)") and the list of non-hidden projects.
+- Project switcher dropdown showing the active project and the list of non-hidden projects (with `global` always at the top, labeled "Global").
 - Switching triggers the activation sequence; UI shows a loading state during `reload`.
 
 ### `/config`
-- New "Project" section. `on_switch` selector with caveats inline:
-  - `keep` — "Current model keeps running. Faster switch, but the new project's preferred model is ignored until manual reload."
+- New "Project" section. `llama_on_switch` selector with caveats inline:
+  - `keep` — "llama-server keeps running. Faster switch, but the new project's preferred model is ignored until manual reload."
   - `reload` — "Drains queue, unloads current model, loads new project's model. Slower switch, correct behavior."
 
 ### `/agents`
 - Scoped to the active project.
 - Each agent badged: `global`, `extends global`, `project-only`.
-- In `(no project)`, only globals are listed.
+- In the global project, only the global agents library is listed by default.
 
 ### Status page
-- Shows active project (or `(no project)`).
+- Shows active project (always set, never empty — defaults to "Global").
 - Per-project missing-directory warnings.
-- Currently loaded model + active project's preferred model. Highlight when `keep` mode has caused a mismatch.
+- Currently loaded model + active project's preferred model. Highlight when `keep` has caused a mismatch.
 
 ---
 
 ## Acceptance Tests
 
+- [ ] First run → `projects` table seeded with a `global` row; `active_project_slug = 'global'`; `memory/projects/global/` exists with empty `sessions.jsonl` and (lazily) `queue.wal`
+- [ ] Attempt to delete or hide the `global` project → blocked by UI and DB constraint
+- [ ] Attempt to rename the `global` slug → blocked; display name remains editable
 - [ ] Create a project via UI → row appears in `projects` table, directory created at `memory/projects/<slug>/`, slug auto-generated from display name and editable on create
 - [ ] Edit a project → display name and overrides change, slug is read-only
 - [ ] Activate a project → `active_project_slug` updated, fresh session opens at `projects/<slug>/sessions.jsonl` with `project: <slug>` in the header
 - [ ] Switch from project A to project B (default `reload` mode) → queue drains, llama-server restarts with B's effective model
-- [ ] Switch with `on_switch = keep` → llama-server keeps running, status page shows model mismatch when applicable
+- [ ] Switch with `llama_on_switch = keep` → llama-server keeps running, status page shows model mismatch when applicable
 - [ ] Switch between two projects with identical effective model config → no llama-server restart, regardless of mode
-- [ ] Switch to `(no project)` from a project → subsequent sessions write to `runtime/sessions.jsonl` with `project: null`, only global agents are visible
+- [ ] Switch to the global project from a user project → subsequent sessions write to `projects/global/sessions.jsonl` with `project: global`, only the global agents library is visible
 - [ ] Activate a project whose configured directory is missing → activation succeeds, UI shows "directory missing" badge for that tree, no crash
-- [ ] Create `projects/dt/agents/trader/persona.md` with no global counterpart → agent visible in DT, invisible in `(no project)` and other projects
-- [ ] Create `projects/dt/agents/coder/persona.md` with global `agents/coder/persona.md` present → DT-active prompt uses DT's persona; switching to `(no project)` reverts to the global persona
-- [ ] Set per-project `model_path` → activating that project loads the override; activating `(no project)` reverts to the global `model_path`
-- [ ] Hide a project → it disappears from the topbar switcher and the default `/projects` list, data and sessions remain on disk
+- [ ] Create `projects/dt/agents/trader/persona.md` with no global counterpart → agent visible in DT, invisible in the global project and other projects
+- [ ] Create `projects/dt/agents/coder/persona.md` with top-level `agents/coder/persona.md` present → DT-active prompt uses DT's persona; switching to the global project reverts to the global persona
+- [ ] Set per-project `model_path` → activating that project loads the override; activating the global project reverts to its effective config (inherited from `config` unless overridden)
+- [ ] Hide a non-global project → it disappears from the topbar switcher and the default `/projects` list, data and sessions remain on disk
 - [ ] Unhide a project → re-appears in pickers, all data intact
 - [ ] Project rules file present → `projects/<slug>/rules.md` is injected into the prompt between global rules and agent persona (verify via logs page token breakdown)
 - [ ] Switch projects mid-session → active session ends, new fresh session starts in destination project; previous session still reachable via picker
-- [ ] First-run user with no projects → stays in `(no project)` indefinitely, no auto-seeded "Untitled" project
+- [ ] First-run user with no user-created projects → remains in the global project indefinitely, no auto-seeded "Untitled" project beyond `global` itself
 - [ ] Two directories configured for one project → both create distinct subdirectories at `projects/<slug>/index/<dir-slug>/` (manifest only in M3b; vectors in M5)
-- [ ] Restart harness with `active_project_slug` set → activation runs on startup, eager directory check executes, status page reflects active project
+- [ ] Restart harness → `active_project_slug` is honored on startup, activation runs, eager directory check executes, status page reflects active project
 
 ---
 
@@ -259,7 +289,7 @@ Deliberately out of scope for M3b. Listed here so they don't get lost.
 
 - **`spawn_per_project` switch mode.** One llama-server per project, ports drawn from a configurable pool, API server routing per active project, idle-eviction policy (LRU-style auto-stop after N minutes of inactivity). Significant escalation in `proc/` and `api/` complexity.
 - **Hard project deletion.** Currently only the `hidden` flag exists. Real deletion (drop DB rows, `rm -rf memory/projects/<slug>/`, clean indexes) needs a confirmation flow and ideally an undo affordance.
-- **Previous-session picker in `(no project)`.** Sessions are written to `runtime/sessions.jsonl` but the UI does not surface them for resumption yet.
+- **Previous-session picker for the global project.** Sessions are written to `projects/global/sessions.jsonl` but the UI does not surface them for resumption yet.
 - **Cross-project search.** Fan-out + merge across project indexes. Rare in practice; trivial to add when needed.
 - **Shared directories across projects.** Requires reference counting on the index and per-project tagging on retrieval results.
 - **Per-project embedder and per-project ports.** Currently embedder and all ports stay global.
