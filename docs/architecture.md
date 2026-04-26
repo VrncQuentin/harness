@@ -90,7 +90,7 @@ Owns conversation lifecycle. Used by the OpenAI-compatible API server when openc
 - **On start:** resolve active agent → trigger memory read → assemble initial context
 - **Per turn:** append to conversation history → call Prompt Assembler → send to Queue
 - **On end:** call summarizer (Qwen) → write episode file → trigger git commit
-- **Persistence:** append-only `runtime/sessions.jsonl` in the memory repo
+- **Persistence:** append-only `projects/<active>/sessions.jsonl` in the memory repo (defaults to `projects/global/` when no user project is selected)
 
 ### Prompt Assembler (`internal/prompt`)
 Builds the final context sent to the model. Layers assembled in order:
@@ -122,7 +122,7 @@ Mediates all reads and writes to the git memory repo.
 3. Return ordered list of chunks to Prompt Assembler
 
 **Write path:**
-1. Post-session: summarize via Qwen → write `agents/<n>/episodes/<timestamp>.md`
+1. Post-session: summarize via Qwen → write `projects/<active>/episodes/<n>/<timestamp>.md`
 2. Embed new chunks → update `index/vectors.bin` + `index/manifest.json`
 3. Commit via Git Backend with structured message
 
@@ -168,7 +168,7 @@ ANN index: flat scan for small corpora (<10k chunks). Upgrade to usearch or hnsw
 Single-model request queue. Simple bounded channel in Go.
 
 - **Backpressure:** reject with clear error when full, UI shows live queue depth
-- **WAL:** append-only file (`runtime/queue.wal`) for crash recovery — cleared on clean shutdown
+- **WAL:** append-only file (`projects/<active>/queue.wal`, defaulting to `projects/global/queue.wal`) for crash recovery — cleared on clean shutdown
 - **Cancellation:** supports context cancellation per request (client disconnect cancels generation)
 
 ### Inference Client (`internal/inference`)
@@ -239,26 +239,42 @@ Retention: raw rows kept for 30 days, downsampled hourly aggregates kept indefin
 
 ```
 memory/
-  global/
-    rules.md              ← always-on base prompt (agents.md equivalent)
-    user.md               ← stable facts about the user, hand-authored
-    facts.md              ← promoted cross-agent facts, kept lean
-  agents/
+  global/                      ← cross-project base content
+    rules.md                   ← always-on base prompt (agents.md equivalent)
+    user.md                    ← stable facts about the user, hand-authored
+    facts.md                   ← promoted cross-agent facts, kept lean
+  agents/                      ← global agents library (definition only)
     <n>/
-      persona.md          ← agent-specific role and identity
-      rules.md            ← agent-specific behavioural rules (optional, never trimmed)
-      notes.md            ← persistent facts for this agent
+      persona.md               ← agent-specific role and identity
+      rules.md                 ← agent-specific behavioural rules (optional, never trimmed)
+      notes.md                 ← persistent facts for this agent
+  projects/                    ← per-project session/episode/queue/index data
+    global/                    ← system project, default when no user project is active
+      sessions.jsonl           ← append-only session log
+      queue.wal                ← crash recovery WAL, cleared on clean shutdown
       episodes/
-        2026-04-20T14:32.md   ← one file per session summary
-  index/
-    vectors.bin           ← ANN index (committed, portable)
-    manifest.json         ← maps chunk SHA → file path + line range
-  runtime/
-    sessions.jsonl        ← append-only session log
-    queue.wal             ← crash recovery WAL, cleared on clean shutdown
+        <n>/
+          2026-04-20T14:32.md  ← one file per session summary
+      index/                   ← ANN indexes, one entry per indexable tree (M5)
+        _episodes/             ← reserved slot: embeddings of this project's episodes
+          vectors.bin
+          manifest.json
+        <dir-slug>/             ← embeddings of one attached directory
+          vectors.bin
+          manifest.json
+    <slug>/                    ← user-created projects (M3b)
+      rules.md                 ← project-specific rules
+      agents/<n>/{persona.md, rules.md, notes.md}   ← optional project agent overrides/additions
+      sessions.jsonl
+      queue.wal
+      episodes/<n>/<timestamp>.md
+      index/_episodes/{vectors.bin, manifest.json}
+      index/<dir-slug>/{vectors.bin, manifest.json}
 ```
 
 Everything in the repo is committed. The repo travels with the user — portable across machines and mediums.
+
+M3 stages the `projects/global/` paths immediately (sessions, queue WAL, episodes); M3b introduces the `projects` table, the `active_project_slug` config, and user-created project rows on top of that layout.
 
 The shared `harness.db` SQLite file (config + metrics) lives alongside the harness binary, not in the memory repo — it is machine-local operational data, not user data.
 
@@ -298,7 +314,7 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **Single SQLite file for all persistent state.** Config (single-row typed table) and metrics (time-series tables) share `harness.db` in the same directory as the binary. One `*sql.DB` handle is opened in `main` and passed to both subsystems — no per-package database connection, no lock contention. The UI reads metrics directly — no separate metrics server. Each milestone adds its own table(s). On restart, history is preserved. Prometheus export (M8) reads from the same database.
 
-**Memory repo is never auto-created.** If `memory.repo_path` is not set or the path does not exist, the harness refuses to start and prompts the user to either provide an existing repo path or run `init-memory <path>` explicitly. No silent creation.
+**Memory repo is never auto-created.** If `memory.repo_path` is not set or the path does not exist, the status page surfaces it as a setup error (the UI server is already up by then) and the user fixes it from the `/config` page — either by pointing at an existing repo or by creating one externally first. No silent creation, no terminal interaction.
 
 **Append-only sessions.jsonl.** Never mutate, only append. Trivial crash recovery, full audit log.
 

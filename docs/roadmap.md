@@ -61,24 +61,45 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 
 **Goal:** sessions are summarized and committed. Recency retrieval works.
 
+M3 stages the project-scoped layout that M3b later formalizes: sessions, episodes, queue WAL, and indexes live under `projects/global/` from day one (`global` is a hardcoded slug at this milestone; the `projects` table and multi-project plumbing are introduced in M3b). Top-level `agents/<n>/` holds definition only — episodes live under the project.
+
 - [ ] Git Backend: go-git wrapper, commit, log query, blob fetch
-- [ ] Startup check: if `memory.repo_path` unset or path missing, refuse to start and prompt user to set it or run `init-memory <path>`
-- [ ] `init-memory <path>` command: explicit one-time scaffold of directory structure + initial commit
 - [ ] Session lifecycle: on-end → summarize via Qwen → write episode file → commit
-- [ ] `runtime/sessions.jsonl`: append-only session log
+- [ ] `projects/global/sessions.jsonl`: append-only session log
 - [ ] Recency retrieval: inject last N episodes on session start
 - [ ] UI: memory browser page — episode list by agent/date, view episode content
 
 **Acceptance tests:**
-- [ ] Start harness with no `memory.repo_path` set → startup refuses with actionable error message
-- [ ] Start harness with a path that does not exist → startup refuses with actionable error message
-- [ ] Run `init-memory ~/memory` → directory structure is created, git repo initialized, initial commit present
-- [ ] Complete a session → episode file appears in `agents/<n>/episodes/`, committed to git
+- [ ] Complete a session → episode file appears at `projects/global/episodes/<agent>/<timestamp>.md`, committed to git
 - [ ] Episode commit message matches format `[agent:x] [type:episode] ...`
 - [ ] Start a new session → previous episode content appears in the assembled prompt
-- [ ] Complete 10 sessions → all 10 episode files present in git log, `sessions.jsonl` has 10 entries
-- [ ] Corrupt `sessions.jsonl` by appending garbage → harness starts without crashing, logs a warning
+- [ ] Complete 10 sessions → all 10 episode files present in git log, `projects/global/sessions.jsonl` has 10 entries
+- [ ] Corrupt `projects/global/sessions.jsonl` by appending garbage → harness starts without crashing, logs a warning
 - [ ] UI memory browser → lists episodes for active agent, click one to view content
+
+---
+
+## M3b — Projects
+
+**Goal:** introduce project-scoped rules, agents, sessions, directories, and optional model overrides. The previous "no project" baseline is implemented as the always-present `global` project. Full design in [M3b.md](M3b.md).
+
+Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, git backend). Indexing of project directories is staged here (layout + activation check); vector refresh lands in M5.
+
+- [ ] `projects` and `project_directories` tables; system `global` row seeded on first run (cannot be hidden, deleted, or renamed)
+- [ ] `config` additions: `active_project_slug` (NOT NULL, default `'global'`) and `project_llama_on_switch` (`'keep' | 'reload'`, default `'reload'`)
+- [ ] Memory repo layout: top-level `runtime/` and `index/` fold into `projects/global/`; episodes move out of `agents/<name>/episodes/` into `projects/<slug>/episodes/<agent-name>/` (agent dirs become definition-only); user projects live at `projects/<slug>/{rules.md, agents/, sessions.jsonl, queue.wal, episodes/<agent-name>/, index/<dir-slug>/}`
+- [ ] Prompt assembler: new `projects/<slug>/rules.md` layer between global rules and agent persona
+- [ ] Agent resolution: per-file override of the global agents library by `projects/<slug>/agents/<name>/`
+- [ ] Activation: eager git-repo check on configured directories (warn-and-continue), fresh session, conditional llama-server swap based on `llama_on_switch`
+- [ ] UI: `/projects` page (CRUD + hide), topbar switcher with `Global` always present, project-aware `/agents`, mismatch indicator on status page when `keep` causes a model/preference divergence
+
+**Acceptance tests:** see [M3b.md](M3b.md#acceptance-tests). Highlights:
+
+- [ ] First run seeds the `global` project; `global` cannot be hidden, deleted, or renamed
+- [ ] Switching projects with `llama_on_switch = reload` drains the queue and reloads the llama-server with the destination's effective model; identical effective configs are a no-op regardless of mode
+- [ ] Project agent overrides resolve per-file (project `persona.md` + global `rules.md` works)
+- [ ] Activating a project with a missing directory succeeds and surfaces a "directory missing" badge
+- [ ] Indexable trees produce manifest entries under `projects/<slug>/index/<dir-slug>/`; vector refresh deferred to M5
 
 ---
 
@@ -107,16 +128,17 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 **Goal:** embedding-based retrieval blended with recency.
 
 - [ ] Embedder sidecar: nomic-embed-text, health check, restart on crash
-- [ ] Embed-on-commit pipeline: new episode → embed chunks → update `index/vectors.bin` + `index/manifest.json` → commit
+- [ ] Embed-on-commit pipeline (episodes): new episode → embed chunks → update `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` → commit
+- [ ] Embed-on-commit pipeline (attached directories): for each tree configured on the active project, walk by HEAD → embed chunks → update `projects/<active>/index/<dir-slug>/{vectors.bin, manifest.json}` → commit
 - [ ] ANN search: flat scan initially, upgrade to usearch if latency becomes a problem
 - [ ] Blended retrieval: `score = (semantic_weight * similarity) + (recency_weight * recency_decay)`
-- [ ] Index rebuild command: walk commits, re-embed missing SHAs (idempotent)
+- [ ] Index rebuild (UI-triggered from memory browser): walk commits, re-embed missing SHAs (idempotent), per-tree
 - [ ] UI: memory browser shows retrieval scores per episode
 
 **Acceptance tests:**
 - [ ] Start embedder sidecar → appears healthy in UI status page
 - [ ] Kill embedder → harness detects and restarts it, same as llama-server
-- [ ] Complete a session → `index/vectors.bin` and `index/manifest.json` updated and committed
+- [ ] Complete a session → `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` updated and committed
 - [ ] Ask a question referencing content from session N-10 → that episode is retrieved despite not being the most recent
 - [ ] Ask a question with no relevant past sessions → retrieval returns empty gracefully, no crash
 - [ ] Run index rebuild on a fresh clone of the memory repo → index reconstructed correctly, retrieval works

@@ -127,22 +127,37 @@ A plain git repo the user creates and manages. The harness reads and writes it v
 Expected structure:
 ```
 memory/
-  global/
+  global/                      ← cross-project base content
     rules.md
     user.md
     facts.md
-  agents/
+  agents/                      ← global agents library (definition only)
     coder/
       persona.md
       rules.md
       notes.md
+  projects/                    ← per-project session/episode/queue/index data
+    global/                    ← system project, default scope
+      sessions.jsonl
+      queue.wal
       episodes/
-  index/
-    vectors.bin
-    manifest.json
-  runtime/
-    sessions.jsonl
-    queue.wal
+        coder/
+          2026-04-20T14:32.md
+      index/                   ← one entry per indexable tree
+        _episodes/             ← reserved: embeddings of this project's episodes
+          vectors.bin
+          manifest.json
+        <dir-slug>/             ← embeddings of one attached directory
+          vectors.bin
+          manifest.json
+    <slug>/                    ← user-created projects (M3b)
+      rules.md
+      agents/coder/{persona.md, rules.md, notes.md}
+      sessions.jsonl
+      queue.wal
+      episodes/coder/<timestamp>.md
+      index/_episodes/{vectors.bin, manifest.json}
+      index/<dir-slug>/{vectors.bin, manifest.json}
 ```
 
 See `docs/agents.md` for the content of `rules.md`, `user.md`, and agent personas.
