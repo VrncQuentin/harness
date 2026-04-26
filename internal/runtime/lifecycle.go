@@ -97,7 +97,7 @@ func (rt *Runtime) startServices(
 		Events:      events,
 		CheckPeriod: 5 * time.Second,
 		HTTPClient:  httpclient.New(),
-		Output:      rt.rings.Llama,
+		Output:      rt.logRings.Llama,
 	})
 	go rt.llamaMgr.Run(ctx)
 
@@ -115,7 +115,7 @@ func (rt *Runtime) startServices(
 		Events:      events,
 		CheckPeriod: 5 * time.Second,
 		HTTPClient:  httpclient.New(),
-		Output:      rt.rings.Embed,
+		Output:      rt.logRings.Embed,
 	})
 	go rt.embedMgr.Run(ctx)
 

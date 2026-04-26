@@ -66,10 +66,12 @@ func ForwardEvents(
 			}
 			logProcEvent(ev)
 			l, e := getMgrs()
-			pushStatus(uiSrv, l, e)
+			pushStatus(l, "llama-server", uiSrv.SetLlamaStatus)
+			pushStatus(e, "embedder", uiSrv.SetEmbedderStatus)
 		case <-ticker.C:
 			l, e := getMgrs()
-			pushStatus(uiSrv, l, e)
+			pushStatus(l, "llama-server", uiSrv.SetLlamaStatus)
+			pushStatus(e, "embedder", uiSrv.SetEmbedderStatus)
 		}
 	}
 }
@@ -88,18 +90,12 @@ func logProcEvent(ev proc.Event) {
 	}
 }
 
-func pushStatus(uiSrv *ui.Server, llamaMgr, embedMgr *proc.Manager) {
-	if llamaMgr != nil {
-		uiSrv.SetLlamaStatus(processStatus(llamaMgr, "llama-server"))
+func pushStatus(mgr *proc.Manager, name string, set func(ui.ProcessStatus)) {
+	if mgr == nil {
+		return
 	}
-	if embedMgr != nil {
-		uiSrv.SetEmbedderStatus(processStatus(embedMgr, "embedder"))
-	}
-}
-
-func processStatus(m *proc.Manager, name string) ui.ProcessStatus {
-	st := m.Status()
-	return ui.ProcessStatus{
+	st := mgr.Status()
+	set(ui.ProcessStatus{
 		Name:         name,
 		Running:      st.Running,
 		Healthy:      st.Healthy,
@@ -107,5 +103,5 @@ func processStatus(m *proc.Manager, name string) ui.ProcessStatus {
 		LastError:    st.LastError,
 		ExitCode:     st.ExitCode,
 		Failed:       st.Failed,
-	}
+	})
 }

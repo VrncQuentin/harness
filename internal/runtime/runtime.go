@@ -24,8 +24,8 @@ var ErrConfigStoreUnavailable = errors.New("config store unavailable (harness.db
 // managers to block while the UI event forwarder catches up.
 const EventBufferSize = 64
 
-// Rings groups the in-memory log buffers shared by services and the UI.
-type Rings struct {
+// LogRings groups the in-memory log buffers shared by services and the UI.
+type LogRings struct {
 	Log   *logbuf.Ring
 	Llama *logbuf.Ring
 	Embed *logbuf.Ring
@@ -38,7 +38,7 @@ type Runtime struct {
 	mu       sync.Mutex
 	cfg      config.Config
 	cfgStore config.Store
-	rings    Rings
+	logRings LogRings
 
 	llamaMgr *proc.Manager
 	embedMgr *proc.Manager
@@ -53,11 +53,11 @@ type Runtime struct {
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.
-func New(cfg config.Config, cfgStore config.Store, rings Rings) *Runtime {
+func New(cfg config.Config, cfgStore config.Store, rings LogRings) *Runtime {
 	return &Runtime{
 		cfg:      cfg,
 		cfgStore: cfgStore,
-		rings:    rings,
+		logRings: rings,
 	}
 }
 

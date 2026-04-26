@@ -15,9 +15,9 @@ func TestNewStoresInitialConfig(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Agent.Active = "coder"
 
-	rt := New(cfg, nil, Rings{})
+	rt := New(cfg, nil, LogRings{})
 
-	if got := rt.getActive(); got != "coder" {
+	if got := rt.getActiveAgent(); got != "coder" {
 		t.Fatalf("active agent = %q, want coder", got)
 	}
 }
@@ -31,7 +31,7 @@ func TestNewEventChannelUsesRuntimeBuffer(t *testing.T) {
 }
 
 func TestRestartCallbacksTolerateMissingManagers(t *testing.T) {
-	rt := New(config.Defaults(), nil, Rings{})
+	rt := New(config.Defaults(), nil, LogRings{})
 
 	rt.RestartLlama()
 	rt.RestartEmbedder()
@@ -44,7 +44,7 @@ func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	cfg.API.Enabled = true
 	cfg.API.Port = port
 
-	rt := New(cfg, nil, Rings{})
+	rt := New(cfg, nil, LogRings{})
 	rt.reqQueue = queue.New(1, "", nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -24,20 +24,9 @@ func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
 	}
 	out := make([]ui.AgentInfo, 0, len(agents))
 	for _, a := range agents {
-		info := ui.AgentInfo{
-			Name:        a.Name,
-			PersonaPath: a.PersonaPath,
-			RulesPath:   a.RulesPath,
-			NotesPath:   a.NotesPath,
-		}
-		if persona, err := readOptional(ad.mem, a.PersonaPath); err == nil {
-			info.Persona = persona
-		}
-		if rules, err := readOptional(ad.mem, a.RulesPath); err == nil {
-			info.Rules = rules
-		}
-		if notes, err := readOptional(ad.mem, a.NotesPath); err == nil {
-			info.Notes = notes
+		info, err := ad.Get(a.Name)
+		if err != nil {
+			continue
 		}
 		out = append(out, info)
 	}
@@ -122,7 +111,7 @@ type apiAssemblerAdapter struct {
 
 func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, conversation []inference.Message) ([]inference.Message, error) {
 	if agentName == "" {
-		agentName = ad.rt.getActive()
+		agentName = ad.rt.getActiveAgent()
 	}
 	if agentName == "" {
 		return nil, errNoActiveAgent

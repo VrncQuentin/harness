@@ -111,16 +111,16 @@ func (rt *Runtime) ApplyConfig(
 	if old.Queue.WALPath != loaded.Queue.WALPath {
 		result.RestartNeeded = append(result.RestartNeeded, "queue WAL path")
 	}
-	if old.Log.RingMaxEntries != loaded.Log.RingMaxEntries && rt.rings.Log != nil {
-		rt.rings.Log.Resize(loaded.Log.RingMaxEntries)
+	if old.Log.RingMaxEntries != loaded.Log.RingMaxEntries && rt.logRings.Log != nil {
+		rt.logRings.Log.Resize(loaded.Log.RingMaxEntries)
 		result.LiveApplied = true
 	}
 	if old.Log.ProcMaxLines != loaded.Log.ProcMaxLines {
-		if rt.rings.Llama != nil {
-			rt.rings.Llama.Resize(loaded.Log.ProcMaxLines)
+		if rt.logRings.Llama != nil {
+			rt.logRings.Llama.Resize(loaded.Log.ProcMaxLines)
 		}
-		if rt.rings.Embed != nil {
-			rt.rings.Embed.Resize(loaded.Log.ProcMaxLines)
+		if rt.logRings.Embed != nil {
+			rt.logRings.Embed.Resize(loaded.Log.ProcMaxLines)
 		}
 		result.LiveApplied = true
 	}

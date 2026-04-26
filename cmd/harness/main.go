@@ -75,7 +75,7 @@ func run() error {
 	cfg, configured := loadInitialConfig(uiServer, cfgStore)
 
 	events := harnessruntime.NewEventChannel()
-	rt := harnessruntime.New(cfg, cfgStore, harnessruntime.Rings{
+	rt := harnessruntime.New(cfg, cfgStore, harnessruntime.LogRings{
 		Log:   logRing,
 		Llama: llamaRing,
 		Embed: embedRing,

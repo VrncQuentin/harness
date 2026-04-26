@@ -28,7 +28,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server) {
 	}
 
 	rt.memReader = memory.NewDirReader(rt.cfg.Memory.RepoPath)
-	rt.agentReg = agent.NewDiskRegistry(rt.memReader, rt.getActive, rt.setActive)
+	rt.agentReg = agent.NewDiskRegistry(rt.memReader, rt.getActiveAgent, rt.setActiveAgent)
 	rt.assembler = prompt.NewDiskAssembler(rt.memReader, rt.agentReg, rt.cfg.Prompt)
 	uiServer.SetMemoryStore(rt.memReader)
 
@@ -71,13 +71,13 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	uiServer.SetMemoryStore(nil)
 }
 
-func (rt *Runtime) getActive() string {
+func (rt *Runtime) getActiveAgent() string {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.cfg.Agent.Active
 }
 
-func (rt *Runtime) setActive(name string) error {
+func (rt *Runtime) setActiveAgent(name string) error {
 	rt.mu.Lock()
 	store := rt.cfgStore
 	hr := rt.hotReload
