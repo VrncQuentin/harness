@@ -63,19 +63,19 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 
 M3 stages the project-scoped layout that M3b later formalizes: sessions, episodes, queue WAL, and indexes live under `projects/global/` from day one (`global` is a hardcoded slug at this milestone; the `projects` table and multi-project plumbing are introduced in M3b). Top-level `agents/<n>/` holds definition only — episodes live under the project.
 
-- [ ] Git Backend: go-git wrapper, commit, log query, blob fetch
-- [ ] Session lifecycle: on-end → summarize via Qwen → write episode file → commit
-- [ ] `projects/global/sessions.jsonl`: append-only session log
-- [ ] Recency retrieval: inject last N episodes on session start
-- [ ] UI: memory browser page — episode list by agent/date, view episode content
+- [x] Git Backend: go-git wrapper, commit, log query, blob fetch
+- [x] Session lifecycle: on-end → summarize via Qwen → write episode file → commit
+- [x] `projects/global/sessions.jsonl`: append-only session log
+- [x] Recency retrieval: inject last N episodes on session start
+- [x] UI: memory browser page — episode list by agent/date, view episode content
 
 **Acceptance tests:**
-- [ ] Complete a session → episode file appears at `projects/global/episodes/<agent>/<timestamp>.md`, committed to git
-- [ ] Episode commit message matches format `[agent:x] [type:episode] ...`
-- [ ] Start a new session → previous episode content appears in the assembled prompt
-- [ ] Complete 10 sessions → all 10 episode files present in git log, `projects/global/sessions.jsonl` has 10 entries
-- [ ] Corrupt `projects/global/sessions.jsonl` by appending garbage → harness starts without crashing, logs a warning
-- [ ] UI memory browser → lists episodes for active agent, click one to view content
+- [x] Complete a session → episode file appears at `projects/global/episodes/<agent>/<timestamp>.md`, committed to git
+- [x] Episode commit message matches format `[agent:x] [type:episode] ...`
+- [x] Start a new session → previous episode content appears in the assembled prompt
+- [x] Complete 10 sessions → all 10 episode files present in git log, `projects/global/sessions.jsonl` has 10 entries
+- [x] Corrupt `projects/global/sessions.jsonl` by appending garbage → harness starts without crashing, logs a warning
+- [x] UI memory browser → lists episodes for active agent, click one to view content
 
 ---
 
