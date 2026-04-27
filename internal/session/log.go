@@ -27,11 +27,13 @@ type Record struct {
 	EpisodePath string    `json:"episode_path"`
 }
 
-// readBufferLimit caps a single sessions.jsonl line to 1 MiB. A line
+// readMaxLineBytes caps a single sessions.jsonl line at 1 MiB. A line
 // longer than this is almost certainly garbled data appended by a
 // crashed writer; we still want the bufio.Scanner to recover instead
-// of returning ErrTooLong on the whole file.
-const readBufferLimit = 1024 * 1024
+// of returning ErrTooLong on the whole file. The same value is used as
+// both the initial allocation and the growth ceiling so the buffer
+// math stays self-evidently correct.
+const readMaxLineBytes = 1024 * 1024
 
 // ReadAll parses the entire log at path. Garbled lines are skipped with
 // a slog.Warn that names the line number so an operator can find the
@@ -51,7 +53,7 @@ func ReadAll(path string) ([]Record, error) {
 	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), readBufferLimit)
+	scanner.Buffer(make([]byte, 0, readMaxLineBytes), readMaxLineBytes)
 	var out []Record
 	line := 0
 	for scanner.Scan() {
