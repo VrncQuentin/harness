@@ -123,6 +123,9 @@ type Server struct {
 	chatRunnerMu sync.RWMutex
 	chatRunner   ChatRunner
 
+	sessionStoreMu sync.RWMutex
+	sessionStore   SessionStore
+
 	logRing   atomic.Pointer[logbuf.Ring]
 	llamaRing atomic.Pointer[logbuf.Ring]
 	embedRing atomic.Pointer[logbuf.Ring]
@@ -384,6 +387,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/agents/notes", s.handleAgentsNotes)
 	mux.HandleFunc("/chat", s.handleChat)
 	mux.HandleFunc("/chat/stream", s.handleChatStream)
+	mux.HandleFunc("/chat/save", s.handleChatSave)
+	mux.HandleFunc("/chat/save/beacon", s.handleChatSaveBeacon)
+	mux.HandleFunc("/chat/sessions", s.handleChatSessions)
+	mux.HandleFunc("/chat/session", s.handleChatSessionResume)
 	mux.HandleFunc("/memory", s.handleMemory)
 	mux.HandleFunc("/memory/edit", s.handleMemoryEdit)
 	mux.HandleFunc("/memory/save", s.handleMemorySave)

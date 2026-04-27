@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/vrnc/harness/internal/inference"
@@ -35,12 +36,30 @@ type Enqueuer interface {
 	Enqueue(req queue.Request) error
 }
 
+// SessionRecorder is the optional surface the API server uses to mint
+// a fresh session per /v1/chat/completions call and append the user's
+// last message + the assistant's response. M3 keeps this minimal: one
+// session per API request gives opencode a per-call episode without
+// any coupling to opencode's own session lifecycle. M4 will refine the
+// model so an opencode session maps onto one harness session.
+type SessionRecorder interface {
+	Start(agent string) Session
+	Append(id string, role, content string) error
+}
+
+// Session is the small subset of session.Session the API needs.
+type Session struct {
+	ID    string
+	Agent string
+}
+
 // Server is the API HTTP server. Zero value is not usable; build one with
 // NewServer.
 type Server struct {
 	port      int
 	asm       Assembler
 	q         Enqueuer
+	rec       SessionRecorder
 	startTime time.Time
 	logger    *slog.Logger
 
@@ -50,11 +69,14 @@ type Server struct {
 // NewServer constructs a Server bound to the given port. The caller owns
 // enable/disable: main.go decides whether to call Start based on the config
 // flag, this type always assumes it should serve when asked.
-func NewServer(port int, asm Assembler, q Enqueuer) *Server {
+//
+// rec may be nil; the server then runs without session recording.
+func NewServer(port int, asm Assembler, q Enqueuer, rec SessionRecorder) *Server {
 	return &Server{
 		port:      port,
 		asm:       asm,
 		q:         q,
+		rec:       rec,
 		startTime: time.Now(),
 		logger:    slog.Default().With(slog.String("component", "api")),
 	}
@@ -267,13 +289,40 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	s.streamTokens(w, flusher, respCh, reqID, modelEcho)
+	// M3-minimal session recording: mint one session per call so each
+	// API request lands an episode in git. opencode does not pin a
+	// session id today; M4 will refine so a single opencode session
+	// maps onto one harness session.
+	var sess Session
+	if s.rec != nil {
+		sess = s.rec.Start(agent)
+		// Append the request's user-side messages so the eventual
+		// summary captures what was asked.
+		for _, m := range req.Messages {
+			if m.Role == "" || m.Content == "" {
+				continue
+			}
+			if err := s.rec.Append(sess.ID, m.Role, m.Content); err != nil {
+				logger.Warn("session append (request)", slog.Any("err", err))
+			}
+		}
+	}
+
+	s.streamTokensWithSession(w, flusher, respCh, reqID, modelEcho, sess)
 }
 
 // streamTokens drains respCh and emits OpenAI-shaped SSE chunks. The response
 // channel is closed by the queue dispatcher after the last token or on error.
 func (s *Server) streamTokens(w http.ResponseWriter, flusher http.Flusher, respCh <-chan inference.Token, reqID, modelEcho string) {
+	s.streamTokensWithSession(w, flusher, respCh, reqID, modelEcho, Session{})
+}
+
+// streamTokensWithSession is streamTokens plus an optional Session
+// that receives the assistant's joined content as a single Append once
+// the stream ends. Pass a zero-value Session to skip recording.
+func (s *Server) streamTokensWithSession(w http.ResponseWriter, flusher http.Flusher, respCh <-chan inference.Token, reqID, modelEcho string, sess Session) {
 	stopReason := "stop"
+	var assistant strings.Builder
 	for tok := range respCh {
 		if tok.Err != nil {
 			s.logger.Error("token stream error", slog.String("id", reqID), slog.Any("err", tok.Err))
@@ -286,6 +335,7 @@ func (s *Server) streamTokens(w http.ResponseWriter, flusher http.Flusher, respC
 		if tok.Content == "" {
 			continue
 		}
+		assistant.WriteString(tok.Content)
 		chunk := chatChunk{
 			ID:      reqID,
 			Object:  "chat.completion.chunk",
@@ -319,6 +369,12 @@ func (s *Server) streamTokens(w http.ResponseWriter, flusher http.Flusher, respC
 	}
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
+
+	if s.rec != nil && sess.ID != "" && assistant.Len() > 0 {
+		if err := s.rec.Append(sess.ID, "assistant", assistant.String()); err != nil {
+			s.logger.Warn("session append (assistant)", slog.Any("err", err))
+		}
+	}
 }
 
 // modelsResponse is the /v1/models payload.

@@ -54,7 +54,7 @@ func (rt *Runtime) ApplyConfig(
 	if !rt.started {
 		slog.Info("starting services", "model_port", loaded.Model.Port, "embed_port", loaded.Embedder.Port)
 		rt.startServices(ctx, uiServer, events, metricsStore)
-		rt.startMemoryAndAPI(ctx, uiServer)
+		rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
 		result.LiveApplied = true
 	} else {
 		if old.Model != loaded.Model {
@@ -97,7 +97,7 @@ func (rt *Runtime) ApplyConfig(
 			old.Agent.Active != loaded.Agent.Active {
 			slog.Info("rebuilding memory and api services")
 			rt.stopMemoryAndAPI(uiServer)
-			rt.startMemoryAndAPI(ctx, uiServer)
+			rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
 			result.LiveApplied = true
 		}
 	}

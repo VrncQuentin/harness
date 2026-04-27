@@ -8,11 +8,13 @@ import (
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/api"
 	"github.com/vrnc/harness/internal/config"
+	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/logbuf"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/proc"
 	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/queue"
+	"github.com/vrnc/harness/internal/session"
 )
 
 // ErrConfigStoreUnavailable is surfaced when the harness DB could not be
@@ -50,6 +52,9 @@ type Runtime struct {
 	assembler *prompt.DiskAssembler
 	hotReload *prompt.HotReload
 	apiServer *api.Server
+	gitRepo   *gitw.Repo
+	sessionMu sync.RWMutex
+	sessionMg *session.Manager
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

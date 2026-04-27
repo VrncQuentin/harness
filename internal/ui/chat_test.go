@@ -14,35 +14,42 @@ import (
 // and either replays a scripted token sequence or returns a scripted
 // pre-dispatch error.
 type stubChatRunner struct {
-	mu       sync.Mutex
-	calls    int
-	lastCtx  context.Context
-	lastName string
-	lastMsgs []ChatMessage
+	mu        sync.Mutex
+	calls     int
+	lastCtx   context.Context
+	lastName  string
+	lastID    string
+	lastMsgs  []ChatMessage
+	returnsID string
 
 	preErr error
 	tokens []ChatToken
 }
 
-func (r *stubChatRunner) Run(ctx context.Context, agent string, conv []ChatMessage) (<-chan ChatToken, error) {
+func (r *stubChatRunner) Run(ctx context.Context, agent, sessionID string, conv []ChatMessage) (string, <-chan ChatToken, error) {
 	r.mu.Lock()
 	r.calls++
 	r.lastCtx = ctx
 	r.lastName = agent
+	r.lastID = sessionID
 	r.lastMsgs = append([]ChatMessage(nil), conv...)
 	preErr := r.preErr
 	tokens := append([]ChatToken(nil), r.tokens...)
+	mintedID := r.returnsID
+	if mintedID == "" {
+		mintedID = sessionID
+	}
 	r.mu.Unlock()
 
 	if preErr != nil {
-		return nil, preErr
+		return "", nil, preErr
 	}
 	ch := make(chan ChatToken, len(tokens))
 	for _, t := range tokens {
 		ch <- t
 	}
 	close(ch)
-	return ch, nil
+	return mintedID, ch, nil
 }
 
 func (r *stubChatRunner) lastConversation() []ChatMessage {
