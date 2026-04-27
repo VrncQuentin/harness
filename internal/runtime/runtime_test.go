@@ -55,7 +55,7 @@ func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rt.startMemoryAndAPI(ctx, ui.NewServer(0))
+	rt.startMemoryAndAPI(ctx, ui.NewServer(0), nil)
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {

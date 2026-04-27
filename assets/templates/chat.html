@@ -29,12 +29,23 @@
   <header class="chat-head card-head">
     <div class="chat-head-meta">
       <h3 class="chat-agent">Active agent: <code>{{.ActiveAgent}}</code></h3>
-      <p class="fg-hint">Conversation lives in this tab only - reload clears it. Persistent sessions arrive in M3.</p>
+      <p class="fg-hint">Session id: <code id="chat-session-id">(unsaved)</code></p>
     </div>
     <div class="chat-head-actions">
+      <button type="button" class="btn btn-ghost btn-sm" id="chat-new">New session</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="chat-save">Save session</button>
       <button type="button" class="btn btn-ghost btn-sm" id="chat-clear">Clear</button>
     </div>
   </header>
+
+  <div class="chat-saved" id="chat-saved" hidden></div>
+
+  <details class="chat-resume" id="chat-resume">
+    <summary>Recent sessions for <code>{{.ActiveAgent}}</code></summary>
+    <div class="chat-resume-body" id="chat-resume-body">
+      <p class="fg-hint">Loading...</p>
+    </div>
+  </details>
 
   <div class="chat-transcript" id="chat-transcript" aria-live="polite">
     <p class="chat-empty">Send a message to begin.</p>

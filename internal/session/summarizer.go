@@ -1,0 +1,106 @@
+package session
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/vrnc/harness/internal/inference"
+)
+
+// fallbackSummarizerPrompt mirrors config.defaultSummarizerPrompt so a
+// user who clears the field in /config still gets a sensible summary.
+// Duplication is deliberate - importing internal/config from session
+// would create a cycle (config does not depend on session today, but
+// runtime wiring imports both). The two strings must stay in sync.
+const fallbackSummarizerPrompt = `You are summarizing a conversation between a user and an AI agent. Produce a concise third-person summary capturing:
+- the user's goal or question
+- key decisions, code paths, or facts established
+- unresolved questions or follow-ups
+
+Write 3-8 short paragraphs in plain markdown. Do not include the conversation verbatim. Do not address the user directly.`
+
+// Summarizer turns a conversation into a markdown summary by issuing a
+// fresh inference call. The call deliberately bypasses the prompt
+// assembler (no recency layer, no persona) and the request queue (the
+// summarizer does not compete with user-facing requests for queue
+// slots) - the goal is a clean factual summary of the conversation
+// alone, scheduled with its own concurrency.
+type Summarizer struct {
+	client  inference.Client
+	prompt  SummarizerPromptFunc
+	timeout time.Duration
+}
+
+// NewSummarizer wires a Summarizer with the given inference client and
+// system-prompt fetcher. timeout caps how long Summarize waits for
+// tokens to drain; pass 0 to use the default.
+func NewSummarizer(client inference.Client, prompt SummarizerPromptFunc, timeout time.Duration) *Summarizer {
+	if prompt == nil {
+		prompt = func() string { return "" }
+	}
+	if timeout <= 0 {
+		timeout = summarizerTimeout
+	}
+	return &Summarizer{
+		client:  client,
+		prompt:  prompt,
+		timeout: timeout,
+	}
+}
+
+// Summarize sends conversation through the inference client and
+// returns the joined token stream as a markdown body. Any
+// error - empty conversation, inference failure, context cancelled, or
+// an explicit error token mid-stream - is returned without falling
+// back to "no summary": M3 prefers refusing the save to committing
+// garbage.
+func (s *Summarizer) Summarize(ctx context.Context, conversation []inference.Message) (string, error) {
+	if len(conversation) == 0 {
+		return "", errors.New("session: summarize: conversation is empty")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
+	system := strings.TrimSpace(s.prompt())
+	if system == "" {
+		system = fallbackSummarizerPrompt
+	}
+
+	msgs := make([]inference.Message, 0, len(conversation)+1)
+	msgs = append(msgs, inference.Message{Role: "system", Content: system})
+	msgs = append(msgs, conversation...)
+
+	tokens, err := s.client.Complete(ctx, inference.CompletionRequest{
+		Messages: msgs,
+		Stream:   true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("session: summarize: %w", err)
+	}
+
+	var out strings.Builder
+	for tok := range tokens {
+		if tok.Err != nil {
+			return "", fmt.Errorf("session: summarize: %w", tok.Err)
+		}
+		if tok.Done {
+			break
+		}
+		if tok.Content == "" {
+			continue
+		}
+		out.WriteString(tok.Content)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("session: summarize: %w", err)
+	}
+	body := strings.TrimSpace(out.String())
+	if body == "" {
+		return "", errors.New("session: summarize: empty response from model")
+	}
+	return body, nil
+}

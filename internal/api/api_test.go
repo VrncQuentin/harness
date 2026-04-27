@@ -174,7 +174,7 @@ func contentsOf(t *testing.T, events []parsedEvent) []string {
 // plus a cleanup closer.
 func newTestServer(t *testing.T, asm Assembler, q Enqueuer) (*httptest.Server, func()) {
 	t.Helper()
-	srv := NewServer(0, asm, q)
+	srv := NewServer(0, asm, q, nil)
 	ts := httptest.NewServer(srv.handler())
 	return ts, ts.Close
 }
@@ -577,7 +577,7 @@ func TestChatCompletions_DefaultModelEcho(t *testing.T) {
 
 // Sanity check that Stop is idempotent and safe before Start.
 func TestServer_StopIdempotent(t *testing.T) {
-	s := NewServer(0, &stubAssembler{}, newStubEnqueuer(nil))
+	s := NewServer(0, &stubAssembler{}, newStubEnqueuer(nil), nil)
 	s.Stop() // before Start: no-op
 	s.Stop() // again: no-op
 
@@ -595,7 +595,7 @@ func TestServer_StopIdempotent(t *testing.T) {
 
 // Guard test: the handler wires the right paths.
 func TestHandler_RoutesRegistered(t *testing.T) {
-	s := NewServer(0, &stubAssembler{}, newStubEnqueuer(nil))
+	s := NewServer(0, &stubAssembler{}, newStubEnqueuer(nil), nil)
 	h := s.handler()
 
 	cases := []struct {
