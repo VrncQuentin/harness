@@ -25,6 +25,12 @@ func TestDefaults(t *testing.T) {
 	if d.Log.ProcMaxLines != 64 {
 		t.Errorf("expected default Log.ProcMaxLines 64, got %d", d.Log.ProcMaxLines)
 	}
+	if d.Model.CacheTypeK != "q8_0" {
+		t.Errorf("expected default Model.CacheTypeK q8_0, got %q", d.Model.CacheTypeK)
+	}
+	if d.Model.CacheTypeV != "q8_0" {
+		t.Errorf("expected default Model.CacheTypeV q8_0, got %q", d.Model.CacheTypeV)
+	}
 }
 
 // validCfg returns a Config that passes Validate, as a starting point for
@@ -147,6 +153,22 @@ func TestValidate(t *testing.T) {
 			name:    "n_parallel zero",
 			mutate:  func(c *Config) { c.Model.NParallel = 0 },
 			wantErr: "model.n_parallel must be >= 1",
+		},
+
+		// KV cache types.
+		{
+			name:    "empty cache_type_k",
+			mutate:  func(c *Config) { c.Model.CacheTypeK = "" },
+			wantErr: "model.cache_type_k must be one of",
+		},
+		{
+			name:    "unknown cache_type_v",
+			mutate:  func(c *Config) { c.Model.CacheTypeV = "q3_k" },
+			wantErr: "model.cache_type_v must be one of",
+		},
+		{
+			name:   "f16 cache types accepted",
+			mutate: func(c *Config) { c.Model.CacheTypeK = "f16"; c.Model.CacheTypeV = "f16" },
 		},
 
 		// Prompt bounds + budget sum.

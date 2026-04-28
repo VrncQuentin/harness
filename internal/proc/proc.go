@@ -570,8 +570,10 @@ func formatExitLine(name string, code *int) string {
 
 // LlamaArgs builds the argument slice for llama-server. When verbose is true,
 // --verbose is appended so early startup failures (model load, CUDA init,
-// port bind) surface with enough context to diagnose.
-func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int, verbose bool) (string, []string) {
+// port bind) surface with enough context to diagnose. cacheTypeK/V are
+// passed through as --cache-type-k/--cache-type-v; both are required and
+// validated upstream by config.Validate.
+func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int, verbose bool, cacheTypeK, cacheTypeV string) (string, []string) {
 	args := []string{
 		"--model", modelPath,
 		"--ctx-size", strconv.Itoa(ctxSize),
@@ -579,6 +581,8 @@ func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int
 		"--parallel", strconv.Itoa(nParallel),
 		"--port", strconv.Itoa(port),
 		"--host", "127.0.0.1",
+		"--cache-type-k", cacheTypeK,
+		"--cache-type-v", cacheTypeV,
 	}
 	if verbose {
 		args = append(args, "--verbose")

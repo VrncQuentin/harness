@@ -106,6 +106,8 @@ func (rt *Runtime) startServices(
 				cfg.Model.NParallel,
 				cfg.Model.Port,
 				cfg.Model.Verbose,
+				cfg.Model.CacheTypeK,
+				cfg.Model.CacheTypeV,
 			)
 		},
 		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Model.Port),
