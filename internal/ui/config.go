@@ -14,6 +14,7 @@ type configPageData struct {
 	basePage
 	Config         *config.Config
 	Suggestions    config.Suggestions
+	CacheTypes     []string
 	FirstRun       bool
 	Saved          bool
 	LiveApplied    bool
@@ -69,6 +70,7 @@ func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay co
 	}
 
 	data.Suggestions = config.Detect(s.getBinDir())
+	data.CacheTypes = config.ValidCacheTypes
 	// On a fresh GET render, pre-fill model_binary with the first detected
 	// llama-server if the user has not entered one yet. We do not pre-fill
 	// anything else - datalists let the user pick without us guessing.
@@ -139,6 +141,16 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.Model.NParallel = atoiOr(r.FormValue("model_n_parallel"), cfg.Model.NParallel)
 	cfg.Model.Port = atoiOr(r.FormValue("model_port"), cfg.Model.Port)
 	cfg.Model.Verbose = r.FormValue("model_verbose") == "on"
+	// Cache types are a constrained enum (see config.ValidCacheTypes). Treat
+	// missing/blank like numeric fields - keep the base value rather than
+	// snapping to "" and tripping Validate. The select always submits its
+	// current option, so this only matters for partial form posts and tests.
+	if v := strings.TrimSpace(r.FormValue("model_cache_type_k")); v != "" {
+		cfg.Model.CacheTypeK = v
+	}
+	if v := strings.TrimSpace(r.FormValue("model_cache_type_v")); v != "" {
+		cfg.Model.CacheTypeV = v
+	}
 
 	cfg.Embedder.Binary = strings.TrimSpace(r.FormValue("embed_binary"))
 	cfg.Embedder.ModelPath = strings.TrimSpace(r.FormValue("embed_path"))

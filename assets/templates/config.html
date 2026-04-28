@@ -83,6 +83,21 @@
         <input type="number" id="model_port" name="model_port" value="{{.Config.Model.Port}}" min="1" max="65535">
       </div>
     </div>
+    <div class="fg-row">
+      <div class="fg">
+        <label for="model_cache_type_k">KV cache type (K)</label>
+        <select id="model_cache_type_k" name="model_cache_type_k">
+          {{range .CacheTypes}}<option value="{{.}}" {{if eq . $.Config.Model.CacheTypeK}}selected{{end}}>{{.}}</option>{{end}}
+        </select>
+      </div>
+      <div class="fg">
+        <label for="model_cache_type_v">KV cache type (V)</label>
+        <select id="model_cache_type_v" name="model_cache_type_v">
+          {{range .CacheTypes}}<option value="{{.}}" {{if eq . $.Config.Model.CacheTypeV}}selected{{end}}>{{.}}</option>{{end}}
+        </select>
+        <p class="fg-hint">Quantizing the V cache below f16 typically requires <code>--flash-attn</code> in llama-server.</p>
+      </div>
+    </div>
     <div class="fg">
       <label class="checkbox">
         <input type="checkbox" id="model_verbose" name="model_verbose" {{if .Config.Model.Verbose}}checked{{end}}>

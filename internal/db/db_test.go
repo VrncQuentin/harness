@@ -148,6 +148,12 @@ func TestConfigStore_LoadFreshReturnsDefaultsAndNotConfigured(t *testing.T) {
 	if cfg.Prompt.SummarizerPrompt == "" {
 		t.Error("Prompt.SummarizerPrompt default must not be empty")
 	}
+	if cfg.Model.CacheTypeK != defaults.Model.CacheTypeK {
+		t.Errorf("Model.CacheTypeK default: got %q, want %q", cfg.Model.CacheTypeK, defaults.Model.CacheTypeK)
+	}
+	if cfg.Model.CacheTypeV != defaults.Model.CacheTypeV {
+		t.Errorf("Model.CacheTypeV default: got %q, want %q", cfg.Model.CacheTypeV, defaults.Model.CacheTypeV)
+	}
 }
 
 func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
@@ -159,6 +165,8 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	cfg.Model.ModelPath = "C:\\m.gguf"
 	cfg.Model.CtxSize = 4096
 	cfg.Model.Verbose = true
+	cfg.Model.CacheTypeK = "q4_0"
+	cfg.Model.CacheTypeV = "f16"
 	cfg.Embedder.Binary = "C:\\embed.exe"
 	cfg.Embedder.ModelPath = "C:\\e.gguf"
 	cfg.Embedder.Verbose = true
@@ -221,6 +229,12 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	}
 	if !loaded.Embedder.Verbose {
 		t.Errorf("Embedder.Verbose roundtrip: got false, want true")
+	}
+	if loaded.Model.CacheTypeK != "q4_0" {
+		t.Errorf("Model.CacheTypeK roundtrip: got %q, want %q", loaded.Model.CacheTypeK, "q4_0")
+	}
+	if loaded.Model.CacheTypeV != "f16" {
+		t.Errorf("Model.CacheTypeV roundtrip: got %q, want %q", loaded.Model.CacheTypeV, "f16")
 	}
 }
 
