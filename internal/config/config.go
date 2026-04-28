@@ -52,6 +52,25 @@ type ModelConfig struct {
 	// Verbose toggles llama-server's --verbose flag. Off by default because
 	// it's chatty; turn it on when diagnosing silent startup crashes.
 	Verbose bool
+	// CacheTypeK and CacheTypeV select the on-GPU dtype for the KV cache,
+	// passed through as llama-server's --cache-type-k / --cache-type-v.
+	// Default q8_0 cuts KV memory roughly in half versus f16 with negligible
+	// quality loss. Quantizing the V cache typically requires --flash-attn
+	// in llama-server; we expose that as a separate knob if/when needed.
+	CacheTypeK string
+	CacheTypeV string
+}
+
+// ValidCacheTypes lists the KV cache dtypes llama-server accepts. Used by
+// Validate and surfaced to the UI as a select. Order is meaningful: f16
+// first (the safe default if a user clears the field), then descending
+// precision.
+var ValidCacheTypes = []string{
+	"f32", "f16", "bf16",
+	"q8_0",
+	"q5_0", "q5_1",
+	"q4_0", "q4_1",
+	"iq4_nl",
 }
 
 // EmbedderConfig holds the embedder sidecar configuration.
@@ -140,10 +159,12 @@ type Store interface {
 func Defaults() Config {
 	return Config{
 		Model: ModelConfig{
-			CtxSize:   32768,
-			GPULayers: -1,
-			NParallel: 1,
-			Port:      8081,
+			CtxSize:    32768,
+			GPULayers:  -1,
+			NParallel:  1,
+			Port:       8081,
+			CacheTypeK: "q8_0",
+			CacheTypeV: "q8_0",
 		},
 		Embedder: EmbedderConfig{
 			Port: 8082,
@@ -233,6 +254,12 @@ func Validate(cfg *Config) error {
 	if cfg.Model.NParallel < 1 {
 		return fmt.Errorf("config: model.n_parallel must be >= 1, got %d", cfg.Model.NParallel)
 	}
+	if err := validateCacheType("model.cache_type_k", cfg.Model.CacheTypeK); err != nil {
+		return err
+	}
+	if err := validateCacheType("model.cache_type_v", cfg.Model.CacheTypeV); err != nil {
+		return err
+	}
 
 	if cfg.Prompt.CtxSize < 0 {
 		return fmt.Errorf("config: prompt.ctx_size must be >= 0, got %d", cfg.Prompt.CtxSize)
@@ -273,4 +300,13 @@ func validatePort(name string, port int) error {
 		return fmt.Errorf("config: %s must be between 1 and 65535, got %d", name, port)
 	}
 	return nil
+}
+
+func validateCacheType(name, value string) error {
+	for _, ok := range ValidCacheTypes {
+		if value == ok {
+			return nil
+		}
+	}
+	return fmt.Errorf("config: %s must be one of %s, got %q", name, strings.Join(ValidCacheTypes, ", "), value)
 }

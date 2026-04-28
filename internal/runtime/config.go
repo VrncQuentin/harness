@@ -68,6 +68,8 @@ func (rt *Runtime) ApplyConfig(
 					loaded.Model.NParallel,
 					loaded.Model.Port,
 					loaded.Model.Verbose,
+					loaded.Model.CacheTypeK,
+					loaded.Model.CacheTypeV,
 				)
 			}, fmt.Sprintf("http://127.0.0.1:%d/health", loaded.Model.Port))
 			result.LiveApplied = true

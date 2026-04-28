@@ -42,7 +42,7 @@ func TestStatus_InitialState(t *testing.T) {
 }
 
 func TestLlamaArgs(t *testing.T) {
-	bin, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081, false)
+	bin, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081, false, "q8_0", "q8_0")
 	if bin != "/bin/llama-server" {
 		t.Errorf("unexpected binary: %s", bin)
 	}
@@ -50,7 +50,7 @@ func TestLlamaArgs(t *testing.T) {
 	for i := 0; i < len(args)-1; i++ {
 		found[args[i]] = true
 	}
-	for _, flag := range []string{"--model", "--ctx-size", "--n-gpu-layers", "--parallel", "--port", "--host"} {
+	for _, flag := range []string{"--model", "--ctx-size", "--n-gpu-layers", "--parallel", "--port", "--host", "--cache-type-k", "--cache-type-v"} {
 		if !found[flag] {
 			t.Errorf("missing flag %s in args: %v", flag, args)
 		}
@@ -61,10 +61,32 @@ func TestLlamaArgs(t *testing.T) {
 }
 
 func TestLlamaArgs_Verbose(t *testing.T) {
-	_, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081, true)
+	_, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081, true, "q8_0", "q8_0")
 	if !hasVerbose(args) {
 		t.Errorf("expected --verbose when verbose=true, got %v", args)
 	}
+}
+
+func TestLlamaArgs_CacheTypePassThrough(t *testing.T) {
+	_, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081, false, "q4_0", "f16")
+	want := map[string]string{
+		"--cache-type-k": "q4_0",
+		"--cache-type-v": "f16",
+	}
+	for flag, val := range want {
+		if got := flagValue(args, flag); got != val {
+			t.Errorf("%s: got %q, want %q (args=%v)", flag, got, val, args)
+		}
+	}
+}
+
+func flagValue(args []string, flag string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag {
+			return args[i+1]
+		}
+	}
+	return ""
 }
 
 func TestEmbedderArgs(t *testing.T) {

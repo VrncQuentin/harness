@@ -408,6 +408,81 @@ func TestHandleConfig_GETRendersLogFields(t *testing.T) {
 	}
 }
 
+func TestHandleConfig_GETRendersCacheTypeSelects(t *testing.T) {
+	s, _ := newServerWithStore(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`name="model_cache_type_k"`,
+		`name="model_cache_type_v"`,
+		`<option value="q8_0" selected>q8_0</option>`,
+		`<option value="f16"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected config form to include %q", want)
+		}
+	}
+}
+
+func TestHandleConfig_POSTPersistsCacheTypes(t *testing.T) {
+	s, store := newServerWithStore(t)
+	s.SetRetry(func() ApplyResult { return ApplyResult{} })
+
+	form := url.Values{}
+	form.Set("model_binary", "C:\\llama.exe")
+	form.Set("model_path", "C:\\m.gguf")
+	form.Set("embed_binary", "C:\\embed.exe")
+	form.Set("embed_path", "C:\\e.gguf")
+	form.Set("model_cache_type_k", "q4_0")
+	form.Set("model_cache_type_v", "f16")
+
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Model.CacheTypeK != "q4_0" {
+		t.Errorf("CacheTypeK: got %q, want q4_0", loaded.Model.CacheTypeK)
+	}
+	if loaded.Model.CacheTypeV != "f16" {
+		t.Errorf("CacheTypeV: got %q, want f16", loaded.Model.CacheTypeV)
+	}
+}
+
+func TestHandleConfig_POSTRejectsUnknownCacheType(t *testing.T) {
+	s, _ := newServerWithStore(t)
+
+	form := url.Values{}
+	form.Set("model_binary", "C:\\llama.exe")
+	form.Set("model_path", "C:\\m.gguf")
+	form.Set("embed_binary", "C:\\embed.exe")
+	form.Set("embed_path", "C:\\e.gguf")
+	form.Set("model_cache_type_k", "q3_k")
+
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 re-render with error, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "model.cache_type_k must be one of") {
+		t.Errorf("expected cache_type_k validation error in body, got: %s", rec.Body.String())
+	}
+}
+
 func TestHandleConfig_POSTInvalidShowsValidationError(t *testing.T) {
 	s, store := newServerWithStore(t)
 
