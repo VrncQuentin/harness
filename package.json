@@ -1,0 +1,28 @@
+{
+  "name": "pi-memory-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi Coding extensions and UI integration for project memory workflows.",
+  "keywords": ["pi-package"],
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "check": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": ["./src/extension.ts"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.74.0",
+    "@types/node": "^20.12.12",
+    "typescript": "^5.8.3"
+  }
+}
