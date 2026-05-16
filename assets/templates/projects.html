@@ -1,0 +1,135 @@
+{{define "title"}}Projects{{end}}
+
+{{define "content"}}
+<section>
+  <div class="section-head">
+    <h1>Projects</h1>
+    <div class="section-actions">
+      <button class="btn" data-open-dialog="project-create">New project</button>
+      {{if .ShowHidden}}
+      <a href="/projects" class="btn btn-ghost">Hide hidden</a>
+      {{else}}
+      <a href="/projects?hidden=1" class="btn btn-ghost">Show hidden</a>
+      {{end}}
+    </div>
+  </div>
+
+  {{if .Error}}
+  <div class="alert alert-err"><p>{{.Error}}</p></div>
+  {{end}}
+
+  {{if .Flash}}
+  <div class="alert alert-ok"><p>{{.Flash}}</p></div>
+  {{end}}
+
+  {{if .Projects}}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Display name</th>
+        <th>Slug</th>
+        <th>Model override</th>
+        <th>Directories</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Projects}}
+      <tr>
+        <td>
+          <strong>{{.DisplayName}}</strong>
+          {{if .Hidden}}<span class="tag">hidden</span>{{end}}
+          {{if .IsGlobal}}<span class="tag">system</span>{{end}}
+        </td>
+        <td><code>{{.Slug}}</code></td>
+        <td>
+          {{if .ModelPath}}
+          <code>{{.ModelPath}}</code>
+          {{else}}
+          <span class="muted">inherited from config</span>
+          {{end}}
+        </td>
+        <td>{{.DirectoryCount}}</td>
+        <td class="actions">
+          <a href="/projects?activate={{.Slug}}" class="btn btn-sm"
+             {{if .IsActive}}disabled{{end}}>
+            {{if .IsActive}}Active{{else}}Activate{{end}}
+          </a>
+          {{if not .IsGlobal}}
+          <button class="btn btn-sm btn-ghost" data-open-dialog="project-edit-{{.Slug}}">Edit</button>
+          {{if .Hidden}}
+          <a href="/projects?unhide={{.Slug}}" class="btn btn-sm btn-ghost">Unhide</a>
+          {{else}}
+          <a href="/projects?hide={{.Slug}}" class="btn btn-sm btn-ghost">Hide</a>
+          {{end}}
+          {{end}}
+        </td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No projects. Create one to get started.</p>
+  {{end}}
+</section>
+
+{{range .Projects}}
+{{if not .IsGlobal}}
+<dialog id="project-edit-{{.Slug}}" class="modal">
+  <form method="post" action="/projects/edit?slug={{.Slug}}" class="modal-form">
+    <h3 class="modal-title">Edit {{.DisplayName}}</h3>
+    <label class="field">
+      <span>Display name</span>
+      <input type="text" name="display_name" value="{{.DisplayName}}" required>
+    </label>
+    <label class="field">
+      <span>Model binary (optional)</span>
+      <input type="text" name="model_binary" value="{{.ModelBinary}}" placeholder="Inherit from config">
+    </label>
+    <label class="field">
+      <span>Model path (optional)</span>
+      <input type="text" name="model_path" value="{{.ModelPath}}" placeholder="Inherit from config">
+    </label>
+    <label class="field">
+      <span>Context size (optional)</span>
+      <input type="number" name="model_ctx_size" value="{{.ModelCtxSize}}" placeholder="Inherit from config">
+    </label>
+    <label class="field">
+      <span>GPU layers (optional)</span>
+      <input type="number" name="model_gpu_layers" value="{{.ModelGPULayers}}" placeholder="Inherit from config">
+    </label>
+    <label class="field">
+      <span>N parallel (optional)</span>
+      <input type="number" name="model_n_parallel" value="{{.ModelNParallel}}" placeholder="Inherit from config">
+    </label>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-close-dialog>Cancel</button>
+      <button type="submit" class="btn">Save</button>
+    </div>
+  </form>
+</dialog>
+{{end}}
+{{end}}
+
+<dialog id="project-create" class="modal">
+  <form method="post" action="/projects" class="modal-form">
+    <h3 class="modal-title">New project</h3>
+    <label class="field">
+      <span>Display name</span>
+      <input type="text" name="display_name" required autofocus>
+    </label>
+    <label class="field">
+      <span>Slug</span>
+      <input type="text" name="slug" pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="auto-generated from name">
+    </label>
+    <label class="field">
+      <span>Directories (one absolute path per line)</span>
+      <textarea name="directories" rows="3" placeholder="/path/to/project/repo"></textarea>
+    </label>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" data-close-dialog>Cancel</button>
+      <button type="submit" class="btn">Create</button>
+    </div>
+  </form>
+</dialog>
+{{end}}
