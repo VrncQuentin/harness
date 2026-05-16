@@ -38,6 +38,13 @@ func TestOpen_CreatesTablesAndSeedsConfigRow(t *testing.T) {
 	if count != 0 {
 		t.Errorf("expected 0 metrics rows after Open, got %d", count)
 	}
+
+	if err := d.sqldb.QueryRow("SELECT COUNT(*) FROM projects WHERE slug = 'global'").Scan(&count); err != nil {
+		t.Fatalf("count global project rows: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 global project row after Open, got %d", count)
+	}
 }
 
 func TestOpen_Idempotent(t *testing.T) {
@@ -64,6 +71,12 @@ func TestOpen_Idempotent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected 1 config row after reopen, got %d", count)
+	}
+	if err := d2.sqldb.QueryRow("SELECT COUNT(*) FROM projects WHERE slug = 'global'").Scan(&count); err != nil {
+		t.Fatalf("count global project rows: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("expected 1 global project row after reopen, got %d", count)
 	}
 }
 
@@ -154,6 +167,12 @@ func TestConfigStore_LoadFreshReturnsDefaultsAndNotConfigured(t *testing.T) {
 	if cfg.Model.CacheTypeV != defaults.Model.CacheTypeV {
 		t.Errorf("Model.CacheTypeV default: got %q, want %q", cfg.Model.CacheTypeV, defaults.Model.CacheTypeV)
 	}
+	if cfg.Project.ActiveProjectSlug != defaults.Project.ActiveProjectSlug {
+		t.Errorf("Project.ActiveProjectSlug default: got %q, want %q", cfg.Project.ActiveProjectSlug, defaults.Project.ActiveProjectSlug)
+	}
+	if cfg.Project.LlamaOnSwitch != defaults.Project.LlamaOnSwitch {
+		t.Errorf("Project.LlamaOnSwitch default: got %q, want %q", cfg.Project.LlamaOnSwitch, defaults.Project.LlamaOnSwitch)
+	}
 }
 
 func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
@@ -179,6 +198,17 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	cfg.Prompt.SummarizerPrompt = "summarize the conversation as one short paragraph."
 	cfg.Log.RingMaxEntries = 1234
 	cfg.Log.ProcMaxLines = 99
+	cfg.Project.ActiveProjectSlug = "dt"
+	cfg.Project.LlamaOnSwitch = "keep"
+
+	// insert the project so the active-project referential trigger allows the save
+	_, err := d.sqldb.Exec(
+		"INSERT INTO projects (slug, display_name, hidden, created_at) VALUES (?, ?, ?, ?)",
+		"dt", "DT", 0, time.Now().Unix(),
+	)
+	if err != nil {
+		t.Fatalf("insert dt project: %v", err)
+	}
 
 	if err := store.Save(&cfg); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -236,12 +266,69 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	if loaded.Model.CacheTypeV != "f16" {
 		t.Errorf("Model.CacheTypeV roundtrip: got %q, want %q", loaded.Model.CacheTypeV, "f16")
 	}
+	if loaded.Project.ActiveProjectSlug != "dt" {
+		t.Errorf("Project.ActiveProjectSlug roundtrip: got %q, want %q", loaded.Project.ActiveProjectSlug, "dt")
+	}
+	if loaded.Project.LlamaOnSwitch != "keep" {
+		t.Errorf("Project.LlamaOnSwitch roundtrip: got %q, want %q", loaded.Project.LlamaOnSwitch, "keep")
+	}
 }
 
 func TestConfigStore_SaveNilRejected(t *testing.T) {
 	d := newTestDB(t)
 	if err := d.Config().Save(nil); err == nil {
 		t.Fatal("expected error for nil config, got nil")
+	}
+}
+
+func TestSchema_ProtectGlobalProject(t *testing.T) {
+	d := newTestDB(t)
+
+	_, err := d.sqldb.Exec("DELETE FROM projects WHERE slug = 'global'")
+	if err == nil {
+		t.Error("expected error deleting global project, got nil")
+	}
+
+	_, err = d.sqldb.Exec("UPDATE projects SET slug = 'other' WHERE slug = 'global'")
+	if err == nil {
+		t.Error("expected error renaming global project slug, got nil")
+	}
+
+	_, err = d.sqldb.Exec("UPDATE projects SET hidden = 1 WHERE slug = 'global'")
+	if err == nil {
+		t.Error("expected error hiding global project, got nil")
+	}
+
+	_, err = d.sqldb.Exec("UPDATE projects SET display_name = 'Global Updated' WHERE slug = 'global'")
+	if err != nil {
+		t.Errorf("unexpected error updating global display_name: %v", err)
+	}
+}
+
+func TestSchema_ActiveProjectSlugReferentialIntegrity(t *testing.T) {
+	d := newTestDB(t)
+	store := d.Config()
+
+	_, err := d.sqldb.Exec(
+		"INSERT INTO projects (slug, display_name, hidden, created_at) VALUES (?, ?, ?, ?)",
+		"dt", "DT", 0, time.Now().Unix(),
+	)
+	if err != nil {
+		t.Fatalf("insert dt project: %v", err)
+	}
+
+	cfg, _, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.Project.ActiveProjectSlug = "dt"
+	if err := store.Save(cfg); err != nil {
+		t.Fatalf("Save with existing dt project: %v", err)
+	}
+
+	cfg.Project.ActiveProjectSlug = "missing"
+	if err := store.Save(cfg); err == nil {
+		t.Error("expected error saving config with missing active_project_slug, got nil")
 	}
 }
 
