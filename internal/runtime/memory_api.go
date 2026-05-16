@@ -39,10 +39,10 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 	rt.memReader = memory.NewDirReader(rt.cfg.Memory.RepoPath)
 	rt.agentReg = agent.NewDiskRegistry(rt.memReader, rt.getActiveAgent, rt.setActiveAgent)
-	rt.assembler = prompt.NewDiskAssembler(rt.memReader, rt.agentReg, rt.cfg.Prompt)
+	rt.assembler = prompt.NewDiskAssembler(rt.memReader, rt.agentReg, rt.cfg.Prompt).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
 	uiServer.SetMemoryStore(rt.memReader)
 
-	hr, err := prompt.NewHotReload(rt.cfg.Memory.RepoPath, rt.cfg.Agent.Active, slog.Default())
+	hr, err := prompt.NewHotReload(rt.cfg.Memory.RepoPath, rt.cfg.Agent.Active, rt.cfg.Project.ActiveProjectSlug, slog.Default())
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("prompt hot-reload: %w", err))
 	} else {
@@ -153,7 +153,6 @@ func (rt *Runtime) SessionManager() *session.Manager {
 	defer rt.sessionMu.RUnlock()
 	return rt.sessionMg
 }
-
 
 // stopMemoryAndAPI tears down the M2/M3 services. Caller must hold rt.mu.
 //

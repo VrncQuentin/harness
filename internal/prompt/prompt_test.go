@@ -14,6 +14,7 @@ import (
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/project"
 )
 
 // writeRepo builds a memory repo under t.TempDir() from a map of
@@ -94,12 +95,13 @@ func TestAssemble_AgentRequiresPersona(t *testing.T) {
 
 func TestAssemble_FullStackOrder(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                     "RULES",
-		"global/user.md":                      "USER",
-		"global/facts.md":                     "FACTS",
-		"agents/coder/persona.md":             "PERSONA",
-		"agents/coder/rules.md":               "AGENTRULES",
-		"agents/coder/notes.md":               "NOTES",
+		"global/rules.md":                              "RULES",
+		"global/user.md":                               "USER",
+		"global/facts.md":                              "FACTS",
+		"projects/global/rules.md":                     "PROJRULES",
+		"agents/coder/persona.md":                      "PERSONA",
+		"agents/coder/rules.md":                        "AGENTRULES",
+		"agents/coder/notes.md":                        "NOTES",
 		"projects/global/episodes/coder/2026-01-01.md": "EP1",
 		"projects/global/episodes/coder/2026-02-01.md": "EP2",
 	})
@@ -109,9 +111,10 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		t.Fatalf("Assemble: %v", err)
 	}
 	sys := msgs[0].Content
-	// Verify section order by checking indices. Agent Rules sits
-	// between Persona and Facts in the mandatory-layer block.
-	headers := []string{"# Rules", "# User", "# Persona", "# Agent Rules", "# Facts", "# Notes", "# Episodes"}
+	// Verify section order by checking indices. Project Rules sits
+	// between User and Persona, and Agent Rules sits between Persona
+	// and Facts in the mandatory-layer block.
+	headers := []string{"# Rules", "# User", "# Project Rules", "# Persona", "# Agent Rules", "# Facts", "# Notes", "# Episodes"}
 	lastIdx := -1
 	for _, h := range headers {
 		idx := strings.Index(sys, h)
@@ -133,7 +136,7 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		t.Errorf("episodes not ordered oldest-first; ep1=%d ep2=%d", ep1Idx, ep2Idx)
 	}
 
-	if stats.Rules == 0 || stats.Persona == 0 || stats.AgentRules == 0 || stats.Episodes == 0 {
+	if stats.Rules == 0 || stats.User == 0 || stats.ProjectRules == 0 || stats.Persona == 0 || stats.AgentRules == 0 || stats.Facts == 0 || stats.Notes == 0 || stats.Episodes == 0 {
 		t.Errorf("stats missing counts: %+v", stats)
 	}
 }
@@ -168,8 +171,8 @@ func TestAssemble_TrimsEpisodesOldestFirstForMemoryBudget(t *testing.T) {
 	// Generate five episodes with increasing content size; use a
 	// deterministic tokenizer so we can reason about counts.
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":             "r",
-		"agents/coder/persona.md":     "p",
+		"global/rules.md":                      "r",
+		"agents/coder/persona.md":              "p",
 		"projects/global/episodes/coder/01.md": strings.Repeat("a", 200),
 		"projects/global/episodes/coder/02.md": strings.Repeat("b", 200),
 		"projects/global/episodes/coder/03.md": strings.Repeat("c", 200),
@@ -284,14 +287,15 @@ func TestAssemble_RecencyNCapsEpisodeCount(t *testing.T) {
 
 func TestAssemble_MandatoryLayersNeverTrimmed(t *testing.T) {
 	// Set a memory budget smaller than the mandatory layers combined;
-	// these must still be present, including the per-agent rules.
+	// these must still be present, including project rules and per-agent rules.
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         strings.Repeat("R", 400), // 100 tokens
-		"global/user.md":          strings.Repeat("U", 400),
-		"global/facts.md":         strings.Repeat("F", 400),
-		"agents/coder/persona.md": strings.Repeat("P", 400),
-		"agents/coder/rules.md":   strings.Repeat("A", 400),
-		"agents/coder/notes.md":   strings.Repeat("N", 400),
+		"global/rules.md":          strings.Repeat("R", 400), // 100 tokens
+		"global/user.md":           strings.Repeat("U", 400),
+		"global/facts.md":          strings.Repeat("F", 400),
+		"projects/global/rules.md": strings.Repeat("P", 400),
+		"agents/coder/persona.md":  strings.Repeat("P", 400),
+		"agents/coder/rules.md":    strings.Repeat("A", 400),
+		"agents/coder/notes.md":    strings.Repeat("N", 400),
 	})
 	cfg := baseCfg()
 	cfg.MemoryTokenBudget = 10 // absurdly low
@@ -302,7 +306,7 @@ func TestAssemble_MandatoryLayersNeverTrimmed(t *testing.T) {
 		t.Fatalf("Assemble: %v", err)
 	}
 	sys := msgs[0].Content
-	for _, section := range []string{"# Rules", "# User", "# Persona", "# Agent Rules"} {
+	for _, section := range []string{"# Rules", "# User", "# Project Rules", "# Persona", "# Agent Rules"} {
 		if !strings.Contains(sys, section) {
 			t.Errorf("mandatory %q missing when budget pressure is high", section)
 		}
@@ -311,8 +315,8 @@ func TestAssemble_MandatoryLayersNeverTrimmed(t *testing.T) {
 
 func TestAssemble_CtxSizeTrimsAgainstConversationReserve(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":             "r",                      // 1 token
-		"agents/coder/persona.md":     "p",                      // 1 token
+		"global/rules.md":                      "r",                      // 1 token
+		"agents/coder/persona.md":              "p",                      // 1 token
 		"projects/global/episodes/coder/01.md": strings.Repeat("a", 400), // 100 tokens
 		"projects/global/episodes/coder/02.md": strings.Repeat("b", 400),
 		"projects/global/episodes/coder/03.md": strings.Repeat("c", 400),
@@ -335,7 +339,7 @@ func TestAssemble_CtxSizeTrimsAgainstConversationReserve(t *testing.T) {
 	}
 
 	limit := cfg.CtxSize - cfg.ConversationReserve
-	fixed := stats.Rules + stats.User + stats.Persona + stats.Facts + stats.Notes + stats.Episodes
+	fixed := stats.Rules + stats.User + stats.ProjectRules + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes
 	if fixed+stats.Conversation > limit {
 		t.Errorf("layers+conversation (%d) exceed ctx limit (%d)", fixed+stats.Conversation, limit)
 	}
@@ -393,7 +397,7 @@ func TestAssemble_TotalEqualsSum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
-	want := stats.Rules + stats.User + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
+	want := stats.Rules + stats.User + stats.ProjectRules + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
 	if stats.Total != want {
 		t.Errorf("Total = %d, want sum = %d", stats.Total, want)
 	}
@@ -482,9 +486,9 @@ func TestAssemble_AgentRulesRenderedBetweenPersonaAndFacts(t *testing.T) {
 // trimming).
 func TestAssemble_AgentRulesCountedAgainstCtxLimit(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":             "r",                      // 1 token
-		"agents/coder/persona.md":     "p",                      // 1 token
-		"agents/coder/rules.md":       strings.Repeat("a", 400), // 100 tokens
+		"global/rules.md":                      "r",                      // 1 token
+		"agents/coder/persona.md":              "p",                      // 1 token
+		"agents/coder/rules.md":                strings.Repeat("a", 400), // 100 tokens
 		"projects/global/episodes/coder/01.md": strings.Repeat("e", 400), // 100 tokens
 		"projects/global/episodes/coder/02.md": strings.Repeat("e", 400), // 100 tokens
 	})
@@ -505,6 +509,151 @@ func TestAssemble_AgentRulesCountedAgainstCtxLimit(t *testing.T) {
 	}
 	if stats.AgentRules == 0 {
 		t.Errorf("expected agent rules to be counted; AgentRules=%d", stats.AgentRules)
+	}
+}
+
+func TestAssemble_ProjectRulesOrdering(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":         "GLOBALRULES",
+		"global/user.md":          "USERBODY",
+		"projects/dt/rules.md":    "PROJECTRULES",
+		"agents/coder/persona.md": "PERSONABODY",
+	})
+	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("dt")
+	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sys := msgs[0].Content
+	userIdx := strings.Index(sys, "USERBODY")
+	projIdx := strings.Index(sys, "PROJECTRULES")
+	persIdx := strings.Index(sys, "PERSONABODY")
+	if userIdx < 0 || projIdx < 0 || persIdx < 0 {
+		t.Fatalf("layer body missing; user=%d project=%d persona=%d\n%s", userIdx, projIdx, persIdx, sys)
+	}
+	if userIdx >= projIdx || projIdx >= persIdx {
+		t.Errorf("expected user < project rules < persona; got user=%d project=%d persona=%d", userIdx, projIdx, persIdx)
+	}
+}
+
+func TestAssemble_ProjectRulesUseActiveProjectSlug(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":          "GLOBALRULES",
+		"projects/global/rules.md": "GLOBALPROJECT",
+		"projects/dt/rules.md":     "DTPROJECT",
+		"agents/coder/persona.md":  "PERSONA",
+	})
+	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("dt")
+	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sys := msgs[0].Content
+	if !strings.Contains(sys, "DTPROJECT") {
+		t.Errorf("expected active project rules, got:\n%s", sys)
+	}
+	if strings.Contains(sys, "GLOBALPROJECT") {
+		t.Errorf("global project rules leaked into dt prompt:\n%s", sys)
+	}
+}
+
+func TestAssemble_ProjectRulesOptionalMissing(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":         "RULES",
+		"agents/coder/persona.md": "PERSONA",
+	})
+	asm := newAssembler(t, mem, baseCfg())
+	msgs, stats, err := asm.Assemble(context.Background(), "coder", nil)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sys := msgs[0].Content
+	if strings.Contains(sys, "# Project Rules") {
+		t.Errorf("expected # Project Rules to be absent when file missing; got:\n%s", sys)
+	}
+	if stats.ProjectRules != 0 {
+		t.Errorf("ProjectRules tokens = %d, want 0 when missing", stats.ProjectRules)
+	}
+}
+
+func TestAssemble_InvalidProjectSlugReturnsError(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":         "RULES",
+		"agents/coder/persona.md": "PERSONA",
+	})
+	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("bad_slug!")
+	_, _, err := asm.Assemble(context.Background(), "coder", nil)
+	if !errors.Is(err, project.ErrInvalidSlug) {
+		t.Fatalf("Assemble invalid project slug: errors.Is(ErrInvalidSlug)=false, err=%v", err)
+	}
+}
+
+func TestAssemble_ProjectRulesStatsAndTotal(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":          "RULES",
+		"global/user.md":           "USER",
+		"projects/global/rules.md": "PROJECT",
+		"agents/coder/persona.md":  "PERSONA",
+	})
+	asm := newAssembler(t, mem, baseCfg())
+	_, stats, err := asm.Assemble(context.Background(), "coder", nil)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if stats.ProjectRules == 0 {
+		t.Errorf("ProjectRules tokens = 0, want > 0")
+	}
+	want := stats.Rules + stats.User + stats.ProjectRules + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
+	if stats.Total != want {
+		t.Errorf("Total = %d, want sum = %d", stats.Total, want)
+	}
+}
+
+func TestAssemble_ProjectRulesNotTrimmed(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":          strings.Repeat("R", 400),
+		"global/user.md":           strings.Repeat("U", 400),
+		"projects/global/rules.md": strings.Repeat("P", 400),
+		"agents/coder/persona.md":  strings.Repeat("P", 400),
+		"agents/coder/rules.md":    strings.Repeat("A", 400),
+	})
+	cfg := baseCfg()
+	cfg.MemoryTokenBudget = 10
+	asm := newAssembler(t, mem, cfg)
+
+	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sys := msgs[0].Content
+	if !strings.Contains(sys, "# Project Rules") {
+		t.Errorf("mandatory # Project Rules missing when budget pressure is high")
+	}
+}
+
+func TestAssemble_CtxSizeTrimsEpisodesWithProjectRules(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":                      "r",
+		"projects/global/rules.md":             strings.Repeat("p", 400),
+		"agents/coder/persona.md":              "p",
+		"projects/global/episodes/coder/01.md": strings.Repeat("e", 400),
+		"projects/global/episodes/coder/02.md": strings.Repeat("e", 400),
+	})
+	cfg := config.PromptConfig{
+		CtxSize:             250,
+		ConversationReserve: 100,
+		MemoryTokenBudget:   1000,
+	}
+	asm := newAssembler(t, mem, cfg)
+	_, stats, err := asm.Assemble(context.Background(), "coder", nil)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if stats.Episodes != 0 {
+		t.Errorf("expected all episodes trimmed when project rules consume ctx budget; episodes=%d", stats.Episodes)
+	}
+	if stats.ProjectRules == 0 {
+		t.Errorf("expected project rules to be counted; ProjectRules=%d", stats.ProjectRules)
 	}
 }
 
