@@ -167,10 +167,6 @@ func (h *HotReload) refreshWatches() {
 	}
 }
 
-// wantedDirs returns the set of directories we need to watch given
-// the current active agent and project. Global files share global/,
-// project files share projects/<slug>/, and per-agent files share
-// agents/<name>/.
 func (h *HotReload) wantedDirs() map[string]struct{} {
 	out := map[string]struct{}{
 		filepath.Join(h.repoPath, "global"): {},
@@ -182,13 +178,11 @@ func (h *HotReload) wantedDirs() map[string]struct{} {
 	out[filepath.Join(h.repoPath, "projects", slug)] = struct{}{}
 	if h.activeAgent != "" {
 		out[filepath.Join(h.repoPath, "agents", h.activeAgent)] = struct{}{}
+		out[filepath.Join(h.repoPath, "projects", slug, "agents", h.activeAgent)] = struct{}{}
 	}
 	return out
 }
 
-// watchedFiles returns the set of concrete files we emit events for.
-// Changes to other files inside a watched directory are ignored to
-// keep the signal clean.
 func (h *HotReload) watchedFiles() map[string]struct{} {
 	out := map[string]struct{}{
 		filepath.Join(h.repoPath, "global", "rules.md"): {},
@@ -208,6 +202,10 @@ func (h *HotReload) watchedFiles() map[string]struct{} {
 		out[filepath.Join(base, "persona.md")] = struct{}{}
 		out[filepath.Join(base, "rules.md")] = struct{}{}
 		out[filepath.Join(base, "notes.md")] = struct{}{}
+		projBase := filepath.Join(h.repoPath, "projects", slug, "agents", ag)
+		out[filepath.Join(projBase, "persona.md")] = struct{}{}
+		out[filepath.Join(projBase, "rules.md")] = struct{}{}
+		out[filepath.Join(projBase, "notes.md")] = struct{}{}
 	}
 	return out
 }
