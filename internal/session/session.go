@@ -136,7 +136,6 @@ type ManagerDeps struct {
 	Now                func() time.Time // optional; defaults to time.Now
 	SummarizerTimeout  time.Duration    // optional; defaults to summarizerTimeout
 	ResolveAbsRepoPath string           // memory repo root, used for diagnostics only
-	ProjectSlug        string           // M3b: active project slug; defaults to project.GlobalSlug
 }
 
 // Manager owns the live in-memory sessions and orchestrates save/resume
@@ -184,7 +183,7 @@ func (m *Manager) episodesRootRelPath() string {
 // have already validated the memory repo (memory.ValidateRepo) so the
 // FileWriter/Reader/Committer/Inference references are non-nil; passing
 // nil here is a programming error and panics.
-func NewManager(deps ManagerDeps) *Manager {
+func NewManager(deps ManagerDeps, projectSlug string) *Manager {
 	if deps.Repo == nil {
 		panic("session: ManagerDeps.Repo is required")
 	}
@@ -206,15 +205,15 @@ func NewManager(deps ManagerDeps) *Manager {
 	if deps.SummarizerTimeout <= 0 {
 		deps.SummarizerTimeout = summarizerTimeout
 	}
-	if deps.ProjectSlug == "" {
-		deps.ProjectSlug = project.GlobalSlug
+	if projectSlug == "" {
+		projectSlug = project.GlobalSlug
 	}
 	return &Manager{
 		sessions:    make(map[string]*Session),
 		knownIDs:    make(map[string]struct{}),
 		deps:        deps,
 		summarizer:  NewSummarizer(deps.Inference, deps.SummarizerPrompt, deps.SummarizerTimeout),
-		projectSlug: deps.ProjectSlug,
+		projectSlug: projectSlug,
 	}
 }
 

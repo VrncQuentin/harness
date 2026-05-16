@@ -71,7 +71,7 @@ func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 		Inference:          fi,
 		SummarizerPrompt:   func() string { return "test" },
 		ResolveAbsRepoPath: root,
-	})
+	}, Project)
 	return mgr, root
 }
 

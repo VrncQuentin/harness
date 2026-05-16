@@ -14,19 +14,24 @@ import (
 
 // handleProjectSwitch flushes the active session (so it is committed under
 // the old project) and optionally reloads llama-server when the active
-// project changes. Caller must hold rt.mu.
+// project changes. The caller must hold rt.mu on entry; the method
+// temporarily releases it during session flush to avoid deadlock with the
+// summarizer's config accessor (summarizerPromptFn acquires rt.mu).
 func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server, oldConfig, newConfig *config.Config) {
-	// Flush the live session under the old project so its episode lands
-	// in the old project's directory. The manager is replaced by the
-	// subsequent startMemoryAndAPI call.
+	llamaPolicy := rt.cfg.Project.LlamaOnSwitch
+
 	if mgr := rt.SessionManager(); mgr != nil {
+		rt.mu.Unlock()
 		flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if err := mgr.FlushAll(flushCtx); err != nil {
+		err := mgr.FlushAll(flushCtx)
+		cancel()
+		rt.mu.Lock()
+		if err != nil {
 			slog.Warn("project switch: session flush", "err", err)
 		}
-		cancel()
 	}
-	if rt.cfg.Project.LlamaOnSwitch != "reload" {
+
+	if llamaPolicy != "reload" {
 		slog.Info("project switch: keeping current llama-server (llama_on_switch=keep)")
 		return
 	}
@@ -38,11 +43,16 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 	}
 
 	dstModel := config.EffectiveModel(newConfig, dstProj)
-	srcModel := config.EffectiveModel(oldConfig, rt.lookupProject(oldConfig.Project.ActiveProjectSlug))
-
-	if config.ModelConfigEqual(srcModel, dstModel) {
-		slog.Info("project switch: effective model unchanged, skipping reload")
-		return
+	srcProj, srcErr := rt.resolveProject(oldConfig.Project.ActiveProjectSlug)
+	if srcErr != nil {
+		slog.Warn("project switch: cannot resolve source project, forcing reload",
+			"slug", oldConfig.Project.ActiveProjectSlug, "err", srcErr)
+	} else {
+		srcModel := config.EffectiveModel(oldConfig, srcProj)
+		if config.ModelConfigEqual(srcModel, dstModel) {
+			slog.Info("project switch: effective model unchanged, skipping reload")
+			return
+		}
 	}
 
 	slog.Info("project switch: reloading llama-server",
@@ -95,15 +105,4 @@ func (rt *Runtime) resolveProject(slug string) (*project.Project, error) {
 		return nil, fmt.Errorf("resolve project %q: %w", slug, err)
 	}
 	return &proj, nil
-}
-
-// lookupProject is like resolveProject but returns nil on any error;
-// the caller gets a nil project which treats all overrides as absent.
-func (rt *Runtime) lookupProject(slug string) *project.Project {
-	proj, err := rt.resolveProject(slug)
-	if err != nil {
-		slog.Warn("project switch: cannot resolve source project", "slug", slug, "err", err)
-		return nil
-	}
-	return proj
 }

@@ -365,10 +365,11 @@ func EffectiveModel(cfg *Config, proj *project.Project) ModelConfig {
 }
 
 // ModelConfigEqual returns true when a and b are identical model
-// configurations. Port is deliberately excluded — two projects that differ
-// only in port cannot share a llama-server, so the equality check that
-// decides whether to skip a reload should compare only the model identity
-// fields.
+// configurations. Port and Verbose are deliberately excluded — they are
+// process-level flags, not model identity fields. Two projects that differ
+// only in Port cannot share a llama-server, but since the harness runs
+// exactly one llama-server whose Port comes from the global config (never
+// project overrides), comparing other fields suffices.
 func ModelConfigEqual(a, b ModelConfig) bool {
 	return a.Binary == b.Binary &&
 		a.ModelPath == b.ModelPath &&

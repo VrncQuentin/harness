@@ -120,8 +120,7 @@ func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.
 		Metrics:            rec,
 		SummarizerPrompt:   rt.summarizerPromptFn(),
 		ResolveAbsRepoPath: repoPath,
-		ProjectSlug:        rt.cfg.Project.ActiveProjectSlug,
-	})
+	}, rt.cfg.Project.ActiveProjectSlug)
 	adapter := &uiSessionStoreAdapter{mgr: mgr, getActive: rt.getActiveAgent}
 	return mgr, adapter
 }
@@ -186,12 +185,6 @@ func (rt *Runtime) getActiveAgent() string {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.cfg.Agent.Active
-}
-
-func (rt *Runtime) getActiveProjectSlug() string {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	return rt.cfg.Project.ActiveProjectSlug
 }
 
 func (rt *Runtime) setActiveAgent(name string) error {
