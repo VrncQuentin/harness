@@ -10,11 +10,16 @@ import (
 
 // Sentinel errors returned by Validate for missing required fields.
 var (
-	ErrModelBinaryRequired    = errors.New("config: model.binary is required")
-	ErrModelPathRequired      = errors.New("config: model.model_path is required")
-	ErrEmbedderBinaryRequired = errors.New("config: embedder.binary is required")
-	ErrEmbedderPathRequired   = errors.New("config: embedder.model_path is required")
+	ErrModelBinaryRequired       = errors.New("config: model.binary is required")
+	ErrModelPathRequired         = errors.New("config: model.model_path is required")
+	ErrEmbedderBinaryRequired    = errors.New("config: embedder.binary is required")
+	ErrEmbedderPathRequired      = errors.New("config: embedder.model_path is required")
+	ErrActiveProjectSlugRequired = errors.New("config: project.active_project_slug is required")
+	ErrInvalidLlamaOnSwitch      = errors.New("config: project.llama_on_switch must be keep or reload")
 )
+
+// ValidLlamaOnSwitch values for ProjectConfig.LlamaOnSwitch.
+var ValidLlamaOnSwitch = []string{"keep", "reload"}
 
 // defaultSummarizerPrompt is the system prompt the M3 session summarizer
 // (Track C) feeds to the model when writing an episode. The user can
@@ -33,6 +38,7 @@ type Config struct {
 	Embedder EmbedderConfig
 	Memory   MemoryConfig
 	Agent    AgentConfig
+	Project  ProjectConfig
 	UI       UIConfig
 	API      APIConfig
 	Prompt   PromptConfig
@@ -93,6 +99,12 @@ type MemoryConfig struct {
 // layers in that case.
 type AgentConfig struct {
 	Active string
+}
+
+// ProjectConfig holds project scoping and switch behavior.
+type ProjectConfig struct {
+	ActiveProjectSlug string
+	LlamaOnSwitch     string
 }
 
 // UIConfig holds UI server configuration.
@@ -194,6 +206,10 @@ func Defaults() Config {
 			RingMaxEntries: 500,
 			ProcMaxLines:   64,
 		},
+		Project: ProjectConfig{
+			ActiveProjectSlug: "global",
+			LlamaOnSwitch:     "reload",
+		},
 	}
 }
 
@@ -290,6 +306,13 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Log.ProcMaxLines < 1 {
 		return fmt.Errorf("config: log.proc_max_lines must be >= 1, got %d", cfg.Log.ProcMaxLines)
+	}
+
+	if strings.TrimSpace(cfg.Project.ActiveProjectSlug) == "" {
+		return ErrActiveProjectSlugRequired
+	}
+	if cfg.Project.LlamaOnSwitch != "keep" && cfg.Project.LlamaOnSwitch != "reload" {
+		return ErrInvalidLlamaOnSwitch
 	}
 
 	return nil
