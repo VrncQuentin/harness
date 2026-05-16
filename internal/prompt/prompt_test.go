@@ -688,6 +688,44 @@ func TestAssemble_ReadErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestAssemble_ProjectAgentReadErrorPropagates(t *testing.T) {
+	mem := errReader{
+		Reader: writeRepo(t, map[string]string{
+			"global/rules.md":         "RULES",
+			"agents/coder/persona.md": "GLOBALPERSONA",
+		}),
+		failOn: "projects/dt/agents/coder/persona.md",
+	}
+	reg := agent.NewDiskRegistry(mem, func() string { return "coder" }, func(string) error { return nil })
+	asm := NewDiskAssembler(mem, reg, baseCfg()).WithProjectSlug("dt")
+	_, _, err := asm.Assemble(context.Background(), "coder", nil)
+	if err == nil {
+		t.Fatal("expected error from failing project agent read")
+	}
+	if !strings.Contains(err.Error(), "synthetic read error") {
+		t.Errorf("expected synthetic read error in message, got %v", err)
+	}
+}
+
+func TestAssemble_GlobalAgentFallbackReadErrorPropagates(t *testing.T) {
+	mem := errReader{
+		Reader: writeRepo(t, map[string]string{
+			"global/rules.md":         "RULES",
+			"agents/coder/persona.md": "GLOBALPERSONA",
+		}),
+		failOn: "agents/coder/persona.md",
+	}
+	reg := agent.NewDiskRegistry(mem, func() string { return "coder" }, func(string) error { return nil })
+	asm := NewDiskAssembler(mem, reg, baseCfg()).WithProjectSlug("dt")
+	_, _, err := asm.Assemble(context.Background(), "coder", nil)
+	if err == nil {
+		t.Fatal("expected error from failing global fallback read")
+	}
+	if !strings.Contains(err.Error(), "synthetic read error") {
+		t.Errorf("expected synthetic read error in message, got %v", err)
+	}
+}
+
 func TestAssemble_ProjectPersonaOverrideInheritsGlobalRulesNotes(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
 		"global/rules.md":                     "RULES",

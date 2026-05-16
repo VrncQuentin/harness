@@ -309,7 +309,7 @@ func (a *DiskAssembler) loadLayers(agentName string) (rawLayers, error) {
 			return rawLayers{}, err
 		}
 		if !personaFound {
-			return rawLayers{}, fmt.Errorf("prompt: agent %q persona missing: %w", agentName, fs.ErrNotExist)
+			return rawLayers{}, fmt.Errorf("prompt: agent %q persona missing in project %q: %w", agentName, slug, fs.ErrNotExist)
 		}
 		lay.persona = persona
 
