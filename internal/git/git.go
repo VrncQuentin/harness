@@ -210,10 +210,12 @@ func (r *Repo) BlobByRef(sha string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("git: blob reader for %s: %w", sha, err)
 	}
-	defer reader.Close()
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, fmt.Errorf("git: read blob for %s: %w", sha, err)
+	}
+	if err := reader.Close(); err != nil {
+		return nil, fmt.Errorf("git: close blob reader for %s: %w", sha, err)
 	}
 	return data, nil
 }
@@ -239,4 +241,3 @@ func changePath(c *object.Change) string {
 	}
 	return c.From.Name
 }
-
