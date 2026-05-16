@@ -305,6 +305,34 @@ func TestSchema_ProtectGlobalProject(t *testing.T) {
 	}
 }
 
+func TestSchema_ProtectActiveProjectDelete(t *testing.T) {
+	d := newTestDB(t)
+
+	_, err := d.sqldb.Exec(
+		"INSERT INTO projects (slug, display_name, hidden, created_at) VALUES (?, ?, ?, ?), (?, ?, ?, ?)",
+		"alpha", "Alpha", 0, time.Now().Unix(),
+		"beta", "Beta", 0, time.Now().Unix(),
+	)
+	if err != nil {
+		t.Fatalf("insert projects: %v", err)
+	}
+
+	_, err = d.sqldb.Exec("UPDATE config SET active_project_slug = 'alpha' WHERE id = 1")
+	if err != nil {
+		t.Fatalf("set active project to alpha: %v", err)
+	}
+
+	_, err = d.sqldb.Exec("DELETE FROM projects WHERE slug = 'alpha'")
+	if err == nil {
+		t.Error("expected error deleting active project, got nil")
+	}
+
+	_, err = d.sqldb.Exec("DELETE FROM projects WHERE slug = 'beta'")
+	if err != nil {
+		t.Errorf("unexpected error deleting non-active project: %v", err)
+	}
+}
+
 func TestSchema_ActiveProjectSlugReferentialIntegrity(t *testing.T) {
 	d := newTestDB(t)
 	store := d.Config()

@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -311,7 +312,7 @@ func Validate(cfg *Config) error {
 	if strings.TrimSpace(cfg.Project.ActiveProjectSlug) == "" {
 		return ErrActiveProjectSlugRequired
 	}
-	if cfg.Project.LlamaOnSwitch != "keep" && cfg.Project.LlamaOnSwitch != "reload" {
+	if !slices.Contains(ValidLlamaOnSwitch, cfg.Project.LlamaOnSwitch) {
 		return ErrInvalidLlamaOnSwitch
 	}
 

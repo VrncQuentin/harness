@@ -66,3 +66,11 @@ WHEN NEW.active_project_slug IS NOT NULL
 BEGIN
     SELECT RAISE(ABORT, 'active_project_slug does not exist in projects');
 END;
+
+CREATE TRIGGER IF NOT EXISTS trg_protect_active_project_delete
+BEFORE DELETE ON projects
+FOR EACH ROW
+WHEN OLD.slug = (SELECT active_project_slug FROM config WHERE id = 1)
+BEGIN
+    SELECT RAISE(ABORT, 'cannot delete the active project');
+END;
