@@ -70,6 +70,9 @@
         <div class="agent-title">
           <h3 class="agent-name">{{.Name}}</h3>
           {{if eq .Name $.Active}}<span class="badge badge-ok">active</span>{{end}}
+          {{if eq .Origin "global"}}<span class="badge">global</span>
+          {{else if eq .Origin "extends-global"}}<span class="badge badge-info">extends global</span>
+          {{else if eq .Origin "project-only"}}<span class="badge badge-info">project-only</span>{{end}}
         </div>
         <div class="agent-actions">
           {{if ne .Name $.Active}}

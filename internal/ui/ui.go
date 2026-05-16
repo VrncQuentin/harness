@@ -63,6 +63,9 @@ type stateSnapshot struct {
 	StartTime                time.Time
 	ProjectSlug              string
 	ProjectDirectoryWarnings []ProjectDirectoryWarning
+	ModelMismatch            bool
+	LoadedModel              string
+	PreferredModel           string
 }
 
 // State is the protected mutable state of the UI server.
@@ -385,6 +388,18 @@ func (s *Server) SetProjectDirectoryWarnings(slug string, warnings []ProjectDire
 	s.state.mu.Lock()
 	s.state.data.ProjectSlug = slug
 	s.state.data.ProjectDirectoryWarnings = copied
+	s.state.mu.Unlock()
+	s.broadcastState()
+}
+
+// SetModelMismatch updates whether the currently loaded model differs from
+// the active project's preferred model (relevant when llama_on_switch=keep).
+// Empty strings clear the mismatch indicator.
+func (s *Server) SetModelMismatch(mismatch bool, loaded, preferred string) {
+	s.state.mu.Lock()
+	s.state.data.ModelMismatch = mismatch
+	s.state.data.LoadedModel = loaded
+	s.state.data.PreferredModel = preferred
 	s.state.mu.Unlock()
 	s.broadcastState()
 }
