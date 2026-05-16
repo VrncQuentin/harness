@@ -2,7 +2,7 @@
 
 ## Overview
 
-A local AI inference harness with a git-backed memory system, layered prompt assembly, and a browser-based management UI. First iteration delegates agentic tool execution (file edits, shell, web search) to opencode. Future iterations replace opencode with a native agent layer.
+A local AI inference harness with a git-backed memory system, layered prompt assembly, a browser-based management UI, and a planned first-party native agent loop. The harness owns chat, tool-call orchestration, and tool execution locally; external coding agents are references for design patterns, not runtime dependencies.
 
 The harness runs as a double-clickable Windows native binary. It starts silently, opens the management UI in the default browser if not already open, and lives in the system tray until explicitly quit. The browser UI is the only user-facing surface — all errors (unconfigured on first run, missing model, llama-server failures, missing memory repo) are surfaced there, not in a terminal.
 
@@ -15,7 +15,7 @@ The binary targets llama-server as the inference backend and uses a separate emb
 ```
 ┌─────────────────────────────────────────────────────────┐
 │           Browser (management UI)                        │
-│   model status │ agent config │ memory browser │ logs   │
+│ chat/tasks │ model status │ agents │ projects │ memory │ logs │
 └───────────────────────┬─────────────────────────────────┘
                         │ HTTP (htmx + SSE)
 ┌───────────────────────▼─────────────────────────────────┐
@@ -33,17 +33,22 @@ The binary targets llama-server as the inference backend and uses a separate emb
 │  ┌──────────────┐  ┌────────────────┐  ┌─────────────┐  │
 │  │   Session    │  │    Prompt      │  │   Memory    │  │
 │  │   Manager   │─▶│   Assembler    │─▶│   Store     │  │
-│  └──────────────┘  └────────────────┘  └──────┬──────┘  │
-│         │                                     │         │
-│         ▼                                     ▼         │
-│  ┌──────────────┐                    ┌───────────────┐   │
-│  │    Queue     │                    │  Git Backend  │   │
-│  └──────┬───────┘                    └──────┬────────┘   │
-│         │                                   │           │
-│  ┌──────▼───────┐                    ┌──────▼────────┐   │
-│  │  Inference   │                    │   Embedder    │   │
-│  │  Client     │                    │  (nomic)      │   │
-│  └──────┬───────┘                    └───────────────┘   │
+│  └──────┬───────┘  └───────┬────────┘  └──────┬──────┘  │
+│         │                  │                  │         │
+│  ┌──────▼───────┐  ┌───────▼────────┐         ▼         │
+│  │ Agent Loop   │─▶│ Tool Registry  │   ┌────────────┐  │
+│  │ (planned)    │  │ + Sandbox      │   │ Git Backend│  │
+│  └──────┬───────┘  │ (planned)      │   └──────┬─────┘  │
+│         │          └────────────────┘          │        │
+│         ▼                                      ▼        │
+│  ┌──────────────┐                       ┌─────────────┐ │
+│  │    Queue     │                       │  Embedder   │ │
+│  └──────┬───────┘                       │  (nomic)   │ │
+│         │                               └─────────────┘ │
+│  ┌──────▼───────┐                                     │
+│  │  Inference   │                                     │
+│  │   Client     │                                     │
+│  └──────┬───────┘                                     │
 └─────────┼───────────────────────────────────────────────┘
           │ HTTP (OpenAI-compatible)
 ┌─────────▼────────────┐
@@ -51,14 +56,14 @@ The binary targets llama-server as the inference backend and uses a separate emb
 └──────────────────────┘
 ```
 
-opencode connects to the harness via the optional OpenAI-compatible API server (separate port from the UI server) and handles all chat, file editing, and tool execution.
+The browser UI is the primary chat/task surface. The optional OpenAI-compatible API server remains available for external clients, but first-party agent-loop execution stays inside the harness.
 
 ---
 
 ## Components
 
 ### UI Server (`internal/ui`)
-Lightweight management interface. Serves pre-rendered HTML fragments, no JavaScript framework, no build step.
+Lightweight browser interface for chat/tasks and management. Serves pre-rendered HTML fragments, no JavaScript framework, no build step.
 
 Stack:
 - `net/http` — request routing
@@ -68,12 +73,12 @@ Stack:
 - SSE — live log tailing and model health streaming
 
 Pages:
+- **Chat / Tasks** — first-party conversation and agent-loop task surface; streams model output, tool calls, tool results, and cancellation state
 - **Status** — llama-server health, queue depth, VRAM usage, restart controls; errors (missing config, missing model, failed starts) displayed prominently here
+- **Projects** — create, edit, hide, and switch active project once M3b lands
 - **Agents** — switch active agent, edit persona and notes inline, trigger hot-reload
 - **Memory** — browse episodes by agent/date, view retrieval scores, promote facts
-- **Logs** — live process manager events, prompt assembly debug (token counts per layer)
-
-No chat UI. opencode owns that surface.
+- **Logs** — live process manager events, prompt assembly debug, loop turns, and tool-call traces
 
 ### System Tray (`internal/tray`)
 Manages the binary's desktop presence. Uses `fyne-io/systray` (native Windows, no CGO required).
@@ -85,12 +90,31 @@ Behavior:
 - **On Quit:** graceful shutdown — drain queue, flush WAL, terminate child processes, release lock
 
 ### Session Manager (`internal/session`)
-Owns conversation lifecycle. Used by the OpenAI-compatible API server when opencode connects.
+Owns conversation lifecycle for the browser chat/task surface, the optional OpenAI-compatible API server, and the planned native agent loop.
 
 - **On start:** resolve active agent → trigger memory read → assemble initial context
 - **Per turn:** append to conversation history → call Prompt Assembler → send to Queue
 - **On end:** call summarizer (Qwen) → write episode file → trigger git commit
 - **Persistence:** append-only `projects/<active>/sessions.jsonl` in the memory repo (defaults to `projects/global/` when no user project is selected)
+
+### Agent Loop (`internal/agentloop`) — planned M4
+Owns the first-party agentic turn loop. This package is planned separately from `internal/agent`, which remains the agent/persona registry.
+
+Responsibilities:
+- Maintain part-based messages (`text`, `tool_call`, `tool_result`) for UI display and session replay.
+- Call the Prompt Assembler, submit requests through Queue/Inference Client, parse tool calls, dispatch tools, inject results, and continue until stop/limit/cancel.
+- Enforce max turn count, doom-loop detection, cancellation propagation, and compaction triggers.
+- Emit loop events to the UI logs/SSE stream and metrics store.
+
+### Tool Registry + Sandbox (`internal/tools`) — planned M4/M7
+Defines the local tool surface available to the agent loop.
+
+Responsibilities:
+- Register tools by id, JSON Schema parameters, description, and execute function.
+- Pass a typed context to each tool: active project slug, sandbox roots, session id, caller identity, and cancellation context.
+- M4 starts read-only (`file_read`, `file_list`) and rejects paths outside active project directories.
+- M7 adds destructive tools, shell execution, web search, approvals, richer permissions, and extension hooks.
+
 
 ### Prompt Assembler (`internal/prompt`)
 Builds the final context sent to the model. Layers assembled in order:
@@ -195,9 +219,9 @@ Metrics collected grow with each milestone:
 - **M1:** llama-server health, uptime, queue depth, restart count
 - **M2:** requests per agent, token counts per prompt layer
 - **M3:** episodes written per agent, memory repo size, commit count
-- **M4:** session duration, tokens in/out per session, tool call count
+- **M4:** session duration, tokens in/out per session, loop turn count, read-only tool call count
 - **M5:** retrieval latency, embedding latency, index size
-- **M7:** tool call count per type, tool error rate, agentic loop turn count
+- **M7:** tool call count per type, tool error rate, approval decisions, shell execution outcomes
 - **M8:** TTFT, token throughput, VRAM usage
 
 Interface:
@@ -211,7 +235,7 @@ type Metrics interface {
 The UI reads directly from SQLite to render history charts. An optional Prometheus endpoint (M8) exposes the same data for external scraping.
 
 ### API Server (`internal/api`) — optional
-Thin OpenAI-compatible HTTP server. Enables opencode and other external tools to connect.
+Thin OpenAI-compatible HTTP server. Enables external clients to send chat completions through the same prompt, queue, inference, and session-recording path.
 
 - Exposes `/v1/chat/completions` (streaming)
 - Each request goes through Session Manager → Prompt Assembler → Queue → Inference Client
@@ -225,10 +249,10 @@ Schema grows per milestone:
 - **M1:** `uptime`, `process_health` (llama-server, embedder), `queue_depth`, `restart_count`
 - **M2:** `prompt_layer_tokens` (per layer, per request), `hot_reload_events`
 - **M3:** `session_count`, `episode_count`, `git_commit_latency_ms`
-- **M4:** `active_sessions`, `requests_proxied`, `api_connections`
+- **M4:** `active_sessions`, `agent_loop_turns`, `tool_calls_by_type`, `tool_failures`
 - **M5:** `embedding_latency_ms`, `index_size_chunks`, `retrieval_scores`, `ann_search_latency_ms`
 - **M6:** `promotions_count`, `dedup_blocks`, `cross_agent_reads`
-- **M7:** `tool_calls_by_type`, `tool_failures`, `agentic_loop_turns`
+- **M7:** `approval_decisions`, `shell_exec_duration_ms`, `tool_output_truncations`
 - **M8:** `ttft_ms`, `token_throughput`, `vram_usage_mb`
 
 Retention: raw rows kept for 30 days, downsampled hourly aggregates kept indefinitely. UI shows both live values (SSE) and historical charts (htmx polling).
@@ -292,6 +316,7 @@ Sections and fields:
 - **memory:** `repo_path`
 - **ui:** `port`, `open_on_start`
 - **api:** `enabled`, `port`
+- **project:** `active_project_slug`, `llama_on_switch`
 - **prompt:** `ctx_size`, `memory_token_budget`, `conversation_reserve`
 - **queue:** `max_depth`, `wal_path`
 - **metrics:** `retention_days`
@@ -302,7 +327,7 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 ## Key Design Decisions
 
-**No chat UI in the harness.** opencode owns the chat and tool execution surface. The harness UI is purely for management: model health, agent config, memory browsing.
+**First-party chat and tool execution.** The harness owns the browser chat/task surface, native agent loop, and local tool execution. External coding agents may inspire design choices, but they are not runtime dependencies.
 
 **Desktop app behavior, no terminal required.** Double-click to start, system tray to quit. Single-instance enforced via lock file. Browser opens automatically on first launch. All errors surface in the browser UI.
 
@@ -320,6 +345,6 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **Commit message tags.** Structured `[key:value]` tags in commit messages enable log filtering without a separate metadata store. The git log *is* the index for episode discovery.
 
-**Two HTTP servers, one binary.** UI server (port 3000) and API server (port 8080) are separate. UI is always on. API is opt-in — enables opencode integration without exposing it by default.
+**Two HTTP servers, one binary.** UI server (port 3000) and API server (port 8080) are separate. UI is always on. API is opt-in for external OpenAI-compatible clients and is never required for the first-party browser workflow.
 
-**opencode as first-iteration agent layer.** Tool execution (file edits, shell, web search) is delegated to opencode in M1–M4. opencode connects to the API server and gets memory + persona injected transparently. Replacing opencode with a native agent layer is isolated to a new `internal/agent` package — nothing else changes.
+**Native agent layer staged after Projects.** M4 introduces `internal/agentloop` and `internal/tools` as planned first-party components. `internal/agent` remains the registry/persona package. The MVP starts read-only and project-scoped; destructive tools and approvals are deferred to M7.
