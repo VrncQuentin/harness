@@ -281,6 +281,18 @@ func TestConfigStore_SaveNilRejected(t *testing.T) {
 	}
 }
 
+func TestSchema_ForeignKeysEnabled(t *testing.T) {
+	d := newTestDB(t)
+
+	_, err := d.sqldb.Exec(
+		"INSERT INTO project_directories (project_slug, path) VALUES (?, ?)",
+		"nonexistent", "/tmp/orphan",
+	)
+	if err == nil {
+		t.Fatal("expected foreign-key error inserting orphan project_directories row, got nil")
+	}
+}
+
 func TestSchema_ProtectGlobalProject(t *testing.T) {
 	d := newTestDB(t)
 
