@@ -311,12 +311,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	s.streamTokensWithSession(w, flusher, respCh, reqID, modelEcho, sess)
 }
 
-// streamTokens drains respCh and emits OpenAI-shaped SSE chunks. The response
-// channel is closed by the queue dispatcher after the last token or on error.
-func (s *Server) streamTokens(w http.ResponseWriter, flusher http.Flusher, respCh <-chan inference.Token, reqID, modelEcho string) {
-	s.streamTokensWithSession(w, flusher, respCh, reqID, modelEcho, Session{})
-}
-
 // streamTokensWithSession is streamTokens plus an optional Session
 // that receives the assistant's joined content as a single Append once
 // the stream ends. Pass a zero-value Session to skip recording.
