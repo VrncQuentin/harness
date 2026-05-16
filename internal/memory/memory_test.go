@@ -321,6 +321,7 @@ func TestDirReader_WriteFileRejectsBadPaths(t *testing.T) {
 		{"backslash dotdot", "agents\\..\\..\\etc"},
 		{"unix absolute", "/etc/passwd"},
 		{"windows absolute", "C:/windows/system32"},
+		{"windows absolute backslash", "C:\\windows\\system32"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -387,6 +388,7 @@ func TestDirReader_RemoveAllRejectsBadPaths(t *testing.T) {
 		{"backslash dotdot", "agents\\..\\..\\etc"},
 		{"unix absolute", "/etc/passwd"},
 		{"windows absolute", "C:/windows/system32"},
+		{"windows absolute backslash", "C:\\windows\\system32"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

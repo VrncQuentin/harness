@@ -352,16 +352,37 @@ func checkRel(rel string) error {
 	if rel == "" {
 		return fmt.Errorf("memory: empty path")
 	}
-	if path.IsAbs(rel) || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "\\") {
+	if path.IsAbs(rel) || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "\\") || isWindowsAbs(rel) {
 		return fmt.Errorf("memory: absolute path not allowed: %s", rel)
 	}
 	// Scan segments on both slash flavours so "\\.." is rejected too.
-	for _, sep := range []string{"/", "\\"} {
-		for _, seg := range strings.Split(rel, sep) {
-			if seg == ".." {
-				return fmt.Errorf("memory: path escapes repo root: %s", rel)
-			}
-		}
+	if hasParentSegment(rel, '/') || hasParentSegment(rel, '\\') {
+		return fmt.Errorf("memory: path escapes repo root: %s", rel)
 	}
 	return nil
+}
+
+func isWindowsAbs(rel string) bool {
+	if len(rel) < 3 || rel[1] != ':' {
+		return false
+	}
+	if rel[2] != '/' && rel[2] != '\\' {
+		return false
+	}
+	c := rel[0]
+	return ('A' <= c && c <= 'Z') || ('a' <= c && c <= 'z')
+}
+
+func hasParentSegment(rel string, sep byte) bool {
+	start := 0
+	for i := 0; i <= len(rel); i++ {
+		if i != len(rel) && rel[i] != sep {
+			continue
+		}
+		if i-start == 2 && rel[start:i] == ".." {
+			return true
+		}
+		start = i + 1
+	}
+	return false
 }
