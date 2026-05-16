@@ -11,19 +11,21 @@ import (
 
 // ssePayload is the JSON shape of an `event: state` frame.
 type ssePayload struct {
-	LlamaHealthy  bool     `json:"llama_healthy"`
-	LlamaRunning  bool     `json:"llama_running"`
-	LlamaRestarts int      `json:"llama_restarts"`
-	LlamaFailed   bool     `json:"llama_failed"`
-	EmbedHealthy  bool     `json:"embed_healthy"`
-	EmbedRunning  bool     `json:"embed_running"`
-	EmbedRestarts int      `json:"embed_restarts"`
-	EmbedFailed   bool     `json:"embed_failed"`
-	QueueDepth    int      `json:"queue_depth"`
-	QueueMax      int      `json:"queue_max"`
-	StartupErrors []string `json:"startup_errors,omitempty"`
-	FirstRun      bool     `json:"first_run"`
-	UptimeSeconds int64    `json:"uptime_seconds"`
+	LlamaHealthy             bool                      `json:"llama_healthy"`
+	LlamaRunning             bool                      `json:"llama_running"`
+	LlamaRestarts            int                       `json:"llama_restarts"`
+	LlamaFailed              bool                      `json:"llama_failed"`
+	EmbedHealthy             bool                      `json:"embed_healthy"`
+	EmbedRunning             bool                      `json:"embed_running"`
+	EmbedRestarts            int                       `json:"embed_restarts"`
+	EmbedFailed              bool                      `json:"embed_failed"`
+	QueueDepth               int                       `json:"queue_depth"`
+	QueueMax                 int                       `json:"queue_max"`
+	StartupErrors            []string                  `json:"startup_errors,omitempty"`
+	ProjectSlug              string                    `json:"project_slug,omitempty"`
+	ProjectDirectoryWarnings []ProjectDirectoryWarning `json:"project_directory_warnings,omitempty"`
+	FirstRun                 bool                      `json:"first_run"`
+	UptimeSeconds            int64                     `json:"uptime_seconds"`
 }
 
 // logEventEntry is the JSON shape of an `event: *-log` frame.
@@ -231,18 +233,20 @@ func stateToPayload(s stateSnapshot) ssePayload {
 		errs = append(errs, e.Error())
 	}
 	return ssePayload{
-		LlamaHealthy:  s.LlamaStatus.Healthy,
-		LlamaRunning:  s.LlamaStatus.Running,
-		LlamaRestarts: s.LlamaStatus.RestartCount,
-		LlamaFailed:   s.LlamaStatus.Failed,
-		EmbedHealthy:  s.EmbedderStatus.Healthy,
-		EmbedRunning:  s.EmbedderStatus.Running,
-		EmbedRestarts: s.EmbedderStatus.RestartCount,
-		EmbedFailed:   s.EmbedderStatus.Failed,
-		QueueDepth:    s.QueueDepth,
-		QueueMax:      s.QueueMax,
-		StartupErrors: errs,
-		FirstRun:      s.FirstRun,
-		UptimeSeconds: int64(time.Since(s.StartTime).Seconds()),
+		LlamaHealthy:             s.LlamaStatus.Healthy,
+		LlamaRunning:             s.LlamaStatus.Running,
+		LlamaRestarts:            s.LlamaStatus.RestartCount,
+		LlamaFailed:              s.LlamaStatus.Failed,
+		EmbedHealthy:             s.EmbedderStatus.Healthy,
+		EmbedRunning:             s.EmbedderStatus.Running,
+		EmbedRestarts:            s.EmbedderStatus.RestartCount,
+		EmbedFailed:              s.EmbedderStatus.Failed,
+		QueueDepth:               s.QueueDepth,
+		QueueMax:                 s.QueueMax,
+		StartupErrors:            errs,
+		ProjectSlug:              s.ProjectSlug,
+		ProjectDirectoryWarnings: s.ProjectDirectoryWarnings,
+		FirstRun:                 s.FirstRun,
+		UptimeSeconds:            int64(time.Since(s.StartTime).Seconds()),
 	}
 }

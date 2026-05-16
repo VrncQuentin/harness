@@ -37,10 +37,11 @@ type LogRings struct {
 // reconfigures in place. A mutex guards all fields because callbacks run on
 // HTTP goroutines while event forwarding and metrics read managers and queue.
 type Runtime struct {
-	mu       sync.Mutex
-	cfg      config.Config
-	cfgStore config.Store
-	logRings LogRings
+	mu           sync.Mutex
+	cfg          config.Config
+	cfgStore     config.Store
+	logRings     LogRings
+	projectStore projectDirectoryStore
 
 	llamaMgr *proc.Manager
 	embedMgr *proc.Manager

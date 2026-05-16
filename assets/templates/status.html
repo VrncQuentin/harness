@@ -73,6 +73,18 @@
 </div>
 {{end}}
 
+{{if .ProjectDirectoryWarnings}}
+<div class="alert alert-warn">
+  <div class="alert-head">
+    <h2>Project directory issues</h2>
+    <p class="alert-sub">The active project <strong>{{.ProjectSlug}}</strong> references directories that are missing or are not valid git repos. The harness will keep running and skip those directories until they are fixed.</p>
+  </div>
+  <ul class="error-list">
+    {{range .ProjectDirectoryWarnings}}<li><code>{{.Path}}</code> - {{.Problem}}</li>{{end}}
+  </ul>
+</div>
+{{end}}
+
 <section class="grid">
   <div class="card">
     <header class="card-head">
