@@ -483,6 +483,70 @@ func TestHotReload_SetActiveProjectSwapsAgentWatches(t *testing.T) {
 	}
 }
 
+func TestHotReload_EmitsOnProjectOnlyAgentFileChange(t *testing.T) {
+	root := makeRepo(t, map[string]string{
+		"global/rules.md":                     "r",
+		"projects/dt/agents/coder/persona.md": "dt",
+	})
+	logger, buf := captureLogger(t)
+	h, err := NewHotReload(root, "coder", "dt", logger)
+	if err != nil {
+		t.Fatalf("NewHotReload: %v", err)
+	}
+	defer func() { _ = h.Close() }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	path := filepath.Join(root, "projects", "dt", "agents", "coder", "persona.md")
+	if err := os.WriteFile(path, []byte("updated"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if !waitForLog(buf, "prompt: file changed") {
+		t.Fatalf("expected file-changed log entry, got:\n%s", buf.String())
+	}
+	if !waitForLog(buf, "persona.md") {
+		t.Errorf("expected persona.md in log, got:\n%s", buf.String())
+	}
+}
+
+func TestHotReload_StaleOldAgentIgnoredAfterSwap(t *testing.T) {
+	root := makeRepo(t, map[string]string{
+		"global/rules.md":                        "r",
+		"projects/dt/agents/coder/persona.md":    "c",
+		"projects/dt/agents/reviewer/persona.md": "r2",
+	})
+	logger, buf := captureLogger(t)
+	h, err := NewHotReload(root, "coder", "dt", logger)
+	if err != nil {
+		t.Fatalf("NewHotReload: %v", err)
+	}
+	defer func() { _ = h.Close() }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "agents", "coder", "persona.md"), []byte("updated"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if !waitForLog(buf, "coder") {
+		t.Fatalf("expected coder project-local change, got:\n%s", buf.String())
+	}
+
+	time.Sleep(hotReloadDebounce * 2)
+	preSwapLen := len(buf.String())
+	h.SetActiveAgent("reviewer")
+
+	time.Sleep(50 * time.Millisecond)
+
+	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "agents", "coder", "persona.md"), []byte("updated again"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	time.Sleep(hotReloadDebounce * 2)
+	if strings.Contains(buf.String()[preSwapLen:], "prompt: file changed") {
+		t.Errorf("expected stale coder project-local change to be ignored after swap, got:\n%s", buf.String()[preSwapLen:])
+	}
+}
+
 func TestHotReload_NonWindowsGuards(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("platform-specific watch semantics vary; the happy-path tests cover this")
