@@ -48,6 +48,7 @@ type Config struct {
 	Queue    QueueConfig
 	Metrics  MetricsConfig
 	Log      LogConfig
+	Loop     LoopConfig
 }
 
 // ModelConfig holds llama-server configuration.
@@ -160,6 +161,17 @@ type LogConfig struct {
 	ProcMaxLines int
 }
 
+// LoopConfig holds native agent loop configuration.
+type LoopConfig struct {
+	// MaxTurns caps the number of loop iterations (model call + tool
+	// dispatch) before the loop terminates with a limit error.
+	MaxTurns int
+	// DoomThreshold is the number of consecutive identical tool calls
+	// (same tool id + same args JSON) the loop tolerates before
+	// terminating with a doom-loop error.
+	DoomThreshold int
+}
+
 // Store persists and retrieves Config. The concrete implementation lives in
 // internal/db; callers accept this interface so they can be tested with
 // in-memory fakes.
@@ -208,6 +220,10 @@ func Defaults() Config {
 		Log: LogConfig{
 			RingMaxEntries: 500,
 			ProcMaxLines:   64,
+		},
+		Loop: LoopConfig{
+			MaxTurns:      10,
+			DoomThreshold: 3,
 		},
 		Project: ProjectConfig{
 			ActiveProjectSlug: "global",
@@ -309,6 +325,13 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Log.ProcMaxLines < 1 {
 		return fmt.Errorf("config: log.proc_max_lines must be >= 1, got %d", cfg.Log.ProcMaxLines)
+	}
+
+	if cfg.Loop.MaxTurns < 1 {
+		return fmt.Errorf("config: loop.max_turns must be >= 1, got %d", cfg.Loop.MaxTurns)
+	}
+	if cfg.Loop.DoomThreshold < 1 {
+		return fmt.Errorf("config: loop.doom_threshold must be >= 1, got %d", cfg.Loop.DoomThreshold)
 	}
 
 	if strings.TrimSpace(cfg.Project.ActiveProjectSlug) == "" {
