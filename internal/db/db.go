@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -31,7 +32,7 @@ type DB struct {
 // Open opens harness.db at path, applies any pending migrations, and seeds
 // the singleton config row. The returned *DB must be closed via Close.
 func Open(path string) (*DB, error) {
-	sqldb, err := sql.Open("sqlite", path)
+	sqldb, err := sql.Open("sqlite", foreignKeysDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("db: open %s: %w", path, err)
 	}
@@ -70,7 +71,7 @@ func PeekUIPort(path string, fallback int) int {
 		return fallback
 	}
 
-	sqldb, err := sql.Open("sqlite", path)
+	sqldb, err := sql.Open("sqlite", foreignKeysDSN(path))
 	if err != nil {
 		return fallback
 	}
@@ -84,6 +85,16 @@ func PeekUIPort(path string, fallback int) int {
 		return fallback
 	}
 	return port
+}
+
+func foreignKeysDSN(path string) string {
+	if strings.Contains(path, "?_pragma=") || strings.Contains(path, "&_pragma=") {
+		return path
+	}
+	if strings.Contains(path, "?") {
+		return path + "&_pragma=foreign_keys(1)"
+	}
+	return path + "?_pragma=foreign_keys(1)"
 }
 
 // Close closes the underlying SQLite handle.
