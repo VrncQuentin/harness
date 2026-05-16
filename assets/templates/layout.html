@@ -18,9 +18,15 @@
       <a href="/chat" class="nav-link {{if eq .Page "chat"}}active{{end}}">Chat</a>
       <a href="/agents" class="nav-link {{if eq .Page "agents"}}active{{end}}">Agents</a>
       <a href="/memory" class="nav-link {{if eq .Page "memory"}}active{{end}}">Memory</a>
+      <a href="/projects" class="nav-link {{if eq .Page "projects"}}active{{end}}">Projects</a>
       <a href="/config" class="nav-link {{if eq .Page "config"}}active{{end}}">Config</a>
     </nav>
     <div class="topbar-actions">
+      <select class="select project-switcher" onchange="if(this.value){window.location='/projects?activate='+this.value}">
+        {{range .ProjectSlugs}}
+        <option value="{{.}}" {{if eq . $.ActiveProjectSlug}}selected{{end}}>{{index $.ProjectNames .}}</option>
+        {{end}}
+      </select>
       <button type="button" class="btn btn-danger btn-sm" data-open-dialog="harness-shutdown" data-confirm-text="Shut down the harness?">Shut down</button>
     </div>
   </div>

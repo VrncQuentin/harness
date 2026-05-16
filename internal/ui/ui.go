@@ -96,6 +96,7 @@ type Server struct {
 	memoryEditTmpl        *template.Template
 	memoryEpisodesTmpl    *template.Template
 	memoryEpisodeViewTmpl *template.Template
+	projectsTmpl          *template.Template
 	// shutdownTmpl is intentionally standalone (no layout.html) so the
 	// rendered page does not load /static/* — by the time the browser
 	// fetches stylesheets the listener may already be gone.
@@ -134,6 +135,9 @@ type Server struct {
 
 	sessionStoreMu sync.RWMutex
 	sessionStore   SessionStore
+
+	projectStoreMu sync.RWMutex
+	projectStore   ProjectStore
 
 	logRing   atomic.Pointer[logbuf.Ring]
 	llamaRing atomic.Pointer[logbuf.Ring]
@@ -193,6 +197,11 @@ func NewServer(port int) *Server {
 		assets.TemplateFS,
 		"templates/layout.html",
 		"templates/memory_episode_view.html",
+	))
+	s.projectsTmpl = template.Must(template.ParseFS(
+		assets.TemplateFS,
+		"templates/layout.html",
+		"templates/projects.html",
 	))
 	s.shutdownTmpl = template.Must(template.ParseFS(
 		assets.TemplateFS,
@@ -260,6 +269,18 @@ func (s *Server) configStore() config.Store {
 	s.storeMu.RLock()
 	defer s.storeMu.RUnlock()
 	return s.store
+}
+
+func (s *Server) SetProjectStore(store ProjectStore) {
+	s.projectStoreMu.Lock()
+	s.projectStore = store
+	s.projectStoreMu.Unlock()
+}
+
+func (s *Server) getProjectStore() ProjectStore {
+	s.projectStoreMu.RLock()
+	defer s.projectStoreMu.RUnlock()
+	return s.projectStore
 }
 
 // SetBinDir records the directory containing the running harness binary. It is
@@ -418,6 +439,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/memory/save", s.handleMemorySave)
 	mux.HandleFunc("/memory/episodes", s.handleMemoryEpisodes)
 	mux.HandleFunc("/memory/episodes/view", s.handleMemoryEpisodeView)
+	mux.HandleFunc("/projects", s.handleProjects)
+	mux.HandleFunc("/projects/edit", s.handleProjectEdit)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
@@ -453,15 +476,47 @@ func (s *Server) Start(ctx context.Context) error {
 // basePage holds template fields shared by every rendered page (nav highlight
 // and footer uptime live in layout.html).
 type basePage struct {
-	Page       string
-	UptimeText string
+	Page               string
+	UptimeText         string
+	ActiveProjectSlug  string
+	ActiveProjectName  string
+	ProjectSlugs       []string
+	ProjectNames       map[string]string
 }
 
 func (s *Server) newBasePage(page string) basePage {
-	return basePage{
+	bp := basePage{
 		Page:       page,
 		UptimeText: formatUptime(time.Since(s.state.snapshot().StartTime)),
 	}
+	store := s.getProjectStore()
+	if store != nil {
+		projects, err := store.List(false)
+		if err == nil {
+			bp.ProjectNames = make(map[string]string, len(projects))
+			for _, p := range projects {
+				bp.ProjectSlugs = append(bp.ProjectSlugs, p.Slug)
+				bp.ProjectNames[p.Slug] = p.DisplayName
+			}
+		}
+	}
+	cs := s.configStore()
+	if cs != nil {
+		loaded, _, err := cs.Load()
+		if err == nil && loaded.Project.ActiveProjectSlug != "" {
+			bp.ActiveProjectSlug = loaded.Project.ActiveProjectSlug
+			if bp.ProjectNames != nil {
+				bp.ActiveProjectName = bp.ProjectNames[loaded.Project.ActiveProjectSlug]
+			}
+		}
+	}
+	if bp.ActiveProjectSlug == "" {
+		bp.ActiveProjectSlug = "global"
+	}
+	if bp.ActiveProjectName == "" {
+		bp.ActiveProjectName = "Global"
+	}
+	return bp
 }
 
 func formatUptime(d time.Duration) string {
