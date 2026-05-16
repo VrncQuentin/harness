@@ -100,17 +100,33 @@ func (r *Registry) Schemas() []map[string]any {
 	return out
 }
 
-// validatePath checks that path is within at least one sandbox root. If
-// sandbox roots are empty, all paths are rejected.
+// validatePath checks that path (after symlink resolution) is within at
+// least one sandbox root. If sandbox roots are empty, all paths are rejected.
 func validatePath(path string, roots []string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("tools: cannot resolve path: %w", err)
 	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		// Path does not exist or cannot be resolved — still validate the
+		// unresolved path against sandbox roots to prevent traversal.
+		for _, root := range roots {
+			clean := filepath.Clean(root)
+			if strings.HasPrefix(abs, clean+string(filepath.Separator)) || abs == clean {
+				return abs, nil
+			}
+		}
+		return "", fmt.Errorf("%w: %s", ErrSandboxViolation, path)
+	}
 	for _, root := range roots {
 		clean := filepath.Clean(root)
-		if strings.HasPrefix(abs, clean+string(filepath.Separator)) || abs == clean {
-			return abs, nil
+		resolvedRoot, err := filepath.EvalSymlinks(clean)
+		if err != nil {
+			resolvedRoot = clean
+		}
+		if strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator)) || resolved == resolvedRoot {
+			return resolved, nil
 		}
 	}
 	return "", fmt.Errorf("%w: %s", ErrSandboxViolation, path)

@@ -5,6 +5,7 @@ package agentloop
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -81,7 +82,7 @@ var ErrCancelled = errors.New("agentloop: cancelled")
 func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch chan<- Event) error {
 	defer close(evch)
 	turns := 0
-	var lastCalls []string // tool name + args for doom detection
+	var lastFPs [][]byte // per-turn fingerprints for doom detection
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -175,16 +176,14 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 		}
 		messages = append(messages, assistantMsg)
 
-		// Doom-loop detection: check if all tool calls in this turn
-		// are repeats of recent calls.
-		for _, tc := range assistantMsg.ToolCalls {
-			fp := tc.Function.Name + ":" + tc.Function.Arguments
-			lastCalls = append(lastCalls, fp)
-			if len(lastCalls) > e.loopCfg.DoomThreshold {
-				lastCalls = lastCalls[1:]
-			}
+		// Doom-loop detection: fingerprint this turn's tool calls and
+		// check if the same fingerprint appears in the last N turns.
+		turnFP := turnFingerprint(assistantMsg.ToolCalls)
+		lastFPs = append(lastFPs, turnFP)
+		if len(lastFPs) > e.loopCfg.DoomThreshold {
+			lastFPs = lastFPs[1:]
 		}
-		if len(lastCalls) >= e.loopCfg.DoomThreshold && allEqual(lastCalls) {
+		if len(lastFPs) >= e.loopCfg.DoomThreshold && allEqualFP(lastFPs) {
 			e.emit(evch, Event{Turn: turns, Type: EvtDoom, Terminate: EvtDoom,
 				Content: "Repeated identical tool calls detected — stopping to avoid loop"})
 			return ErrDoomLoop
@@ -266,13 +265,26 @@ func resolveSlot(slots *[]*accumulatedToolCall, index int) *accumulatedToolCall 
 	return (*slots)[index]
 }
 
-func allEqual(items []string) bool {
+// turnFingerprint produces a hash of the tool calls in a single turn so
+// the doom-loop detector can compare turns (not individual calls).
+func turnFingerprint(calls []inference.ToolCall) []byte {
+	h := sha256.New()
+	for _, tc := range calls {
+		h.Write([]byte(tc.Function.Name))
+		h.Write([]byte{0})
+		h.Write([]byte(tc.Function.Arguments))
+		h.Write([]byte{0})
+	}
+	return h.Sum(nil)
+}
+
+func allEqualFP(items [][]byte) bool {
 	if len(items) <= 1 {
 		return false
 	}
 	first := items[0]
 	for _, item := range items[1:] {
-		if item != first {
+		if string(item) != string(first) {
 			return false
 		}
 	}
