@@ -100,6 +100,11 @@ func (rt *Runtime) ApplyConfig(
 			old.API != loaded.API ||
 			old.Agent.Active != loaded.Agent.Active ||
 			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
+			// Project switch: flush current session and optionally
+			// reload llama-server before rebuilding memory services.
+			if old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
+				rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
+			}
 			slog.Info("rebuilding memory and api services")
 			rt.stopMemoryAndAPI(uiServer)
 			rt.startMemoryAndAPI(ctx, uiServer, metricsStore)

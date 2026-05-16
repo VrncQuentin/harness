@@ -337,3 +337,45 @@ func validateCacheType(name, value string) error {
 	}
 	return fmt.Errorf("config: %s must be one of %s, got %q", name, strings.Join(ValidCacheTypes, ", "), value)
 }
+
+// EffectiveModel returns the effective model config for the given project.
+// Per-project overrides take precedence; nil values fall back to the global
+// defaults in cfg.
+func EffectiveModel(cfg *Config, proj *project.Project) ModelConfig {
+	m := cfg.Model
+	if proj == nil {
+		return m
+	}
+	if proj.ModelBinary != nil {
+		m.Binary = *proj.ModelBinary
+	}
+	if proj.ModelPath != nil {
+		m.ModelPath = *proj.ModelPath
+	}
+	if proj.ModelCtxSize != nil {
+		m.CtxSize = *proj.ModelCtxSize
+	}
+	if proj.ModelGPULayers != nil {
+		m.GPULayers = *proj.ModelGPULayers
+	}
+	if proj.ModelNParallel != nil {
+		m.NParallel = *proj.ModelNParallel
+	}
+	return m
+}
+
+// ModelConfigEqual returns true when a and b are identical model
+// configurations. Port and Verbose are deliberately excluded — they are
+// process-level flags, not model identity fields. Two projects that differ
+// only in Port cannot share a llama-server, but since the harness runs
+// exactly one llama-server whose Port comes from the global config (never
+// project overrides), comparing other fields suffices.
+func ModelConfigEqual(a, b ModelConfig) bool {
+	return a.Binary == b.Binary &&
+		a.ModelPath == b.ModelPath &&
+		a.CtxSize == b.CtxSize &&
+		a.GPULayers == b.GPULayers &&
+		a.NParallel == b.NParallel &&
+		a.CacheTypeK == b.CacheTypeK &&
+		a.CacheTypeV == b.CacheTypeV
+}

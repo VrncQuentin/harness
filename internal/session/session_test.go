@@ -121,7 +121,7 @@ func newTestManager(t *testing.T, fi *fakeInference) (*Manager, *memory.DirReade
 		Metrics:            metricsRec,
 		SummarizerPrompt:   func() string { return "test prompt" },
 		ResolveAbsRepoPath: dir,
-	})
+	}, Project)
 	return mgr, reader, dir, metricsRec
 }
 
