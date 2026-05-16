@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
+
+	"github.com/vrnc/harness/internal/project"
 )
 
 // LayoutItem describes one entry the canonical memory layout requires.
@@ -46,6 +49,39 @@ func ExpectedLayout() []LayoutItem {
 	}
 }
 
+// ProjectLayout returns the canonical layout items for a single project
+// identified by slug. For the reserved "global" slug it returns the
+// system-project scaffold with sessions.jsonl but without optional
+// project-local rules.md. For user projects it includes rules.md, agents/,
+// sessions.jsonl, episodes/, index/, and index/_episodes/. The queue.wal is intentionally omitted
+// — it is created lazily by the queue subsystem on first use.
+func ProjectLayout(slug string) ([]LayoutItem, error) {
+	if err := project.ValidateSlug(slug); err != nil {
+		return nil, fmt.Errorf("memory: invalid project slug %q: %w", slug, err)
+	}
+
+	if slug == project.GlobalSlug {
+		return []LayoutItem{
+			{Path: "projects/global", Dir: true, Desc: "System project (default scope)"},
+			{Path: "projects/global/sessions.jsonl", Dir: false, Desc: "Project session history"},
+			{Path: "projects/global/episodes", Dir: true, Desc: "Session episode files for the system project"},
+			{Path: "projects/global/index", Dir: true, Desc: "Semantic search indexes for the system project"},
+			{Path: "projects/global/index/_episodes", Dir: true, Desc: "Embeddings of the system project's episodes"},
+		}, nil
+	}
+
+	prefix := "projects/" + slug
+	return []LayoutItem{
+		{Path: prefix, Dir: true, Desc: "User project"},
+		{Path: prefix + "/rules.md", Dir: false, Desc: "Project-specific rules"},
+		{Path: prefix + "/agents", Dir: true, Desc: "Project agent definitions"},
+		{Path: prefix + "/sessions.jsonl", Dir: false, Desc: "Project session history"},
+		{Path: prefix + "/episodes", Dir: true, Desc: "Project episode files"},
+		{Path: prefix + "/index", Dir: true, Desc: "Project semantic search indexes"},
+		{Path: prefix + "/index/_episodes", Dir: true, Desc: "Project episode embeddings"},
+	}, nil
+}
+
 // MissingItems returns the subset of ExpectedLayout that is absent under
 // root. An item present with the wrong kind (file where a directory is
 // expected, or vice versa) is reported as missing so the UI surfaces the
@@ -68,7 +104,7 @@ func MissingItems(root string) ([]LayoutItem, error) {
 	for _, item := range expected {
 		abs := filepath.Join(root, filepath.FromSlash(item.Path))
 		st, err := os.Stat(abs)
-		if errors.Is(err, fs.ErrNotExist) {
+		if isMissingLayoutPath(err) {
 			missing = append(missing, item)
 			continue
 		}
@@ -197,4 +233,8 @@ func layoutPaths(items []LayoutItem) string {
 		paths = append(paths, item.Path)
 	}
 	return strings.Join(paths, ", ")
+}
+
+func isMissingLayoutPath(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
