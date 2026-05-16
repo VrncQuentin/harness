@@ -58,6 +58,8 @@ func CheckProjectDirectories(store projectDirectoryStore, slug string) ([]ui.Pro
 	return warnings, nil
 }
 
+// refreshProjectDirectoryWarnings recomputes per-directory health warnings for
+// the active project. Caller must hold rt.mu.
 func (rt *Runtime) refreshProjectDirectoryWarnings(uiServer *ui.Server) {
 	if uiServer == nil {
 		return
