@@ -120,7 +120,7 @@ func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.
 		Metrics:            rec,
 		SummarizerPrompt:   rt.summarizerPromptFn(),
 		ResolveAbsRepoPath: repoPath,
-	})
+	}, rt.cfg.Project.ActiveProjectSlug)
 	adapter := &uiSessionStoreAdapter{mgr: mgr, getActive: rt.getActiveAgent}
 	return mgr, adapter
 }

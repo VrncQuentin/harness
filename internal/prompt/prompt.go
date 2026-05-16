@@ -46,12 +46,10 @@ const (
 	// honored when the user authors it.
 	projectRulesPath = "projects/%s/rules.md"
 
-	// episodesGlob points at the system project's episode tree. M3
-	// staged the project-scoped layout so per-agent episodes live under
-	// projects/global/, with top-level agents/<n>/ holding definition
-	// only (persona, rules, notes). M3b will replace the hardcoded
-	// "global" slug with the active project's slug.
-	episodesGlob = "projects/global/episodes/%s/*.md"
+	// episodesGlobPattern is the format template for globbing episode
+	// files. The first parameter is the project slug, the second is the
+	// agent name.
+	episodesGlobPattern = "projects/%s/episodes/%s/*.md"
 )
 
 // Static markdown section headers. Each optional layer is skipped if
@@ -349,7 +347,11 @@ func (a *DiskAssembler) loadLayers(agentName string) (rawLayers, error) {
 // are returned, so the budget-driven trim further down sees a slice
 // already capped to recency. RecencyN <= 0 means unlimited.
 func (a *DiskAssembler) loadEpisodes(agentName string) ([]episode, error) {
-	pattern := fmt.Sprintf(episodesGlob, agentName)
+	slug := a.projectSlug
+	if slug == "" {
+		slug = project.GlobalSlug
+	}
+	pattern := fmt.Sprintf(episodesGlobPattern, slug, agentName)
 	paths, err := a.mem.Glob(pattern)
 	if err != nil {
 		return nil, fmt.Errorf("prompt: glob episodes: %w", err)

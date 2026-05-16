@@ -6,14 +6,14 @@
 // valid Windows filename and the episode filename stem.
 //
 // Saves are append-only and last-wins-by-ID:
-//   - the summary is regenerated and written to projects/global/episodes/
+//   - the summary is regenerated and written to projects/<slug>/episodes/
 //     <agent>/<id>.md (committed to git, single file per commit)
-//   - the raw conversation is written to projects/global/episodes/
+//   - the raw conversation is written to projects/<slug>/episodes/
 //     <agent>/<id>.json (working-tree-only, intentionally uncommitted)
-//   - one record per save is appended to projects/global/sessions.jsonl
+//   - one record per save is appended to projects/<slug>/sessions.jsonl
 //
-// M3 hardcodes the project slug to "global"; M3b introduces project
-// switching and replaces the literal with the active project.
+// The project slug is set via ManagerDeps.ProjectSlug at construction
+// time; paths are computed from the manager's stored value.
 package session
 
 import (
@@ -29,23 +29,16 @@ import (
 	"github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/project"
 )
 
-// Project is the literal slug used by every session in M3. The path
-// templates below substitute it inline so callers never invent it.
-const Project = "global"
+// Project is the global project slug. Callers that need to hardcode a
+// fallback should prefer project.GlobalSlug; this constant exists for
+// backward compatibility with M3 era code.
+const Project = project.GlobalSlug
 
-// Path templates for session artifacts inside the memory repo. Forward
-// slashes only - the memory.FileWriter joins them with the OS-native
-// separator on disk.
-const (
-	episodesDirTmpl   = "projects/" + Project + "/episodes/%s"
-	episodeMarkdown   = "projects/" + Project + "/episodes/%s/%s.md"
-	episodeSidecar    = "projects/" + Project + "/episodes/%s/%s.json"
-	sessionsLogPath   = "projects/" + Project + "/sessions.jsonl"
-	episodesRoot      = "projects/" + Project + "/episodes"
-	episodeFileSuffix = ".md"
-)
+// episodeFileSuffix is the extension used for episode markdown files.
+const episodeFileSuffix = ".md"
 
 // idTimeFormat is the time.Format layout used to mint a session ID.
 // Hyphens replace colons so the same string doubles as a filename on
@@ -148,18 +141,49 @@ type ManagerDeps struct {
 // Manager owns the live in-memory sessions and orchestrates save/resume
 // against the memory repo. Safe for concurrent use.
 type Manager struct {
-	mu         sync.Mutex
-	sessions   map[string]*Session
-	knownIDs   map[string]struct{}
-	deps       ManagerDeps
-	summarizer *Summarizer
+	mu          sync.Mutex
+	sessions    map[string]*Session
+	knownIDs    map[string]struct{}
+	deps        ManagerDeps
+	summarizer  *Summarizer
+	projectSlug string
+}
+
+// episodesDir returns the repo-relative path for the episode directory
+// of a given agent under this manager's project.
+func (m *Manager) episodesDir(agent string) string {
+	return fmt.Sprintf("projects/%s/episodes/%s", m.projectSlug, agent)
+}
+
+// episodeMarkdownPath returns the repo-relative path to an episode .md
+// file for the given agent and session id.
+func (m *Manager) episodeMarkdownPath(agent, id string) string {
+	return fmt.Sprintf("projects/%s/episodes/%s/%s.md", m.projectSlug, agent, id)
+}
+
+// episodeSidecarPath returns the repo-relative path to an episode .json
+// sidecar for the given agent and session id.
+func (m *Manager) episodeSidecarPath(agent, id string) string {
+	return fmt.Sprintf("projects/%s/episodes/%s/%s.json", m.projectSlug, agent, id)
+}
+
+// sessionsLogRelPath returns the repo-relative path for this project's
+// sessions.jsonl.
+func (m *Manager) sessionsLogRelPath() string {
+	return fmt.Sprintf("projects/%s/sessions.jsonl", m.projectSlug)
+}
+
+// episodesRootRelPath returns the repo-relative episodes root directory
+// for this project.
+func (m *Manager) episodesRootRelPath() string {
+	return fmt.Sprintf("projects/%s/episodes", m.projectSlug)
 }
 
 // NewManager constructs a Manager from deps. The caller is expected to
 // have already validated the memory repo (memory.ValidateRepo) so the
 // FileWriter/Reader/Committer/Inference references are non-nil; passing
 // nil here is a programming error and panics.
-func NewManager(deps ManagerDeps) *Manager {
+func NewManager(deps ManagerDeps, projectSlug string) *Manager {
 	if deps.Repo == nil {
 		panic("session: ManagerDeps.Repo is required")
 	}
@@ -181,11 +205,15 @@ func NewManager(deps ManagerDeps) *Manager {
 	if deps.SummarizerTimeout <= 0 {
 		deps.SummarizerTimeout = summarizerTimeout
 	}
+	if projectSlug == "" {
+		projectSlug = project.GlobalSlug
+	}
 	return &Manager{
-		sessions:   make(map[string]*Session),
-		knownIDs:   make(map[string]struct{}),
-		deps:       deps,
-		summarizer: NewSummarizer(deps.Inference, deps.SummarizerPrompt, deps.SummarizerTimeout),
+		sessions:    make(map[string]*Session),
+		knownIDs:    make(map[string]struct{}),
+		deps:        deps,
+		summarizer:  NewSummarizer(deps.Inference, deps.SummarizerPrompt, deps.SummarizerTimeout),
+		projectSlug: projectSlug,
 	}
 }
 
@@ -216,7 +244,7 @@ func (m *Manager) Start(agent string) *Session {
 	s := &Session{
 		ID:           id,
 		Agent:        agent,
-		Project:      Project,
+		Project:      m.projectSlug,
 		StartedAt:    now,
 		Conversation: nil,
 	}
@@ -239,7 +267,7 @@ func (m *Manager) Resume(id string) (*Session, error) {
 	if rec == nil {
 		return nil, fmt.Errorf("session: resume %s: %w", id, ErrUnknownSession)
 	}
-	sidecarPath := fmt.Sprintf(episodeSidecar, rec.Agent, rec.ID)
+	sidecarPath := m.episodeSidecarPath(rec.Agent, rec.ID)
 	body, err := m.deps.Reader.Read(sidecarPath)
 	if err != nil {
 		return nil, fmt.Errorf("session: resume %s: %w", id, ErrConversationLost)
@@ -336,8 +364,8 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		return SaveResult{}, fmt.Errorf("session: summarize %s: summarizer returned empty body", id)
 	}
 
-	episodePath := fmt.Sprintf(episodeMarkdown, snap.Agent, snap.ID)
-	sidecarPath := fmt.Sprintf(episodeSidecar, snap.Agent, snap.ID)
+	episodePath := m.episodeMarkdownPath(snap.Agent, snap.ID)
+	sidecarPath := m.episodeSidecarPath(snap.Agent, snap.ID)
 
 	body := renderEpisodeBody(snap.ID, summary)
 	if err := m.deps.Writer.WriteFile(episodePath, []byte(body)); err != nil {
@@ -478,7 +506,7 @@ func (m *Manager) SidecarConversation(agent, id string) ([]inference.Message, er
 	if !validAgent(agent) || !validID(id) {
 		return nil, fmt.Errorf("session: sidecar %s/%s: invalid argument", agent, id)
 	}
-	sidecarPath := fmt.Sprintf(episodeSidecar, agent, id)
+	sidecarPath := m.episodeSidecarPath(agent, id)
 	body, err := m.deps.Reader.Read(sidecarPath)
 	if err != nil {
 		return nil, fmt.Errorf("session: sidecar %s: %w", sidecarPath, ErrConversationLost)
@@ -512,15 +540,13 @@ func (m *Manager) findLatestRecord(id string) (*Record, error) {
 // count is used as the EpisodeCount metric. Cheap enough to compute on
 // every save - the tree is small at M3 scale.
 func (m *Manager) countEpisodeFiles() int {
-	pattern := episodesRoot + "/*"
-	agents, err := m.deps.Reader.Glob(pattern + "/")
-	_ = err // best-effort metric
-	count := 0
+	root := m.episodesRootRelPath()
 	if w, ok := m.deps.Reader.(memory.Walker); ok {
-		entries, werr := w.Walk(episodesRoot)
-		if werr != nil {
+		entries, err := w.Walk(root)
+		if err != nil {
 			return 0
 		}
+		count := 0
 		for _, e := range entries {
 			if e.Dir {
 				continue
@@ -534,9 +560,13 @@ func (m *Manager) countEpisodeFiles() int {
 	}
 	// Walker unavailable: fall back to per-agent glob. Slower but
 	// correct for tests that ship a stub Reader.
+	pattern := root + "/*"
+	agents, err := m.deps.Reader.Glob(pattern + "/")
+	_ = err // best-effort metric
+	count := 0
 	for _, agentDir := range agents {
-		agentName := strings.TrimSuffix(strings.TrimPrefix(agentDir, episodesRoot+"/"), "/")
-		matches, gerr := m.deps.Reader.Glob(fmt.Sprintf(episodesDirTmpl+"/*"+episodeFileSuffix, agentName))
+		agentName := strings.TrimSuffix(strings.TrimPrefix(agentDir, root+"/"), "/")
+		matches, gerr := m.deps.Reader.Glob(m.episodesDir(agentName) + "/*" + episodeFileSuffix)
 		if gerr != nil {
 			continue
 		}
@@ -549,10 +579,11 @@ func (m *Manager) countEpisodeFiles() int {
 // The memory writer accepts repo-relative paths but ReadAll/AppendRecord
 // take an absolute path so they work without a memory.Reader handle.
 func (m *Manager) sessionsLogPath() string {
+	rel := m.sessionsLogRelPath()
 	if m.deps.ResolveAbsRepoPath == "" {
-		return sessionsLogPath
+		return rel
 	}
-	return path.Join(filepathToSlash(m.deps.ResolveAbsRepoPath), sessionsLogPath)
+	return path.Join(filepathToSlash(m.deps.ResolveAbsRepoPath), rel)
 }
 
 // cloneSession returns a defensive copy of s so callers cannot mutate
