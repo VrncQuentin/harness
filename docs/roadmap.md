@@ -88,8 +88,8 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 - [x] `projects` and `project_directories` tables; system `global` row seeded on first run (cannot be hidden, deleted, or renamed)
 - [x] `config` additions: `active_project_slug` (NOT NULL, default `'global'`) and `project_llama_on_switch` (`'keep' | 'reload'`, default `'reload'`)
 - [ ] Memory repo layout: top-level `runtime/` and `index/` fold into `projects/global/`; episodes move out of `agents/<name>/episodes/` into `projects/<slug>/episodes/<agent-name>/` (agent dirs become definition-only); user projects live at `projects/<slug>/{rules.md, agents/, sessions.jsonl, queue.wal, episodes/<agent-name>/, index/<dir-slug>/}`
-- [ ] Prompt assembler: new `projects/<slug>/rules.md` layer between global rules and agent persona
-- [ ] Agent resolution: per-file override of the global agents library by `projects/<slug>/agents/<name>/`
+- [x] Prompt assembler: new `projects/<slug>/rules.md` layer between global rules and agent persona
+- [x] Agent resolution: per-file override of the global agents library by `projects/<slug>/agents/<name>/`
 - [ ] Activation: eager git-repo check on configured directories (warn-and-continue), fresh session, conditional llama-server swap based on `llama_on_switch`
 - [ ] UI: `/projects` page (CRUD + hide), topbar switcher with `Global` always present, project-aware `/agents`, mismatch indicator on status page when `keep` causes a model/preference divergence
 
