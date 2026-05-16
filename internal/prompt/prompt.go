@@ -289,23 +289,37 @@ func (a *DiskAssembler) loadLayers(agentName string) (rawLayers, error) {
 	lay.projectRules = projectRules
 
 	if agentName != "" {
-		ag, err := a.reg.Get(agentName)
-		if err != nil {
-			return rawLayers{}, fmt.Errorf("prompt: resolve agent %q: %w", agentName, err)
+		if err := agent.ValidateName(agentName); err != nil {
+			return rawLayers{}, fmt.Errorf("prompt: invalid agent name %q: %w", agentName, err)
 		}
-		persona, err := a.readRequired(ag.PersonaPath)
+
+		var globalAgent agent.Agent
+		globalExists := false
+		if ag, err := a.reg.Get(agentName); err != nil {
+			if !errors.Is(err, fs.ErrNotExist) {
+				return rawLayers{}, fmt.Errorf("prompt: resolve agent %q: %w", agentName, err)
+			}
+		} else {
+			globalAgent = ag
+			globalExists = true
+		}
+
+		persona, personaFound, err := a.resolveAgentFile(slug, agentName, "persona.md", globalAgent, globalExists)
 		if err != nil {
 			return rawLayers{}, err
 		}
+		if !personaFound {
+			return rawLayers{}, fmt.Errorf("prompt: agent %q persona missing: %w", agentName, fs.ErrNotExist)
+		}
 		lay.persona = persona
 
-		agentRules, err := a.readOptional(ag.RulesPath)
+		agentRules, _, err := a.resolveAgentFile(slug, agentName, "rules.md", globalAgent, globalExists)
 		if err != nil {
 			return rawLayers{}, err
 		}
 		lay.agentRules = agentRules
 
-		notes, err := a.readOptional(ag.NotesPath)
+		notes, _, err := a.resolveAgentFile(slug, agentName, "notes.md", globalAgent, globalExists)
 		if err != nil {
 			return rawLayers{}, err
 		}
@@ -386,6 +400,40 @@ func (a *DiskAssembler) readOptional(p string) (string, error) {
 		return "", fmt.Errorf("prompt: read optional %s: %w", p, err)
 	}
 	return string(b), nil
+}
+
+func (a *DiskAssembler) resolveAgentFile(slug, agentName, fileName string, globalAgent agent.Agent, globalExists bool) (string, bool, error) {
+	projPath := fmt.Sprintf("projects/%s/agents/%s/%s", slug, agentName, fileName)
+	b, err := a.mem.Read(projPath)
+	if err == nil {
+		return string(b), true, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", false, fmt.Errorf("prompt: read project agent file %s: %w", projPath, err)
+	}
+
+	if globalExists {
+		var globalPath string
+		switch fileName {
+		case "persona.md":
+			globalPath = globalAgent.PersonaPath
+		case "rules.md":
+			globalPath = globalAgent.RulesPath
+		case "notes.md":
+			globalPath = globalAgent.NotesPath
+		default:
+			globalPath = path.Join("agents", agentName, fileName)
+		}
+		b, err = a.mem.Read(globalPath)
+		if err == nil {
+			return string(b), true, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", false, fmt.Errorf("prompt: read global agent file %s: %w", globalPath, err)
+		}
+	}
+
+	return "", false, nil
 }
 
 // countMessages estimates tokens across a conversation. Role tokens are

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 
@@ -166,10 +167,8 @@ func (r *DiskRegistry) Get(name string) (Agent, error) {
 	if err != nil {
 		return Agent{}, fmt.Errorf("agent: get %q: %w", name, err)
 	}
-	for _, n := range names {
-		if n == name {
-			return newAgent(name), nil
-		}
+	if slices.Contains(names, name) {
+		return newAgent(name), nil
 	}
 	return Agent{}, fmt.Errorf("agent: %q: %w", name, fs.ErrNotExist)
 }
@@ -245,10 +244,8 @@ func (r *DiskRegistry) Create(name string) (Agent, error) {
 	if err != nil {
 		return Agent{}, fmt.Errorf("agent: create %q: %w", name, err)
 	}
-	for _, n := range existing {
-		if n == name {
-			return Agent{}, fmt.Errorf("agent: %q: %w", name, ErrAgentExists)
-		}
+	if slices.Contains(existing, name) {
+		return Agent{}, fmt.Errorf("agent: %q: %w", name, ErrAgentExists)
 	}
 
 	if err := r.creator.MkdirAll(path.Join(agentsDir, name)); err != nil {
@@ -320,14 +317,7 @@ func (r *DiskRegistry) Delete(name string) error {
 	if err != nil {
 		return fmt.Errorf("agent: delete %q: %w", name, err)
 	}
-	found := false
-	for _, n := range existing {
-		if n == name {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(existing, name) {
 		return fmt.Errorf("agent: %q: %w", name, fs.ErrNotExist)
 	}
 
@@ -364,10 +354,13 @@ func (r *DiskRegistry) resolveForWrite(name string) (Agent, error) {
 	return a, nil
 }
 
-// validateName enforces a conservative agent-name policy: 1-64 chars
-// from [A-Za-z0-9._-], no leading dot or dash, and no reserved
-// single-segment names like "." or "..". The character set is the
-// safe intersection of POSIX and Windows directory rules.
+// ValidateName enforces the same conservative agent-name policy used
+// by the registry. It returns an error wrapping ErrInvalidName when
+// name fails validation.
+func ValidateName(name string) error {
+	return validateName(name)
+}
+
 func validateName(name string) error {
 	if name == "" {
 		return fmt.Errorf("%w: name is empty", ErrInvalidName)
