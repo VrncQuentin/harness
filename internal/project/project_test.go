@@ -39,3 +39,9 @@ func TestValidateCreatableSlugRejectsGlobal(t *testing.T) {
 		t.Fatalf("ValidateCreatableSlug(global): errors.Is(ErrReservedSlug)=false, err=%v", err)
 	}
 }
+
+func TestValidateCreatableSlugRejectsGlobalWithSpaces(t *testing.T) {
+	if err := ValidateCreatableSlug(" global "); !errors.Is(err, ErrReservedSlug) {
+		t.Fatalf("ValidateCreatableSlug(\" global \"): errors.Is(ErrReservedSlug)=false, err=%v", err)
+	}
+}

@@ -86,6 +86,7 @@ func ValidateSlug(slug string) error {
 }
 
 func ValidateCreatableSlug(slug string) error {
+	slug = strings.TrimSpace(slug)
 	if err := ValidateSlug(slug); err != nil {
 		return err
 	}
