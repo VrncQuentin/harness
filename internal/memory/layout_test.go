@@ -1,11 +1,14 @@
 package memory
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/vrnc/harness/internal/project"
 )
 
 func TestProjectLayout_ValidUserProject(t *testing.T) {
@@ -46,6 +49,7 @@ func TestProjectLayout_Global(t *testing.T) {
 
 	want := []LayoutItem{
 		{Path: "projects/global", Dir: true, Desc: "System project (default scope)"},
+		{Path: "projects/global/sessions.jsonl", Dir: false, Desc: "Project session history"},
 		{Path: "projects/global/episodes", Dir: true, Desc: "Session episode files for the system project"},
 		{Path: "projects/global/index", Dir: true, Desc: "Semantic search indexes for the system project"},
 		{Path: "projects/global/index/_episodes", Dir: true, Desc: "Embeddings of the system project's episodes"},
@@ -65,8 +69,8 @@ func TestProjectLayout_InvalidSlug(t *testing.T) {
 	tests := []string{"", "My Project", "foo_bar", "double--dash", " global "}
 	for _, slug := range tests {
 		t.Run(slug, func(t *testing.T) {
-			if _, err := ProjectLayout(slug); err == nil {
-				t.Errorf("ProjectLayout(%q): expected error, got nil", slug)
+			if _, err := ProjectLayout(slug); !errors.Is(err, project.ErrInvalidSlug) {
+				t.Errorf("ProjectLayout(%q): errors.Is(ErrInvalidSlug)=false, err=%v", slug, err)
 			}
 		})
 	}
@@ -179,15 +183,21 @@ func TestMissingItems_WrongKind(t *testing.T) {
 		t.Fatalf("MissingItems: %v", err)
 	}
 
-	found := false
+	foundGlobal := false
+	foundChild := false
 	for _, item := range got {
 		if item.Path == "global" {
-			found = true
-			break
+			foundGlobal = true
+		}
+		if item.Path == "global/rules.md" {
+			foundChild = true
 		}
 	}
-	if !found {
+	if !foundGlobal {
 		t.Errorf("MissingItems: expected wrong-kind 'global' to be flagged, got %v", got)
+	}
+	if !foundChild {
+		t.Errorf("MissingItems: expected child of wrong-kind 'global' to be flagged, got %v", got)
 	}
 }
 
@@ -350,6 +360,8 @@ func TestCreateMissing_RejectsTraversal(t *testing.T) {
 		{Path: "../escape", Dir: false},
 		{Path: "global/../../etc", Dir: false},
 		{Path: "/abs/path", Dir: true},
+		{Path: "C:/windows", Dir: false},
+		{Path: "C:\\windows", Dir: false},
 		{Path: "", Dir: false},
 	}
 	for _, tc := range tests {

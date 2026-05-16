@@ -51,9 +51,9 @@ func ExpectedLayout() []LayoutItem {
 
 // ProjectLayout returns the canonical layout items for a single project
 // identified by slug. For the reserved "global" slug it returns the
-// system-project scaffold (no rules.md, no sessions.jsonl). For user
-// projects it includes rules.md, agents/, sessions.jsonl, episodes/,
-// index/, and index/_episodes/. The queue.wal is intentionally omitted
+// system-project scaffold with sessions.jsonl but without optional
+// project-local rules.md. For user projects it includes rules.md, agents/,
+// sessions.jsonl, episodes/, index/, and index/_episodes/. The queue.wal is intentionally omitted
 // — it is created lazily by the queue subsystem on first use.
 func ProjectLayout(slug string) ([]LayoutItem, error) {
 	if err := project.ValidateSlug(slug); err != nil {
@@ -63,6 +63,7 @@ func ProjectLayout(slug string) ([]LayoutItem, error) {
 	if slug == project.GlobalSlug {
 		return []LayoutItem{
 			{Path: "projects/global", Dir: true, Desc: "System project (default scope)"},
+			{Path: "projects/global/sessions.jsonl", Dir: false, Desc: "Project session history"},
 			{Path: "projects/global/episodes", Dir: true, Desc: "Session episode files for the system project"},
 			{Path: "projects/global/index", Dir: true, Desc: "Semantic search indexes for the system project"},
 			{Path: "projects/global/index/_episodes", Dir: true, Desc: "Embeddings of the system project's episodes"},
