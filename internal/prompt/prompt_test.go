@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -162,7 +163,7 @@ func TestAssemble_ConversationAppendedVerbatim(t *testing.T) {
 	if msgs[0].Role != "system" {
 		t.Errorf("first message role = %q, want system", msgs[0].Role)
 	}
-	if msgs[1] != convo[0] || msgs[2] != convo[1] {
+	if !reflect.DeepEqual(msgs[1], convo[0]) || !reflect.DeepEqual(msgs[2], convo[1]) {
 		t.Errorf("conversation mutated during assembly")
 	}
 }

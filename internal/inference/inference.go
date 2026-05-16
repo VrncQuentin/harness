@@ -21,17 +21,58 @@ type Client interface {
 	Health(ctx context.Context) error
 }
 
-// Token is a single streamed token from a completion.
+// Token is a single streamed token from a completion. Content carries text
+// deltas; ToolCallDelta carries partial tool-call JSON during tool-use turns.
 type Token struct {
-	Content string
-	Done    bool
-	Err     error
+	Content       string       `json:"content,omitempty"`
+	Done          bool         `json:"done"`
+	Err           error        `json:"-"`
+	ToolCallDelta *ToolCallDelta `json:"tool_call_delta,omitempty"`
 }
 
-// Message is a single chat message.
+// ToolCallDelta is a streaming tool-call fragment. The caller accumulates
+// these to assemble a complete ToolCall.
+type ToolCallDelta struct {
+	Index      int    `json:"index"`
+	ID         string `json:"id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Arguments  string `json:"arguments,omitempty"`
+}
+
+// ToolCall represents a complete tool invocation the model requested.
+type ToolCall struct {
+	ID       string           `json:"id"`
+	Type     string           `json:"type"`
+	Function ToolCallFunction `json:"function"`
+}
+
+// ToolCallFunction holds the function name and JSON-encoded arguments.
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// Tool is a tool definition sent to the model in a completion request.
+type Tool struct {
+	Type     string         `json:"type"`
+	Function ToolDefinition `json:"function"`
+}
+
+// ToolDefinition describes a single callable function for the model.
+type ToolDefinition struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
+}
+
+// Message is a single chat message. ToolCalls is populated on assistant
+// messages with tool-use turns; ToolCallID identifies a tool result message.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Name       string     `json:"name,omitempty"`
 }
 
 // CompletionRequest is the request body for /v1/chat/completions.
@@ -42,13 +83,24 @@ type CompletionRequest struct {
 	TopP        float64   `json:"top_p,omitempty"`
 	MaxTokens   int       `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream"`
+	Tools       []Tool    `json:"tools,omitempty"`
+	ToolChoice  any       `json:"tool_choice,omitempty"`
 }
 
 // sseChunk is the JSON structure of a single SSE data line.
 type sseChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				Index     int    `json:"index"`
+				ID        string `json:"id"`
+				Type      string `json:"type"`
+				Function  struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason *string `json:"finish_reason"`
 	} `json:"choices"`
@@ -166,6 +218,16 @@ func readSSE(ctx context.Context, r io.Reader, ch chan<- Token) {
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
 				if !emitToken(ctx, ch, Token{Content: choice.Delta.Content}) {
+					return
+				}
+			}
+			for _, tc := range choice.Delta.ToolCalls {
+				if !emitToken(ctx, ch, Token{ToolCallDelta: &ToolCallDelta{
+					Index:     tc.Index,
+					ID:        tc.ID,
+					Name:      tc.Function.Name,
+					Arguments: tc.Function.Arguments,
+				}}) {
 					return
 				}
 			}

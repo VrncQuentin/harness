@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -302,7 +303,7 @@ func TestManager_ResumeHydratesConversation(t *testing.T) {
 	if len(got.Conversation) != 2 {
 		t.Fatalf("Resume conversation: want 2, got %d", len(got.Conversation))
 	}
-	if got.Conversation[0] != want {
+	if !reflect.DeepEqual(got.Conversation[0], want) {
 		t.Errorf("first message: want %+v, got %+v", want, got.Conversation[0])
 	}
 }
@@ -466,7 +467,7 @@ func TestEncodeDecodeConversationRoundTrip(t *testing.T) {
 		t.Fatalf("len: want %d, got %d", len(want), len(got))
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("msg %d: want %+v, got %+v", i, want[i], got[i])
 		}
 	}
