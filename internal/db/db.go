@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -22,15 +23,16 @@ import (
 // DB owns the shared harness SQLite handle and exposes typed stores for each
 // subsystem. Callers open it once in main and pass the sub-stores around.
 type DB struct {
-	sqldb   *sql.DB
-	cfg     *ConfigStore
-	metrics *MetricsStore
+	sqldb    *sql.DB
+	cfg      *ConfigStore
+	metrics  *MetricsStore
+	projects *ProjectStore
 }
 
 // Open opens harness.db at path, applies any pending migrations, and seeds
 // the singleton config row. The returned *DB must be closed via Close.
 func Open(path string) (*DB, error) {
-	sqldb, err := sql.Open("sqlite", path)
+	sqldb, err := sql.Open("sqlite", foreignKeysDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("db: open %s: %w", path, err)
 	}
@@ -47,6 +49,7 @@ func Open(path string) (*DB, error) {
 	d := &DB{sqldb: sqldb}
 	d.cfg = &ConfigStore{db: sqldb}
 	d.metrics = &MetricsStore{db: sqldb}
+	d.projects = &ProjectStore{db: sqldb}
 
 	if err := d.seedGlobalProject(); err != nil {
 		_ = sqldb.Close()
@@ -68,7 +71,7 @@ func PeekUIPort(path string, fallback int) int {
 		return fallback
 	}
 
-	sqldb, err := sql.Open("sqlite", path)
+	sqldb, err := sql.Open("sqlite", foreignKeysDSN(path))
 	if err != nil {
 		return fallback
 	}
@@ -84,6 +87,16 @@ func PeekUIPort(path string, fallback int) int {
 	return port
 }
 
+func foreignKeysDSN(path string) string {
+	if strings.Contains(path, "?_pragma=") || strings.Contains(path, "&_pragma=") {
+		return path
+	}
+	if strings.Contains(path, "?") {
+		return path + "&_pragma=foreign_keys(1)"
+	}
+	return path + "?_pragma=foreign_keys(1)"
+}
+
 // Close closes the underlying SQLite handle.
 func (d *DB) Close() error {
 	return d.sqldb.Close()
@@ -94,6 +107,9 @@ func (d *DB) Config() *ConfigStore { return d.cfg }
 
 // Metrics returns the metrics sub-store.
 func (d *DB) Metrics() *MetricsStore { return d.metrics }
+
+// Projects returns the project metadata sub-store.
+func (d *DB) Projects() *ProjectStore { return d.projects }
 
 func (d *DB) seedGlobalProject() error {
 	_, err := d.sqldb.Exec(
