@@ -79,7 +79,7 @@ type Store interface {
 }
 
 func ValidateSlug(slug string) error {
-	if !slugPattern.MatchString(strings.TrimSpace(slug)) {
+	if !slugPattern.MatchString(slug) {
 		return fmt.Errorf("%w: %q", ErrInvalidSlug, slug)
 	}
 	return nil

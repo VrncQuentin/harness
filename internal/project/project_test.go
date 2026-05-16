@@ -17,6 +17,7 @@ func TestValidateSlug(t *testing.T) {
 		{"uppercase", "DT", ErrInvalidSlug},
 		{"underscore", "local_agent", ErrInvalidSlug},
 		{"double dash", "local--agent", ErrInvalidSlug},
+		{"space padded", " global ", ErrInvalidSlug},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
