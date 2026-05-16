@@ -26,10 +26,11 @@ type HotReload struct {
 	repoPath string
 	logger   *slog.Logger
 
-	mu          sync.Mutex
-	watcher     *fsnotify.Watcher
-	activeAgent string
-	watched     map[string]struct{}
+	mu                sync.Mutex
+	watcher           *fsnotify.Watcher
+	activeAgent       string
+	activeProjectSlug string
+	watched           map[string]struct{}
 
 	// debounceMu guards the per-path timers. Separate from mu so the
 	// event pump doesn't hold the big lock while scheduling timers.
@@ -40,11 +41,11 @@ type HotReload struct {
 	done   chan struct{}
 }
 
-// NewHotReload builds a HotReload watching the global files and the
-// files for activeAgent (may be empty). Missing files are logged as
-// warnings; construction only fails if fsnotify itself cannot be
-// initialised.
-func NewHotReload(repoPath string, agentName string, logger *slog.Logger) (*HotReload, error) {
+// NewHotReload builds a HotReload watching the global files, the
+// active project rules, and the files for activeAgent (may be empty).
+// Missing files are logged as warnings; construction only fails if
+// fsnotify itself cannot be initialised.
+func NewHotReload(repoPath string, agentName string, projectSlug string, logger *slog.Logger) (*HotReload, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -53,14 +54,15 @@ func NewHotReload(repoPath string, agentName string, logger *slog.Logger) (*HotR
 		return nil, fmt.Errorf("prompt: hotreload watcher: %w", err)
 	}
 	h := &HotReload{
-		repoPath:    repoPath,
-		logger:      logger,
-		watcher:     w,
-		activeAgent: agentName,
-		watched:     make(map[string]struct{}),
-		debounce:    make(map[string]*time.Timer),
-		closed:      make(chan struct{}),
-		done:        make(chan struct{}),
+		repoPath:          repoPath,
+		logger:            logger,
+		watcher:           w,
+		activeAgent:       agentName,
+		activeProjectSlug: projectSlug,
+		watched:           make(map[string]struct{}),
+		debounce:          make(map[string]*time.Timer),
+		closed:            make(chan struct{}),
+		done:              make(chan struct{}),
 	}
 	h.refreshWatches()
 	go h.run()
@@ -68,7 +70,7 @@ func NewHotReload(repoPath string, agentName string, logger *slog.Logger) (*HotR
 }
 
 // SetActiveAgent rewires the persona/notes watches when the operator
-// switches agents. The global files remain watched.
+// switches agents. The global and project files remain watched.
 func (h *HotReload) SetActiveAgent(name string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -76,6 +78,18 @@ func (h *HotReload) SetActiveAgent(name string) {
 		return
 	}
 	h.activeAgent = name
+	h.refreshWatches()
+}
+
+// SetActiveProject rewires the project rules watch when the operator
+// switches projects. The global and agent files remain watched.
+func (h *HotReload) SetActiveProject(slug string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.activeProjectSlug == slug {
+		return
+	}
+	h.activeProjectSlug = slug
 	h.refreshWatches()
 }
 
@@ -154,12 +168,18 @@ func (h *HotReload) refreshWatches() {
 }
 
 // wantedDirs returns the set of directories we need to watch given
-// the current active agent. Global files share global/, and the
-// per-agent files share agents/<name>/.
+// the current active agent and project. Global files share global/,
+// project files share projects/<slug>/, and per-agent files share
+// agents/<name>/.
 func (h *HotReload) wantedDirs() map[string]struct{} {
 	out := map[string]struct{}{
 		filepath.Join(h.repoPath, "global"): {},
 	}
+	slug := h.activeProjectSlug
+	if slug == "" {
+		slug = "global"
+	}
+	out[filepath.Join(h.repoPath, "projects", slug)] = struct{}{}
 	if h.activeAgent != "" {
 		out[filepath.Join(h.repoPath, "agents", h.activeAgent)] = struct{}{}
 	}
@@ -176,8 +196,13 @@ func (h *HotReload) watchedFiles() map[string]struct{} {
 		filepath.Join(h.repoPath, "global", "facts.md"): {},
 	}
 	h.mu.Lock()
+	slug := h.activeProjectSlug
 	ag := h.activeAgent
 	h.mu.Unlock()
+	if slug == "" {
+		slug = "global"
+	}
+	out[filepath.Join(h.repoPath, "projects", slug, "rules.md")] = struct{}{}
 	if ag != "" {
 		base := filepath.Join(h.repoPath, "agents", ag)
 		out[filepath.Join(base, "persona.md")] = struct{}{}

@@ -474,7 +474,10 @@ func TestEncodeDecodeConversationRoundTrip(t *testing.T) {
 
 func TestDecodeConversation_StripsBOM(t *testing.T) {
 	bom := []byte{0xEF, 0xBB, 0xBF}
-	payload := append(bom, []byte(`[{"role":"user","content":"hi"}]`)...)
+	body := []byte(`[{"role":"user","content":"hi"}]`)
+	payload := make([]byte, 0, len(bom)+len(body))
+	payload = append(payload, bom...)
+	payload = append(payload, body...)
 	got, err := decodeConversation(payload)
 	if err != nil {
 		t.Fatalf("decode: %v", err)

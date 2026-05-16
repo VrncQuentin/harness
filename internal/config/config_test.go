@@ -255,6 +255,11 @@ func TestValidate(t *testing.T) {
 			wantErr: "project.active_project_slug is required",
 		},
 		{
+			name:    "invalid active_project_slug",
+			mutate:  func(c *Config) { c.Project.ActiveProjectSlug = "bad_slug" },
+			wantErr: "project.active_project_slug: project: invalid slug",
+		},
+		{
 			name:    "invalid llama_on_switch",
 			mutate:  func(c *Config) { c.Project.LlamaOnSwitch = "restart" },
 			wantErr: "project.llama_on_switch must be keep or reload",

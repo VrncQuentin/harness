@@ -96,7 +96,8 @@ func (rt *Runtime) ApplyConfig(
 		if old.Memory != loaded.Memory ||
 			old.Prompt != loaded.Prompt ||
 			old.API != loaded.API ||
-			old.Agent.Active != loaded.Agent.Active {
+			old.Agent.Active != loaded.Agent.Active ||
+			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
 			slog.Info("rebuilding memory and api services")
 			rt.stopMemoryAndAPI(uiServer)
 			rt.startMemoryAndAPI(ctx, uiServer, metricsStore)

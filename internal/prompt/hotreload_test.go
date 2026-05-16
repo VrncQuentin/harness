@@ -76,7 +76,7 @@ func TestHotReload_EmitsOnGlobalChange(t *testing.T) {
 		"global/facts.md": "f",
 	})
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "", logger)
+	h, err := NewHotReload(root, "", "", logger)
 	if err != nil {
 		t.Fatalf("NewHotReload: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestHotReload_IgnoresUnrelatedFile(t *testing.T) {
 		"global/facts.md": "f",
 	})
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "", logger)
+	h, err := NewHotReload(root, "", "", logger)
 	if err != nil {
 		t.Fatalf("NewHotReload: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestHotReload_DebounceCollapsesBurst(t *testing.T) {
 		"global/facts.md": "f",
 	})
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "", logger)
+	h, err := NewHotReload(root, "", "", logger)
 	if err != nil {
 		t.Fatalf("NewHotReload: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestHotReload_DebounceCollapsesBurst(t *testing.T) {
 	// Rapid writes within the debounce window should produce a single
 	// log entry.
 	rules := filepath.Join(root, "global", "rules.md")
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if err := os.WriteFile(rules, []byte("v"+string(rune('0'+i))), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
@@ -172,7 +172,7 @@ func TestHotReload_EmitsOnAgentRulesChange(t *testing.T) {
 		"agents/coder/rules.md":   "before",
 	})
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "coder", logger)
+	h, err := NewHotReload(root, "coder", "", logger)
 	if err != nil {
 		t.Fatalf("NewHotReload: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestHotReload_SetActiveAgentSwapsWatches(t *testing.T) {
 		"agents/reviewer/persona.md": "r2",
 	})
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "coder", logger)
+	h, err := NewHotReload(root, "coder", "", logger)
 	if err != nil {
 		t.Fatalf("NewHotReload: %v", err)
 	}
@@ -235,13 +235,90 @@ func TestHotReload_SetActiveAgentSwapsWatches(t *testing.T) {
 	}
 }
 
+func TestHotReload_EmitsOnProjectRulesChange(t *testing.T) {
+	root := makeRepo(t, map[string]string{
+		"global/rules.md":      "r",
+		"projects/dt/rules.md": "before",
+	})
+	logger, buf := captureLogger(t)
+	h, err := NewHotReload(root, "", "dt", logger)
+	if err != nil {
+		t.Fatalf("NewHotReload: %v", err)
+	}
+	defer func() { _ = h.Close() }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	rulesPath := filepath.Join(root, "projects", "dt", "rules.md")
+	if err := os.WriteFile(rulesPath, []byte("after"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if !waitForLog(buf, "prompt: file changed") {
+		t.Fatalf("expected file-changed log entry, got:\n%s", buf.String())
+	}
+	if !waitForLog(buf, "rules.md") {
+		t.Errorf("expected rules.md in log, got:\n%s", buf.String())
+	}
+}
+
+func TestHotReload_SetActiveProjectSwapsWatches(t *testing.T) {
+	root := makeRepo(t, map[string]string{
+		"global/rules.md":      "r",
+		"projects/dt/rules.md": "dt",
+		"projects/ac/rules.md": "ac",
+	})
+	logger, buf := captureLogger(t)
+	h, err := NewHotReload(root, "", "dt", logger)
+	if err != nil {
+		t.Fatalf("NewHotReload: %v", err)
+	}
+	defer func() { _ = h.Close() }()
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Changing dt/rules.md should fire.
+	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "rules.md"), []byte("updated"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if !waitForLog(buf, "dt") {
+		t.Fatalf("expected dt project rules change, got:\n%s", buf.String())
+	}
+
+	// Swap to ac, wait for debounces, reset buffer by checking length.
+	time.Sleep(hotReloadDebounce * 2)
+	preSwapLen := len(buf.String())
+	h.SetActiveProject("ac")
+
+	time.Sleep(50 * time.Millisecond)
+
+	// ac change should fire under the new active project.
+	if err := os.WriteFile(filepath.Join(root, "projects", "ac", "rules.md"), []byte("updated"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if !waitForLog(buf, "ac") {
+		t.Errorf("expected ac project rules change, got:\n%s", buf.String()[preSwapLen:])
+	}
+
+	// dt change should NOT fire after the swap.
+	time.Sleep(hotReloadDebounce * 2)
+	preDtLen := len(buf.String())
+	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "rules.md"), []byte("updated again"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	time.Sleep(hotReloadDebounce * 2)
+	if strings.Contains(buf.String()[preDtLen:], "prompt: file changed") {
+		t.Errorf("expected dt project rules change to be ignored after swap, got:\n%s", buf.String()[preDtLen:])
+	}
+}
+
 func TestHotReload_MissingFilesAreWarnedNotFailed(t *testing.T) {
 	root := makeRepo(t, map[string]string{
 		"global/rules.md": "r",
 		// No user.md, no facts.md, no agent at all.
 	})
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "ghost", logger)
+	h, err := NewHotReload(root, "ghost", "", logger)
 	if err != nil {
 		t.Fatalf("NewHotReload should succeed with missing optional files: %v", err)
 	}
@@ -258,7 +335,7 @@ func TestHotReload_CloseIsIdempotent(t *testing.T) {
 		"global/rules.md": "r",
 	})
 	logger, _ := captureLogger(t)
-	h, err := NewHotReload(root, "", logger)
+	h, err := NewHotReload(root, "", "", logger)
 	if err != nil {
 		t.Fatalf("NewHotReload: %v", err)
 	}
@@ -277,7 +354,7 @@ func TestHotReload_CloseStopsGoroutine(t *testing.T) {
 		"global/rules.md": "r",
 	})
 	logger, _ := captureLogger(t)
-	h, err := NewHotReload(root, "", logger)
+	h, err := NewHotReload(root, "", "", logger)
 	if err != nil {
 		t.Fatalf("NewHotReload: %v", err)
 	}

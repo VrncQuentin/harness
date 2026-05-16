@@ -58,10 +58,7 @@ func BuildMessage(tags map[string]string, summary string) string {
 func ParseMessage(msg string) (map[string]string, string) {
 	tags := make(map[string]string)
 	rest := msg
-	for {
-		if !strings.HasPrefix(rest, "[") {
-			break
-		}
+	for strings.HasPrefix(rest, "[") {
 		end := strings.IndexByte(rest, ']')
 		if end < 0 {
 			// Unclosed bracket: roll back, treat the whole input as
@@ -79,9 +76,7 @@ func ParseMessage(msg string) (map[string]string, string) {
 		tags[key] = value
 		rest = rest[end+1:]
 		// Eat at most one space between brackets / before the summary.
-		if strings.HasPrefix(rest, " ") {
-			rest = rest[1:]
-		}
+		rest = strings.TrimPrefix(rest, " ")
 	}
 	return tags, strings.TrimSpace(rest)
 }
