@@ -103,23 +103,35 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 
 ---
 
-## M4 — opencode Integration
+## M4 — Native Agent Loop MVP
 
-**Goal:** full agentic coding workflow via opencode, memory transparent to it.
+**Goal:** the harness owns agentic tool execution through a first-party loop engine and browser task surface.
 
-- [ ] Harden API server for production use: timeouts, error responses, connection limits
-- [ ] Verify opencode tool calling works end-to-end through the proxy
-- [ ] Session tracking: correlate opencode sessions to harness session lifecycle
-- [ ] UI: status page shows active sessions, logs page shows token counts per layer
+Design references: opencode (part-based messages, step counter, doom-loop detection, compaction-first loops, tool id/schema/execute/context contract, layered permissions and once/always/reject approvals, abort propagation) and Pi (minimal loop, minimal built-in tools, steering/follow-up queues, tree sessions, small prompts, extension hooks). These are references only; neither is a runtime dependency or integration milestone.
+
+- [ ] Chat/task surface: first-party browser UI for task input and conversation display; no external chat client needed
+- [ ] Loop engine: send conversation to the model, parse the response, dispatch tool calls, inject results, and repeat until stop/limit/cancel
+- [ ] OpenAI-style tool-call parsing for streaming and non-streaming chat completion responses
+- [ ] Part-based message model: text, tool_call, and tool_result parts with durable state for UI display and session replay
+- [ ] Tool registry and schema contract: tools declare id, JSON Schema parameters, execute function, and context (active project, sandbox roots, caller identity)
+- [ ] Read-only file tools first: `file_read` and `file_list`; no writes, edits, shell execution, or web search in the MVP
+- [ ] Sandbox rooting: all file operations scoped to active project directories; paths outside those roots are rejected
+- [ ] Step limit and doom-loop detection for repeated identical tool calls or response patterns
+- [ ] Cancellation and abort propagation through the loop, current tool call, and in-flight model request
+- [ ] Visibility: UI logs/token breakdown show loop turn count, tool calls, tool results, and loop termination reason
+- [ ] Config: `loop_max_turns`, `loop_doom_threshold`, and per-tool enable/disable toggles
+
+**Deferred to M7:** destructive tools (`file_write`, file edit, shell execution), approvals, richer permissions, web search, steering/follow-up queues, extension hooks, and sub-agents.
 
 **Acceptance tests:**
-- [ ] Point opencode at harness API server → opencode connects and lists the model successfully
-- [ ] Run a multi-step opencode task (read file, edit, run command) → all tool calls complete successfully
-- [ ] Memory from a previous session is present in context during an opencode session (verify via logs page token breakdown)
-- [ ] opencode session ends → episode file committed to git within 30 seconds
-- [ ] Harness API server receives 10 concurrent requests → all complete, none dropped, queue behaves correctly
-- [ ] opencode disconnects mid-stream → harness cleans up session state, next request succeeds
-- [ ] UI logs page → shows correct token count for each prompt layer during an active session
+- [ ] Open the task UI, enter a prompt -> conversation appears in the chat surface, model response streams in
+- [ ] Model calls `file_read` on a path within the active project's sandbox root -> content is returned and injected into context
+- [ ] Model calls `file_read` on a path outside any configured sandbox root -> request is rejected with a clear error and the rejection is visible to the model
+- [ ] Loop hits the step limit -> terminates gracefully and the UI shows the limit was reached
+- [ ] Model repeats the same tool call three times in a row -> loop terminates and the UI shows the doom-loop event
+- [ ] Click cancel mid-task -> in-flight model request is aborted, running tool call is cancelled, loop terminates, UI returns to idle
+- [ ] Disable `file_list` in config -> model receives a tool-not-available result when it calls it, loop continues
+- [ ] Complete a multi-turn task (read several files, answer a question about them) entirely inside the harness UI
 
 ---
 
@@ -128,23 +140,23 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 **Goal:** embedding-based retrieval blended with recency.
 
 - [ ] Embedder sidecar: nomic-embed-text, health check, restart on crash
-- [ ] Embed-on-commit pipeline (episodes): new episode → embed chunks → update `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` → commit
-- [ ] Embed-on-commit pipeline (attached directories): for each tree configured on the active project, walk by HEAD → embed chunks → update `projects/<active>/index/<dir-slug>/{vectors.bin, manifest.json}` → commit
+- [ ] Embed-on-commit pipeline (episodes): new episode -> embed chunks -> update `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` -> commit
+- [ ] Embed-on-commit pipeline (attached directories): for each tree configured on the active project, walk by HEAD -> embed chunks -> update `projects/<active>/index/<dir-slug>/{vectors.bin, manifest.json}` -> commit
 - [ ] ANN search: flat scan initially, upgrade to usearch if latency becomes a problem
 - [ ] Blended retrieval: `score = (semantic_weight * similarity) + (recency_weight * recency_decay)`
 - [ ] Index rebuild (UI-triggered from memory browser): walk commits, re-embed missing SHAs (idempotent), per-tree
 - [ ] UI: memory browser shows retrieval scores per episode
 
 **Acceptance tests:**
-- [ ] Start embedder sidecar → appears healthy in UI status page
-- [ ] Kill embedder → harness detects and restarts it, same as llama-server
-- [ ] Complete a session → `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` updated and committed
-- [ ] Ask a question referencing content from session N-10 → that episode is retrieved despite not being the most recent
-- [ ] Ask a question with no relevant past sessions → retrieval returns empty gracefully, no crash
-- [ ] Run index rebuild on a fresh clone of the memory repo → index reconstructed correctly, retrieval works
-- [ ] Set `semantic_weight = 0` → retrieval falls back to pure recency, top-K matches last N episodes exactly
-- [ ] Set `recency_weight = 0` → retrieval is pure semantic, oldest relevant episode can appear in top-K
-- [ ] UI memory browser → shows blended score next to each retrieved episode
+- [ ] Start embedder sidecar -> appears healthy in UI status page
+- [ ] Kill embedder -> harness detects and restarts it, same as llama-server
+- [ ] Complete a session -> `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` updated and committed
+- [ ] Ask a question referencing content from session N-10 -> that episode is retrieved despite not being the most recent
+- [ ] Ask a question with no relevant past sessions -> retrieval returns empty gracefully, no crash
+- [ ] Run index rebuild on a fresh clone of the memory repo -> index reconstructed correctly, retrieval works
+- [ ] Set `semantic_weight = 0` -> retrieval falls back to pure recency, top-K matches last N episodes exactly
+- [ ] Set `recency_weight = 0` -> retrieval is pure semantic, oldest relevant episode can appear in top-K
+- [ ] UI memory browser -> shows blended score next to each retrieved episode
 
 ---
 
@@ -152,63 +164,67 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 
 **Goal:** memory is actively curated, not just accumulated.
 
-- [ ] `PromoteToGlobalFact(text)`: UI action → append to `global/facts.md` + commit
-- [ ] `AppendAgentNote(agent, text)`: UI action → append to `agents/<n>/notes.md` + commit
+- [ ] `PromoteToGlobalFact(text)`: UI action -> append to `global/facts.md` + commit
+- [ ] `AppendAgentNote(agent, text)`: UI action -> append to `agents/<n>/notes.md` + commit
 - [ ] Cross-agent read: explicit API to pull episodes from another agent's directory
 - [ ] Dedup pass on commit: detect near-duplicate facts before appending (embedding similarity threshold)
 - [ ] UI: promotion controls in memory browser, cross-agent episode browser
 
 **Acceptance tests:**
-- [ ] Promote a fact via UI → text appears in `global/facts.md`, git commit present
+- [ ] Promote a fact via UI -> text appears in `global/facts.md`, git commit present
 - [ ] Promoted fact appears in the assembled prompt of the next session (verify via logs page)
-- [ ] Promote a near-duplicate of an existing fact → dedup pass blocks it, user sees a warning
-- [ ] Append a note to `agents/coder/notes.md` via UI → appears in next coder session prompt
-- [ ] Request cross-agent episodes from `reviewer` while in a `coder` session → episodes injected correctly
-- [ ] `global/facts.md` grows beyond a reasonable size → assembler still respects `memory_token_budget`, oldest facts are not silently dropped (warn instead)
+- [ ] Promote a near-duplicate of an existing fact -> dedup pass blocks it, user sees a warning
+- [ ] Append a note to `agents/coder/notes.md` via UI -> appears in next coder session prompt
+- [ ] Request cross-agent episodes from `reviewer` while in a `coder` session -> episodes injected correctly
+- [ ] `global/facts.md` grows beyond a reasonable size -> assembler still respects `memory_token_budget`, oldest facts are not silently dropped (warn instead)
 
 ---
 
-## M7 — Native Agent Layer
+## M7 — Agent Tools + Permissions Hardening
 
-**Goal:** opencode becomes optional. Harness owns tool execution.
+**Goal:** expand the native loop from read-only inspection to safe code-changing workflows.
 
-- [ ] Tool calling protocol: OpenAI function calling format, parsed and dispatched by harness
-- [ ] Built-in tools: file read, file write, shell exec, web search
-- [ ] Sandboxing: working directory scoping, no writes outside project root
-- [ ] Agentic loop: model calls tool → harness executes → result injected → next turn
-- [ ] UI: tool call display, approval controls for destructive tools
-- [ ] Config: enable/disable individual tools, sandbox root path
+- [ ] Destructive tools: `file_write`, file edit/patch, and shell execution
+- [ ] Approval flow: once/always/reject decisions for destructive tools and external-directory access
+- [ ] Layered permissions: agent defaults -> user config -> session approvals, with last-match-wins evaluation
+- [ ] Shell safety: working directory scoping, command timeouts, output truncation, and explicit destructive-command classification
+- [ ] Web search: opt-in tool with clear network-use disclosure and per-tool disable toggle
+- [ ] Steering/follow-up queues: user can redirect the active loop after the current tool or enqueue follow-up instructions after completion
+- [ ] Extension hooks: documented Go interfaces around loop start/end, tool start/end, and compaction boundaries
+- [ ] Optional sub-agent/task tool with recursion limits and inherited deny rules
+- [ ] UI: approval cards, tool history, retry failed tool call, and audit trail per session
 
 **Acceptance tests:**
-- [ ] Model calls `file_read` on a file within sandbox root → content returned correctly
-- [ ] Model calls `file_read` on a path outside sandbox root → rejected with clear error, not executed
-- [ ] Model calls `file_write` → file is written, change visible on disk
-- [ ] Model calls `shell_exec` → command runs, stdout/stderr returned to model
-- [ ] Model calls `shell_exec` with a destructive command (`rm -rf`) → approval required in UI before execution
-- [ ] Disable `shell_exec` in config → model receives a tool-not-available error, harness does not crash
-- [ ] Complete a multi-step task (read file, edit, run tests) without opencode running → task completes end-to-end
-- [ ] Tool call fails (file not found, command exits non-zero) → error injected into context, model can recover
+- [ ] Model calls `file_write` within sandbox root -> file is written and visible on disk
+- [ ] Model calls file edit outside sandbox root -> rejected before touching disk
+- [ ] Model calls `shell_exec` with a safe command -> stdout/stderr returned to the model
+- [ ] Model calls `shell_exec` with a destructive command (`rm -rf`) -> approval required before execution
+- [ ] User selects reject in approval UI -> tool result is a denial, loop can recover
+- [ ] User selects always for a matching pattern -> next matching tool call proceeds without asking
+- [ ] Disable `shell_exec` in config -> model receives a tool-not-available result, harness does not crash
+- [ ] Complete a multi-step code task (read file, edit, run tests) entirely inside the harness UI
+- [ ] Tool call exits non-zero -> error is injected into context and the model can recover
 
 ---
 
 ## M8 — Hardening
 
-**Goal:** daily driver reliability, observable, packaged.
+**Goal:** daily-driver reliability, observability, and Windows-native packaging.
 
-- [ ] Add remaining metrics: TTFT, token throughput, VRAM usage (nvidia-smi polling)
+- [ ] Add remaining metrics: TTFT, token throughput, VRAM usage (nvidia-smi polling), loop turn count, tool call count/error rate
 - [ ] Optional Prometheus endpoint exposing all SQLite-backed metrics
-- [ ] Full test suite: inference mock, memory read/write, retrieval scoring, prompt assembly
+- [ ] Full test suite: inference mock, memory read/write, retrieval scoring, prompt assembly, agent loop, tool sandbox, approvals
 - [ ] Single binary packaging: harness + embedded UI assets, Windows native
 - [ ] Embedder binary: self-contained, no Python dependency
-- [ ] Graceful shutdown: drain queue, flush WAL, clean process teardown
-- [ ] Startup validation: config checks, model file exists, memory repo accessible
+- [ ] Graceful shutdown: drain queue, flush WAL, cancel active loops, commit any pending session, clean process teardown
+- [ ] Startup validation: config checks, model file exists, memory repo accessible, active project references valid directories
 
 **Acceptance tests:**
-- [ ] Run full test suite → all pass, no flaky tests
-- [ ] Build single binary on Windows native → runs correctly
-- [ ] Start harness, send 50 sequential requests → TTFT, throughput, and VRAM metrics visible in UI
-- [ ] Send SIGTERM → harness drains in-flight requests, commits any pending session, exits cleanly
-- [ ] Send SIGKILL → on next start, WAL is replayed, no data lost
-- [ ] Start with a corrupted `harness.db` → clear error on the status page, no crash
-- [ ] Start with valid config but wrong model path → clear error at startup, not at first request
-- [ ] Enable Prometheus endpoint → `curl /metrics` returns valid Prometheus text format
+- [ ] Run full test suite -> all pass, no flaky tests
+- [ ] Build single binary on Windows native -> runs correctly
+- [ ] Start harness, send 50 sequential requests -> TTFT, throughput, VRAM, loop, and tool metrics visible in UI
+- [ ] Send SIGTERM -> harness drains in-flight requests, cancels active loops safely, commits any pending session, exits cleanly
+- [ ] Send SIGKILL -> on next start, WAL is replayed, no data lost
+- [ ] Start with a corrupted `harness.db` -> clear error on the status page, no crash
+- [ ] Start with valid config but wrong model path -> clear error at startup, not at first request
+- [ ] Enable Prometheus endpoint -> `curl /metrics` returns valid Prometheus text format
