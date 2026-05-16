@@ -71,6 +71,10 @@ func run() error {
 	if harnessDB != nil {
 		slog.Info("harness.db opened", "path", dbPath)
 	}
+	uiServer.SetConfigStore(cfgStore)
+	if harnessDB != nil {
+		uiServer.SetProjectStore(harnessDB.Projects())
+	}
 
 	cfg, configured := loadInitialConfig(uiServer, cfgStore)
 
