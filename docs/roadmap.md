@@ -107,6 +107,8 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 
 **Goal:** the harness owns agentic tool execution through a first-party loop engine and browser task surface.
 
+Depends on M3b (projects, active project directories, and sandbox roots).
+
 Design references: opencode (part-based messages, step counter, doom-loop detection, compaction-first loops, tool id/schema/execute/context contract, layered permissions and once/always/reject approvals, abort propagation) and Pi (minimal loop, minimal built-in tools, steering/follow-up queues, tree sessions, small prompts, extension hooks). These are references only; neither is a runtime dependency or integration milestone.
 
 - [ ] Chat/task surface: first-party browser UI for task input and conversation display; no external chat client needed
