@@ -68,6 +68,24 @@ func TestHandleStatus_WithErrors(t *testing.T) {
 	}
 }
 
+func TestHandleStatus_ProjectDirectoryWarnings(t *testing.T) {
+	s := NewServer(3000)
+	path := filepath.Join(t.TempDir(), "missing-repo")
+	s.SetProjectDirectoryWarnings("dt", []ProjectDirectoryWarning{{Path: path, Problem: "directory missing"}})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body, _ := io.ReadAll(rec.Body)
+	text := string(body)
+	for _, want := range []string{"Project directory issues", "dt", path, "directory missing", "keep running"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("expected %q in response body", want)
+		}
+	}
+}
+
 func TestHandleStatus_FirstRunShowsSetupCTA(t *testing.T) {
 	s := NewServer(3000)
 	s.SetFirstRun(true)
@@ -840,6 +858,19 @@ func TestSSE_EmitsConnectedAndInitialState(t *testing.T) {
 	}
 	if !strings.Contains(body, `"llama_healthy":true`) {
 		t.Errorf("SSE payload missing state JSON, got: %q", body)
+	}
+}
+
+func TestSSE_EmitsProjectDirectoryWarnings(t *testing.T) {
+	s := NewServer(3000)
+	s.SetProjectDirectoryWarnings("dt", []ProjectDirectoryWarning{{Path: "/tmp/missing", Problem: "directory missing"}})
+
+	body := runSSE(t, s, nil)
+
+	for _, want := range []string{`"project_slug":"dt"`, `"path":"/tmp/missing"`, `"problem":"directory missing"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SSE payload missing %q, got: %q", want, body)
+		}
 	}
 }
 
