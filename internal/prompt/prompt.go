@@ -142,7 +142,7 @@ func (a *DiskAssembler) WithTokenizer(f func(string) int) *DiskAssembler {
 }
 
 // WithProjectSlug returns a shallow copy with the active project slug.
-// An empty string defaults to the global project for backward compatibility.
+// The assembler resolves an empty slug to the global project at load time.
 func (a *DiskAssembler) WithProjectSlug(slug string) *DiskAssembler {
 	cp := *a
 	cp.projectSlug = slug

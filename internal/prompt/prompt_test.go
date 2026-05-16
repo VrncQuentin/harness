@@ -98,6 +98,7 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		"global/rules.md":                              "RULES",
 		"global/user.md":                               "USER",
 		"global/facts.md":                              "FACTS",
+		"projects/global/rules.md":                     "PROJRULES",
 		"agents/coder/persona.md":                      "PERSONA",
 		"agents/coder/rules.md":                        "AGENTRULES",
 		"agents/coder/notes.md":                        "NOTES",
@@ -110,9 +111,10 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		t.Fatalf("Assemble: %v", err)
 	}
 	sys := msgs[0].Content
-	// Verify section order by checking indices. Agent Rules sits
-	// between Persona and Facts in the mandatory-layer block.
-	headers := []string{"# Rules", "# User", "# Persona", "# Agent Rules", "# Facts", "# Notes", "# Episodes"}
+	// Verify section order by checking indices. Project Rules sits
+	// between User and Persona, and Agent Rules sits between Persona
+	// and Facts in the mandatory-layer block.
+	headers := []string{"# Rules", "# User", "# Project Rules", "# Persona", "# Agent Rules", "# Facts", "# Notes", "# Episodes"}
 	lastIdx := -1
 	for _, h := range headers {
 		idx := strings.Index(sys, h)
@@ -134,7 +136,7 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		t.Errorf("episodes not ordered oldest-first; ep1=%d ep2=%d", ep1Idx, ep2Idx)
 	}
 
-	if stats.Rules == 0 || stats.Persona == 0 || stats.AgentRules == 0 || stats.Episodes == 0 {
+	if stats.Rules == 0 || stats.User == 0 || stats.ProjectRules == 0 || stats.Persona == 0 || stats.AgentRules == 0 || stats.Facts == 0 || stats.Notes == 0 || stats.Episodes == 0 {
 		t.Errorf("stats missing counts: %+v", stats)
 	}
 }
@@ -285,14 +287,15 @@ func TestAssemble_RecencyNCapsEpisodeCount(t *testing.T) {
 
 func TestAssemble_MandatoryLayersNeverTrimmed(t *testing.T) {
 	// Set a memory budget smaller than the mandatory layers combined;
-	// these must still be present, including the per-agent rules.
+	// these must still be present, including project rules and per-agent rules.
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         strings.Repeat("R", 400), // 100 tokens
-		"global/user.md":          strings.Repeat("U", 400),
-		"global/facts.md":         strings.Repeat("F", 400),
-		"agents/coder/persona.md": strings.Repeat("P", 400),
-		"agents/coder/rules.md":   strings.Repeat("A", 400),
-		"agents/coder/notes.md":   strings.Repeat("N", 400),
+		"global/rules.md":          strings.Repeat("R", 400), // 100 tokens
+		"global/user.md":           strings.Repeat("U", 400),
+		"global/facts.md":          strings.Repeat("F", 400),
+		"projects/global/rules.md": strings.Repeat("P", 400),
+		"agents/coder/persona.md":  strings.Repeat("P", 400),
+		"agents/coder/rules.md":    strings.Repeat("A", 400),
+		"agents/coder/notes.md":    strings.Repeat("N", 400),
 	})
 	cfg := baseCfg()
 	cfg.MemoryTokenBudget = 10 // absurdly low
@@ -303,7 +306,7 @@ func TestAssemble_MandatoryLayersNeverTrimmed(t *testing.T) {
 		t.Fatalf("Assemble: %v", err)
 	}
 	sys := msgs[0].Content
-	for _, section := range []string{"# Rules", "# User", "# Persona", "# Agent Rules"} {
+	for _, section := range []string{"# Rules", "# User", "# Project Rules", "# Persona", "# Agent Rules"} {
 		if !strings.Contains(sys, section) {
 			t.Errorf("mandatory %q missing when budget pressure is high", section)
 		}
