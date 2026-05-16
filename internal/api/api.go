@@ -1,5 +1,5 @@
 // Package api implements the optional OpenAI-compatible HTTP server that lets
-// opencode and other external tools talk to the harness. It mirrors a tiny
+// external OpenAI-compatible clients talk to the harness. It mirrors a tiny
 // slice of the OpenAI surface - /v1/chat/completions (streaming) and
 // /v1/models - and routes every request through the local prompt Assembler
 // and inference queue so memory + persona injection is transparent to callers.
@@ -39,9 +39,9 @@ type Enqueuer interface {
 // SessionRecorder is the optional surface the API server uses to mint
 // a fresh session per /v1/chat/completions call and append the user's
 // last message + the assistant's response. M3 keeps this minimal: one
-// session per API request gives opencode a per-call episode without
-// any coupling to opencode's own session lifecycle. M4 will refine the
-// model so an opencode session maps onto one harness session.
+// session per API request gives each external client a per-call episode
+// without coupling to the client's own session lifecycle. M4 will refine
+// the model so a client session maps onto one harness session.
 type SessionRecorder interface {
 	Start(agent string) Session
 	Append(id string, role, content string) error
@@ -200,8 +200,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Header wins over body for agent selection so opencode-style clients can
-	// pin the agent without touching the JSON body.
+	// Header wins over body for agent selection so OpenAI-compatible clients
+	// can pin the agent without touching the JSON body.
 	agent := req.Agent
 	if h := r.Header.Get("X-Harness-Agent"); h != "" {
 		agent = h
@@ -290,8 +290,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	// M3-minimal session recording: mint one session per call so each
-	// API request lands an episode in git. opencode does not pin a
-	// session id today; M4 will refine so a single opencode session
+	// API request lands an episode in git. External clients do not pin
+	// a session id today; M4 will refine so a single client session
 	// maps onto one harness session.
 	var sess Session
 	if s.rec != nil {
@@ -390,8 +390,8 @@ type modelInfo struct {
 	OwnedBy string `json:"owned_by"`
 }
 
-// handleModels is GET /v1/models. Stub for opencode's discovery call; real
-// model metadata arrives in a later milestone.
+// handleModels is GET /v1/models. Stub for OpenAI-compatible model discovery;
+// real model metadata arrives in a later milestone.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, apiErrorBody{
