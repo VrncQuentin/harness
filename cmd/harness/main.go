@@ -80,6 +80,9 @@ func run() error {
 		Llama: llamaRing,
 		Embed: embedRing,
 	})
+	if harnessDB != nil {
+		rt.SetProjectStore(harnessDB.Projects())
+	}
 
 	if configured {
 		harnessruntime.ValidatePaths(uiServer, &cfg)

@@ -45,15 +45,24 @@ type ProcessStatus struct {
 	Failed bool
 }
 
+// ProjectDirectoryWarning is an advisory status item for an unhealthy
+// directory attached to the active project.
+type ProjectDirectoryWarning struct {
+	Path    string `json:"path"`
+	Problem string `json:"problem"`
+}
+
 // stateSnapshot holds the copyable fields of State (no mutex).
 type stateSnapshot struct {
-	LlamaStatus    ProcessStatus
-	EmbedderStatus ProcessStatus
-	QueueDepth     int
-	QueueMax       int
-	StartupErrors  []error
-	FirstRun       bool
-	StartTime      time.Time
+	LlamaStatus              ProcessStatus
+	EmbedderStatus           ProcessStatus
+	QueueDepth               int
+	QueueMax                 int
+	StartupErrors            []error
+	FirstRun                 bool
+	StartTime                time.Time
+	ProjectSlug              string
+	ProjectDirectoryWarnings []ProjectDirectoryWarning
 }
 
 // State is the protected mutable state of the UI server.
@@ -342,6 +351,19 @@ func (s *Server) SetQueueDepth(depth, capacity int) {
 	s.state.mu.Lock()
 	s.state.data.QueueDepth = depth
 	s.state.data.QueueMax = capacity
+	s.state.mu.Unlock()
+	s.broadcastState()
+}
+
+// SetProjectDirectoryWarnings updates advisory health warnings for the active
+// project's configured directories. These warnings do not block startup.
+func (s *Server) SetProjectDirectoryWarnings(slug string, warnings []ProjectDirectoryWarning) {
+	copied := make([]ProjectDirectoryWarning, len(warnings))
+	copy(copied, warnings)
+
+	s.state.mu.Lock()
+	s.state.data.ProjectSlug = slug
+	s.state.data.ProjectDirectoryWarnings = copied
 	s.state.mu.Unlock()
 	s.broadcastState()
 }

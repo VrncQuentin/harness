@@ -24,6 +24,7 @@ func (rt *Runtime) ApplyConfig(
 	metricsStore metrics.Store,
 ) ui.ApplyResult {
 	uiServer.ClearStartupErrors()
+	uiServer.SetProjectDirectoryWarnings("", nil)
 	if rt.cfgStore == nil {
 		uiServer.AddStartupError(ErrConfigStoreUnavailable)
 		return ui.ApplyResult{}
@@ -48,6 +49,7 @@ func (rt *Runtime) ApplyConfig(
 
 	old := rt.cfg
 	rt.cfg = *loaded
+	rt.refreshProjectDirectoryWarnings(uiServer)
 
 	var result ui.ApplyResult
 

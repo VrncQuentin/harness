@@ -24,6 +24,7 @@ func (rt *Runtime) Start(
 ) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
+	rt.refreshProjectDirectoryWarnings(uiServer)
 	rt.startServices(ctx, uiServer, events, metricsStore)
 	rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
 }
