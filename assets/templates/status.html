@@ -85,6 +85,15 @@
 </div>
 {{end}}
 
+{{if .ModelMismatch}}
+<div class="alert alert-warn">
+  <div class="alert-head">
+    <h2>Model mismatch</h2>
+    <p class="alert-sub">The active project prefers <code>{{.PreferredModel}}</code> but the harness is currently running <code>{{.LoadedModel}}</code>. <code>llama_on_switch</code> is set to <strong>keep</strong>, so the server process was not restarted. Switch to <strong>reload</strong> in <a href="/config">/config</a> to match the model on project switch, or reload the server manually.</p>
+  </div>
+</div>
+{{end}}
+
 <section class="grid">
   <div class="card">
     <header class="card-head">

@@ -33,6 +33,17 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 
 	if llamaPolicy != "reload" {
 		slog.Info("project switch: keeping current llama-server (llama_on_switch=keep)")
+		// Compute whether there is a model mismatch to surface in the UI.
+		srcModel := config.EffectiveModel(oldConfig, nil)
+		dstProj, err := rt.resolveProject(newConfig.Project.ActiveProjectSlug)
+		if err == nil {
+			dstModel := config.EffectiveModel(newConfig, dstProj)
+			if !config.ModelConfigEqual(srcModel, dstModel) {
+				uiServer.SetModelMismatch(true, srcModel.ModelPath, dstModel.ModelPath)
+				return
+			}
+		}
+		uiServer.SetModelMismatch(false, "", "")
 		return
 	}
 
@@ -84,6 +95,7 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 			slog.Error("project switch: queue restart failed", "err", err)
 		}
 	}
+	uiServer.SetModelMismatch(false, "", "")
 }
 
 // resolveProject looks up a project by slug from the project store.

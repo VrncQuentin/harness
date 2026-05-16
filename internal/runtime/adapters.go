@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/vrnc/harness/internal/agent"
@@ -20,8 +21,9 @@ import (
 )
 
 type uiAgentRegistryAdapter struct {
-	reg agent.Registry
-	mem memory.Reader
+	reg             agent.Registry
+	mem             memory.Reader
+	getProjectSlug  func() string
 }
 
 func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
@@ -29,13 +31,61 @@ func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]ui.AgentInfo, 0, len(agents))
+
+	slug := ""
+	if ad.getProjectSlug != nil {
+		slug = ad.getProjectSlug()
+	}
+
+	projectAgents := make(map[string]bool)
+	if slug != "" {
+		pattern := fmt.Sprintf("projects/%s/agents/*", slug)
+		dirs, err := ad.mem.Glob(pattern + "/")
+		if err == nil {
+			for _, d := range dirs {
+				name := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSuffix(d, "/"), pattern+"/"), "/")
+				if name != "" && name != "." && name != ".." {
+					projectAgents[name] = true
+				}
+			}
+		}
+	}
+
+	out := make([]ui.AgentInfo, 0, len(agents)+len(projectAgents))
+	seen := make(map[string]bool)
 	for _, a := range agents {
 		info, err := ad.Get(a.Name)
 		if err != nil {
 			continue
 		}
+		if projectAgents[a.Name] {
+			info.Origin = "extends-global"
+		} else {
+			info.Origin = "global"
+		}
 		out = append(out, info)
+		seen[a.Name] = true
+	}
+
+	// Add project-only agents that have no global counterpart.
+	for name := range projectAgents {
+		if seen[name] {
+			continue
+		}
+		projectPath := fmt.Sprintf("projects/%s/agents/%s", slug, name)
+		persona, _ := readOptional(ad.mem, projectPath+"/persona.md")
+		rules, _ := readOptional(ad.mem, projectPath+"/rules.md")
+		notes, _ := readOptional(ad.mem, projectPath+"/notes.md")
+		out = append(out, ui.AgentInfo{
+			Name:        name,
+			PersonaPath: projectPath + "/persona.md",
+			Persona:     persona,
+			RulesPath:   projectPath + "/rules.md",
+			Rules:       rules,
+			NotesPath:   projectPath + "/notes.md",
+			Notes:       notes,
+			Origin:      "project-only",
+		})
 	}
 	return out, nil
 }
@@ -43,8 +93,61 @@ func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
 func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
 	a, err := ad.reg.Get(name)
 	if err != nil {
-		return ui.AgentInfo{}, err
+		if !errors.Is(err, fs.ErrNotExist) {
+			return ui.AgentInfo{}, err
+		}
+		// Agent might be project-only; try the project path.
+		info, projErr := ad.getProjectAgent(name)
+		if projErr != nil {
+			return ui.AgentInfo{}, err // return original global lookup error
+		}
+		return info, nil
 	}
+	info := ad.buildAgentInfo(a)
+	// Check if this agent is extended by the active project.
+	slug := ""
+	if ad.getProjectSlug != nil {
+		slug = ad.getProjectSlug()
+	}
+	if slug != "" {
+		projectPersonaPath := fmt.Sprintf("projects/%s/agents/%s/persona.md", slug, a.Name)
+		if _, err := ad.mem.Read(projectPersonaPath); err == nil {
+			info.Origin = "extends-global"
+			return info, nil
+		}
+	}
+	info.Origin = "global"
+	return info, nil
+}
+
+func (ad *uiAgentRegistryAdapter) getProjectAgent(name string) (ui.AgentInfo, error) {
+	slug := ""
+	if ad.getProjectSlug != nil {
+		slug = ad.getProjectSlug()
+	}
+	if slug == "" {
+		return ui.AgentInfo{}, fmt.Errorf("no active project")
+	}
+	projectPath := fmt.Sprintf("projects/%s/agents/%s", slug, name)
+	persona, _ := readOptional(ad.mem, projectPath+"/persona.md")
+	rules, _ := readOptional(ad.mem, projectPath+"/rules.md")
+	notes, _ := readOptional(ad.mem, projectPath+"/notes.md")
+	if persona == "" && rules == "" && notes == "" {
+		return ui.AgentInfo{}, fmt.Errorf("agent %q not found", name)
+	}
+	return ui.AgentInfo{
+		Name:        name,
+		PersonaPath: projectPath + "/persona.md",
+		Persona:     persona,
+		RulesPath:   projectPath + "/rules.md",
+		Rules:       rules,
+		NotesPath:   projectPath + "/notes.md",
+		Notes:       notes,
+		Origin:      "project-only",
+	}, nil
+}
+
+func (ad *uiAgentRegistryAdapter) buildAgentInfo(a agent.Agent) ui.AgentInfo {
 	info := ui.AgentInfo{
 		Name:        a.Name,
 		PersonaPath: a.PersonaPath,
@@ -53,20 +156,20 @@ func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
 	}
 	persona, err := readOptional(ad.mem, a.PersonaPath)
 	if err != nil {
-		return info, err
+		return info
 	}
 	info.Persona = persona
 	rules, err := readOptional(ad.mem, a.RulesPath)
 	if err != nil {
-		return info, err
+		return info
 	}
 	info.Rules = rules
 	notes, err := readOptional(ad.mem, a.NotesPath)
 	if err != nil {
-		return info, err
+		return info
 	}
 	info.Notes = notes
-	return info, nil
+	return info
 }
 
 func readOptional(mem memory.Reader, relPath string) (string, error) {
