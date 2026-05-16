@@ -85,8 +85,8 @@ M3 stages the project-scoped layout that M3b later formalizes: sessions, episode
 
 Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, git backend). Indexing of project directories is staged here (layout + activation check); vector refresh lands in M5.
 
-- [ ] `projects` and `project_directories` tables; system `global` row seeded on first run (cannot be hidden, deleted, or renamed)
-- [ ] `config` additions: `active_project_slug` (NOT NULL, default `'global'`) and `project_llama_on_switch` (`'keep' | 'reload'`, default `'reload'`)
+- [x] `projects` and `project_directories` tables; system `global` row seeded on first run (cannot be hidden, deleted, or renamed)
+- [x] `config` additions: `active_project_slug` (NOT NULL, default `'global'`) and `project_llama_on_switch` (`'keep' | 'reload'`, default `'reload'`)
 - [ ] Memory repo layout: top-level `runtime/` and `index/` fold into `projects/global/`; episodes move out of `agents/<name>/episodes/` into `projects/<slug>/episodes/<agent-name>/` (agent dirs become definition-only); user projects live at `projects/<slug>/{rules.md, agents/, sessions.jsonl, queue.wal, episodes/<agent-name>/, index/<dir-slug>/}`
 - [ ] Prompt assembler: new `projects/<slug>/rules.md` layer between global rules and agent persona
 - [ ] Agent resolution: per-file override of the global agents library by `projects/<slug>/agents/<name>/`

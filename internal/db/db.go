@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
@@ -47,6 +48,10 @@ func Open(path string) (*DB, error) {
 	d.cfg = &ConfigStore{db: sqldb}
 	d.metrics = &MetricsStore{db: sqldb}
 
+	if err := d.seedGlobalProject(); err != nil {
+		_ = sqldb.Close()
+		return nil, err
+	}
 	if err := d.cfg.seed(); err != nil {
 		_ = sqldb.Close()
 		return nil, err
@@ -89,6 +94,17 @@ func (d *DB) Config() *ConfigStore { return d.cfg }
 
 // Metrics returns the metrics sub-store.
 func (d *DB) Metrics() *MetricsStore { return d.metrics }
+
+func (d *DB) seedGlobalProject() error {
+	_, err := d.sqldb.Exec(
+		`INSERT OR IGNORE INTO projects (slug, display_name, hidden, created_at) VALUES (?, ?, ?, ?)`,
+		"global", "Global", 0, time.Now().Unix(),
+	)
+	if err != nil {
+		return fmt.Errorf("db: seed global project: %w", err)
+	}
+	return nil
+}
 
 // runMigrations applies every pending migration from the embedded FS using
 // golang-migrate. Running against a DB that is already up-to-date is a no-op.
