@@ -370,8 +370,9 @@ func (ad *uiSessionStoreAdapter) Resume(id string) error {
 // apiSessionAdapter implements api.SessionRecorder so the API server
 // can mint a fresh session per /v1/chat/completions request and append
 // the user-side messages plus the assistant turn. Designed M3-minimal
-// so opencode's per-call episodes appear without coupling to opencode's
-// own session lifecycle (M4 will replace this with a smarter mapping).
+// so an external client's per-call episodes are recorded without coupling
+// to the client's own session lifecycle (M4 will replace this with a
+// smarter mapping).
 type apiSessionAdapter struct {
 	mgr *session.Manager
 }

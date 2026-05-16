@@ -31,6 +31,12 @@ func TestDefaults(t *testing.T) {
 	if d.Model.CacheTypeV != "q8_0" {
 		t.Errorf("expected default Model.CacheTypeV q8_0, got %q", d.Model.CacheTypeV)
 	}
+	if d.Project.ActiveProjectSlug != "global" {
+		t.Errorf("expected default Project.ActiveProjectSlug global, got %q", d.Project.ActiveProjectSlug)
+	}
+	if d.Project.LlamaOnSwitch != "reload" {
+		t.Errorf("expected default Project.LlamaOnSwitch reload, got %q", d.Project.LlamaOnSwitch)
+	}
 }
 
 // validCfg returns a Config that passes Validate, as a starting point for
@@ -235,6 +241,27 @@ func TestValidate(t *testing.T) {
 			name:    "proc max lines zero",
 			mutate:  func(c *Config) { c.Log.ProcMaxLines = 0 },
 			wantErr: "log.proc_max_lines must be >= 1",
+		},
+
+		// Project fields.
+		{
+			name:    "empty active_project_slug",
+			mutate:  func(c *Config) { c.Project.ActiveProjectSlug = "" },
+			wantErr: "project.active_project_slug is required",
+		},
+		{
+			name:    "whitespace-only active_project_slug",
+			mutate:  func(c *Config) { c.Project.ActiveProjectSlug = "   " },
+			wantErr: "project.active_project_slug is required",
+		},
+		{
+			name:    "invalid llama_on_switch",
+			mutate:  func(c *Config) { c.Project.LlamaOnSwitch = "restart" },
+			wantErr: "project.llama_on_switch must be keep or reload",
+		},
+		{
+			name:   "keep llama_on_switch accepted",
+			mutate: func(c *Config) { c.Project.LlamaOnSwitch = "keep" },
 		},
 	}
 
