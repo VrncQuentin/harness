@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/vrnc/harness/internal/agent"
@@ -39,13 +38,14 @@ func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
 
 	projectAgents := make(map[string]bool)
 	if slug != "" {
-		pattern := fmt.Sprintf("projects/%s/agents/*", slug)
-		dirs, err := ad.mem.Glob(pattern + "/")
-		if err == nil {
-			for _, d := range dirs {
-				name := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSuffix(d, "/"), pattern+"/"), "/")
-				if name != "" && name != "." && name != ".." {
-					projectAgents[name] = true
+		dirPath := fmt.Sprintf("projects/%s/agents", slug)
+		if dl, ok := ad.mem.(memory.DirLister); ok {
+			names, err := dl.ListDirs(dirPath)
+			if err == nil {
+				for _, name := range names {
+					if name != "" && name != "." && name != ".." {
+						projectAgents[name] = true
+					}
 				}
 			}
 		}
@@ -103,7 +103,10 @@ func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
 		}
 		return info, nil
 	}
-	info := ad.buildAgentInfo(a)
+	info, err := ad.buildAgentInfo(a)
+	if err != nil {
+		return ui.AgentInfo{}, err
+	}
 	// Check if this agent is extended by the active project.
 	slug := ""
 	if ad.getProjectSlug != nil {
@@ -147,7 +150,7 @@ func (ad *uiAgentRegistryAdapter) getProjectAgent(name string) (ui.AgentInfo, er
 	}, nil
 }
 
-func (ad *uiAgentRegistryAdapter) buildAgentInfo(a agent.Agent) ui.AgentInfo {
+func (ad *uiAgentRegistryAdapter) buildAgentInfo(a agent.Agent) (ui.AgentInfo, error) {
 	info := ui.AgentInfo{
 		Name:        a.Name,
 		PersonaPath: a.PersonaPath,
@@ -156,20 +159,20 @@ func (ad *uiAgentRegistryAdapter) buildAgentInfo(a agent.Agent) ui.AgentInfo {
 	}
 	persona, err := readOptional(ad.mem, a.PersonaPath)
 	if err != nil {
-		return info
+		return info, err
 	}
 	info.Persona = persona
 	rules, err := readOptional(ad.mem, a.RulesPath)
 	if err != nil {
-		return info
+		return info, err
 	}
 	info.Rules = rules
 	notes, err := readOptional(ad.mem, a.NotesPath)
 	if err != nil {
-		return info
+		return info, err
 	}
 	info.Notes = notes
-	return info
+	return info, nil
 }
 
 func readOptional(mem memory.Reader, relPath string) (string, error) {

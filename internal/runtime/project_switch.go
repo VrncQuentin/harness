@@ -34,7 +34,8 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 	if llamaPolicy != "reload" {
 		slog.Info("project switch: keeping current llama-server (llama_on_switch=keep)")
 		// Compute whether there is a model mismatch to surface in the UI.
-		srcModel := config.EffectiveModel(oldConfig, nil)
+		srcProj, _ := rt.resolveProject(oldConfig.Project.ActiveProjectSlug)
+		srcModel := config.EffectiveModel(oldConfig, srcProj)
 		dstProj, err := rt.resolveProject(newConfig.Project.ActiveProjectSlug)
 		if err == nil {
 			dstModel := config.EffectiveModel(newConfig, dstProj)
