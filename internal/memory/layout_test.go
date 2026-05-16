@@ -8,6 +8,70 @@ import (
 	"testing"
 )
 
+func TestProjectLayout_ValidUserProject(t *testing.T) {
+	got, err := ProjectLayout("my-project")
+	if err != nil {
+		t.Fatalf("ProjectLayout: %v", err)
+	}
+
+	wantPaths := map[string]bool{
+		"projects/my-project":                 true,
+		"projects/my-project/rules.md":        true,
+		"projects/my-project/agents":          true,
+		"projects/my-project/sessions.jsonl":  true,
+		"projects/my-project/episodes":        true,
+		"projects/my-project/index":           true,
+		"projects/my-project/index/_episodes": true,
+	}
+
+	gotPaths := make(map[string]bool)
+	for _, item := range got {
+		gotPaths[item.Path] = true
+	}
+
+	if !reflect.DeepEqual(gotPaths, wantPaths) {
+		t.Errorf("ProjectLayout paths = %v, want %v", gotPaths, wantPaths)
+	}
+
+	if gotPaths["projects/my-project/queue.wal"] {
+		t.Error("ProjectLayout must not include queue.wal")
+	}
+}
+
+func TestProjectLayout_Global(t *testing.T) {
+	got, err := ProjectLayout("global")
+	if err != nil {
+		t.Fatalf("ProjectLayout: %v", err)
+	}
+
+	want := []LayoutItem{
+		{Path: "projects/global", Dir: true, Desc: "System project (default scope)"},
+		{Path: "projects/global/episodes", Dir: true, Desc: "Session episode files for the system project"},
+		{Path: "projects/global/index", Dir: true, Desc: "Semantic search indexes for the system project"},
+		{Path: "projects/global/index/_episodes", Dir: true, Desc: "Embeddings of the system project's episodes"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ProjectLayout(global) =\n\t%v\nwant\n\t%v", got, want)
+	}
+
+	for _, item := range got {
+		if item.Path == "projects/global/rules.md" {
+			t.Error("ProjectLayout(global) must not include projects/global/rules.md")
+		}
+	}
+}
+
+func TestProjectLayout_InvalidSlug(t *testing.T) {
+	tests := []string{"", "My Project", "foo_bar", "double--dash", " global "}
+	for _, slug := range tests {
+		t.Run(slug, func(t *testing.T) {
+			if _, err := ProjectLayout(slug); err == nil {
+				t.Errorf("ProjectLayout(%q): expected error, got nil", slug)
+			}
+		})
+	}
+}
+
 func TestExpectedLayout_StableContent(t *testing.T) {
 	got := ExpectedLayout()
 	// Mirror the canonical layout from docs/architecture.md so a future
