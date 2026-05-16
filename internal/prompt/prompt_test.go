@@ -336,7 +336,7 @@ func TestAssemble_CtxSizeTrimsAgainstConversationReserve(t *testing.T) {
 	}
 
 	limit := cfg.CtxSize - cfg.ConversationReserve
-	fixed := stats.Rules + stats.User + stats.Persona + stats.Facts + stats.Notes + stats.Episodes
+	fixed := stats.Rules + stats.User + stats.ProjectRules + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes
 	if fixed+stats.Conversation > limit {
 		t.Errorf("layers+conversation (%d) exceed ctx limit (%d)", fixed+stats.Conversation, limit)
 	}
