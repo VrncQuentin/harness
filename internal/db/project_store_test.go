@@ -256,6 +256,14 @@ func TestProjectStore_GetMissing(t *testing.T) {
 	}
 }
 
+func TestProjectStore_GetRejectsSpacedSlug(t *testing.T) {
+	d := newTestDB(t)
+	_, err := d.Projects().Get(" global ")
+	if !errors.Is(err, project.ErrInvalidSlug) {
+		t.Fatalf("Get spaced slug: errors.Is(ErrInvalidSlug)=false, err=%v", err)
+	}
+}
+
 func projectSlugs(projects []project.Project) []string {
 	out := make([]string, len(projects))
 	for i, p := range projects {
