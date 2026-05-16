@@ -18,6 +18,10 @@ type AgentInfo struct {
 	Rules       string
 	NotesPath   string
 	Notes       string
+	// Origin is "global", "extends-global", or "project-only", indicating
+	// whether the agent is defined globally, overridden by the active
+	// project, or local to the active project.
+	Origin string
 }
 
 // AgentRegistry is the minimum surface the UI needs to list agents, fetch a

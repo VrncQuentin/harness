@@ -24,6 +24,9 @@ type ssePayload struct {
 	StartupErrors            []string                  `json:"startup_errors,omitempty"`
 	ProjectSlug              string                    `json:"project_slug,omitempty"`
 	ProjectDirectoryWarnings []ProjectDirectoryWarning `json:"project_directory_warnings,omitempty"`
+	ModelMismatch            bool                      `json:"model_mismatch,omitempty"`
+	LoadedModel              string                    `json:"loaded_model,omitempty"`
+	PreferredModel           string                    `json:"preferred_model,omitempty"`
 	FirstRun                 bool                      `json:"first_run"`
 	UptimeSeconds            int64                     `json:"uptime_seconds"`
 }
@@ -246,6 +249,9 @@ func stateToPayload(s stateSnapshot) ssePayload {
 		StartupErrors:            errs,
 		ProjectSlug:              s.ProjectSlug,
 		ProjectDirectoryWarnings: s.ProjectDirectoryWarnings,
+		ModelMismatch:            s.ModelMismatch,
+		LoadedModel:              s.LoadedModel,
+		PreferredModel:           s.PreferredModel,
 		FirstRun:                 s.FirstRun,
 		UptimeSeconds:            int64(time.Since(s.StartTime).Seconds()),
 	}

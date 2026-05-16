@@ -49,7 +49,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		rt.hotReload = hr
 	}
 
-	uiServer.SetAgentRegistry(&uiAgentRegistryAdapter{reg: rt.agentReg, mem: rt.memReader})
+	uiServer.SetAgentRegistry(&uiAgentRegistryAdapter{reg: rt.agentReg, mem: rt.memReader, getProjectSlug: rt.getActiveProjectSlug})
 
 	// Session manager is layered on top of the validated memory repo.
 	// A failure to open the git repo surfaces as a startup error and
@@ -185,6 +185,16 @@ func (rt *Runtime) getActiveAgent() string {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.cfg.Agent.Active
+}
+
+func (rt *Runtime) getActiveProjectSlug() string {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	slug := rt.cfg.Project.ActiveProjectSlug
+	if slug == "" {
+		slug = "global"
+	}
+	return slug
 }
 
 func (rt *Runtime) setActiveAgent(name string) error {

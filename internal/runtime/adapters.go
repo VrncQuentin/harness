@@ -20,8 +20,9 @@ import (
 )
 
 type uiAgentRegistryAdapter struct {
-	reg agent.Registry
-	mem memory.Reader
+	reg             agent.Registry
+	mem             memory.Reader
+	getProjectSlug  func() string
 }
 
 func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
@@ -29,13 +30,62 @@ func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make([]ui.AgentInfo, 0, len(agents))
+
+	slug := ""
+	if ad.getProjectSlug != nil {
+		slug = ad.getProjectSlug()
+	}
+
+	projectAgents := make(map[string]bool)
+	if slug != "" {
+		dirPath := fmt.Sprintf("projects/%s/agents", slug)
+		if dl, ok := ad.mem.(memory.DirLister); ok {
+			names, err := dl.ListDirs(dirPath)
+			if err == nil {
+				for _, name := range names {
+					if name != "" && name != "." && name != ".." {
+						projectAgents[name] = true
+					}
+				}
+			}
+		}
+	}
+
+	out := make([]ui.AgentInfo, 0, len(agents)+len(projectAgents))
+	seen := make(map[string]bool)
 	for _, a := range agents {
 		info, err := ad.Get(a.Name)
 		if err != nil {
 			continue
 		}
+		if projectAgents[a.Name] {
+			info.Origin = "extends-global"
+		} else {
+			info.Origin = "global"
+		}
 		out = append(out, info)
+		seen[a.Name] = true
+	}
+
+	// Add project-only agents that have no global counterpart.
+	for name := range projectAgents {
+		if seen[name] {
+			continue
+		}
+		projectPath := fmt.Sprintf("projects/%s/agents/%s", slug, name)
+		persona, _ := readOptional(ad.mem, projectPath+"/persona.md")
+		rules, _ := readOptional(ad.mem, projectPath+"/rules.md")
+		notes, _ := readOptional(ad.mem, projectPath+"/notes.md")
+		out = append(out, ui.AgentInfo{
+			Name:        name,
+			PersonaPath: projectPath + "/persona.md",
+			Persona:     persona,
+			RulesPath:   projectPath + "/rules.md",
+			Rules:       rules,
+			NotesPath:   projectPath + "/notes.md",
+			Notes:       notes,
+			Origin:      "project-only",
+		})
 	}
 	return out, nil
 }
@@ -43,8 +93,64 @@ func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
 func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
 	a, err := ad.reg.Get(name)
 	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			return ui.AgentInfo{}, err
+		}
+		// Agent might be project-only; try the project path.
+		info, projErr := ad.getProjectAgent(name)
+		if projErr != nil {
+			return ui.AgentInfo{}, err // return original global lookup error
+		}
+		return info, nil
+	}
+	info, err := ad.buildAgentInfo(a)
+	if err != nil {
 		return ui.AgentInfo{}, err
 	}
+	// Check if this agent is extended by the active project.
+	slug := ""
+	if ad.getProjectSlug != nil {
+		slug = ad.getProjectSlug()
+	}
+	if slug != "" {
+		projectPersonaPath := fmt.Sprintf("projects/%s/agents/%s/persona.md", slug, a.Name)
+		if _, err := ad.mem.Read(projectPersonaPath); err == nil {
+			info.Origin = "extends-global"
+			return info, nil
+		}
+	}
+	info.Origin = "global"
+	return info, nil
+}
+
+func (ad *uiAgentRegistryAdapter) getProjectAgent(name string) (ui.AgentInfo, error) {
+	slug := ""
+	if ad.getProjectSlug != nil {
+		slug = ad.getProjectSlug()
+	}
+	if slug == "" {
+		return ui.AgentInfo{}, fmt.Errorf("no active project")
+	}
+	projectPath := fmt.Sprintf("projects/%s/agents/%s", slug, name)
+	persona, _ := readOptional(ad.mem, projectPath+"/persona.md")
+	rules, _ := readOptional(ad.mem, projectPath+"/rules.md")
+	notes, _ := readOptional(ad.mem, projectPath+"/notes.md")
+	if persona == "" && rules == "" && notes == "" {
+		return ui.AgentInfo{}, fmt.Errorf("agent %q not found", name)
+	}
+	return ui.AgentInfo{
+		Name:        name,
+		PersonaPath: projectPath + "/persona.md",
+		Persona:     persona,
+		RulesPath:   projectPath + "/rules.md",
+		Rules:       rules,
+		NotesPath:   projectPath + "/notes.md",
+		Notes:       notes,
+		Origin:      "project-only",
+	}, nil
+}
+
+func (ad *uiAgentRegistryAdapter) buildAgentInfo(a agent.Agent) (ui.AgentInfo, error) {
 	info := ui.AgentInfo{
 		Name:        a.Name,
 		PersonaPath: a.PersonaPath,
