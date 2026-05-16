@@ -22,9 +22,10 @@ import (
 // DB owns the shared harness SQLite handle and exposes typed stores for each
 // subsystem. Callers open it once in main and pass the sub-stores around.
 type DB struct {
-	sqldb   *sql.DB
-	cfg     *ConfigStore
-	metrics *MetricsStore
+	sqldb    *sql.DB
+	cfg      *ConfigStore
+	metrics  *MetricsStore
+	projects *ProjectStore
 }
 
 // Open opens harness.db at path, applies any pending migrations, and seeds
@@ -47,6 +48,7 @@ func Open(path string) (*DB, error) {
 	d := &DB{sqldb: sqldb}
 	d.cfg = &ConfigStore{db: sqldb}
 	d.metrics = &MetricsStore{db: sqldb}
+	d.projects = &ProjectStore{db: sqldb}
 
 	if err := d.seedGlobalProject(); err != nil {
 		_ = sqldb.Close()
@@ -94,6 +96,9 @@ func (d *DB) Config() *ConfigStore { return d.cfg }
 
 // Metrics returns the metrics sub-store.
 func (d *DB) Metrics() *MetricsStore { return d.metrics }
+
+// Projects returns the project metadata sub-store.
+func (d *DB) Projects() *ProjectStore { return d.projects }
 
 func (d *DB) seedGlobalProject() error {
 	_, err := d.sqldb.Exec(
