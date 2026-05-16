@@ -141,6 +141,7 @@ func (rt *Runtime) startServices(
 		fmt.Sprintf("http://127.0.0.1:%d", cfg.Model.Port),
 		httpclient.NewStreaming(),
 	)
+	rt.inferClient = inferClient
 	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, cfg.Queue.WALPath, inferClient)
 	if err := rt.reqQueue.Start(ctx); err != nil {
 		uiServer.AddStartupError(fmt.Errorf("queue WAL error: %w", err))

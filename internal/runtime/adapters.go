@@ -9,13 +9,16 @@ import (
 	"time"
 
 	"github.com/vrnc/harness/internal/agent"
+	"github.com/vrnc/harness/internal/agentloop"
 	"github.com/vrnc/harness/internal/api"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/queue"
 	"github.com/vrnc/harness/internal/reqid"
 	"github.com/vrnc/harness/internal/session"
+	"github.com/vrnc/harness/internal/tools"
 	"github.com/vrnc/harness/internal/ui"
 )
 
@@ -496,4 +499,89 @@ func (a *apiSessionAdapter) Append(id, role, content string) error {
 		return errors.New("session: api adapter has no manager")
 	}
 	return a.mgr.Append(id, inference.Message{Role: role, Content: content})
+}
+
+type taskRunnerAdapter struct {
+	rt       *Runtime
+	registry *tools.Registry
+}
+
+func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sessionID string, conversation []ui.ChatMessage) (string, <-chan agentloop.Event, error) {
+	if agentName == "" {
+		agentName = ad.rt.getActiveAgent()
+	}
+	if agentName == "" {
+		return "", nil, ui.ErrTaskNoAgent
+	}
+
+	msgs := make([]inference.Message, len(conversation))
+	for i, m := range conversation {
+		msgs[i] = inference.Message{Role: m.Role, Content: m.Content}
+	}
+
+	// Mint or attach to a session.
+	mgr := ad.rt.SessionManager()
+	id := sessionID
+	if mgr != nil {
+		if id == "" {
+			s := mgr.Start(agentName)
+			id = s.ID
+		} else if mgr.Snapshot(id) == nil {
+			s := mgr.Start(agentName)
+			id = s.ID
+		}
+	}
+
+	inferClient := ad.rt.getInferClient()
+	if inferClient == nil {
+		return "", nil, fmt.Errorf("inference client not ready")
+	}
+
+	// Resolve sandbox roots from the active project's directories.
+	var sandboxRoots []string
+	ad.rt.mu.Lock()
+	slug := ad.rt.cfg.Project.ActiveProjectSlug
+	ad.rt.mu.Unlock()
+	if slug != "" && ad.rt.projectStore != nil {
+		if fs, ok := ad.rt.projectStore.(project.Store); ok {
+			dirs, err := fs.ListDirectories(slug)
+			if err == nil {
+				for _, d := range dirs {
+					sandboxRoots = append(sandboxRoots, d.Path)
+				}
+			}
+		}
+	}
+	if len(sandboxRoots) == 0 {
+		// Fall back to the memory repo root if no directories are configured.
+		ad.rt.mu.Lock()
+		repoPath := ad.rt.cfg.Memory.RepoPath
+		ad.rt.mu.Unlock()
+		if repoPath != "" {
+			sandboxRoots = append(sandboxRoots, repoPath)
+		}
+	}
+
+	toolCtx := tools.Context{
+		ProjectSlug:  slug,
+		SandboxRoots: sandboxRoots,
+	}
+
+	engine := agentloop.NewEngine(inferClient, ad.registry, ad.rt.cfg.Loop, toolCtx)
+
+	evch := make(chan agentloop.Event, 64)
+	go func() {
+		defer close(evch)
+		if err := engine.Run(ctx, msgs, evch); err != nil {
+			slog.Warn("task engine", "err", err)
+		}
+	}()
+
+	return id, evch, nil
+}
+
+func (rt *Runtime) getInferClient() inference.Client {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.inferClient
 }

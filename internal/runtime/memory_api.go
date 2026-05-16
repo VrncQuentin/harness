@@ -14,6 +14,7 @@ import (
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/session"
+	"github.com/vrnc/harness/internal/tools"
 	"github.com/vrnc/harness/internal/ui"
 	"github.com/vrnc/harness/pkg/httpclient"
 )
@@ -87,6 +88,13 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			slog.Info("api server listening", "port", rt.cfg.API.Port)
 		}
 	}
+
+	// Wire the M4 task runner (loop engine).
+	registry := tools.NewRegistry()
+	tools.RegisterBuiltins(registry)
+	rt.loopRegistry = registry
+	taskAdapter := &taskRunnerAdapter{rt: rt, registry: registry}
+	uiServer.SetTaskRunner(taskAdapter)
 }
 
 // buildSessionManager opens the git repo and constructs a session
@@ -179,6 +187,8 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	uiServer.SetMemoryStore(nil)
 	uiServer.SetChatRunner(nil)
 	uiServer.SetSessionStore(nil)
+	uiServer.SetTaskRunner(nil)
+	rt.loopRegistry = nil
 }
 
 func (rt *Runtime) getActiveAgent() string {
