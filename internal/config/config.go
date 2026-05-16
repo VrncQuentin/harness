@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/vrnc/harness/internal/project"
 )
 
 // Sentinel errors returned by Validate for missing required fields.
@@ -312,6 +314,9 @@ func Validate(cfg *Config) error {
 	if strings.TrimSpace(cfg.Project.ActiveProjectSlug) == "" {
 		return ErrActiveProjectSlugRequired
 	}
+	if err := project.ValidateSlug(cfg.Project.ActiveProjectSlug); err != nil {
+		return fmt.Errorf("config: project.active_project_slug: %w", err)
+	}
 	if !slices.Contains(ValidLlamaOnSwitch, cfg.Project.LlamaOnSwitch) {
 		return ErrInvalidLlamaOnSwitch
 	}
@@ -327,10 +332,8 @@ func validatePort(name string, port int) error {
 }
 
 func validateCacheType(name, value string) error {
-	for _, ok := range ValidCacheTypes {
-		if value == ok {
-			return nil
-		}
+	if slices.Contains(ValidCacheTypes, value) {
+		return nil
 	}
 	return fmt.Errorf("config: %s must be one of %s, got %q", name, strings.Join(ValidCacheTypes, ", "), value)
 }
