@@ -9,12 +9,14 @@ import (
 	"github.com/vrnc/harness/internal/api"
 	"github.com/vrnc/harness/internal/config"
 	gitw "github.com/vrnc/harness/internal/git"
+	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/logbuf"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/proc"
 	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/queue"
 	"github.com/vrnc/harness/internal/session"
+	"github.com/vrnc/harness/internal/tools"
 )
 
 // ErrConfigStoreUnavailable is surfaced when the harness DB could not be
@@ -42,6 +44,7 @@ type Runtime struct {
 	cfgStore     config.Store
 	logRings     LogRings
 	projectStore projectDirectoryStore
+	inferClient  inference.Client
 
 	llamaMgr *proc.Manager
 	embedMgr *proc.Manager
@@ -56,6 +59,7 @@ type Runtime struct {
 	gitRepo   *gitw.Repo
 	sessionMu sync.RWMutex
 	sessionMg *session.Manager
+	loopRegistry *tools.Registry
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.
