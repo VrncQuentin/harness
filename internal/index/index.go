@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 )
 
 const (
@@ -41,10 +42,12 @@ type Result struct {
 	Score float32
 }
 
-// Index manages one vectors.bin + manifest.json pair on disk.
+// Index manages one vectors.bin + manifest.json pair on disk. Safe for
+// concurrent use.
 type Index struct {
-	dir  string
-	dim  int
+	mu       sync.Mutex
+	dir      string
+	dim      int
 	manifest Manifest
 }
 
@@ -84,8 +87,10 @@ func Create(dir string, dim int) (*Index, error) {
 
 // Add appends vectors for the given SHA. Returns error if the SHA already
 // exists (idempotent check). The vectors slice must match the index
-// dimension.
+// dimension. Safe for concurrent use.
 func (idx *Index) Add(sha string, vectors [][]float32) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	for _, e := range idx.manifest.Chunks {
 		if e.SHA == sha {
 			return nil // already indexed
@@ -111,8 +116,10 @@ func (idx *Index) Add(sha string, vectors [][]float32) error {
 }
 
 // Search performs a flat cosine-similarity scan across all vectors and
-// returns the top-k results by descending score.
+// returns the top-k results by descending score. Safe for concurrent use.
 func (idx *Index) Search(query []float32, k int) ([]Result, error) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	if len(query) != idx.dim {
 		return nil, fmt.Errorf("index: query dim mismatch: got %d, want %d", len(query), idx.dim)
 	}
