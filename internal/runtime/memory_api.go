@@ -206,10 +206,7 @@ func (rt *Runtime) afterSaveEmbed(embedClient embedder.Client, repoPath string) 
 			return fmt.Errorf("index dimension mismatch: index has %d, got %d", idx.Dim(), dim)
 		}
 
-		sha := result.CommitSHA
-		if sha == "" {
-			sha = result.ID
-		}
+		sha := result.ID
 		if err := idx.Add(sha, vectors); err != nil {
 			return fmt.Errorf("add to index %s: %w", indexDir, err)
 		}

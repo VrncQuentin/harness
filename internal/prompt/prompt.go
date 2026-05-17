@@ -209,7 +209,7 @@ func (a *DiskAssembler) Assemble(ctx context.Context, agentName string, conversa
 		}
 	}
 
-	layers, err := a.loadLayers(agentName, query)
+	layers, err := a.loadLayers(ctx, agentName, query)
 	if err != nil {
 		logger.Debug("prompt: load layers failed", "agent", agentName, "err", err)
 		return nil, LayerStats{}, err
@@ -281,7 +281,7 @@ type episode struct {
 // Required files missing (rules.md, and persona.md when agentName is
 // non-empty) surface as wrapped errors; optional files missing produce
 // empty sections.
-func (a *DiskAssembler) loadLayers(agentName string, query string) (rawLayers, error) {
+func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query string) (rawLayers, error) {
 	var lay rawLayers
 
 	rules, err := a.readRequired(rulesPath)
@@ -346,7 +346,7 @@ func (a *DiskAssembler) loadLayers(agentName string, query string) (rawLayers, e
 		}
 		lay.notes = notes
 
-		eps, err := a.loadEpisodes(agentName, query)
+		eps, err := a.loadEpisodes(ctx, agentName, query)
 		if err != nil {
 			return rawLayers{}, err
 		}
@@ -369,7 +369,7 @@ func (a *DiskAssembler) loadLayers(agentName string, query string) (rawLayers, e
 // When PromptConfig.RecencyN > 0 only the last N entries (the newest)
 // are returned, so the budget-driven trim further down sees a slice
 // already capped to recency. RecencyN <= 0 means unlimited.
-func (a *DiskAssembler) loadEpisodes(agentName string, query string) ([]episode, error) {
+func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, query string) ([]episode, error) {
 	slug := a.projectSlug
 	if slug == "" {
 		slug = project.GlobalSlug
@@ -400,7 +400,7 @@ func (a *DiskAssembler) loadEpisodes(agentName string, query string) ([]episode,
 
 	// Blended retrieval: semantic similarity + recency.
 	if a.idx != nil && a.emb != nil && len(out) > 0 && query != "" {
-		vecs, err := a.emb.Embed(context.Background(), []string{query})
+		vecs, err := a.emb.Embed(ctx, []string{query})
 		if err == nil && len(vecs) > 0 {
 			results, err := a.idx.Search(vecs[0], len(out)*2)
 			if err == nil && len(results) > 0 {
@@ -616,7 +616,7 @@ func writeSection(b *strings.Builder, header, content string) {
 	}
 	b.WriteString(header)
 	b.WriteString("\n\n")
-	b.WriteString(content)
+	b.WriteString(strings.TrimRight(content, "\n"))
 }
 
 func extractID(epPath string) string {
