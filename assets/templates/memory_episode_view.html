@@ -13,6 +13,18 @@
     <p class="card-meta"><a href="/memory/episodes?agent={{.Agent}}">&larr; Back to episodes</a></p>
 
     <pre class="tree-content">{{.Content}}</pre>
+
+    <div class="card-actions" style="margin-top:1em">
+      <form method="post" action="/memory/promote" style="display:inline">
+        <input type="hidden" name="text" value="{{.Content}}">
+        <button type="submit" class="btn btn-sm">Promote to Global Fact</button>
+      </form>
+      <form method="post" action="/memory/note" style="display:inline">
+        <input type="hidden" name="agent" value="{{.Agent}}">
+        <input type="hidden" name="text" value="{{.Content}}">
+        <button type="submit" class="btn btn-sm btn-ghost">Append to Agent Note</button>
+      </form>
+    </div>
   </div>
 </section>
 {{end}}

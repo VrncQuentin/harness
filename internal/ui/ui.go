@@ -134,6 +134,9 @@ type Server struct {
 	memStoreMu sync.RWMutex
 	memStore   MemoryStore
 
+	committerMu sync.RWMutex
+	committerData   Committer
+
 	chatRunnerMu sync.RWMutex
 	chatRunner   ChatRunner
 
@@ -463,6 +466,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/memory/save", s.handleMemorySave)
 	mux.HandleFunc("/memory/episodes", s.handleMemoryEpisodes)
 	mux.HandleFunc("/memory/episodes/view", s.handleMemoryEpisodeView)
+	mux.HandleFunc("/memory/promote", s.handlePromoteFact)
+	mux.HandleFunc("/memory/note", s.handleAppendNote)
 	mux.HandleFunc("/projects", s.handleProjects)
 	mux.HandleFunc("/projects/edit", s.handleProjectEdit)
 	mux.HandleFunc("/task", s.handleTask)

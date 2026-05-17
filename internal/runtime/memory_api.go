@@ -12,7 +12,7 @@ import (
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/api"
 	"github.com/vrnc/harness/internal/embedder"
-	git "github.com/vrnc/harness/internal/git"
+	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/index"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
@@ -82,6 +82,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		uiServer.SetSessionStore(nil)
 	}
 
+	// Wire committer for M6 memory promotion.
+	if rt.gitRepo != nil {
+		uiServer.SetCommitter(rt.gitRepo)
+	}
+
 	asmAdapter := &apiAssemblerAdapter{a: rt.assembler, rt: rt}
 	if rt.reqQueue != nil {
 		uiServer.SetChatRunner(&chatRunnerAdapter{
@@ -121,7 +126,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 // resume rather than crashing the harness on /chat load.
 func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.Server) (*session.Manager, *uiSessionStoreAdapter) {
 	repoPath := rt.cfg.Memory.RepoPath
-	repo, err := git.Open(repoPath)
+	repo, err := gitw.Open(repoPath)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
 		return nil, nil
@@ -213,7 +218,7 @@ func (rt *Runtime) afterSaveEmbed(embedClient embedder.Client, repoPath string) 
 
 		// Commit index files.
 		if rt.gitRepo != nil {
-			msg := git.BuildMessage(
+			msg := gitw.BuildMessage(
 				map[string]string{"type": "index", "episode_id": result.ID},
 				"update episode index",
 			)
