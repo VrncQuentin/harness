@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path"
 	"sort"
 	"strings"
@@ -124,6 +125,10 @@ type Committer interface {
 // rebuilding the manager.
 type SummarizerPromptFunc func() string
 
+// AfterSaveFunc is an optional callback invoked after a successful Save
+// (including the git commit). The runtime wires it to trigger embed-on-commit.
+type AfterSaveFunc func(ctx context.Context, result SaveResult) error
+
 // ManagerDeps bundles the dependencies a Manager needs. Constructed by
 // the runtime wiring; tests build it inline.
 type ManagerDeps struct {
@@ -133,6 +138,7 @@ type ManagerDeps struct {
 	Inference          inference.Client
 	Metrics            MetricsRecorder
 	SummarizerPrompt   SummarizerPromptFunc
+	AfterSave          AfterSaveFunc
 	Now                func() time.Time // optional; defaults to time.Now
 	SummarizerTimeout  time.Duration    // optional; defaults to summarizerTimeout
 	ResolveAbsRepoPath string           // memory repo root, used for diagnostics only
@@ -429,7 +435,7 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		_ = rec.GitCommitLatencyMS(commitDur)
 	}
 
-	return SaveResult{
+	result := SaveResult{
 		ID:          snap.ID,
 		EpisodePath: episodePath,
 		SidecarPath: sidecarPath,
@@ -437,7 +443,15 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		Summary:     summary,
 		SavedAt:     now,
 		SaveSeq:     saveSeq,
-	}, nil
+	}
+
+	if m.deps.AfterSave != nil {
+		if err := m.deps.AfterSave(ctx, result); err != nil {
+			slog.Warn("session: after-save hook", "id", id, "err", err)
+		}
+	}
+
+	return result, nil
 }
 
 // FlushAll saves every live session under the given ctx. Used by
