@@ -541,6 +541,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	var sandboxRoots []string
 	ad.rt.mu.Lock()
 	slug := ad.rt.cfg.Project.ActiveProjectSlug
+	loopCfg := ad.rt.cfg.Loop
 	ad.rt.mu.Unlock()
 	if slug != "" && ad.rt.projectStore != nil {
 		if fs, ok := ad.rt.projectStore.(project.Store); ok {
@@ -553,7 +554,6 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		}
 	}
 	if len(sandboxRoots) == 0 {
-		// Fall back to the memory repo root if no directories are configured.
 		ad.rt.mu.Lock()
 		repoPath := ad.rt.cfg.Memory.RepoPath
 		ad.rt.mu.Unlock()
@@ -567,14 +567,14 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		SandboxRoots: sandboxRoots,
 	}
 
-	engine := agentloop.NewEngine(inferClient, ad.registry, ad.rt.cfg.Loop, toolCtx)
+	engine := agentloop.NewEngine(inferClient, ad.registry, loopCfg, toolCtx)
 
 	evch := make(chan agentloop.Event, 64)
 	go func() {
-		defer close(evch)
 		if err := engine.Run(ctx, msgs, evch); err != nil {
 			slog.Warn("task engine", "err", err)
 		}
+		// engine.Run closes evch via defer
 	}()
 
 	return id, evch, nil

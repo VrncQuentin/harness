@@ -113,7 +113,11 @@
         body: JSON.stringify({agent: '', session_id: sessionId, messages: messages}),
         signal: controller.signal,
       });
-      if (!resp.ok) { pushMsg('error', {content: 'Request failed: ' + resp.status}); return; }
+      if (!resp.ok) {
+        setRunning(false);
+        pushMsg('error', {content: 'Request failed: ' + resp.status});
+        return;
+      }
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';

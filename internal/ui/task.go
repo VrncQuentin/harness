@@ -73,20 +73,9 @@ func (s *Server) handleTaskStream(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	go func() {
-		<-ctx.Done()
-	}()
-
 	sessionID, evch, err := runner.RunTask(ctx, req.Agent, req.SessionID, req.Messages)
 	if err != nil {
-		switch {
-		case errors.Is(err, ErrChatNoAgent):
-			writeTaskError(w, ErrChatNoAgent.Error())
-		case errors.Is(err, ErrTaskQueueFull):
-			writeTaskError(w, ErrTaskQueueFull.Error())
-		default:
-			writeTaskError(w, err.Error())
-		}
+		writeTaskError(w, err.Error())
 		return
 	}
 
