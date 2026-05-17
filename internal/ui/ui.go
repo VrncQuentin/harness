@@ -100,6 +100,7 @@ type Server struct {
 	memoryEpisodesTmpl    *template.Template
 	memoryEpisodeViewTmpl *template.Template
 	projectsTmpl          *template.Template
+	taskTmpl              *template.Template
 	// shutdownTmpl is intentionally standalone (no layout.html) so the
 	// rendered page does not load /static/* — by the time the browser
 	// fetches stylesheets the listener may already be gone.
@@ -135,6 +136,9 @@ type Server struct {
 
 	chatRunnerMu sync.RWMutex
 	chatRunner   ChatRunner
+
+	taskRunnerMu sync.RWMutex
+	taskRunner   TaskRunner
 
 	sessionStoreMu sync.RWMutex
 	sessionStore   SessionStore
@@ -205,6 +209,11 @@ func NewServer(port int) *Server {
 		assets.TemplateFS,
 		"templates/layout.html",
 		"templates/projects.html",
+	))
+	s.taskTmpl = template.Must(template.ParseFS(
+		assets.TemplateFS,
+		"templates/layout.html",
+		"templates/task.html",
 	))
 	s.shutdownTmpl = template.Must(template.ParseFS(
 		assets.TemplateFS,
@@ -456,6 +465,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/memory/episodes/view", s.handleMemoryEpisodeView)
 	mux.HandleFunc("/projects", s.handleProjects)
 	mux.HandleFunc("/projects/edit", s.handleProjectEdit)
+	mux.HandleFunc("/task", s.handleTask)
+	mux.HandleFunc("/task/stream", s.handleTaskStream)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
