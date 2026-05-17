@@ -21,6 +21,8 @@ import (
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/config"
+	"github.com/vrnc/harness/internal/embedder"
+	"github.com/vrnc/harness/internal/index"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/project"
@@ -100,6 +102,8 @@ type DiskAssembler struct {
 	projectSlug string
 	logger      *slog.Logger
 	tokenizer   func(string) int
+	idx         *index.Index
+	emb         embedder.Client
 }
 
 var _ Assembler = (*DiskAssembler)(nil)
@@ -147,6 +151,16 @@ func (a *DiskAssembler) WithProjectSlug(slug string) *DiskAssembler {
 	return &cp
 }
 
+// WithBlendedRetrieval returns a shallow copy with semantic retrieval
+// support. When idx and emb are non-nil, loadEpisodes uses the last user
+// message as a query for ANN search, blending similarity with recency.
+func (a *DiskAssembler) WithBlendedRetrieval(idx *index.Index, emb embedder.Client) *DiskAssembler {
+	cp := *a
+	cp.idx = idx
+	cp.emb = emb
+	return &cp
+}
+
 // defaultTokenize is the rune-quarter heuristic. Fast, deterministic,
 // and close enough for budgeting against caps that already carry
 // generous headroom.
@@ -187,7 +201,15 @@ func (a *DiskAssembler) Assemble(ctx context.Context, agentName string, conversa
 
 	logger.Debug("prompt: assembling", "agent", agentName, "conversation_messages", len(conversation))
 
-	layers, err := a.loadLayers(agentName)
+	query := ""
+	for i := len(conversation) - 1; i >= 0; i-- {
+		if conversation[i].Role == "user" {
+			query = conversation[i].Content
+			break
+		}
+	}
+
+	layers, err := a.loadLayers(agentName, query)
 	if err != nil {
 		logger.Debug("prompt: load layers failed", "agent", agentName, "err", err)
 		return nil, LayerStats{}, err
@@ -252,13 +274,14 @@ type episode struct {
 	path    string
 	content string
 	tokens  int
+	score   float64
 }
 
 // loadLayers reads every file that contributes to the system prompt.
 // Required files missing (rules.md, and persona.md when agentName is
 // non-empty) surface as wrapped errors; optional files missing produce
 // empty sections.
-func (a *DiskAssembler) loadLayers(agentName string) (rawLayers, error) {
+func (a *DiskAssembler) loadLayers(agentName string, query string) (rawLayers, error) {
 	var lay rawLayers
 
 	rules, err := a.readRequired(rulesPath)
@@ -323,7 +346,7 @@ func (a *DiskAssembler) loadLayers(agentName string) (rawLayers, error) {
 		}
 		lay.notes = notes
 
-		eps, err := a.loadEpisodes(agentName)
+		eps, err := a.loadEpisodes(agentName, query)
 		if err != nil {
 			return rawLayers{}, err
 		}
@@ -346,7 +369,7 @@ func (a *DiskAssembler) loadLayers(agentName string) (rawLayers, error) {
 // When PromptConfig.RecencyN > 0 only the last N entries (the newest)
 // are returned, so the budget-driven trim further down sees a slice
 // already capped to recency. RecencyN <= 0 means unlimited.
-func (a *DiskAssembler) loadEpisodes(agentName string) ([]episode, error) {
+func (a *DiskAssembler) loadEpisodes(agentName string, query string) ([]episode, error) {
 	slug := a.projectSlug
 	if slug == "" {
 		slug = project.GlobalSlug
@@ -374,6 +397,31 @@ func (a *DiskAssembler) loadEpisodes(agentName string) ([]episode, error) {
 			tokens:  a.tokenizer(content),
 		})
 	}
+
+	// Blended retrieval: semantic similarity + recency.
+	if a.idx != nil && a.emb != nil && len(out) > 0 && query != "" {
+		vecs, err := a.emb.Embed(context.Background(), []string{query})
+		if err == nil && len(vecs) > 0 {
+			results, err := a.idx.Search(vecs[0], len(out)*2)
+			if err == nil && len(results) > 0 {
+				scores := make(map[string]float64, len(results))
+				for _, r := range results {
+					scores[r.SHA] = float64(r.Score)
+				}
+				n := len(out)
+				for i := range out {
+					semScore := scores[extractID(out[i].path)]
+					recScore := float64(i+1) / float64(n)
+					out[i].score = a.cfg.SemanticWeight*semScore +
+						a.cfg.RecencyWeight*recScore
+				}
+				sort.SliceStable(out, func(i, j int) bool {
+					return out[i].score > out[j].score
+				})
+			}
+		}
+	}
+
 	if n := a.cfg.RecencyN; n > 0 && len(out) > n {
 		out = out[len(out)-n:]
 	}
@@ -568,5 +616,10 @@ func writeSection(b *strings.Builder, header, content string) {
 	}
 	b.WriteString(header)
 	b.WriteString("\n\n")
-	b.WriteString(strings.TrimRight(content, "\n"))
+	b.WriteString(content)
+}
+
+func extractID(epPath string) string {
+	base := path.Base(epPath)
+	return strings.TrimSuffix(base, ".md")
 }

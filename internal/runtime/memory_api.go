@@ -46,6 +46,19 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.memReader = memory.NewDirReader(rt.cfg.Memory.RepoPath)
 	rt.agentReg = agent.NewDiskRegistry(rt.memReader, rt.getActiveAgent, rt.setActiveAgent)
 	rt.assembler = prompt.NewDiskAssembler(rt.memReader, rt.agentReg, rt.cfg.Prompt).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
+
+	// Open the episode index for blended retrieval.
+	indexDir := filepath.Join(rt.cfg.Memory.RepoPath, "projects", rt.cfg.Project.ActiveProjectSlug, "index", "_episodes")
+	epIdx, err := index.Open(indexDir)
+	if err != nil {
+		slog.Debug("no episode index found, retrieval will use recency only", "dir", indexDir)
+	} else {
+		embedClient := embedder.NewClient(
+			fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
+			httpclient.NewStreaming(),
+		)
+		rt.assembler = rt.assembler.WithBlendedRetrieval(epIdx, embedClient)
+	}
 	uiServer.SetMemoryStore(rt.memReader)
 
 	hr, err := prompt.NewHotReload(rt.cfg.Memory.RepoPath, rt.cfg.Agent.Active, rt.cfg.Project.ActiveProjectSlug, slog.Default())
