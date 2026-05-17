@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -229,8 +230,11 @@ func episodeIndexDir(repoRoot, episodePath string) string {
 }
 
 func relIndexPath(episodePath, file string) string {
-	dir := filepath.Dir(filepath.Dir(episodePath))
-	return filepath.Join(dir, "index", "_episodes", file)
+	// Use path (forward slashes) for repo-relative paths as go-git requires.
+	// EpisodePath: "projects/<slug>/episodes/<agent>/<id>.md"
+	// Index path:  "projects/<slug>/index/_episodes/<file>"
+	dir := path.Dir(path.Dir(episodePath))            // "projects/<slug>/episodes" → "projects/<slug>"
+	return path.Join(dir, "index", "_episodes", file)  // "projects/<slug>/index/_episodes/<file>"
 }
 
 func chunkSummary(summary string) []string {
