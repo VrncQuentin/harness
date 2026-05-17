@@ -136,6 +136,12 @@ type PromptConfig struct {
 	// to the model when writing an episode. An empty string lets the
 	// summarizer fall back to its built-in default.
 	SummarizerPrompt string
+	// SemanticWeight controls the influence of semantic similarity in
+	// blended episode retrieval. 0 means pure recency.
+	SemanticWeight float64
+	// RecencyWeight controls the influence of recency in blended episode
+	// retrieval. 0 means pure semantic search.
+	RecencyWeight float64
 }
 
 // QueueConfig holds queue configuration.
@@ -210,6 +216,8 @@ func Defaults() Config {
 			ConversationReserve: 8192,
 			RecencyN:            5,
 			SummarizerPrompt:    defaultSummarizerPrompt,
+			SemanticWeight:      0.5,
+			RecencyWeight:       0.5,
 		},
 		Queue: QueueConfig{
 			MaxDepth: 8,
