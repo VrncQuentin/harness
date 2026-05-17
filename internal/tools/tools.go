@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ErrSandboxViolation is returned when a file tool tries to access a path
@@ -132,10 +134,12 @@ func validatePath(path string, roots []string) (string, error) {
 	return "", fmt.Errorf("%w: %s", ErrSandboxViolation, path)
 }
 
-// RegisterBuiltins registers the M4 read-only file tools on r.
+// RegisterBuiltins registers the M4+M7 built-in tools on r.
 func RegisterBuiltins(r *Registry) {
 	r.Register(&fileReadTool{})
 	r.Register(&fileListTool{})
+	r.Register(&fileWriteTool{})
+	r.Register(&shellExecTool{})
 }
 
 // fileReadTool implements the file_read tool.
@@ -221,4 +225,78 @@ func (t *fileListTool) Execute(ctx context.Context, c Context, args map[string]a
 		names = append(names, name)
 	}
 	return Result{Content: strings.Join(names, "\n")}
+}
+
+type fileWriteTool struct{}
+
+func (t *fileWriteTool) ID() string          { return "file_write" }
+func (t *fileWriteTool) Description() string { return "Write content to a file. Creates the file if it does not exist, overwrites if it does." }
+func (t *fileWriteTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"path":    map[string]any{"type": "string", "description": "Absolute or relative path to the file to write"},
+			"content": map[string]any{"type": "string", "description": "The content to write to the file"},
+		},
+		"required": []string{"path", "content"},
+	}
+}
+
+func (t *fileWriteTool) Execute(ctx context.Context, c Context, args map[string]any) Result {
+	rawPath, ok := args["path"].(string)
+	if !ok || rawPath == "" {
+		return Result{Error: "file_write: missing or invalid path argument"}
+	}
+	content, _ := args["content"].(string)
+	absPath, err := validatePath(rawPath, c.SandboxRoots)
+	if err != nil {
+		return Result{Error: err.Error()}
+	}
+	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+		return Result{Error: fmt.Sprintf("file_write: %v", err)}
+	}
+	return Result{Content: fmt.Sprintf("Wrote %d bytes to %s", len(content), absPath)}
+}
+
+type shellExecTool struct{}
+
+func (t *shellExecTool) ID() string          { return "shell_exec" }
+func (t *shellExecTool) Description() string { return "Execute a shell command. The command runs inside the sandbox root directory. Commands are limited to 30s and output is truncated to 64KB." }
+func (t *shellExecTool) Schema() map[string]any {
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"command": map[string]any{"type": "string", "description": "The shell command to execute"},
+		},
+		"required": []string{"command"},
+	}
+}
+
+func (t *shellExecTool) Execute(ctx context.Context, c Context, args map[string]any) Result {
+	cmdStr, ok := args["command"].(string)
+	if !ok || cmdStr == "" {
+		return Result{Error: "shell_exec: missing or invalid command argument"}
+	}
+	workDir := c.SandboxRoots[0]
+	if workDir == "" {
+		workDir = "/"
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(timeoutCtx, "sh", "-c", cmdStr)
+	cmd.Dir = workDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return Result{Error: fmt.Sprintf("shell_exec: %v\n%s", err, truncateBytes(output, 65536))}
+	}
+	return Result{Content: truncateBytes(output, 65536)}
+}
+
+func truncateBytes(data []byte, max int) string {
+	if len(data) > max {
+		return string(data[:max]) + "\n... (output truncated)"
+	}
+	return string(data)
 }
