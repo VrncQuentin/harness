@@ -83,13 +83,12 @@ func TestRegistry_ListAndGet(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltins(r)
 	all := r.List()
-	if len(all) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(all))
+	if len(all) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(all))
 	}
-	if r.Get("file_read") == nil {
-		t.Fatal("file_read not found")
-	}
-	if r.Get("file_list") == nil {
-		t.Fatal("file_list not found")
+	for _, id := range []string{"file_read", "file_list", "file_write", "shell_exec"} {
+		if r.Get(id) == nil {
+			t.Errorf("%s not found", id)
+		}
 	}
 }
