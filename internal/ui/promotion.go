@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -46,8 +47,13 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "text is required", http.StatusBadRequest)
 		return
 	}
+	existing, _ := store.Read("global/facts.md")
 	var builder strings.Builder
-	builder.WriteString("\n\n")
+	builder.Write(existing)
+	if len(existing) > 0 && !bytes.HasSuffix(existing, []byte("\n")) {
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("\n")
 	builder.WriteString(text)
 	builder.WriteString("\n")
 	if err := store.WriteFile("global/facts.md", []byte(builder.String())); err != nil {
@@ -85,8 +91,13 @@ func (s *Server) handleAppendNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	notePath := fmt.Sprintf("agents/%s/notes.md", agent)
+	existing, _ := store.Read(notePath)
 	var builder strings.Builder
-	builder.WriteString("\n\n")
+	builder.Write(existing)
+	if len(existing) > 0 && !bytes.HasSuffix(existing, []byte("\n")) {
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("\n")
 	builder.WriteString(text)
 	builder.WriteString("\n")
 	if err := store.WriteFile(notePath, []byte(builder.String())); err != nil {
