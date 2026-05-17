@@ -5,10 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strings"
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/api"
-	gitw "github.com/vrnc/harness/internal/git"
+	"github.com/vrnc/harness/internal/embedder"
+	git "github.com/vrnc/harness/internal/git"
+	"github.com/vrnc/harness/internal/index"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/metrics"
@@ -103,7 +107,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 // resume rather than crashing the harness on /chat load.
 func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.Server) (*session.Manager, *uiSessionStoreAdapter) {
 	repoPath := rt.cfg.Memory.RepoPath
-	repo, err := gitw.Open(repoPath)
+	repo, err := git.Open(repoPath)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
 		return nil, nil
@@ -120,6 +124,11 @@ func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.
 		rec = metrics.NewRecorder(metricsStore)
 	}
 
+	embedClient := embedder.NewClient(
+		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
+		httpclient.NewStreaming(),
+	)
+
 	mgr := session.NewManager(session.ManagerDeps{
 		Repo:               repo,
 		Writer:             rt.memReader,
@@ -128,6 +137,7 @@ func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.
 		Metrics:            rec,
 		SummarizerPrompt:   rt.summarizerPromptFn(),
 		ResolveAbsRepoPath: repoPath,
+		AfterSave:          rt.afterSaveEmbed(embedClient, repoPath),
 	}, rt.cfg.Project.ActiveProjectSlug)
 	adapter := &uiSessionStoreAdapter{mgr: mgr, getActive: rt.getActiveAgent}
 	return mgr, adapter
@@ -142,6 +152,97 @@ func (rt *Runtime) summarizerPromptFn() session.SummarizerPromptFunc {
 		defer rt.mu.Unlock()
 		return rt.cfg.Prompt.SummarizerPrompt
 	}
+}
+
+// afterSaveEmbed returns an AfterSaveFunc that embeds the episode summary
+// and updates the project's _episodes index.
+func (rt *Runtime) afterSaveEmbed(embedClient embedder.Client, repoPath string) session.AfterSaveFunc {
+	return func(ctx context.Context, result session.SaveResult) error {
+		if embedClient == nil || result.Summary == "" {
+			return nil
+		}
+		// Chunk the summary into paragraphs for embedding.
+		chunks := chunkSummary(result.Summary)
+		if len(chunks) == 0 {
+			return nil
+		}
+
+		vectors, err := embedClient.Embed(ctx, chunks)
+		if err != nil {
+			return fmt.Errorf("embed episode %s: %w", result.ID, err)
+		}
+		if len(vectors) == 0 || len(vectors[0]) == 0 {
+			return nil
+		}
+
+		// Determine index directory from the episode path.
+		// EpisodePath is e.g. "projects/<slug>/episodes/<agent>/<id>.md"
+		// Index goes at projects/<slug>/index/_episodes/
+		indexDir := episodeIndexDir(repoPath, result.EpisodePath)
+		dim := len(vectors[0])
+
+		idx, err := index.Open(indexDir)
+		if err != nil {
+			idx, err = index.Create(indexDir, dim)
+			if err != nil {
+				return fmt.Errorf("create index %s: %w", indexDir, err)
+			}
+		}
+		if idx.Dim() != dim {
+			return fmt.Errorf("index dimension mismatch: index has %d, got %d", idx.Dim(), dim)
+		}
+
+		sha := result.CommitSHA
+		if sha == "" {
+			sha = result.ID
+		}
+		if err := idx.Add(sha, vectors); err != nil {
+			return fmt.Errorf("add to index %s: %w", indexDir, err)
+		}
+
+		// Commit index files.
+		if rt.gitRepo != nil {
+			msg := git.BuildMessage(
+				map[string]string{"type": "index", "episode_id": result.ID},
+				"update episode index",
+			)
+			relVectors := relIndexPath(result.EpisodePath, "vectors.bin")
+			relManifest := relIndexPath(result.EpisodePath, "manifest.json")
+			if _, err := rt.gitRepo.Commit(msg, []string{relVectors, relManifest}); err != nil {
+				slog.Warn("commit index", "err", err)
+			}
+		}
+		return nil
+	}
+}
+
+// episodeIndexDir resolves the _episodes index directory from an episode path.
+func episodeIndexDir(repoRoot, episodePath string) string {
+	// EpisodePath: "projects/<slug>/episodes/<agent>/<id>.md"
+	// Index dir:    projects/<slug>/index/_episodes/
+	dir := filepath.Dir(filepath.Dir(episodePath)) // strip <agent>/<id>.md
+	parts := strings.SplitN(dir, string(filepath.Separator), 3)
+	if len(parts) >= 2 && parts[0] == "projects" {
+		return filepath.Join(repoRoot, parts[0], parts[1], "index", "_episodes")
+	}
+	return filepath.Join(repoRoot, dir, "index", "_episodes")
+}
+
+func relIndexPath(episodePath, file string) string {
+	dir := filepath.Dir(filepath.Dir(episodePath))
+	return filepath.Join(dir, "index", "_episodes", file)
+}
+
+func chunkSummary(summary string) []string {
+	var chunks []string
+	for _, para := range strings.Split(summary, "\n\n") {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+		chunks = append(chunks, para)
+	}
+	return chunks
 }
 
 // setSessionManager swaps the live manager under its dedicated mutex
