@@ -548,7 +548,7 @@ func TestHotReload_StaleOldAgentIgnoredAfterSwap(t *testing.T) {
 }
 
 func TestHotReload_NonWindowsGuards(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
 		t.Skip("platform-specific watch semantics vary; the happy-path tests cover this")
 	}
 }

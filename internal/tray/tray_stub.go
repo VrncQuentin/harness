@@ -1,22 +1,23 @@
-//go:build !windows
+//go:build !windows && !linux
 
-// Package tray provides stubs for non-Windows builds.
+// Package tray provides stubs for unsupported platforms.
 package tray
 
 import "fmt"
 
-// AcquireSingleInstance is a no-op on non-Windows platforms.
-// Always returns (true, nil) - single-instance enforcement only runs on Windows.
+// AcquireSingleInstance is a no-op on unsupported platforms.
 func AcquireSingleInstance() (bool, error) {
 	return true, nil
 }
 
-// Run is a no-op stub on non-Windows platforms.
+// Run is a no-op stub on unsupported platforms.
 func Run(uiURL string, onQuit func()) {
 	fmt.Println("tray: systray not supported on this platform; running in headless mode")
-	// Block forever (or until the caller's context is done).
 	select {}
 }
 
-// Quit is a no-op stub on non-Windows platforms.
+// Quit is a no-op stub on unsupported platforms.
 func Quit() {}
+
+// OpenBrowser is a no-op stub on unsupported platforms.
+func OpenBrowser(_ string) {}

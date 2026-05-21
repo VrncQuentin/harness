@@ -73,7 +73,7 @@ func onReady(uiURL string, onQuit func()) {
 		for {
 			select {
 			case <-mOpenUI.ClickedCh:
-				openBrowser(uiURL)
+				OpenBrowser(uiURL)
 			case <-mQuit.ClickedCh:
 				if onQuit != nil {
 					onQuit()
@@ -85,8 +85,8 @@ func onReady(uiURL string, onQuit func()) {
 	}()
 }
 
-// openBrowser opens the default browser to the given URL.
-func openBrowser(url string) {
+// OpenBrowser opens the default browser to the given URL.
+func OpenBrowser(url string) {
 	cmd := exec.Command("cmd", "/c", "start", url)
 	cmd.Run() //nolint:errcheck
 }

@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -556,9 +555,6 @@ func TestHandleConfig_GETPreFillsDetectedLlamaBinary(t *testing.T) {
 
 	dir := t.TempDir()
 	exe := "llama-server"
-	if runtime.GOOS == "windows" {
-		exe = "llama-server.exe"
-	}
 	want := filepath.Join(dir, exe)
 	if err := os.WriteFile(want, nil, 0o755); err != nil {
 		t.Fatalf("write: %v", err)
@@ -610,9 +606,6 @@ func TestHandleConfig_POSTErrorDoesNotPreFillBinary(t *testing.T) {
 
 	dir := t.TempDir()
 	exe := "llama-server"
-	if runtime.GOOS == "windows" {
-		exe = "llama-server.exe"
-	}
 	detected := filepath.Join(dir, exe)
 	if err := os.WriteFile(detected, nil, 0o755); err != nil {
 		t.Fatalf("write: %v", err)

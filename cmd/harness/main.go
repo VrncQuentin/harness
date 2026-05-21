@@ -9,7 +9,6 @@ import (
 	"log"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -104,7 +103,7 @@ func run() error {
 	if cfg.UI.OpenOnStart {
 		go func() {
 			time.Sleep(200 * time.Millisecond)
-			exec.Command("cmd", "/c", "start", uiURL).Run() //nolint:errcheck
+			tray.OpenBrowser(uiURL)
 		}()
 	}
 
