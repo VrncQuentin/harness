@@ -8,9 +8,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
-
-	"fyne.io/systray"
 )
+
+var lockFile *os.File // held for process lifetime; released on exit
 
 // AcquireSingleInstance uses a file lock to ensure only one harness instance
 // runs at a time. Returns (true, nil) for the first instance, (false, nil)
@@ -29,47 +29,11 @@ func AcquireSingleInstance() (bool, error) {
 
 	_ = f.Truncate(0)
 	fmt.Fprintf(f, "%d\n", os.Getpid())
+	lockFile = f
 	return true, nil
 }
 
-func Run(uiURL string, onQuit func()) {
-	systray.Run(func() {
-		onReady(uiURL, onQuit)
-	}, func() {
-		if onQuit != nil {
-			onQuit()
-		}
-	})
-}
-
-func Quit() {
-	systray.Quit()
-}
-
-func onReady(uiURL string, onQuit func()) {
-	systray.SetIcon(iconPNG)
-	systray.SetTitle("Harness")
-	systray.SetTooltip("Local AI Inference Harness")
-
-	mOpenUI := systray.AddMenuItem("Open UI", "Open the management interface in your browser")
-	systray.AddSeparator()
-	mQuit := systray.AddMenuItem("Quit", "Quit the harness")
-
-	go func() {
-		for {
-			select {
-			case <-mOpenUI.ClickedCh:
-				OpenBrowser(uiURL)
-			case <-mQuit.ClickedCh:
-				if onQuit != nil {
-					onQuit()
-				}
-				systray.Quit()
-				return
-			}
-		}
-	}()
-}
+func trayIcon() []byte { return iconPNG }
 
 func OpenBrowser(url string) {
 	exec.Command("xdg-open", url).Start() //nolint:errcheck

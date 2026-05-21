@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -54,38 +55,36 @@ func searchRoots(binDir string) []string {
 
 func detectLlamaBinary(roots []string) []string {
 	exe := "llama-server"
-	exeWin := exe + ".exe"
+	if runtime.GOOS == "windows" {
+		exe = "llama-server.exe"
+	}
 
 	var seeds []string
 	for _, r := range roots {
 		seeds = append(seeds,
 			filepath.Join(r, exe),
-			filepath.Join(r, exeWin),
 			filepath.Join(r, "llama.cpp", exe),
-			filepath.Join(r, "llama.cpp", exeWin),
 			filepath.Join(r, "llama.cpp", "bin", exe),
-			filepath.Join(r, "llama.cpp", "bin", exeWin),
 		)
 	}
-	// Platform-specific well-known locations.
-	if pf := os.Getenv("ProgramFiles"); pf != "" {
-		seeds = append(seeds,
-			filepath.Join(pf, "llama.cpp", exeWin),
-			filepath.Join(pf, "llama.cpp", "bin", exeWin),
-		)
-	}
-	if home, _ := os.UserHomeDir(); home != "" {
-		for _, d := range []string{"bin", ".local/bin", "llama.cpp/bin"} {
-			seeds = append(seeds, filepath.Join(home, d, exe))
+	if runtime.GOOS == "windows" {
+		if pf := os.Getenv("ProgramFiles"); pf != "" {
+			seeds = append(seeds,
+				filepath.Join(pf, "llama.cpp", exe),
+				filepath.Join(pf, "llama.cpp", "bin", exe),
+			)
 		}
+	} else {
+		if home, _ := os.UserHomeDir(); home != "" {
+			for _, d := range []string{"bin", ".local/bin", "llama.cpp/bin"} {
+				seeds = append(seeds, filepath.Join(home, d, exe))
+			}
+		}
+		seeds = append(seeds, filepath.Join("/opt/llama.cpp/bin", exe))
 	}
-	seeds = append(seeds, filepath.Join("/opt/llama.cpp/bin", exe))
 
 	var found []string
 	if p, err := exec.LookPath(exe); err == nil {
-		found = append(found, p)
-	}
-	if p, err := exec.LookPath(exeWin); err == nil {
 		found = append(found, p)
 	}
 	for _, s := range seeds {

@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -120,6 +121,9 @@ func TestDetect_DedupesModelsAcrossRoots(t *testing.T) {
 func TestDetect_FindsLlamaBinaryNextToBinary(t *testing.T) {
 	dir := t.TempDir()
 	exe := "llama-server"
+	if runtime.GOOS == "windows" {
+		exe = "llama-server.exe"
+	}
 	nested := filepath.Join(dir, "llama.cpp")
 	if err := os.Mkdir(nested, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
