@@ -74,15 +74,18 @@ func detectLlamaBinary(roots []string) []string {
 			filepath.Join(pf, "llama.cpp", "bin", exeWin),
 		)
 	}
-	for _, d := range []string{"/usr/local/bin", "/usr/bin"} {
-		seeds = append(seeds, filepath.Join(d, exe))
+	if home, _ := os.UserHomeDir(); home != "" {
+		for _, d := range []string{"bin", ".local/bin", "llama.cpp/bin"} {
+			seeds = append(seeds, filepath.Join(home, d, exe))
+		}
 	}
-	if home := os.Getenv("HOME"); home != "" {
-		seeds = append(seeds, filepath.Join(home, ".local", "bin", exe))
-	}
+	seeds = append(seeds, filepath.Join("/opt/llama.cpp/bin", exe))
 
 	var found []string
 	if p, err := exec.LookPath(exe); err == nil {
+		found = append(found, p)
+	}
+	if p, err := exec.LookPath(exeWin); err == nil {
 		found = append(found, p)
 	}
 	for _, s := range seeds {
