@@ -23,9 +23,9 @@ import (
 )
 
 type uiAgentRegistryAdapter struct {
-	reg             agent.Registry
-	mem             memory.Reader
-	getProjectSlug  func() string
+	reg            agent.Registry
+	mem            memory.Reader
+	getProjectSlug func() string
 }
 
 func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {

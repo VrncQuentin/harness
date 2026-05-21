@@ -24,32 +24,32 @@ type Event struct {
 	Type    string `json:"type"`
 	Content string `json:"content,omitempty"`
 
-	ToolID      string `json:"tool_id,omitempty"`
-	ToolArgs    string `json:"tool_args,omitempty"`
-	ToolResult  string `json:"tool_result,omitempty"`
-	ToolError   string `json:"tool_error,omitempty"`
+	ToolID     string `json:"tool_id,omitempty"`
+	ToolArgs   string `json:"tool_args,omitempty"`
+	ToolResult string `json:"tool_result,omitempty"`
+	ToolError  string `json:"tool_error,omitempty"`
 
 	// Terminate is the reason the loop stopped, set on the final event.
 	Terminate string `json:"terminate,omitempty"`
 }
 
 const (
-	EvtDone      = "done"
-	EvtError     = "error"
-	EvtText      = "text"
-	EvtToolCall  = "tool_call"
+	EvtDone       = "done"
+	EvtError      = "error"
+	EvtText       = "text"
+	EvtToolCall   = "tool_call"
 	EvtToolResult = "tool_result"
-	EvtLimit     = "limit"
-	EvtDoom      = "doom_loop"
-	EvtCancel    = "cancelled"
+	EvtLimit      = "limit"
+	EvtDoom       = "doom_loop"
+	EvtCancel     = "cancelled"
 )
 
 // Engine orchestrates the agent loop.
 type Engine struct {
-	infer     inference.Client
-	registry  *tools.Registry
-	loopCfg   config.LoopConfig
-	toolCtx   tools.Context
+	infer    inference.Client
+	registry *tools.Registry
+	loopCfg  config.LoopConfig
+	toolCtx  tools.Context
 }
 
 // NewEngine creates a loop engine with the given dependencies.
@@ -223,11 +223,11 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 			}
 
 			e.emit(evch, Event{
-				Turn:        turns,
-				Type:        EvtToolResult,
-				ToolID:      tc.Function.Name,
-				ToolResult:  res.Content,
-				ToolError:   res.Error,
+				Turn:       turns,
+				Type:       EvtToolResult,
+				ToolID:     tc.Function.Name,
+				ToolResult: res.Content,
+				ToolError:  res.Error,
 			})
 
 			// Inject tool result into conversation.

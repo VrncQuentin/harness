@@ -28,13 +28,14 @@ func AcquireSingleInstance() (bool, error) {
 	}
 
 	_ = f.Truncate(0)
-	fmt.Fprintf(f, "%d\n", os.Getpid())
+	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
 	lockFile = f
 	return true, nil
 }
 
 func trayIcon() []byte { return iconPNG }
 
+// OpenBrowser opens the default browser to the given URL.
 func OpenBrowser(url string) {
 	exec.Command("xdg-open", url).Start() //nolint:errcheck
 }
