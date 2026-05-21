@@ -10,7 +10,8 @@ import (
 	"syscall"
 )
 
-var lockFile *os.File // held for process lifetime; released on exit
+// lockFile holds the fd open for the process lifetime; released on exit.
+var lockFile *os.File
 
 // AcquireSingleInstance uses a file lock to ensure only one harness instance
 // runs at a time. Returns (true, nil) for the first instance, (false, nil)
@@ -30,6 +31,7 @@ func AcquireSingleInstance() (bool, error) {
 	_ = f.Truncate(0)
 	_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
 	lockFile = f
+	_ = lockFile // referenced to prevent unused warning; fd held for lifetime
 	return true, nil
 }
 
