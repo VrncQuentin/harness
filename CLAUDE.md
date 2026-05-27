@@ -6,11 +6,11 @@ This file is the entry point for Claude Code. Read it fully before touching anyt
 
 ## Project
 
-A local AI inference harness for Windows native. Double-clickable binary, always-on, browser-based management UI. No cloud, no telemetry, no dependencies at runtime beyond what the harness manages itself.
+A local AI inference harness. Double-clickable binary, always-on, browser-based management UI. No cloud, no telemetry, no dependencies at runtime beyond what the harness manages itself.
 
 - **Docs:** `docs/architecture.md`, `docs/roadmap.md`, `docs/agents.md`
 - **Language:** Go
-- **Target OS:** Windows native (no WSL)
+- **Target OS:** Windows native, Linux (GTK-based systray)
 
 Read the architecture doc before writing any code. It defines component boundaries, package names, and key design decisions that must be respected.
 
@@ -32,7 +32,7 @@ internal/
   prompt/           ← layered prompt assembler
   queue/            ← bounded request queue + WAL
   session/          ← session lifecycle
-  tray/             ← system tray (fyne-io/systray)
+  tray/             ← system tray (fyne-io/systray), single-instance
   ui/               ← management web UI (net/http + html/template)
 docs/
   architecture.md
@@ -83,16 +83,35 @@ harness.db          ← SQLite database: config (single-row typed table) + metri
 
 ### Process management
 - `systray` (fyne-io/systray) for the tray icon. It blocks `main()` — all services start before calling `systray.Run()`.
-- Single-instance enforcement via a named Windows mutex (`CreateMutex`).
+- Single-instance enforcement via named mutex (Windows) or file lock (Linux).
 - On double-click when already running: do nothing, exit the second instance silently.
 - On Quit from tray: drain queue, flush WAL, commit any pending session, terminate child processes, exit.
+
+---
+
+## Build dependencies
+
+**Linux:** the systray requires CGO and GTK development headers:
+
+```sh
+# Debian/Ubuntu
+sudo apt install libayatana-appindicator3-dev
+
+# Fedora
+sudo dnf install libayatana-appindicator3-devel
+
+# Arch
+sudo pacman -S libayatana-appindicator
+```
+
+Windows builds need no external development libraries.
 
 ---
 
 ## Startup sequence
 
 ```
-1. Acquire single-instance mutex → if already held, exit silently
+1. Acquire single-instance lock → if already held, exit silently
 2. Start UI server (port 3000) → always succeeds, browser opens if not already open
 3. Open harness.db → surface error in UI if the database cannot be opened or migrated
 4. Load config row → if the user has never saved, show the first-run CTA and stop here
