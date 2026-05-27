@@ -127,7 +127,7 @@ func (idx *Index) Search(query []float32, k int) ([]Result, error) {
 	if err != nil {
 		return nil, fmt.Errorf("index: open vectors: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	type scored struct {
 		sha   string
@@ -178,7 +178,7 @@ func (idx *Index) appendVectors(vectors [][]float32) error {
 	if err != nil {
 		return fmt.Errorf("index: open vectors for append: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	buf := make([]byte, len(vectors)*idx.dim*4)
 	pos := 0

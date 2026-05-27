@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,7 @@ func TestFileRead_WithinSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := &fileReadTool{}
-	res := tool.Execute(nil, Context{SandboxRoots: []string{dir}}, map[string]any{"path": filepath.Join(dir, "hello.txt")})
+	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{"path": filepath.Join(dir, "hello.txt")})
 	if res.Error != "" {
 		t.Fatalf("unexpected error: %s", res.Error)
 	}
@@ -25,7 +26,7 @@ func TestFileRead_WithinSandbox(t *testing.T) {
 func TestFileRead_OutsideSandbox(t *testing.T) {
 	dir := t.TempDir()
 	tool := &fileReadTool{}
-	res := tool.Execute(nil, Context{SandboxRoots: []string{dir}}, map[string]any{"path": "/etc/hosts"})
+	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{"path": "/etc/hosts"})
 	if !strings.Contains(res.Error, "sandbox") {
 		t.Fatalf("expected sandbox error, got %q", res.Error)
 	}
@@ -34,7 +35,7 @@ func TestFileRead_OutsideSandbox(t *testing.T) {
 func TestFileRead_MissingPath(t *testing.T) {
 	dir := t.TempDir()
 	tool := &fileReadTool{}
-	res := tool.Execute(nil, Context{SandboxRoots: []string{dir}}, map[string]any{"path": filepath.Join(dir, "missing.txt")})
+	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{"path": filepath.Join(dir, "missing.txt")})
 	if !strings.Contains(res.Error, "not found") {
 		t.Fatalf("expected not-found error, got %q", res.Error)
 	}
@@ -42,12 +43,12 @@ func TestFileRead_MissingPath(t *testing.T) {
 
 func TestFileList_WithinSandbox(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644)
-	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o644)
-	os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b"), 0o644)
+	_ = os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
 
 	tool := &fileListTool{}
-	res := tool.Execute(nil, Context{SandboxRoots: []string{dir}}, map[string]any{"path": dir})
+	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{"path": dir})
 	if res.Error != "" {
 		t.Fatalf("unexpected error: %s", res.Error)
 	}
@@ -62,7 +63,7 @@ func TestFileList_WithinSandbox(t *testing.T) {
 func TestFileList_OutsideSandbox(t *testing.T) {
 	dir := t.TempDir()
 	tool := &fileListTool{}
-	res := tool.Execute(nil, Context{SandboxRoots: []string{dir}}, map[string]any{"path": "/etc"})
+	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{"path": "/etc"})
 	if !strings.Contains(res.Error, "sandbox") {
 		t.Fatalf("expected sandbox error, got %q", res.Error)
 	}

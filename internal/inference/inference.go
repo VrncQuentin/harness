@@ -24,19 +24,19 @@ type Client interface {
 // Token is a single streamed token from a completion. Content carries text
 // deltas; ToolCallDelta carries partial tool-call JSON during tool-use turns.
 type Token struct {
-	Content       string       `json:"content,omitempty"`
-	Done          bool         `json:"done"`
-	Err           error        `json:"-"`
+	Content       string         `json:"content,omitempty"`
+	Done          bool           `json:"done"`
+	Err           error          `json:"-"`
 	ToolCallDelta *ToolCallDelta `json:"tool_call_delta,omitempty"`
 }
 
 // ToolCallDelta is a streaming tool-call fragment. The caller accumulates
 // these to assemble a complete ToolCall.
 type ToolCallDelta struct {
-	Index      int    `json:"index"`
-	ID         string `json:"id,omitempty"`
-	Name       string `json:"name,omitempty"`
-	Arguments  string `json:"arguments,omitempty"`
+	Index     int    `json:"index"`
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 // ToolCall represents a complete tool invocation the model requested.
@@ -93,10 +93,10 @@ type sseChunk struct {
 		Delta struct {
 			Content   string `json:"content"`
 			ToolCalls []struct {
-				Index     int    `json:"index"`
-				ID        string `json:"id"`
-				Type      string `json:"type"`
-				Function  struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
 				} `json:"function"`

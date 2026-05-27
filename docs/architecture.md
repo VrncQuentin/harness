@@ -4,7 +4,7 @@
 
 A local AI inference harness with a git-backed memory system, layered prompt assembly, a browser-based management UI, and a planned first-party native agent loop. The harness owns chat, tool-call orchestration, and tool execution locally; external coding agents are references for design patterns, not runtime dependencies.
 
-The harness runs as a double-clickable Windows native binary. It starts silently, opens the management UI in the default browser if not already open, and lives in the system tray until explicitly quit. The browser UI is the only user-facing surface — all errors (unconfigured on first run, missing model, llama-server failures, missing memory repo) are surfaced there, not in a terminal.
+The harness runs as a native desktop binary (Windows and Linux). It starts silently, opens the management UI in the default browser if not already open, and lives in the system tray until explicitly quit. The browser UI is the only user-facing surface — all errors (unconfigured on first run, missing model, llama-server failures, missing memory repo) are surfaced there, not in a terminal.
 
 The binary targets llama-server as the inference backend and uses a separate embedding sidecar for semantic memory.
 
@@ -81,10 +81,10 @@ Pages:
 - **Logs** — live process manager events, prompt assembly debug, loop turns, and tool-call traces
 
 ### System Tray (`internal/tray`)
-Manages the binary's desktop presence. Uses `fyne-io/systray` (native Windows, no CGO required).
+Manages the binary's desktop presence. Uses `fyne-io/systray` (native on Windows and Linux, no CGO required for Windows; GTK-based on Linux).
 
 Behavior:
-- **On start:** check if another instance is already running (via lock file or named pipe); if so, do nothing and exit
+- **On start:** check if another instance is already running (via Windows mutex on Windows, file lock on Linux); if so, do nothing and exit
 - **If first instance:** start all services, open browser to UI if not already open, show tray icon
 - **Tray icon menu:** Open UI, Quit
 - **On Quit:** graceful shutdown — drain queue, flush WAL, terminate child processes, release lock
@@ -158,7 +158,7 @@ Mediates all reads and writes to the git memory repo.
 **Cross-agent reads:** explicit only. An agent may request episodes from another agent's directory. Not automatic.
 
 ### Git Backend (`internal/git`)
-Thin wrapper around `go-git` (pure Go — no git binary dependency, required for Windows native).
+Thin wrapper around `go-git` (pure Go — no git binary dependency).
 
 Operations:
 - `Init(path string)` — init or open existing repo
@@ -184,7 +184,7 @@ type Embedder interface {
 }
 ```
 
-Ships as a self-contained binary on Windows native (no Python dependency).
+Ships as a self-contained binary (no Python dependency).
 
 ANN index: flat scan for small corpora (<10k chunks). Upgrade to usearch or hnswlib if retrieval latency becomes a problem.
 
@@ -209,7 +209,6 @@ Spawns and monitors llama-server and the Embedder sidecar as child processes.
 - Health check loop: HTTP ping on configurable interval
 - Restart with exponential backoff on crash or failed health check
 - Reads from config: binary path, model path, ctx size, GPU layers, n_parallel
-- Windows native: uses `os/exec` with Windows paths
 - Emits structured events to UI log stream via SSE
 
 ### Metrics Store (`internal/metrics`)

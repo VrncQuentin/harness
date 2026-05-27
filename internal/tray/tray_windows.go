@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os/exec"
 
-	"fyne.io/systray"
 	"golang.org/x/sys/windows"
 )
 
@@ -37,56 +36,8 @@ func AcquireSingleInstance() (bool, error) {
 	return true, nil
 }
 
-// Run starts the system tray. onReady is called after the tray is set up.
-// onQuit is called when the user selects Quit. This function blocks until quit.
-func Run(uiURL string, onQuit func()) {
-	systray.Run(func() {
-		onReady(uiURL, onQuit)
-	}, func() {
-		if onQuit != nil {
-			onQuit()
-		}
-	})
-}
+func trayIcon() []byte { return iconICO }
 
-// Quit signals the tray loop to exit. The onExit callback registered via Run
-// fires the same shutdown closure as the tray's Quit menu item, so the UI
-// shutdown button and the tray menu converge on one cleanup path.
-//
-// Safe to call from any goroutine. Returns immediately; the actual exit
-// happens once the systray loop drains.
-func Quit() {
-	systray.Quit()
-}
-
-// onReady configures the tray icon and menu.
-func onReady(uiURL string, onQuit func()) {
-	systray.SetIcon(iconICO)
-	systray.SetTitle("Harness")
-	systray.SetTooltip("Local AI Inference Harness")
-
-	mOpenUI := systray.AddMenuItem("Open UI", "Open the management interface in your browser")
-	systray.AddSeparator()
-	mQuit := systray.AddMenuItem("Quit", "Quit the harness")
-
-	go func() {
-		for {
-			select {
-			case <-mOpenUI.ClickedCh:
-				openBrowser(uiURL)
-			case <-mQuit.ClickedCh:
-				if onQuit != nil {
-					onQuit()
-				}
-				systray.Quit()
-				return
-			}
-		}
-	}()
-}
-
-// openBrowser opens the default browser to the given URL.
-func openBrowser(url string) {
-	cmd := exec.Command("cmd", "/c", "start", url)
-	cmd.Run() //nolint:errcheck
+func OpenBrowser(url string) {
+	exec.Command("cmd", "/c", "start", url).Run() //nolint:errcheck
 }

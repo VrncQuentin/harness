@@ -145,8 +145,10 @@ func RegisterBuiltins(r *Registry) {
 // fileReadTool implements the file_read tool.
 type fileReadTool struct{}
 
-func (t *fileReadTool) ID() string          { return "file_read" }
-func (t *fileReadTool) Description() string { return "Read the contents of a file. Returns the file content or an error." }
+func (t *fileReadTool) ID() string { return "file_read" }
+func (t *fileReadTool) Description() string {
+	return "Read the contents of a file. Returns the file content or an error."
+}
 func (t *fileReadTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -229,8 +231,10 @@ func (t *fileListTool) Execute(ctx context.Context, c Context, args map[string]a
 
 type fileWriteTool struct{}
 
-func (t *fileWriteTool) ID() string          { return "file_write" }
-func (t *fileWriteTool) Description() string { return "Write content to a file. Creates the file if it does not exist, overwrites if it does." }
+func (t *fileWriteTool) ID() string { return "file_write" }
+func (t *fileWriteTool) Description() string {
+	return "Write content to a file. Creates the file if it does not exist, overwrites if it does."
+}
 func (t *fileWriteTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -260,8 +264,10 @@ func (t *fileWriteTool) Execute(ctx context.Context, c Context, args map[string]
 
 type shellExecTool struct{}
 
-func (t *shellExecTool) ID() string          { return "shell_exec" }
-func (t *shellExecTool) Description() string { return "Execute a shell command. The command runs inside the sandbox root directory. Commands are limited to 30s and output is truncated to 64KB." }
+func (t *shellExecTool) ID() string { return "shell_exec" }
+func (t *shellExecTool) Description() string {
+	return "Execute a shell command. The command runs inside the sandbox root directory. Commands are limited to 30s and output is truncated to 64KB."
+}
 func (t *shellExecTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",

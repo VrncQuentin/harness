@@ -51,14 +51,14 @@ type Runtime struct {
 	reqQueue *queue.Queue
 	started  bool
 
-	memReader *memory.DirReader
-	agentReg  *agent.DiskRegistry
-	assembler *prompt.DiskAssembler
-	hotReload *prompt.HotReload
-	apiServer *api.Server
-	gitRepo   *gitw.Repo
-	sessionMu sync.RWMutex
-	sessionMg *session.Manager
+	memReader    *memory.DirReader
+	agentReg     *agent.DiskRegistry
+	assembler    *prompt.DiskAssembler
+	hotReload    *prompt.HotReload
+	apiServer    *api.Server
+	gitRepo      *gitw.Repo
+	sessionMu    sync.RWMutex
+	sessionMg    *session.Manager
 	loopRegistry *tools.Registry
 }
 
