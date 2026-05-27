@@ -6,6 +6,9 @@ import "embed"
 //go:embed icon.ico
 var IconICO []byte
 
+//go:embed icon.png
+var IconPNG []byte
+
 //go:embed templates/*.html
 var TemplateFS embed.FS
 

@@ -15,10 +15,10 @@ type TaskRunner interface {
 }
 
 var (
-	ErrTaskNoAgent     = errors.New("no agent selected — pick one on the /agents page first")
-	ErrTaskQueueFull   = errors.New("queue is full — wait for in-flight requests to finish")
-	ErrTaskCancelled   = errors.New("task cancelled")
-	ErrTaskNotReady    = errors.New("task runner not available — the harness may still be starting")
+	ErrTaskNoAgent   = errors.New("no agent selected — pick one on the /agents page first")
+	ErrTaskQueueFull = errors.New("queue is full — wait for in-flight requests to finish")
+	ErrTaskCancelled = errors.New("task cancelled")
+	ErrTaskNotReady  = errors.New("task runner not available — the harness may still be starting")
 )
 
 // SetTaskRunner installs the runner used by /task/stream. Safe to leave
@@ -105,7 +105,7 @@ func (s *Server) handleTaskStream(w http.ResponseWriter, r *http.Request) {
 
 func writeTaskSSE(w http.ResponseWriter, flusher http.Flusher, payload map[string]any) {
 	data, _ := json.Marshal(payload)
-	w.Write([]byte(string(data) + "\n\n"))
+	w.Write([]byte(string(data) + "\n\n")) //nolint:errcheck
 	if flusher != nil {
 		flusher.Flush()
 	}
@@ -115,7 +115,7 @@ func writeTaskError(w http.ResponseWriter, msg string) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	data, _ := json.Marshal(map[string]any{"data": map[string]string{"error": msg}})
-	w.Write([]byte(string(data) + "\n\n"))
+	w.Write([]byte(string(data) + "\n\n")) //nolint:errcheck
 }
 
 // taskView is the template context for the /task page.

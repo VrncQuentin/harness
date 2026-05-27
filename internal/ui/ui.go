@@ -134,8 +134,8 @@ type Server struct {
 	memStoreMu sync.RWMutex
 	memStore   MemoryStore
 
-	committerMu sync.RWMutex
-	committerData   Committer
+	committerMu   sync.RWMutex
+	committerData Committer
 
 	chatRunnerMu sync.RWMutex
 	chatRunner   ChatRunner
@@ -507,12 +507,12 @@ func (s *Server) Start(ctx context.Context) error {
 // basePage holds template fields shared by every rendered page (nav highlight
 // and footer uptime live in layout.html).
 type basePage struct {
-	Page               string
-	UptimeText         string
-	ActiveProjectSlug  string
-	ActiveProjectName  string
-	ProjectSlugs       []string
-	ProjectNames       map[string]string
+	Page              string
+	UptimeText        string
+	ActiveProjectSlug string
+	ActiveProjectName string
+	ProjectSlugs      []string
+	ProjectNames      map[string]string
 }
 
 func (s *Server) newBasePage(page string) basePage {
