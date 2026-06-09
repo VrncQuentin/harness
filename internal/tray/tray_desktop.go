@@ -4,20 +4,6 @@ package tray
 
 import "fyne.io/systray"
 
-func Run(uiURL string, onQuit func()) {
-	systray.Run(func() {
-		onReady(uiURL, onQuit)
-	}, func() {
-		if onQuit != nil {
-			onQuit()
-		}
-	})
-}
-
-func Quit() {
-	systray.Quit()
-}
-
 func onReady(uiURL string, onQuit func()) {
 	systray.SetIcon(trayIcon())
 	systray.SetTitle("Harness")

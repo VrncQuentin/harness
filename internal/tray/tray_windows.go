@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 
+	"fyne.io/systray"
 	"golang.org/x/sys/windows"
 )
 
@@ -40,4 +41,20 @@ func trayIcon() []byte { return iconICO }
 
 func OpenBrowser(url string) {
 	exec.Command("cmd", "/c", "start", url).Run() //nolint:errcheck
+}
+
+// Run starts the system tray on Windows.
+func Run(uiURL string, onQuit func()) {
+	systray.Run(func() {
+		onReady(uiURL, onQuit)
+	}, func() {
+		if onQuit != nil {
+			onQuit()
+		}
+	})
+}
+
+// Quit signals the tray to exit.
+func Quit() {
+	systray.Quit()
 }

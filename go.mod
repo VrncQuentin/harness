@@ -6,6 +6,7 @@ require (
 	fyne.io/systray v1.11.0
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-git/go-git/v5 v5.18.0
+	github.com/godbus/dbus/v5 v5.1.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	golang.org/x/sys v0.38.0
 	modernc.org/sqlite v1.34.1
@@ -21,7 +22,6 @@ require (
 	github.com/emirpasic/gods v1.18.1 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
 	github.com/go-git/go-billy/v5 v5.8.0 // indirect
-	github.com/godbus/dbus/v5 v5.1.0 // indirect
 	github.com/golang/groupcache v0.0.0-20241129210726-2c02b8208cf8 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
