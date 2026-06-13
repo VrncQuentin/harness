@@ -45,6 +45,18 @@ COMMENT    ::= '#' NOT_NEWLINE*
 
 WHITESPACE ::= ' ' | '\t' | '\n' | '\r'
              ; whitespace separates tokens and is otherwise ignored
+
+; Named STRING categories used in the grammar.
+; They all derive from STRING unless otherwise noted.
+import_path     ::= STRING
+role_name       ::= STRING
+model_name      ::= STRING
+literal_path    ::= STRING
+shell_command   ::= STRING
+surface_message ::= STRING | TEXT
+
+; Agent reference: @ followed by a declared agent name.
+agent_ref       ::= "@" agent_name
 ```
 
 Identifiers are ASCII and case-sensitive. Two identifiers that collide under
@@ -119,8 +131,6 @@ reject_action   ::= goto                           ; route rejected work
                   | "surface" [surface_message]    ; checkpoint + notify + human review
 goto            ::= step_name ["(" route_arg ("," route_arg)* ")"]
 route_arg       ::= open_agent_param "=" agent_ref ; open-agent-param = agent
-
-agent_ref ::= "@" agent_name
 ```
 
 An `agent_ref` (`@coder`) refers to a declared agent. The `@` is syntax; the
