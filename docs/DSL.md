@@ -126,7 +126,7 @@ cmd_substitution  ::= "$" IDENT
 In `text_substitution`:
 
 - `{IDENT}` refers to a declared non-agent data binding visible in the step
-  (pipeline param, step param, or child export).
+  (pipeline param or step param).
 - `{last_verify.cmd}` and `{last_verify.output}` refer to the failing verify
   command and its output tail.
 - `$IDENT` refers to a declared output of the current step and expands to its
