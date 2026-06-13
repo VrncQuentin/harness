@@ -21,8 +21,10 @@ import          ::= "from" STRING "use" IDENT ("," IDENT)*
                     ; path relative to project root, must end in .hp
                     ; import graph must be acyclic (load-time check)
 
-type            ::= "text"
+data_type       ::= "text"
                   | "json"
+
+param_type      ::= data_type
                   | "agent"
 
 pipeline        ::= "pipeline" IDENT "(" [pipeline_params] ")"
@@ -30,7 +32,7 @@ pipeline        ::= "pipeline" IDENT "(" [pipeline_params] ")"
                     "{" agent* step+ "}"
 
 pipeline_params ::= pipeline_param ("," pipeline_param)*
-pipeline_param  ::= IDENT ":" type
+pipeline_param  ::= IDENT ":" param_type
 export          ::= IDENT "=" IDENT "." IDENT      ; alias = step.output
 
 agent           ::= "agent" IDENT "{"
@@ -40,7 +42,7 @@ agent           ::= "agent" IDENT "{"
 
 step            ::= "step" IDENT "(" [step_params] ")"
                     ["->" output ("," output)*]
-                    "{" body route+ "}"
+                    "{" body routes "}"
 
 step_params     ::= step_param ("," step_param)*
 step_param      ::= binding                        ; bound param
@@ -49,19 +51,21 @@ binding         ::= IDENT "=" source ["?"]         ; ? = empty-if-absent
 source          ::= IDENT "." IDENT                ; step.output (same pipeline)
                   | IDENT                          ; pipeline param or agent name
                   | STRING                         ; literal path, read-only
-output          ::= IDENT ":" type                 ; agent is not a valid output type
+output          ::= IDENT ":" data_type
 
-body            ::= field*                         ; model step
-                  | "runs" IDENT "(" [run_args] ")" ; sub-pipeline step
+body            ::= model_body
+                  | runs_body
+model_body      ::= "prompt" TEXT verify* gate* [retry]
+runs_body       ::= "runs" IDENT "(" [run_args] ")" ; sub-pipeline step
 run_args        ::= binding ("," binding)*         ; bound from pipeline scope
 
-field           ::= "prompt" TEXT                  ; triple-quoted, interpolates {param}
-                  | "verify" STRING                ; repeatable; sequential, fail-fast
-                  | "gate" STRING                  ; repeatable; verdict checks after verify
-                  | "retry" INT TEXT               ; repair turns: count + follow-up prompt
+verify          ::= "verify" STRING                ; repeatable; sequential, fail-fast
+gate            ::= "gate" STRING                  ; repeatable; verdict checks after verify
+retry           ::= "retry" POS_INT TEXT           ; repair turns: count + follow-up prompt
 
-route           ::= "ok" "->" ok_action
-                  | "reject" ["(" INT ")"] "->" reject_action
+routes          ::= ok_route reject_route*
+ok_route        ::= "ok" "->" ok_action
+reject_route    ::= "reject" ["(" POS_INT ")"] "->" reject_action
 ok_action       ::= goto                           ; continue the pipeline
                   | "done"                         ; terminate pipeline, ok
 reject_action   ::= goto                           ; route rejected work
@@ -72,12 +76,18 @@ reject_action   ::= goto                           ; route rejected work
                   | "surface" [STRING]             ; checkpoint + notify + human review
 goto            ::= IDENT ["(" route_arg ("," route_arg)* ")"]
 route_arg       ::= IDENT "=" IDENT                ; open-agent-param = agent name
+POS_INT         ::= nonzero decimal integer
 ```
 
 A model step's signature declares exactly one agent param, in first position,
 either bound (`dev = coder`) or open (`dev: agent`). A `runs` step's
 signature declares open agent params only (usually none); its data flows are
 bound directly in the runs args from pipeline scope.
+
+A model step body has exactly one `prompt`, followed by zero or more `verify`
+commands, zero or more `gate` commands, and at most one `retry`. `retry` counts
+must be positive. A step has exactly one `ok` route. It may have at most one
+bare `reject` route and at most one `reject(N)` route per threshold.
 
 Reserved words (illegal as pipeline, step, agent, or binding names):
 `from`, `use`, `pipeline`, `agent`, `step`, `runs`, `prompt`, `verify`,
@@ -217,22 +227,36 @@ policy decision, not the route's.
 
 ### Types and bindings
 
-Every pipeline param and step output declares a type: `text`, `json`, or
-`agent` (params only; `agent` is not a valid output type). `json` outputs
-are validated by parsing before the verify chain runs, as an implicit verify
-step zero. There is no schema resolver in the DSL. Bindings are type-checked
-at load: binding a data source to an agent param, or an agent to a data
-param, is an error.
+Every pipeline param declares `text`, `json`, or `agent`. Every step output
+declares `text` or `json`; `agent` is not a valid output type. `json` values
+are validated by parsing whenever they enter a step: pipeline args, literal
+sources, parent outputs, child exports, and step outputs all must parse before
+the receiving step runs. There is no schema resolver in the DSL.
 
-A binding to a step that has not yet executed in this run is an error unless
-the binding is explicitly marked optional with `?`. Optional absent bindings
-resolve to the empty string, regardless of declared type. Cyclic data
-references across a route loop must make their first-pass optionality
-visible in the signature.
+Bindings are type-checked at load: binding a data source to an agent param, or
+an agent to a data param, is an error. A binding to a step that has not yet
+executed in this run is an error unless the binding is explicitly marked
+optional with `?`. Optional absent bindings resolve by target type: `text` gets
+the empty string; `json` gets `null`. Cyclic data references across a route loop
+must make their first-pass optionality visible in the signature.
 
-`{param}` in a prompt interpolates file contents. `$name` in a verify or
-gate command is the file path of one of the step's own outputs. A prompt or
-retry text referencing an undeclared binding is a load-time error.
+`{param}` in a prompt or retry text interpolates data params only. Interpolating
+an `agent` param is a load-time error. `text` params interpolate their file
+contents; `json` params interpolate their validated JSON text. `$name` in a
+verify or gate command is the file path of one of the step's own outputs. A
+prompt or retry text referencing an undeclared binding is a load-time error.
+
+### Namespaces
+
+Names cannot shadow other visible names. Within one file, imported pipeline
+aliases and local pipeline names must be unique. Within one pipeline, pipeline
+params, agents, steps, and exports share one source-resolvable namespace and
+must not collide. Within one step, step params and outputs share one namespace
+and must not collide with each other or with visible pipeline-level names.
+
+The practical rule is: if an unqualified `IDENT` could resolve to two things at
+`file.pipeline(.step.$x)` scope, the spec is rejected at load. Case-insensitive
+collisions are also rejected for Windows portability.
 
 ### Outputs
 
@@ -294,14 +318,20 @@ human review point: agent `as` must match exactly one agents.md heading
 (zero or two-plus matches is an error, never a fuzzy pick); every `uses`
 model must be registered; every route target must be a real step or reserved
 action; every binding source must exist and type-check; every prompt or
-retry-text placeholder must be a declared binding or builtin; import and
-call graphs must be acyclic; a model step's agent param must be first and
-unique; a runs step's signature may contain open agent params only; every
-route targeting a step with an open agent param must bind it with a known
-agent; a runs step must bind every param of the child pipeline; a required
-binding to a step output that may be absent on the first pass is an error
-unless marked optional with `?`; `reject` routes require at least one `gate`
-in the step or a `runs` child that can return `reject`.
+retry-text placeholder must be a declared non-agent binding or builtin; import
+and call graphs must be acyclic; no visible name may shadow another visible
+name; a model step's agent param must be first and unique; a model step must
+have exactly one prompt and at most one retry; retry counts and reject route
+thresholds must be positive; a step must have exactly one ok route; a step may
+have at most one bare reject route and at most one reject route per threshold;
+a runs step's signature may contain open agent params only; route args must
+exactly match the target step's open agent params, with no missing, extra, or
+duplicate args; every route arg value must be a known agent; a runs step must
+bind every param of the child pipeline and may not bind extras or duplicates;
+a required binding to a step output that may be absent on the first pass is an
+error unless marked optional with `?`; `json` literal sources that exist at
+load must parse as JSON; `reject` routes require at least one `gate` in the
+step or a `runs` child that can return `reject`.
 
 ### Artifacts and run state
 
@@ -452,13 +482,13 @@ pipeline full_feature(plan: text) {
   # Agentic coding step: no retry on purpose. The agent iterates
   # against the compiler itself; a harness verify failure here is
   # anomalous and should surface immediately.
-  step build(dev = coder, plan = plan) -> diff: text {
+  step build(dev = coder, item = plan) -> diff: text {
     prompt """
       Implement the item below on a feature branch. Work
       incrementally and commit as you go. Do not consider
       yourself finished until build, vet, and tests pass.
 
-      <plan>{plan}</plan>
+      <plan>{item}</plan>
     """
     verify "go build ./..."
     verify "go vet ./..."
@@ -566,7 +596,7 @@ a spec cannot compute. Deliberate.
 
 ### Steps declare their data contract in the signature
 
-`step build(dev = coder, plan = plan) -> diff: text` states the agent, the
+`step build(dev = coder, item = plan) -> diff: text` states the agent, the
 coupling, and the shape before you read the body. A step can only consume
 what it declares; a prompt referencing an undeclared binding is a load-time
 error. This kills the "prompt silently expands to nothing" bug class at
@@ -701,10 +731,6 @@ intermediate format. The grammar in this document is the source of truth.
 ---
 
 ## Potential Improvements
-
-**Shorthand for identity bindings.** `step build(plan = plan)` stutters;
-`step build(plan)` as sugar for `x = x` would remove the noise. Cheap, pure
-taste, and the first sugar in the language -- decide deliberately.
 
 **Route guards.** Conditional routes (`ok [files > 12] -> review`) existed
 in earlier drafts and were cut as dead code: no example ever used one.
