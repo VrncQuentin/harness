@@ -17,24 +17,17 @@ literal. A `#` inside a quoted string or a triple-quoted prompt is literal.
 ```ebnf
 IDENT      ::= [A-Za-z_][A-Za-z0-9_]{0,63}
 
+; Named identifier categories used in the grammar.
+; They all derive from IDENT and share the same lexical rules.
+pipeline_name     ::= IDENT
+step_name         ::= IDENT
+agent_name        ::= IDENT
+param_name        ::= IDENT
+output_name       ::= IDENT
+export_alias      ::= IDENT
+open_agent_param  ::= IDENT
+
 POS_INT    ::= [1-9][0-9]*
-
-STRING     ::= '"' STRING_CHAR* '"'
-STRING_CHAR::= UNESCAPED | ESCAPE
-UNESCAPED  ::= any Unicode scalar except '"', '\', control characters, and line breaks
-ESCAPE     ::= '\\' | '\"' | '\n' | '\t' | '\r' | '\$' | '\{'
-
-TEXT       ::= '"""' TEXT_BODY '"""'
-TEXT_BODY  ::= any Unicode scalar, with the following escapes recognized:
-               '\\' | '\"' | '\$' | '\{'
-               ; the unescaped sequence """ terminates the literal
-
-COMMENT    ::= '#' NOT_NEWLINE*
-             ; a comment runs to end of line and is ignored;
-             ; '#' inside a STRING or TEXT literal is literal
-
-WHITESPACE ::= ' ' | '\t' | '\n' | '\r'
-             ; whitespace separates tokens and is otherwise ignored
 ```
 
 Identifiers are ASCII and case-sensitive. Two identifiers that collide under
