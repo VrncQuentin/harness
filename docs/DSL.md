@@ -4,11 +4,43 @@ A declarative language for defining agent pipelines in the Harness. One
 pipeline spec describes one unit of work: the agents involved, the steps
 executed, how data flows between them, and what happens when things go wrong.
 
-File extension: `.hp` (harness pipeline). Encoding: ASCII. The harness sanitizer hard-fails on
-bidi override and zero-width characters, and warns on any non-ASCII content.
+File extension: `.hp` (harness pipeline). Source files are UTF-8. The harness sanitizer hard-fails on
+bidi override and zero-width characters.
 
-Comments run from `#` to end of line, anywhere outside a STRING or TEXT
+Comments run from `#` to end of line, anywhere outside a `STRING` or `TEXT`
 literal. A `#` inside a quoted string or a triple-quoted prompt is literal.
+
+---
+
+## Lexical
+
+```ebnf
+IDENT      ::= [A-Za-z_][A-Za-z0-9_]{0,63}
+
+POS_INT    ::= [1-9][0-9]*
+
+STRING     ::= '"' STRING_CHAR* '"'
+STRING_CHAR::= UNESCAPED | ESCAPE
+UNESCAPED  ::= any Unicode scalar except '"', '\', control characters, and line breaks
+ESCAPE     ::= '\\' | '\"' | '\n' | '\t' | '\r' | '\$' | '\{'
+
+TEXT       ::= '"""' TEXT_BODY '"""'
+TEXT_BODY  ::= any Unicode scalar, with the following escapes recognized:
+               '\\' | '\"' | '\$' | '\{'
+               ; the unescaped sequence """ terminates the literal
+
+COMMENT    ::= '#' NOT_NEWLINE*
+             ; a comment runs to end of line and is ignored;
+             ; '#' inside a STRING or TEXT literal is literal
+
+WHITESPACE ::= ' ' | '\t' | '\n' | '\r'
+             ; whitespace separates tokens and is otherwise ignored
+```
+
+Identifiers are ASCII and case-sensitive. Two identifiers that collide under
+Windows case-insensitive comparison are rejected within the same namespace.
+Identifiers are never used directly as filesystem path components; artifact
+paths use harness-controlled encoding.
 
 ---
 
@@ -17,7 +49,7 @@ literal. A `#` inside a quoted string or a triple-quoted prompt is literal.
 ```ebnf
 file            ::= import* pipeline+
 
-import          ::= "from" STRING "use" IDENT ("," IDENT)*
+import          ::= "from" import_path "use" IDENT ("," IDENT)*
                     ; path relative to project root, must end in .hp
                     ; import graph must be acyclic (load-time check)
 
@@ -36,8 +68,8 @@ pipeline_param  ::= IDENT ":" param_type
 export          ::= IDENT "=" IDENT "." IDENT      ; alias = step.output
 
 agent           ::= "agent" IDENT "{"
-                    "as" STRING                    ; exact match against agents.md
-                    "uses" STRING                  ; must be in model registry
+                    "as" role_name                 ; exact match against agents.md
+                    "uses" model_name              ; must be in model registry
                     "}"
 
 step            ::= "step" IDENT "(" [step_params] ")"
@@ -50,7 +82,7 @@ step_param      ::= binding                        ; bound param
 binding         ::= IDENT "=" source ["?"]         ; ? = empty-if-absent
 source          ::= IDENT "." IDENT                ; step.output (same pipeline)
                   | IDENT                          ; pipeline param or agent name
-                  | STRING                         ; literal path, read-only
+                  | literal_path                   ; literal path, read-only
 output          ::= IDENT ":" data_type
 
 body            ::= model_body
@@ -59,8 +91,8 @@ model_body      ::= "prompt" TEXT verify* gate* [retry]
 runs_body       ::= "runs" IDENT "(" [run_args] ")" ; sub-pipeline step
 run_args        ::= binding ("," binding)*         ; bound from pipeline scope
 
-verify          ::= "verify" STRING                ; repeatable; sequential, fail-fast
-gate            ::= "gate" STRING                  ; repeatable; verdict checks after verify
+verify          ::= "verify" shell_command         ; repeatable; sequential, fail-fast
+gate            ::= "gate" shell_command            ; repeatable; verdict checks after verify
 retry           ::= "retry" POS_INT TEXT           ; repair turns: count + follow-up prompt
 
 routes          ::= ok_route reject_route*
@@ -73,11 +105,40 @@ reject_action   ::= goto                           ; route rejected work
                                                    ; "reject -> reject" is the propagation
                                                    ; idiom: hand the verdict to the caller
                                                    ; (or runner), like Go's "return err"
-                  | "surface" [STRING]             ; checkpoint + notify + human review
+                  | "surface" [surface_message]    ; checkpoint + notify + human review
 goto            ::= IDENT ["(" route_arg ("," route_arg)* ")"]
 route_arg       ::= IDENT "=" IDENT                ; open-agent-param = agent name
-POS_INT         ::= nonzero decimal integer
 ```
+
+### Interpolation
+
+`TEXT` literals in `prompt` and `retry` bodies, and `shell_command` literals in
+`verify` and `gate`, may contain substitutions:
+
+```ebnf
+text_substitution ::= "{" IDENT "}"
+                    | "{" "last_verify" "." ("cmd" | "output") "}"
+                    | "$" IDENT
+
+cmd_substitution  ::= "$" IDENT
+```
+
+In `text_substitution`:
+
+- `{IDENT}` refers to a declared non-agent data binding visible in the step
+  (pipeline param or step param).
+- `{last_verify.cmd}` and `{last_verify.output}` refer to the failing verify
+  command and its output tail.
+- `$IDENT` refers to a declared output of the current step and expands to its
+  writable artifact path.
+
+In `cmd_substitution`:
+
+- `$IDENT` refers to a declared output of the current step and expands to its
+  artifact file path.
+
+Substitutions referring to undeclared names, or interpolating an `agent` param,
+are load-time errors.
 
 A model step's signature declares exactly one agent param, in first position,
 either bound (`dev = coder`) or open (`dev: agent`). A `runs` step's
@@ -93,16 +154,6 @@ Reserved words (illegal as pipeline, step, agent, or binding names):
 `from`, `use`, `pipeline`, `agent`, `step`, `runs`, `prompt`, `verify`,
 `gate`, `retry`, `as`, `uses`, `ok`, `reject`, `done`, `surface`, `text`,
 `json`, plus `pause`, `escalates`, and `to` (reserved for future versions).
-
-Identifiers are ASCII and case-sensitive:
-
-```ebnf
-IDENT ::= [A-Za-z_][A-Za-z0-9_]{0,63}
-```
-
-Two identifiers that collide under Windows case-insensitive comparison are
-rejected within the same namespace. Identifiers are never used directly as
-filesystem path components; artifact paths use harness-controlled encoding.
 
 ---
 
