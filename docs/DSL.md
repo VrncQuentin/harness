@@ -17,6 +17,16 @@ literal. A `#` inside a quoted string or a triple-quoted prompt is literal.
 ```ebnf
 IDENT      ::= [A-Za-z_][A-Za-z0-9_]{0,63}
 
+; Named identifier categories used in the grammar.
+; They all derive from IDENT and share the same lexical rules.
+pipeline_name     ::= IDENT
+step_name         ::= IDENT
+agent_name        ::= IDENT
+param_name        ::= IDENT
+output_name       ::= IDENT
+export_alias      ::= IDENT
+open_agent_param  ::= IDENT
+
 POS_INT    ::= [1-9][0-9]*
 
 STRING     ::= '"' STRING_CHAR* '"'
@@ -35,6 +45,18 @@ COMMENT    ::= '#' NOT_NEWLINE*
 
 WHITESPACE ::= ' ' | '\t' | '\n' | '\r'
              ; whitespace separates tokens and is otherwise ignored
+
+; Named STRING categories used in the grammar.
+; They all derive from STRING unless otherwise noted.
+import_path     ::= STRING
+role_name       ::= STRING
+model_name      ::= STRING
+literal_path    ::= STRING
+shell_command   ::= STRING
+surface_message ::= STRING | TEXT
+
+; Agent reference: @ followed by a declared agent name.
+agent_ref       ::= "@" agent_name
 ```
 
 Identifiers are ASCII and case-sensitive. Two identifiers that collide under
@@ -49,7 +71,7 @@ paths use harness-controlled encoding.
 ```ebnf
 file            ::= import* pipeline+
 
-import          ::= "from" import_path "use" IDENT ("," IDENT)*
+import          ::= "from" import_path "use" pipeline_name ("," pipeline_name)*
                     ; path relative to project root, must end in .hp
                     ; import graph must be acyclic (load-time check)
 
@@ -59,40 +81,41 @@ data_type       ::= "text"
 param_type      ::= data_type
                   | "agent"
 
-pipeline        ::= "pipeline" IDENT "(" [pipeline_params] ")"
+pipeline        ::= "pipeline" pipeline_name "(" [pipeline_params] ")"
                     ["->" export ("," export)*]
                     "{" agent* step+ "}"
 
 pipeline_params ::= pipeline_param ("," pipeline_param)*
-pipeline_param  ::= IDENT ":" param_type
-export          ::= IDENT "=" IDENT "." IDENT      ; alias = step.output
+pipeline_param  ::= param_name ":" param_type
+export          ::= export_alias "=" step_name "." output_name
 
-agent           ::= "agent" IDENT "{"
+agent           ::= "agent" agent_name "{"
                     "as" role_name                 ; exact match against agents.md
                     "uses" model_name              ; must be in model registry
                     "}"
 
-step            ::= "step" IDENT "(" [step_params] ")"
+step            ::= "step" step_name "(" [step_params] ")"
                     ["->" output ("," output)*]
                     "{" body routes "}"
 
 step_params     ::= step_param ("," step_param)*
 step_param      ::= binding                        ; bound param
-                  | IDENT ":" "agent"              ; open agent param, route-supplied
-binding         ::= IDENT "=" source ["?"]         ; ? = empty-if-absent
-source          ::= IDENT "." IDENT                ; step.output (same pipeline)
-                  | IDENT                          ; pipeline param or agent name
+                  | open_agent_param ":" "agent"  ; open agent param, route-supplied
+binding         ::= param_name "=" source ["?"]    ; ? = empty-if-absent
+source          ::= step_name "." output_name      ; step.output (same pipeline)
+                  | param_name                     ; pipeline param or step param
+                  | agent_ref                      ; agent name
                   | literal_path                   ; literal path, read-only
-output          ::= IDENT ":" data_type
+output          ::= output_name ":" data_type
 
 body            ::= model_body
                   | runs_body
 model_body      ::= "prompt" TEXT verify* gate* [retry]
-runs_body       ::= "runs" IDENT "(" [run_args] ")" ; sub-pipeline step
+runs_body       ::= "runs" pipeline_name "(" [run_args] ")" ; sub-pipeline step
 run_args        ::= binding ("," binding)*         ; bound from pipeline scope
 
 verify          ::= "verify" shell_command         ; repeatable; sequential, fail-fast
-gate            ::= "gate" shell_command            ; repeatable; verdict checks after verify
+gate            ::= "gate" shell_command           ; repeatable; verdict checks after verify
 retry           ::= "retry" POS_INT TEXT           ; repair turns: count + follow-up prompt
 
 routes          ::= ok_route reject_route*
@@ -106,9 +129,12 @@ reject_action   ::= goto                           ; route rejected work
                                                    ; idiom: hand the verdict to the caller
                                                    ; (or runner), like Go's "return err"
                   | "surface" [surface_message]    ; checkpoint + notify + human review
-goto            ::= IDENT ["(" route_arg ("," route_arg)* ")"]
-route_arg       ::= IDENT "=" IDENT                ; open-agent-param = agent name
+goto            ::= step_name ["(" route_arg ("," route_arg)* ")"]
+route_arg       ::= open_agent_param "=" agent_ref ; open-agent-param = agent
 ```
+
+An `agent_ref` (`@coder`) refers to a declared agent. The `@` is syntax; the
+agent's declared name is the bare `agent_name` (`coder`).
 
 ### Interpolation
 
@@ -141,7 +167,7 @@ Substitutions referring to undeclared names, or interpolating an `agent` param,
 are load-time errors.
 
 A model step's signature declares exactly one agent param, in first position,
-either bound (`dev = coder`) or open (`dev: agent`). A `runs` step's
+either bound (`dev = @coder`) or open (`dev: agent`). A `runs` step's
 signature declares open agent params only (usually none); its data flows are
 bound directly in the runs args from pipeline scope.
 
@@ -172,7 +198,7 @@ routing (see "Open agent params").
 A model step has exactly one agent param, and it must be the first param.
 It takes one of two forms:
 
-- bound: `step build(dev = coder, ...)` -- the agent is fixed at declaration.
+- bound: `step build(dev = @coder, ...)` -- the agent is fixed at declaration.
   Binding to a pipeline-level agent param (`rev = reviewer`) also counts as
   bound: the agent is fixed for the whole run once the caller supplies it.
 - open: `step refactor(dev: agent, ...)` -- the agent is supplied by every
@@ -189,8 +215,8 @@ Every route targeting a step with an open agent param must bind it, fully
 statically:
 
 ```
-reject(2) -> refactor(dev = coder_xl)
-reject    -> refactor(dev = coder)
+reject(2) -> refactor(dev = @coder_xl)
+reject    -> refactor(dev = @coder)
 ```
 
 This is the escalation mechanism of this version: the step that judges decides,
@@ -199,7 +225,7 @@ readable at the human review point. Route args bind open agent params only;
 data does not travel through routes.
 
 Reject counters and cycle counters belong to the step, not the agent:
-`refactor(dev = coder)` and `refactor(dev = coder_xl)` are the same step
+`refactor(dev = @coder)` and `refactor(dev = @coder_xl)` are the same step
 trying harder, sharing one history.
 
 ### Attempts, retry, and malfunction
@@ -533,7 +559,7 @@ pipeline full_feature(plan: text) {
   # Agentic coding step: no retry on purpose. The agent iterates
   # against the compiler itself; a harness verify failure here is
   # anomalous and should surface immediately.
-  step build(dev = coder, item = plan) -> diff: text {
+  step build(dev = @coder, item = plan) -> diff: text {
     prompt """
       Implement the item below on a feature branch. Work
       incrementally and commit as you go. Do not consider
@@ -547,7 +573,7 @@ pipeline full_feature(plan: text) {
     ok -> review
   }
 
-  step review(rev = critic, changes = build.diff, reworked = refactor.diff?)
+  step review(rev = @critic, changes = build.diff, reworked = refactor.diff?)
       -> critiques: json {
     prompt """
       Review the changes below for correctness and design.
@@ -576,8 +602,8 @@ pipeline full_feature(plan: text) {
     """
     ok        -> harden
     reject(3) -> surface "review keeps finding blockers"
-    reject(2) -> refactor(dev = coder_xl)   # two strikes: stronger model
-    reject    -> refactor(dev = coder)
+    reject(2) -> refactor(dev = @coder_xl)   # two strikes: stronger model
+    reject    -> refactor(dev = @coder)
   }
 
   step refactor(dev: agent, findings = review.critiques) -> diff: text {
@@ -593,15 +619,15 @@ pipeline full_feature(plan: text) {
   }
 
   step harden() {
-    runs security_pass(reviewer = critic,
+    runs security_pass(reviewer = @critic,
                        input = build.diff,
                        rework = refactor.diff?)
     ok        -> cleanup
     reject(2) -> surface "security pass keeps finding blockers"
-    reject    -> refactor(dev = coder_xl)   # security blockers skip the cheap model
+    reject    -> refactor(dev = @coder_xl)   # security blockers skip the cheap model
   }
 
-  step cleanup(dev = coder) {
+  step cleanup(dev = @coder) {
     prompt """
       The work on this branch is complete and reviewed. Create
       the PR, and once it is approved and merged, return to
@@ -647,7 +673,7 @@ a spec cannot compute. Deliberate.
 
 ### Steps declare their data contract in the signature
 
-`step build(dev = coder, item = plan) -> diff: text` states the agent, the
+`step build(dev = @coder, item = plan) -> diff: text` states the agent, the
 coupling, and the shape before you read the body. A step can only consume
 what it declares; a prompt referencing an undeclared binding is a load-time
 error. This kills the "prompt silently expands to nothing" bug class at
@@ -666,7 +692,7 @@ flows; each is individually simpler and individually routable.
 ### Escalation is routing, not a ladder
 
 One agent, one model. A step that judges decides in its own routes which
-agent handles each level of trouble: `reject(2) -> refactor(dev = coder_xl)`.
+agent handles each level of trouble: `reject(2) -> refactor(dev = @coder_xl)`.
 The policy is readable at the human review point, which a per-agent ladder
 never was. Model ladders may return in a future version for malfunction
 handling; verdict-driven escalation stays in routes regardless.
@@ -747,7 +773,7 @@ previous cycles, reject counts, the supplied agent for open agent params,
 and next matched route. Route logs explain each transition, for example:
 
 ```
-review reject count=1 matched reject -> refactor(dev = coder)
+review reject count=1 matched reject -> refactor(dev = @coder)
 ```
 
 Each run has an artifact browser organized by step cycle. It shows the
