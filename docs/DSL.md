@@ -81,11 +81,9 @@ paths use harness-controlled encoding.
 ```ebnf
 file            ::= import* (pipeline | lib)+
 
-import          ::= "from" import_path "use" callable_name ("," callable_name)*
+import          ::= "from" import_path "use" lib_name ("," lib_name)*
                     ; path relative to project root, must end in .hp
                     ; import graph must be acyclic (load-time check)
-
-callable_name   ::= pipeline_name | lib_name
 
 data_type       ::= "text"
                   | "json"
@@ -96,11 +94,12 @@ param_type      ::= data_type
 pipeline        ::= "pipeline" pipeline_name "(" [pipeline_params] ")"
                     ["->" export ("," export)*]
                     "{" agent* step+ "}"
+                    ; runner entry point; declares agents; no agent params
 
 lib             ::= "lib" lib_name "(" [pipeline_params] ")"
                     ["->" export ("," export)*]
-                    "{" agent* step+ "}"
-                    ; reusable callable; may declare agent params
+                    "{" step+ "}"
+                    ; reusable callable; agents arrive only through params
 
 pipeline_params ::= pipeline_param ("," pipeline_param)*
 pipeline_param  ::= param_name ":" param_type
@@ -128,7 +127,7 @@ output          ::= output_name ":" data_type
 body            ::= model_body
                   | runs_body
 model_body      ::= "prompt" TEXT verify* gate* [retry]
-runs_body       ::= "runs" callable_name "(" [run_args] ")" ; sub-pipeline/lib step
+runs_body       ::= "runs" lib_name "(" [run_args] ")" ; invoke a lib
 run_args        ::= binding ("," binding)*         ; bound from callable scope
 
 verify          ::= "verify" shell_command         ; repeatable; sequential, fail-fast
@@ -336,11 +335,12 @@ policy decision, not the route's.
 
 ### Types and bindings
 
-Every callable param declares `text`, `json`, or `agent`. Every step output
-declares `text` or `json`; `agent` is not a valid output type. `json` values
-are validated by parsing whenever they enter a step: callable args, literal
-sources, parent outputs, child exports, and step outputs all must parse before
-the receiving step runs. There is no schema resolver in the DSL.
+`pipeline` params declare `text` or `json` only. `lib` params may declare
+`text`, `json`, or `agent`. Every step output declares `text` or `json`;
+`agent` is not a valid output type. `json` values are validated by parsing
+whenever they enter a step: callable args, literal sources, parent outputs,
+child exports, and step outputs all must parse before the receiving step runs.
+There is no schema resolver in the DSL.
 
 Bindings are type-checked at load: binding a data source to an agent param, or
 an agent to a data param, is an error. A binding to a step that has not yet
@@ -365,11 +365,12 @@ notification layer unchanged.
 
 ### Namespaces
 
-Names cannot shadow other visible names. Within one file, imported callable
-aliases and local callable names must be unique. Within one callable, params,
-agents, steps, and exports share one source-resolvable namespace and must not
-collide. Within one step, step params and outputs share one namespace and must
-not collide with each other or with visible callable-level names.
+Names cannot shadow other visible names. Within one file, imported lib
+aliases and local pipeline/lib names must be unique. Within one callable,
+params, agents (pipelines only), steps, and exports share one source-resolvable
+namespace and must not collide. Within one step, step params and outputs share
+one namespace and must not collide with each other or with visible
+callable-level names.
 
 The practical rule is: if an unqualified `IDENT` could resolve to two things at
 `file.pipeline(.step.$x)` scope, the spec is rejected at load. Case-insensitive
@@ -395,11 +396,11 @@ the run audit trail.
 
 ### Sub-pipelines
 
-`runs child(bindings)` invokes an imported or sibling callable (`pipeline` or
-`lib`) as a step. Runs args bind directly from callable scope -- step outputs,
-params, agent refs, literals -- so each data flow is stated exactly once. The
-runs step's own signature declares open agent params only, for the case where
-routes choose which agent the child receives.
+`runs child(bindings)` invokes an imported or sibling `lib` as a step. Runs
+args bind directly from the calling callable's scope -- step outputs, params,
+agent refs, literals -- so each data flow is stated exactly once. The runs
+step's own signature declares open agent params only, for the case where routes
+choose which agent the child receives.
 
 The caller sees only the child's exports: `harden.report` works because the
 child exports `report`; the parent never learns the child's step names, and
@@ -411,10 +412,12 @@ child -- `surface` does not map to a caller outcome, it propagates straight to
 the human regardless of nesting depth. The callable call graph must be acyclic
 (load-time check).
 
-A `pipeline` may not declare `agent` params. Only `lib` callables may declare
-agent params, and a `lib` cannot be a runner entry point: the runner binds data,
-not agents. Only calling callables supply agents. This is validated at dispatch,
-when the human approves the roadmap.
+A `pipeline` is a runner entry point: it declares agents and may call `lib`
+callables, but it cannot declare `agent` params. A `lib` is reusable logic that
+may declare `agent` params, but it cannot declare agents of its own and cannot
+be a runner entry point. The runner binds data, not agents; only calling
+callables supply agents. This is validated at dispatch, when the human approves
+the roadmap.
 
 ### Path resolution
 
@@ -448,7 +451,7 @@ human review point.
 - A `runs` step's step params declare open agent params only.
 - Route args exactly match the target step's open agent params, with no
   missing, extra, or duplicate args.
-- A `runs` step binds every param of the child callable and binds no extras or
+- A `runs` step binds every param of the child lib and binds no extras or
   duplicates.
 
 **Semantic checks:**
@@ -457,6 +460,8 @@ human review point.
   is an error; never a fuzzy pick).
 - Every `uses` model is registered.
 - `pipeline` callables do not declare `agent` params; only `lib` callables may.
+- `lib` callables do not declare agents; agents arrive only through params.
+- `runs` may only invoke `lib` callables, not `pipeline` callables.
 - Every route target is a real step or reserved action.
 - Every binding source exists and type-checks.
 - Every prompt or retry-text placeholder is a declared non-agent binding or
