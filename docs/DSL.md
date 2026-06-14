@@ -8,7 +8,7 @@ File extension: `.hp` (harness pipeline). Source files are UTF-8. The harness sa
 bidi override and zero-width characters.
 
 Comments run from `#` to end of line, anywhere outside a `STRING` or `TEXT`
-literal. A `#` inside a quoted string or a triple-quoted prompt is literal.
+literal. A `#` inside a quoted string or a triple-backtick-quoted prompt is literal.
 
 ---
 
@@ -20,6 +20,7 @@ IDENT      ::= [A-Za-z_][A-Za-z0-9_]{0,63}
 ; Named identifier categories used in the grammar.
 ; They all derive from IDENT and share the same lexical rules.
 pipeline_name     ::= IDENT
+lib_name          ::= IDENT
 step_name         ::= IDENT
 agent_name        ::= IDENT
 param_name        ::= IDENT
@@ -29,30 +30,39 @@ open_agent_param  ::= IDENT
 
 POS_INT    ::= [1-9][0-9]*
 
+; Plain STRING: used for names, paths, and messages.
+; Escapes are limited to quote, backslash, and common whitespace chars.
 STRING     ::= '"' STRING_CHAR* '"'
 STRING_CHAR::= UNESCAPED | ESCAPE
 UNESCAPED  ::= any Unicode scalar except '"', '\', control characters, and line breaks
-ESCAPE     ::= '\\' | '\"' | '\n' | '\t' | '\r' | '\$' | '\{'
+ESCAPE     ::= '\\' | '\"' | '\n' | '\t' | '\r'
 
-TEXT       ::= '"""' TEXT_BODY '"""'
-TEXT_BODY  ::= any Unicode scalar, with the following escapes recognized:
-               '\\' | '\"' | '\$' | '\{'
-               ; the unescaped sequence """ terminates the literal
+; SHELL_COMMAND: used for verify/gate commands.
+; In addition to STRING escapes, it allows escaping $ and { so commands can
+; contain literal interpolation markers.
+SHELL_COMMAND     ::= '"' SHELL_CHAR* '"'
+SHELL_CHAR        ::= SHELL_UNESCAPED | SHELL_ESCAPE
+SHELL_UNESCAPED   ::= any Unicode scalar except '"', '\', control characters, and line breaks
+SHELL_ESCAPE      ::= '\\' | '\"' | '\n' | '\t' | '\r' | '\$' | '\{'
+
+; TEXT: used for prompts and retry text. Delimited by triple backticks.
+TEXT       ::= '```' TEXT_CHAR* '```'
+TEXT_CHAR  ::= TEXT_UNESCAPED | TEXT_ESCAPE
+TEXT_UNESCAPED ::= any Unicode scalar except '`'
+TEXT_ESCAPE    ::= '\\' | '\`' | '\$' | '\{'
 
 COMMENT    ::= '#' NOT_NEWLINE*
-             ; a comment runs to end of line and is ignored;
-             ; '#' inside a STRING or TEXT literal is literal
+NOT_NEWLINE       ::= any Unicode scalar except '\n' and '\r'
 
 WHITESPACE ::= ' ' | '\t' | '\n' | '\r'
              ; whitespace separates tokens and is otherwise ignored
 
-; Named STRING categories used in the grammar.
-; They all derive from STRING unless otherwise noted.
+; Named STRING/TEXT categories used in the grammar.
 import_path     ::= STRING
 role_name       ::= STRING
 model_name      ::= STRING
 literal_path    ::= STRING
-shell_command   ::= STRING
+shell_command   ::= SHELL_COMMAND
 surface_message ::= STRING | TEXT
 
 ; Agent reference: @ followed by a declared agent name.
@@ -69,9 +79,9 @@ paths use harness-controlled encoding.
 ## Grammar
 
 ```ebnf
-file            ::= import* pipeline+
+file            ::= import* (pipeline | lib)+
 
-import          ::= "from" import_path "use" pipeline_name ("," pipeline_name)*
+import          ::= "from" import_path "use" lib_name ("," lib_name)*
                     ; path relative to project root, must end in .hp
                     ; import graph must be acyclic (load-time check)
 
@@ -84,15 +94,20 @@ param_type      ::= data_type
 pipeline        ::= "pipeline" pipeline_name "(" [pipeline_params] ")"
                     ["->" export ("," export)*]
                     "{" agent* step+ "}"
+                    ; runner entry point; declares agents; no agent params
+
+lib             ::= "lib" lib_name "(" [pipeline_params] ")"
+                    ["->" export ("," export)*]
+                    "{" step+ "}"
+                    ; reusable callable; agents arrive only through params
 
 pipeline_params ::= pipeline_param ("," pipeline_param)*
 pipeline_param  ::= param_name ":" param_type
 export          ::= export_alias "=" step_name "." output_name
 
-agent           ::= "agent" agent_name "{"
-                    "as" role_name                 ; exact match against agents.md
-                    "uses" model_name              ; must be in model registry
-                    "}"
+agent           ::= "agent" agent_name "{" agent_body "}"
+agent_body      ::= "as" role_name "uses" model_name
+                  | "uses" model_name "as" role_name
 
 step            ::= "step" step_name "(" [step_params] ")"
                     ["->" output ("," output)*]
@@ -103,7 +118,8 @@ step_param      ::= binding                        ; bound param
                   | open_agent_param ":" "agent"  ; open agent param, route-supplied
 binding         ::= param_name "=" source ["?"]    ; ? = empty-if-absent
 source          ::= step_name "." output_name      ; step.output (same pipeline)
-                  | param_name                     ; pipeline param or step param
+                  | step_name "." export_alias     ; child export through a runs step
+                  | param_name                     ; callable param or step param
                   | agent_ref                      ; agent name
                   | literal_path                   ; literal path, read-only
 output          ::= output_name ":" data_type
@@ -111,8 +127,8 @@ output          ::= output_name ":" data_type
 body            ::= model_body
                   | runs_body
 model_body      ::= "prompt" TEXT verify* gate* [retry]
-runs_body       ::= "runs" pipeline_name "(" [run_args] ")" ; sub-pipeline step
-run_args        ::= binding ("," binding)*         ; bound from pipeline scope
+runs_body       ::= "runs" lib_name "(" [run_args] ")" ; invoke a lib
+run_args        ::= binding ("," binding)*         ; bound from callable scope
 
 verify          ::= "verify" shell_command         ; repeatable; sequential, fail-fast
 gate            ::= "gate" shell_command           ; repeatable; verdict checks after verify
@@ -121,15 +137,11 @@ retry           ::= "retry" POS_INT TEXT           ; repair turns: count + follo
 routes          ::= ok_route reject_route*
 ok_route        ::= "ok" "->" ok_action
 reject_route    ::= "reject" ["(" POS_INT ")"] "->" reject_action
-ok_action       ::= goto                           ; continue the pipeline
-                  | "done"                         ; terminate pipeline, ok
-reject_action   ::= goto                           ; route rejected work
-                  | "reject"                       ; terminate pipeline, negative verdict
-                                                   ; "reject -> reject" is the propagation
-                                                   ; idiom: hand the verdict to the caller
-                                                   ; (or runner), like Go's "return err"
+ok_action       ::= "done"                         ; terminate callable, ok
+                  | step_name ["(" route_arg ("," route_arg)* ")"]
+reject_action   ::= "propagate"                    ; terminate callable, negative verdict
                   | "surface" [surface_message]    ; checkpoint + notify + human review
-goto            ::= step_name ["(" route_arg ("," route_arg)* ")"]
+                  | step_name ["(" route_arg ("," route_arg)* ")"]
 route_arg       ::= open_agent_param "=" agent_ref ; open-agent-param = agent
 ```
 
@@ -152,7 +164,7 @@ cmd_substitution  ::= "$" IDENT
 In `text_substitution`:
 
 - `{IDENT}` refers to a declared non-agent data binding visible in the step
-  (pipeline param or step param).
+  (callable param or step param).
 - `{last_verify.cmd}` and `{last_verify.output}` refer to the failing verify
   command and its output tail.
 - `$IDENT` refers to a declared output of the current step and expands to its
@@ -177,9 +189,9 @@ must be positive. A step has exactly one `ok` route. It may have at most one
 bare `reject` route and at most one `reject(N)` route per threshold.
 
 Reserved words (illegal as pipeline, step, agent, or binding names):
-`from`, `use`, `pipeline`, `agent`, `step`, `runs`, `prompt`, `verify`,
-`gate`, `retry`, `as`, `uses`, `ok`, `reject`, `done`, `surface`, `text`,
-`json`, plus `pause`, `escalates`, and `to` (reserved for future versions).
+`from`, `use`, `pipeline`, `lib`, `agent`, `step`, `runs`, `prompt`, `verify`,
+`gate`, `retry`, `as`, `uses`, `ok`, `reject`, `propagate`, `done`, `surface`,
+`text`, `json`, plus `pause`, `escalates`, and `to` (reserved for future versions).
 
 ---
 
@@ -199,7 +211,7 @@ A model step has exactly one agent param, and it must be the first param.
 It takes one of two forms:
 
 - bound: `step build(dev = @coder, ...)` -- the agent is fixed at declaration.
-  Binding to a pipeline-level agent param (`rev = reviewer`) also counts as
+  Binding to a callable-level agent param (`rev = reviewer`) also counts as
   bound: the agent is fixed for the whole run once the caller supplies it.
 - open: `step refactor(dev: agent, ...)` -- the agent is supplied by every
   route that targets the step.
@@ -215,8 +227,8 @@ Every route targeting a step with an open agent param must bind it, fully
 statically:
 
 ```
-reject(2) -> refactor(dev = @coder_xl)
 reject    -> refactor(dev = @coder)
+reject(2) -> refactor(dev = @coder_xl)
 ```
 
 This is the escalation mechanism of this version: the step that judges decides,
@@ -239,10 +251,10 @@ One entry into a model step is a sequence of attempts:
    the chain and fails the attempt. Verify answers: did this step produce
    valid, usable output?
 4. On a failed attempt, if repair turns remain: the harness sends the retry
-   text as a follow-up turn in the same session. `retry 1 """..."""` grants
-   one repair turn; no `retry` field means none. The builtins
-   `{last_verify.cmd}` and `{last_verify.output}` interpolate the failing
-   command and its output tail. Step params remain available.
+   text as a follow-up turn in the same session. `retry 1` followed by a
+   `TEXT` literal grants one repair turn; no `retry` field means none. The
+   builtins `{last_verify.cmd}` and `{last_verify.output}` interpolate the
+   failing command and its output tail. Step params remain available.
 5. Repair turns exhausted: the step has malfunctioned. The run surfaces with
    the auto-summary. Malfunction is never routed: there are no fail routes,
    no step can be the target of another step's malfunction, and the spec
@@ -283,18 +295,37 @@ the counter resets on `ok`. Resolution order: the matching `reject(N)` route
 with the highest N not exceeding the count, then bare `reject`, then implicit
 `surface "unhandled rejection in <step>"`. There are no silent dead ends.
 
+Given these routes:
+
+```
+ok        -> done
+reject    -> refactor(dev = @coder)
+reject(2) -> refactor(dev = @coder_xl)
+reject(3) -> surface "keeps failing"
+```
+
+| reject count | matched route |
+|---|---|
+| 1 | bare `reject` |
+| 2 | `reject(2)` |
+| 3 | `reject(3)` |
+| 4 | `reject(3)` (highest N ≤ 4) |
+
+Routes are typically written least-serious-first for readability, but
+matching is independent of source order.
+
 The harness logs the rejecting command and its output tail for route logs
 and surface summaries; they are not spec-visible builtins, because gates do
 not trigger repair turns and no prompt can reference them.
 
-The `done` action terminates the current pipeline with `ok`. The `reject`
-action terminates it with a negative verdict. In a child pipeline, that
+The `done` action terminates the current callable with `ok`. The `propagate`
+action terminates it with a negative verdict. In a child callable, that
 verdict maps to the caller step's `reject`. At top level, a terminal
-`reject` surfaces unless the runner has an explicit external policy for
+`propagate` surfaces unless the runner has an explicit external policy for
 rejected work items.
 
 The action sets are asymmetric by construction. An ok route continues or
-finishes; it cannot terminate with `reject` (a passed gate cannot be
+finishes; it cannot terminate with `propagate` (a passed gate cannot be
 repudiated by its own route) and it cannot `surface` (resume re-resolves
 routes, so an ok-surface would loop; the planned `pause` action covers the
 deliberate post-success human checkpoint with its own resume rule). A
@@ -304,18 +335,20 @@ policy decision, not the route's.
 
 ### Types and bindings
 
-Every pipeline param declares `text`, `json`, or `agent`. Every step output
-declares `text` or `json`; `agent` is not a valid output type. `json` values
-are validated by parsing whenever they enter a step: pipeline args, literal
-sources, parent outputs, child exports, and step outputs all must parse before
-the receiving step runs. There is no schema resolver in the DSL.
+`pipeline` params declare `text` or `json` only. `lib` params may declare
+`text`, `json`, or `agent`. Every step output declares `text` or `json`;
+`agent` is not a valid output type. `json` values are validated by parsing
+whenever they enter a step: callable args, literal sources, parent outputs,
+child exports, and step outputs all must parse before the receiving step runs.
+There is no schema resolver in the DSL.
 
 Bindings are type-checked at load: binding a data source to an agent param, or
 an agent to a data param, is an error. A binding to a step that has not yet
-executed in this run is an error unless the binding is explicitly marked
-optional with `?`. Optional absent bindings resolve by target type: `text` gets
-the empty string; `json` gets `null`. Cyclic data references across a route loop
-must make their first-pass optionality visible in the signature.
+executed in this run is checked at runtime unless the binding is explicitly
+marked optional with `?`; a static first-pass check will be added in a future
+version. Optional absent bindings resolve by target type: `text` gets the empty
+string; `json` gets `null`. Cyclic data references across a route loop must make
+their first-pass optionality visible in the signature.
 
 `{param}` in a prompt or retry text interpolates data params only. Interpolating
 an `agent` param is a load-time error. `text` params interpolate their file
@@ -323,13 +356,21 @@ contents; `json` params interpolate their validated JSON text. `$name` in a
 verify or gate command is the file path of one of the step's own outputs. A
 prompt or retry text referencing an undeclared binding is a load-time error.
 
+`{last_verify.cmd}` and `{last_verify.output}` are only valid inside `retry`
+TEXT. They refer to the failing verify command and its output tail from the
+most recent attempt.
+
+`surface` messages are literal: they are not interpolated and are passed to the
+notification layer unchanged.
+
 ### Namespaces
 
-Names cannot shadow other visible names. Within one file, imported pipeline
-aliases and local pipeline names must be unique. Within one pipeline, pipeline
-params, agents, steps, and exports share one source-resolvable namespace and
-must not collide. Within one step, step params and outputs share one namespace
-and must not collide with each other or with visible pipeline-level names.
+Names cannot shadow other visible names. Within one file, imported lib
+aliases and local pipeline/lib names must be unique. Within one callable,
+params, agents (pipelines only), steps, and exports share one source-resolvable
+namespace and must not collide. Within one step, step params and outputs share
+one namespace and must not collide with each other or with visible
+callable-level names.
 
 The practical rule is: if an unqualified `IDENT` could resolve to two things at
 `file.pipeline(.step.$x)` scope, the spec is rejected at load. Case-insensitive
@@ -355,35 +396,41 @@ the run audit trail.
 
 ### Sub-pipelines
 
-`runs child(bindings)` invokes an imported or sibling pipeline as a step.
-Runs args bind directly from pipeline scope -- step outputs, pipeline params,
-agent names, literals -- so each data flow is stated exactly once. The runs
-step's own signature declares open agent params only, for the case where
-routes choose which agent the child receives.
+`runs child(bindings)` invokes an imported or sibling `lib` as a step. Runs
+args bind directly from the calling callable's scope -- step outputs, params,
+agent refs, literals -- so each data flow is stated exactly once. The runs
+step's own signature declares open agent params only, for the case where routes
+choose which agent the child receives.
 
 The caller sees only the child's exports: `harden.report` works because the
 child exports `report`; the parent never learns the child's step names, and
 reaching into child internals is not expressible.
 
-Outcome mapping: child `done` resolves as the step's `ok`; child `reject`
-resolves as the step's `reject`. A child malfunction surfaces from inside
-the child -- `surface` does not map to a caller outcome, it propagates
-straight to the human regardless of nesting depth. The pipeline call graph
-must be acyclic (load-time check).
+Outcome mapping: child `done` resolves as the step's `ok`; child `propagate`
+resolves as the step's `reject`. A child malfunction surfaces from inside the
+child -- `surface` does not map to a caller outcome, it propagates straight to
+the human regardless of nesting depth. The callable call graph must be acyclic
+(load-time check).
 
-A pipeline with open (unbound) agent params cannot be a runner entry point:
-the runner binds data, not agents. Only calling pipelines supply agents.
-This is validated at dispatch, when the human approves the roadmap.
+A `pipeline` is a runner entry point: it declares agents and may call `lib`
+callables, but it cannot declare `agent` params. A `lib` is reusable logic that
+may declare `agent` params, but it cannot declare agents of its own and cannot
+be a runner entry point. The runner binds data, not agents; only calling
+callables supply agents. This is validated at dispatch, when the human approves
+the roadmap.
 
 ### Path resolution
 
-All import paths and literal sources are resolved against the project root.
-Absolute paths are rejected. `..` path segments are rejected before symlink
-resolution. After symlink resolution, the final path must still be inside the
-project root.
+All `import_path` and `literal_path` values are resolved against the project
+root. A path is validated as follows:
 
-On Windows, drive-qualified paths, UNC paths, reserved device names, and
-case-insensitive collisions are rejected. The same validation applies to any
+1. Reject absolute paths.
+2. Reject any `..` segment before symlink resolution.
+3. Resolve symlinks.
+4. Reject the path if the resolved result is outside the project root.
+
+On Windows, also reject drive-qualified paths, UNC paths, reserved device
+names, and case-insensitive collisions. The same validation applies to any
 path-like value the harness derives from the spec. Artifacts are stored under
 the harness-controlled artifact root, and user identifiers are encoded before
 they become path components.
@@ -391,24 +438,51 @@ they become path components.
 ### Load-time validation (fail fast)
 
 A spec that parses but cannot run safely is rejected at load, before the
-human review point: agent `as` must match exactly one agents.md heading
-(zero or two-plus matches is an error, never a fuzzy pick); every `uses`
-model must be registered; every route target must be a real step or reserved
-action; every binding source must exist and type-check; every prompt or
-retry-text placeholder must be a declared non-agent binding or builtin; import
-and call graphs must be acyclic; no visible name may shadow another visible
-name; a model step's agent param must be first and unique; a model step must
-have exactly one prompt and at most one retry; retry counts and reject route
-thresholds must be positive; a step must have exactly one ok route; a step may
-have at most one bare reject route and at most one reject route per threshold;
-a runs step's signature may contain open agent params only; route args must
-exactly match the target step's open agent params, with no missing, extra, or
-duplicate args; every route arg value must be a known agent; a runs step must
-bind every param of the child pipeline and may not bind extras or duplicates;
-a required binding to a step output that may be absent on the first pass is an
-error unless marked optional with `?`; `json` literal sources that exist at
-load must parse as JSON; `reject` routes require at least one `gate` in the
-step or a `runs` child that can return `reject`.
+human review point.
+
+**Grammar-enforced checks:**
+
+- A model step has exactly one agent param and it is the first param.
+- A model step has exactly one `prompt` and at most one `retry`.
+- `retry` counts and `reject(N)` thresholds are positive.
+- A step has exactly one `ok` route.
+- A step has at most one bare `reject` route and at most one `reject(N)` route
+  per threshold.
+- A `runs` step's step params declare open agent params only.
+- Route args exactly match the target step's open agent params, with no
+  missing, extra, or duplicate args.
+- A `runs` step binds every param of the child lib and binds no extras or
+  duplicates.
+
+**Semantic checks:**
+
+- Agent `as` matches exactly one `agents.md` heading (zero or two-plus matches
+  is an error; never a fuzzy pick).
+- Every `uses` model is registered.
+- `pipeline` callables do not declare `agent` params; only `lib` callables may.
+- `lib` callables do not declare agents; agents arrive only through params.
+- `runs` may only invoke `lib` callables, not `pipeline` callables.
+- Every route target is a real step or reserved action.
+- Every binding source exists and type-checks.
+- Every prompt or retry-text placeholder is a declared non-agent binding or
+  builtin; `{last_verify.*}` appears only inside `retry` TEXT.
+- `surface` messages are literal and not interpolated.
+- Import and call graphs are acyclic.
+- No visible name shadows another visible name.
+- Every route arg value is a known agent.
+- `json` literal sources that exist at load parse as JSON.
+- `reject` routes require at least one `gate` in the step or a `runs` child that
+  can return `propagate`.
+
+**Linter warnings (non-fatal):**
+
+- Unreachable steps.
+- Missing fallback reject routes.
+- Optional bindings.
+- Unused agents, unused outputs.
+- Route cycles.
+- `gate` commands with no preceding `verify`.
+- `verify`/`gate` commands that look unusually broad or destructive.
 
 ### Artifacts and run state
 
@@ -475,18 +549,18 @@ fix, while still detecting stale or conflicting state.
 
 ## Example
 
-Two files. `pipelines/security.hp` defines a reusable, agent-generic
-sub-pipeline; `pipelines/feature.hp` imports it and supplies the agent.
+Two files. `pipelines/security.hp` defines a reusable, agent-generic `lib`;
+`pipelines/feature.hp` imports it and supplies the agent.
 
 `pipelines/security.hp`:
 
-```
-pipeline security_pass(reviewer: agent, input: text, rework: text)
+````
+lib security_pass(reviewer: agent, input: text, rework: text)
     -> report = adjudicate.summary {
 
   step scan(rev = reviewer, changes = input, reworked = rework)
       -> findings: json {
-    prompt """
+    prompt ```
       Review the changes below for security issues. Write each
       finding as a JSON object to $findings: include severity,
       location, and a concrete remediation. If <reworked> is
@@ -494,50 +568,50 @@ pipeline security_pass(reviewer: agent, input: text, rework: text)
 
       <changes>{changes}</changes>
       <reworked>{reworked}</reworked>
-    """
+    ```
     verify "./scripts/findings-follow-schema.sh"
-    retry 1 """
+    retry 1 ```
       Your findings failed validation:
 
       <cmd>{last_verify.cmd}</cmd>
       <output>{last_verify.output}</output>
 
       Rewrite $findings so every entry passes.
-    """
+    ```
     ok -> adjudicate
   }
 
   step adjudicate(rev = reviewer, raw = scan.findings) -> summary: json {
-    prompt """
+    prompt ```
       Given these raw security findings, produce a single JSON
       object in $summary:
         { "pass": bool, "blockers": [...], "warnings": [...] }
 
       <findings>{raw}</findings>
-    """
+    ```
     verify "./scripts/summary-follows-schema.sh"
     gate "./scripts/security-pass.sh $summary"
-    retry 1 """
+    retry 1 ```
       Your summary failed validation:
 
       <cmd>{last_verify.cmd}</cmd>
       <output>{last_verify.output}</output>
 
       Rewrite $summary so it passes.
-    """
+    ```
     ok     -> done
     # The propagation idiom: outcome on the left, terminal action on the
-    # right. This pipeline's verdict is negative; hand it to whoever
-    # invoked us (the caller's reject routes, or runner policy at top
-    # level). The language equivalent of Go's "return err".
-    reject -> reject
+    # right. This lib's verdict is negative; hand it to whoever invoked us
+    # (the caller's reject routes, or runner policy at top level). The
+    # language equivalent of Go's "return err".
+    reject -> propagate
   }
 }
-```
+````
 
 `pipelines/feature.hp`:
 
-```
+````
 from "pipelines/security.hp" use security_pass
 
 pipeline full_feature(plan: text) {
@@ -560,13 +634,13 @@ pipeline full_feature(plan: text) {
   # against the compiler itself; a harness verify failure here is
   # anomalous and should surface immediately.
   step build(dev = @coder, item = plan) -> diff: text {
-    prompt """
+    prompt ```
       Implement the item below on a feature branch. Work
       incrementally and commit as you go. Do not consider
       yourself finished until build, vet, and tests pass.
 
       <plan>{item}</plan>
-    """
+    ```
     verify "go build ./..."
     verify "go vet ./..."
     verify "go test ./..."
@@ -575,7 +649,7 @@ pipeline full_feature(plan: text) {
 
   step review(rev = @critic, changes = build.diff, reworked = refactor.diff?)
       -> critiques: json {
-    prompt """
+    prompt ```
       Review the changes below for correctness and design.
       Write each finding as JSON to $critiques. If <reworked>
       is non-empty it supersedes the corresponding parts of
@@ -583,7 +657,7 @@ pipeline full_feature(plan: text) {
 
       <changes>{changes}</changes>
       <reworked>{reworked}</reworked>
-    """
+    ```
     # Shape, not judgment: every entry parses into severity /
     # location / remediation. Guarantees the gate and refactor's
     # prompt can read this document.
@@ -592,27 +666,27 @@ pipeline full_feature(plan: text) {
     # verify above is what makes this exit code mean "verdict",
     # never "script choked on a malformed entry".
     gate "./scripts/no-blockers.sh $critiques"
-    retry 1 """
+    retry 1 ```
       Your critique output failed validation:
 
       <cmd>{last_verify.cmd}</cmd>
       <output>{last_verify.output}</output>
 
       Rewrite $critiques so every entry passes.
-    """
+    ```
     ok        -> harden
-    reject(3) -> surface "review keeps finding blockers"
+    reject    -> refactor(dev = @coder)       # first strike: cheap model
     reject(2) -> refactor(dev = @coder_xl)   # two strikes: stronger model
-    reject    -> refactor(dev = @coder)
+    reject(3) -> surface "review keeps finding blockers"
   }
 
   step refactor(dev: agent, findings = review.critiques) -> diff: text {
-    prompt """
+    prompt ```
       Address every blocking finding below. Do not introduce
       new features while doing so.
 
       <findings>{findings}</findings>
-    """
+    ```
     verify "go build ./..."
     verify "go test ./..."
     ok -> review
@@ -628,17 +702,17 @@ pipeline full_feature(plan: text) {
   }
 
   step cleanup(dev = @coder) {
-    prompt """
+    prompt ```
       The work on this branch is complete and reviewed. Create
       the PR, and once it is approved and merged, return to
       main, delete the feature branch, and remove any leftover
       scratch files or artifacts from the work tree.
-    """
+    ```
     verify "./scripts/clean-tree.sh"
     ok -> done
   }
 }
-```
+````
 
 Notes on the example:
 
@@ -655,8 +729,8 @@ Notes on the example:
 - `refactor` is the only step with an open agent param, and every route
   targeting it says which agent it sends: escalation policy is visible in
   `review` and `harden`, not hidden in a ladder.
-- `security_pass` is agent-generic: the caller decides who reviews. A
-  stricter caller could pass a stronger reviewer without touching the child.
+- `security_pass` is an agent-generic `lib`: the caller decides who reviews.
+  A stricter caller could pass a stronger reviewer without touching the child.
 
 ---
 
@@ -692,7 +766,8 @@ flows; each is individually simpler and individually routable.
 ### Escalation is routing, not a ladder
 
 One agent, one model. A step that judges decides in its own routes which
-agent handles each level of trouble: `reject(2) -> refactor(dev = @coder_xl)`.
+agent handles each level of trouble: `reject -> refactor(dev = @coder)` and
+`reject(2) -> refactor(dev = @coder_xl)`.
 The policy is readable at the human review point, which a per-agent ladder
 never was. Model ladders may return in a future version for malfunction
 handling; verdict-driven escalation stays in routes regardless.
