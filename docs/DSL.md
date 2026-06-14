@@ -140,7 +140,7 @@ ok_route        ::= "ok" "->" ok_action
 reject_route    ::= "reject" ["(" POS_INT ")"] "->" reject_action
 ok_action       ::= "done"                         ; terminate callable, ok
                   | step_name ["(" route_arg ("," route_arg)* ")"]
-reject_action   ::= "propagate"                    ; terminate callable, negative verdict
+reject_action   ::= "propagate"                    ; lib only: terminate callable, negative verdict
                   | "surface" [surface_message]    ; checkpoint + notify + human review
                   | step_name ["(" route_arg ("," route_arg)* ")"]
 route_arg       ::= open_agent_param "=" agent_ref ; open-agent-param = agent
@@ -179,12 +179,12 @@ In `cmd_substitution`:
 Substitutions referring to undeclared names, or interpolating an `agent` param,
 are load-time errors.
 
-A model step's signature declares exactly one agent param, in first position,
-either bound (`dev = @coder`) or open (`dev: agent`). A `runs` step's
-signature declares open agent params only (usually none); its data flows are
+A prompt step (a step with a `prompt` body) declares exactly one agent param,
+in first position, either bound (`dev = @coder`) or open (`dev: agent`). A
+`runs` step declares open agent params only (usually none); its data flows are
 bound directly in the runs args from callable scope.
 
-A model step body has exactly one `prompt`, followed by zero or more `verify`
+A prompt step body has exactly one `prompt`, followed by zero or more `verify`
 commands, zero or more `gate` commands, and at most one `retry`. `retry` counts
 must be positive. A step has exactly one `ok` route. It may have at most one
 bare `reject` route and at most one `reject(N)` route per threshold.
@@ -208,7 +208,7 @@ routing (see "Open agent params").
 
 ### One step, one agent
 
-A model step has exactly one agent param, and it must be the first param.
+A prompt step has exactly one agent param, and it must be the first param.
 It takes one of two forms:
 
 - bound: `step build(dev = @coder, ...)` -- the agent is fixed at declaration.
@@ -235,7 +235,14 @@ reject(2) -> refactor(dev = @coder_xl)
 This is the escalation mechanism of this version: the step that judges decides,
 in its own routes, which agent handles each level of trouble. The policy is
 readable at the human review point. Route args bind open agent params only;
-data does not travel through routes.
+they cannot override a bound agent param. Data does not travel through routes:
+text and json inputs are declared on the target step, not passed in route args.
+
+```
+step review(rev = @critic, patch = build.diff) { ... }
+ok -> review                         # allowed: data was bound on review
+ok -> review(patch = build.diff)     # rejected: route args are not data args
+```
 
 Reject counters and cycle counters belong to the step, not the agent:
 `refactor(dev = @coder)` and `refactor(dev = @coder_xl)` are the same step
@@ -243,7 +250,7 @@ trying harder, sharing one history.
 
 ### Attempts, retry, and malfunction
 
-One entry into a model step is a sequence of attempts:
+One entry into a prompt step is a sequence of attempts:
 
 1. The model runs `prompt` (first attempt) in a fresh session.
 2. Declared outputs are checked. Missing outputs, malformed `json`, and other
@@ -321,9 +328,9 @@ not trigger repair turns and no prompt can reference them.
 
 The `done` action terminates the current callable with `ok`. The `propagate`
 action terminates it with a negative verdict. In a child callable, that
-verdict maps to the caller step's `reject`. At top level, a terminal
-`propagate` surfaces unless the runner has an explicit external policy for
-rejected work items.
+verdict maps to the caller step's `reject`. A top-level `pipeline` cannot use
+`propagate`; rejected work at the runner boundary must route to another step or
+use `surface` explicitly.
 
 The action sets are asymmetric by construction. An ok route continues or
 finishes; it cannot terminate with `propagate` (a passed gate cannot be
@@ -352,8 +359,9 @@ string; `json` gets `null`. Cyclic data references across a route loop must make
 their first-pass optionality visible in the signature.
 
 `{param}` in a prompt or retry text interpolates data params only. Interpolating
-an `agent` param is a load-time error. `text` params interpolate their file
-contents; `json` params interpolate their validated JSON text. `$name` in a
+an `agent` param is a load-time error. The interpolation expands the value, not
+the source path: `text` params expand to their UTF-8 text content; `json` params
+must parse before the step runs and expand to their JSON text. `$name` in a
 verify or gate command is the file path of one of the step's own outputs. A
 prompt or retry text referencing an undeclared binding is a load-time error.
 
@@ -443,8 +451,8 @@ human review point.
 
 **Grammar-enforced checks:**
 
-- A model step has exactly one agent param and it is the first param.
-- A model step has exactly one `prompt` and at most one `retry`.
+- A prompt step has exactly one agent param and it is the first param.
+- A prompt step has exactly one `prompt` and at most one `retry`.
 - `retry` counts and `reject(N)` thresholds are positive.
 - A step has exactly one `ok` route.
 - A step has at most one bare `reject` route and at most one `reject(N)` route
@@ -464,6 +472,8 @@ human review point.
 - `lib` callables do not declare agents; agents arrive only through params.
 - `runs` may only invoke `lib` callables, not `pipeline` callables.
 - Every route target is a real step or reserved action.
+- `pipeline` reject routes cannot use `propagate`; top-level rejected work must
+  route to another step or `surface` explicitly.
 - Every binding source exists and type-checks.
 - Every prompt or retry-text placeholder is a declared non-agent binding or
   builtin; `{last_verify.*}` appears only inside `retry` TEXT.
@@ -603,7 +613,7 @@ lib security_pass(reviewer: agent, input: text, rework: text)
     ok     -> done
     # The propagation idiom: outcome on the left, terminal action on the
     # right. This lib's verdict is negative; hand it to whoever invoked us
-    # (the caller's reject routes, or runner policy at top level). The
+    # through the caller's reject routes. The
     # language equivalent of Go's "return err".
     reject -> propagate
   }
@@ -986,7 +996,8 @@ pick a pipeline. Runner logic, never DSL logic.
 future migration flow could let a human resume from step X under a new spec
 while explicitly choosing which run state survives.
 
-**Runner policy for terminal `propagate`.** A top-level pipeline ending in
-`propagate` currently surfaces. The runner could instead implement an external
-policy (skip item, park item for review, halt the roadmap). Runner concern;
-decide when the runner is built.
+**Runner policy for terminal rejection.** A top-level pipeline cannot use
+`propagate`; it must route rejected work to another step or `surface`
+explicitly. The runner may still add external policy around surfaced items
+(skip item, park item for review, halt the roadmap). Runner concern; decide
+when the runner is built.
