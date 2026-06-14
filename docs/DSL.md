@@ -38,18 +38,10 @@ STRING_CHAR::= UNESCAPED | ESCAPE
 UNESCAPED  ::= any Unicode scalar except '"', '\', control characters, and line breaks
 ESCAPE     ::= '\\' | '\"' | '\n' | '\t' | '\r'
 
-; SHELL_COMMAND: used for verify/gate commands.
-; In addition to STRING escapes, it allows escaping $ and { so commands can
-; contain literal interpolation markers.
-SHELL_COMMAND     ::= '"' SHELL_CHAR* '"'
-SHELL_CHAR        ::= SHELL_UNESCAPED | SHELL_ESCAPE
-SHELL_UNESCAPED   ::= any Unicode scalar except '"', '\', control characters, and line breaks
-SHELL_ESCAPE      ::= '\\' | '\"' | '\n' | '\t' | '\r' | '\$' | '\{'
-
 ; TEXT: used for prompts and retry text. Delimited by triple backticks.
 TEXT       ::= '```' TEXT_CHAR* '```'
 TEXT_CHAR  ::= TEXT_UNESCAPED | TEXT_ESCAPE
-TEXT_UNESCAPED ::= any Unicode scalar except '`'
+TEXT_UNESCAPED ::= any Unicode scalar sequence that does not contain an unescaped '```'
 TEXT_ESCAPE    ::= '\\' | '\`' | '\$' | '\{'
 
 COMMENT    ::= '#' NOT_NEWLINE*
@@ -63,17 +55,17 @@ import_path     ::= STRING
 role_name       ::= STRING
 model_name      ::= STRING
 literal_path    ::= STRING
-shell_command   ::= SHELL_COMMAND
 surface_message ::= STRING | TEXT
 
-; Agent reference: @ followed by a declared agent name.
+; Agent reference: @ followed by a visible agent name.
 agent_ref       ::= "@" agent_name
 ```
 
-Identifiers are ASCII and case-sensitive. Two identifiers that collide under
-Windows case-insensitive comparison are rejected within the same namespace.
-Identifiers are never used directly as filesystem path components; artifact
-paths use harness-controlled encoding.
+Identifiers are ASCII and case-sensitive. Reserved words are illegal for every
+IDENT-derived name. Two identifiers that collide under Windows case-insensitive
+comparison are rejected within the same namespace. Identifiers are never used
+directly as filesystem path components; artifact paths use harness-controlled
+encoding.
 
 ---
 
@@ -89,50 +81,61 @@ import          ::= "from" import_path "use" lib_name ("," lib_name)*
 data_type       ::= "text"
                   | "json"
 
-param_type      ::= data_type
-                  | "agent"
-
-pipeline        ::= "pipeline" pipeline_name "(" [callable_params] ")"
+pipeline        ::= "pipeline" pipeline_name "(" [pipeline_params] ")"
                     ["->" export ("," export)*]
                     "{" agent* step+ "}"
                     ; runner entry point; declares agents; no agent params
 
-lib             ::= "lib" lib_name "(" [callable_params] ")"
+lib             ::= "lib" lib_name "(" [lib_params] ")"
                     ["->" export ("," export)*]
                     "{" step+ "}"
                     ; reusable callable; agents arrive only through params
 
-callable_params ::= callable_param ("," callable_param)*
-callable_param  ::= param_name ":" param_type
+pipeline_params ::= data_param ("," data_param)*
+lib_params      ::= lib_param ("," lib_param)*
+lib_param       ::= data_param | agent_param
+data_param      ::= param_name ":" data_type
+agent_param     ::= param_name ":" "agent"
 export          ::= export_alias "=" step_name "." output_name
 
 agent           ::= "agent" agent_name "{" agent_body "}"
 agent_body      ::= "as" role_name "uses" model_name
                   | "uses" model_name "as" role_name
 
-step            ::= "step" step_name "(" [step_params] ")"
-                    ["->" output ("," output)*]
-                    "{" body routes "}"
+step            ::= model_step | runs_step
 
-step_params     ::= step_param ("," step_param)*
-step_param      ::= binding                        ; bound param
-                  | open_agent_param ":" "agent"  ; open agent param, route-supplied
-binding         ::= param_name "=" source ["?"]    ; ? = empty-if-absent
-source          ::= step_name "." output_name      ; step.output (same pipeline)
-                  | step_name "." export_name      ; child export through a runs step
+model_step      ::= "step" step_name "(" model_step_params ")"
+                    ["->" output ("," output)*]
+                    "{" model_body routes "}"
+model_step_params ::= model_agent_param
+                    | model_agent_param "," data_binding ("," data_binding)*
+model_agent_param ::= bound_agent_param
+                    | open_agent_param ":" "agent" ; route-supplied
+bound_agent_param ::= param_name "=" agent_ref
+data_binding    ::= param_name "=" data_source ["?"] ; ? = empty-if-absent
+data_source     ::= step_name "." output_name
                   | param_name                     ; callable param or step param
-                  | agent_ref                      ; agent name
                   | literal_path                   ; literal path, read-only
 output          ::= output_name ":" data_type
 
-body            ::= model_body
-                  | runs_body
-model_body      ::= "prompt" TEXT verify* gate* [retry]
-runs_body       ::= "runs" lib_name "(" [run_args] ")" ; invoke a lib
-run_args        ::= binding ("," binding)*         ; bound from callable scope
+model_body      ::= "prompt" TEXT verify* [retry] gate*
 
-verify          ::= "verify" shell_command         ; repeatable; sequential, fail-fast
-gate            ::= "gate" shell_command           ; repeatable; verdict checks after verify
+runs_step       ::= "step" step_name "(" [runs_step_params] ")"
+                    ["->" output ("," output)*]
+                    "{" runs_body routes "}"
+runs_step_params ::= open_agent_param ":" "agent"
+                   ("," open_agent_param ":" "agent")*
+runs_body       ::= "runs" lib_name "(" [run_args] ")" [runs_exports]
+                    ; invoke a lib
+run_args        ::= run_arg ("," run_arg)*         ; bound from callable scope
+run_arg         ::= param_name "=" run_source ["?"]
+run_source      ::= data_source | agent_ref
+runs_exports    ::= "exports" output_name ("," output_name)*
+
+command         ::= "[" command_arg ("," command_arg)* "]"
+command_arg     ::= STRING
+verify          ::= "verify" command               ; repeatable; sequential, fail-fast
+gate            ::= "gate" command                 ; repeatable; verdict checks after verify
 retry           ::= "retry" POS_INT TEXT           ; repair turns: count + follow-up prompt
 
 routes          ::= ok_route reject_route*
@@ -146,32 +149,40 @@ reject_action   ::= "propagate"                    ; lib only: terminate callabl
 route_arg       ::= open_agent_param "=" agent_ref ; open-agent-param = agent
 ```
 
-An `agent_ref` (`@coder`) refers to a declared agent. The `@` is syntax; the
-agent's declared name is the bare `agent_name` (`coder`).
+An `agent_ref` (`@coder`) refers to a visible agent value. In a pipeline,
+visible agents are locally declared agents. In a lib, visible agents are
+agent-typed callable params. The `@` is syntax; the visible name is the bare
+`agent_name` (`coder`).
 
 ### Interpolation
 
-`TEXT` literals in `prompt` and `retry` bodies, and `shell_command` literals in
-`verify` and `gate`, may contain substitutions:
+`TEXT` literals in `prompt` and `retry` bodies, and command args in `verify`
+and `gate`, may contain substitutions:
 
 ```ebnf
-text_substitution ::= "{" IDENT "}"
-                    | "{" "last_verify" "." ("cmd" | "output") "}"
-                    | "$" IDENT
+prompt_substitution ::= "{" IDENT "}"
+                      | "$" IDENT
 
-cmd_substitution  ::= "$" IDENT
+retry_substitution  ::= "{" IDENT "}"
+                      | "{" "last_verify" "." ("cmd" | "output") "}"
+                      | "$" IDENT
+
+command_substitution ::= "$" IDENT
 ```
 
-In `text_substitution`:
+In `prompt_substitution` and `retry_substitution`:
 
 - `{IDENT}` refers to a declared non-agent data binding visible in the step
   (callable param or step param).
-- `{last_verify.cmd}` and `{last_verify.output}` refer to the failing verify
-  command and its output tail.
 - `$IDENT` refers to a declared output of the current step and expands to its
   writable artifact path.
 
-In `cmd_substitution`:
+In `retry_substitution` only:
+
+- `{last_verify.cmd}` and `{last_verify.output}` refer to the failing verify
+  command and its output tail.
+
+In `command_substitution`:
 
 - `$IDENT` refers to a declared output of the current step and expands to its
   artifact file path.
@@ -185,14 +196,16 @@ in first position, either bound (`dev = @coder`) or open (`dev: agent`). A
 bound directly in the runs args from callable scope.
 
 A prompt step body has exactly one `prompt`, followed by zero or more `verify`
-commands, zero or more `gate` commands, and at most one `retry`. `retry` counts
-must be positive. A step has exactly one `ok` route. It may have at most one
-bare `reject` route and at most one `reject(N)` route per threshold.
+commands, at most one `retry`, and then zero or more `gate` commands. `retry`
+repairs output-contract and verify failures only; gate rejection is routed.
+`retry` counts must be positive. A step has exactly one `ok` route. It may have
+at most one bare `reject` route and at most one `reject(N)` route per threshold.
 
-Reserved words (illegal as pipeline, step, agent, or binding names):
+Reserved words (illegal as any IDENT-derived name):
 `from`, `use`, `pipeline`, `lib`, `agent`, `step`, `runs`, `prompt`, `verify`,
 `gate`, `retry`, `as`, `uses`, `ok`, `reject`, `propagate`, `done`, `surface`,
-`text`, `json`, plus `pause`, `escalates`, and `to` (reserved for future versions).
+`exports`, `text`, `json`, plus `pause`, `escalates`, and `to` (reserved for
+future versions).
 
 ---
 
@@ -212,7 +225,7 @@ A prompt step has exactly one agent param, and it must be the first param.
 It takes one of two forms:
 
 - bound: `step build(dev = @coder, ...)` -- the agent is fixed at declaration.
-  Binding to a callable-level agent param (`rev = reviewer`) also counts as
+  Binding to a callable-level agent param (`rev = @reviewer`) also counts as
   bound: the agent is fixed for the whole run once the caller supplies it.
 - open: `step refactor(dev: agent, ...)` -- the agent is supplied by every
   route that targets the step.
@@ -346,17 +359,17 @@ policy decision, not the route's.
 `pipeline` params declare `text` or `json` only. `lib` params may declare
 `text`, `json`, or `agent`. Every step output declares `text` or `json`;
 `agent` is not a valid output type. `json` values are validated by parsing
-whenever they enter a step: callable args, literal sources, parent outputs,
-child exports, and step outputs all must parse before the receiving step runs.
-There is no schema resolver in the DSL.
+whenever they enter a step: callable args, literal sources, model-step outputs,
+runs-step outputs, and step outputs all must parse before the receiving step
+runs. There is no schema resolver in the DSL.
 
 Bindings are type-checked at load: binding a data source to an agent param, or
-an agent to a data param, is an error. A binding to a step that has not yet
-executed in this run is checked at runtime unless the binding is explicitly
-marked optional with `?`; a static first-pass check will be added in a future
-version. Optional absent bindings resolve by target type: `text` gets the empty
-string; `json` gets `null`. Cyclic data references across a route loop must make
-their first-pass optionality visible in the signature.
+an agent to a data param, is an error. A non-optional step-output binding must
+be definitely available on every statically knowable route path into the
+consuming step. If the source may be absent on any path, the binding must be
+marked optional with `?`. Optional absent bindings resolve by target type:
+`text` gets the empty string; `json` gets `null`. Cyclic data references across
+a route loop must make their first-pass optionality visible in the signature.
 
 `{param}` in a prompt or retry text interpolates data params only. Interpolating
 an `agent` param is a load-time error. The interpolation expands the value, not
@@ -372,10 +385,26 @@ most recent attempt.
 `surface` messages are literal: they are not interpolated and are passed to the
 notification layer unchanged.
 
+### Verify and gate commands
+
+`verify` and `gate` commands are argv arrays, not shell strings. The first arg
+is the executable; remaining args are passed without shell parsing. Commands run
+from the project root. There is no implicit shell expansion, pipes, redirects,
+globbing, or environment-variable interpolation.
+
+Substitution is applied independently to each arg before execution. `$output`
+expands to that output's artifact file path. If a command needs complex logic,
+put it in a checked-in script and call the script directly:
+
+```
+verify ["go", "test", "./..."]
+gate ["./scripts/no-blockers.sh", "$findings"]
+```
+
 ### Namespaces
 
-Names cannot shadow other visible names. Within one file, imported lib
-aliases and local pipeline/lib names must be unique. Within one callable,
+Names cannot shadow other visible names. Within one file, imported lib names
+and local pipeline/lib names must be unique. Within one callable,
 params, agents (pipelines only), steps, and exports share one source-resolvable
 namespace and must not collide. Within one step, step params and outputs share
 one namespace and must not collide with each other or with visible
@@ -387,11 +416,13 @@ collisions are also rejected for Windows portability.
 
 ### Outputs
 
-Declared outputs are artifact files allocated by the harness before a model
-step runs. In `prompt` and retry text, `$output_name` expands to the writable
-artifact path for that output. Since this DSL runs after the M7
+Declared outputs are artifact files allocated by the harness for each step
+entry. In a model step, `prompt` and retry text may use `$output_name` to refer
+to the writable artifact path for that output. Since this DSL runs after the M7
 tool-permission milestone, model writes go through the harness tool layer and
-inherit the run's sandbox and approval policy.
+inherit the run's sandbox and approval policy. In a runs step, declared outputs
+are materialized by the harness from the child exports named in the step's
+`exports` clause; no model writes them directly.
 
 After the model turn completes, the harness validates every declared output:
 
@@ -411,9 +442,19 @@ agent refs, literals -- so each data flow is stated exactly once. The runs
 step's own signature declares open agent params only, for the case where routes
 choose which agent the child receives.
 
-The caller sees only the child's exports: `harden.report` works because the
-child exports `report`; the parent never learns the child's step names, and
-reaching into child internals is not expressible.
+If the parent needs child exports as data, the runs step declares outputs and
+names matching child exports in an `exports` clause. The harness materializes
+each named child export as the runs step output of the same name. The parent
+then reads the runs step output (`harden.report`), never the child internals.
+Renaming child exports in the parent is not supported in this version.
+
+```
+step harden() -> report: json {
+  runs security_pass(reviewer = @critic, input = build.diff)
+    exports report
+  ok -> done
+}
+```
 
 Outcome mapping: child `done` resolves as the step's `ok`; child `propagate`
 resolves as the step's `reject`. A child malfunction surfaces from inside the
@@ -425,8 +466,7 @@ A `pipeline` is a runner entry point: it declares agents and may call `lib`
 callables, but it cannot declare `agent` params. A `lib` is reusable logic that
 may declare `agent` params, but it cannot declare agents of its own and cannot
 be a runner entry point. The runner binds data, not agents; only calling
-callables supply agents. This is validated at dispatch, when the human approves
-the roadmap.
+callables supply agents.
 
 ### Path resolution
 
@@ -453,22 +493,31 @@ human review point.
 
 - A prompt step has exactly one agent param and it is the first param.
 - A prompt step has exactly one `prompt` and at most one `retry`.
+- `retry` appears before any `gate` commands, so repair turns apply only to
+  output-contract and verify failures.
 - `retry` counts and `reject(N)` thresholds are positive.
 - A step has exactly one `ok` route.
+- `pipeline` callables do not declare `agent` params; only `lib` callables may.
+- A `runs` step's step params declare open agent params only.
+
+**Semantic checks:**
+
 - A step has at most one bare `reject` route and at most one `reject(N)` route
   per threshold.
-- A `runs` step's step params declare open agent params only.
 - Route args exactly match the target step's open agent params, with no
   missing, extra, or duplicate args.
 - A `runs` step binds every param of the child lib and binds no extras or
   duplicates.
-
-**Semantic checks:**
-
+- If a `runs` step declares outputs, it must have an `exports` clause naming
+  exactly those outputs. If it has no outputs, it must not have `exports`.
+- Every `runs` exported name must exist in the child lib's exports with the
+  same type.
+- Every callable export must definitely resolve on every `done` path.
+- Every non-optional step-output binding must be definitely available on every
+  statically knowable route path into the consuming step.
 - Agent `as` matches exactly one `agents.md` heading (zero or two-plus matches
   is an error; never a fuzzy pick).
 - Every `uses` model is registered.
-- `pipeline` callables do not declare `agent` params; only `lib` callables may.
 - `lib` callables do not declare agents; agents arrive only through params.
 - `runs` may only invoke `lib` callables, not `pipeline` callables.
 - Every route target is a real step or reserved action.
@@ -480,7 +529,7 @@ human review point.
 - `surface` messages are literal and not interpolated.
 - Import and call graphs are acyclic.
 - No visible name shadows another visible name.
-- Every route arg value is a known agent.
+- Every route arg value is a visible agent.
 - `json` literal sources that exist at load parse as JSON.
 - `reject` routes require at least one `gate` in the step or a `runs` child that
   can return `propagate`.
@@ -569,7 +618,7 @@ Two files. `pipelines/security.hp` defines a reusable, agent-generic `lib`;
 lib security_pass(reviewer: agent, input: text, rework: text)
     -> report = adjudicate.summary {
 
-  step scan(rev = reviewer, changes = input, reworked = rework)
+  step scan(rev = @reviewer, changes = input, reworked = rework)
       -> findings: json {
     prompt ```
       Review the changes below for security issues. Write each
@@ -580,7 +629,7 @@ lib security_pass(reviewer: agent, input: text, rework: text)
       <changes>{changes}</changes>
       <reworked>{reworked}</reworked>
     ```
-    verify "./scripts/findings-follow-schema.sh"
+    verify ["./scripts/findings-follow-schema.sh"]
     retry 1 ```
       Your findings failed validation:
 
@@ -592,7 +641,7 @@ lib security_pass(reviewer: agent, input: text, rework: text)
     ok -> adjudicate
   }
 
-  step adjudicate(rev = reviewer, raw = scan.findings) -> summary: json {
+  step adjudicate(rev = @reviewer, raw = scan.findings) -> summary: json {
     prompt ```
       Given these raw security findings, produce a single JSON
       object in $summary:
@@ -600,8 +649,7 @@ lib security_pass(reviewer: agent, input: text, rework: text)
 
       <findings>{raw}</findings>
     ```
-    verify "./scripts/summary-follows-schema.sh"
-    gate "./scripts/security-pass.sh $summary"
+    verify ["./scripts/summary-follows-schema.sh"]
     retry 1 ```
       Your summary failed validation:
 
@@ -610,6 +658,7 @@ lib security_pass(reviewer: agent, input: text, rework: text)
 
       Rewrite $summary so it passes.
     ```
+    gate ["./scripts/security-pass.sh", "$summary"]
     ok     -> done
     # The propagation idiom: outcome on the left, terminal action on the
     # right. This lib's verdict is negative; hand it to whoever invoked us
@@ -652,9 +701,9 @@ pipeline full_feature(plan: text) {
 
       <plan>{item}</plan>
     ```
-    verify "go build ./..."
-    verify "go vet ./..."
-    verify "go test ./..."
+    verify ["go", "build", "./..."]
+    verify ["go", "vet", "./..."]
+    verify ["go", "test", "./..."]
     ok -> review
   }
 
@@ -672,11 +721,10 @@ pipeline full_feature(plan: text) {
     # Shape, not judgment: every entry parses into severity /
     # location / remediation. Guarantees the gate and refactor's
     # prompt can read this document.
-    verify "./scripts/critiques-follow-schema.sh"
+    verify ["./scripts/critiques-follow-schema.sh"]
     # Verdict: nonzero iff any finding is severity=blocker. The
     # verify above is what makes this exit code mean "verdict",
     # never "script choked on a malformed entry".
-    gate "./scripts/no-blockers.sh $critiques"
     retry 1 ```
       Your critique output failed validation:
 
@@ -685,6 +733,7 @@ pipeline full_feature(plan: text) {
 
       Rewrite $critiques so every entry passes.
     ```
+    gate ["./scripts/no-blockers.sh", "$critiques"]
     ok        -> harden
     reject    -> refactor(dev = @coder)       # first strike: cheap model
     reject(2) -> refactor(dev = @coder_xl)   # two strikes: stronger model
@@ -698,15 +747,16 @@ pipeline full_feature(plan: text) {
 
       <findings>{findings}</findings>
     ```
-    verify "go build ./..."
-    verify "go test ./..."
+    verify ["go", "build", "./..."]
+    verify ["go", "test", "./..."]
     ok -> review
   }
 
-  step harden() {
+  step harden() -> report: json {
     runs security_pass(reviewer = @critic,
                        input = build.diff,
                        rework = refactor.diff?)
+      exports report
     ok        -> cleanup
     reject(2) -> surface "security pass keeps finding blockers"
     reject    -> refactor(dev = @coder_xl)   # security blockers skip the cheap model
@@ -719,7 +769,7 @@ pipeline full_feature(plan: text) {
       main, delete the feature branch, and remove any leftover
       scratch files or artifacts from the work tree.
     ```
-    verify "./scripts/clean-tree.sh"
+    verify ["./scripts/clean-tree.sh"]
     ok -> done
   }
 }
@@ -737,6 +787,9 @@ Notes on the example:
   args. The `?` marks `refactor.diff` as optional: on the first pass it
   resolves to the empty string because `refactor` has not run yet, and the
   prompts degrade cleanly.
+- `harden` uses `exports report` to materialize the child lib's `report`
+  export as the runs step's own `report` output; the parent never reaches into
+  the child step names.
 - `refactor` is the only step with an open agent param, and every route
   targeting it says which agent it sends: escalation policy is visible in
   `review` and `harden`, not hidden in a ladder.
@@ -909,6 +962,12 @@ resume path re-runs verify and re-resolves routes -- an ok-surface would
 loop). `pause` needs its own resume rule: continue past the pause point
 without re-resolving the route that paused. Will be added in a future
 version; the keyword is already reserved.
+
+**Import aliases.** Imports currently use the lib's original name:
+`from "pipelines/security.hp" use security_pass`. If name collisions become a
+real problem, add explicit alias syntax such as
+`from "pipelines/security.hp" use security_pass as security`. Do not add this
+until a real spec needs it.
 
 **Generated sub-libraries.** A step outputs a `lib`, a later step runs it:
 a strong model splits a large item into small build steps with detailed
