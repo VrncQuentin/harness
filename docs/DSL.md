@@ -7,6 +7,10 @@ executed, how data flows between them, and what happens when things go wrong.
 File extension: `.hp` (harness pipeline). Source files are UTF-8. The harness sanitizer hard-fails on
 bidi override and zero-width characters.
 
+Runtime integration is staged in [roadmap M9](roadmap.md#m9--pipeline-dsl) and the component boundary is defined in [architecture.md](architecture.md#pipeline-runner-internalpipeline--planned-m9). Until that milestone lands, this document is the language contract only; it does not imply a partially supported runtime.
+
+Specs are project-owned artifacts. M9 loads them from `projects/<slug>/pipelines/`, writes prompts and outputs under `projects/<slug>/artifacts/<run>/`, and keeps operational run state in `harness.db` alongside other metrics/config state.
+
 Comments run from `#` to end of line, anywhere outside a `STRING` or `TEXT`
 literal. A `#` inside a quoted string or a triple-backtick-quoted prompt is literal.
 

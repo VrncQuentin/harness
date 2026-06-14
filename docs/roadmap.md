@@ -230,3 +230,34 @@ Design references: opencode (part-based messages, step counter, doom-loop detect
 - [ ] Start with a corrupted `harness.db` -> clear error on the status page, no crash
 - [ ] Start with valid config but wrong model path -> clear error at startup, not at first request
 - [ ] Enable Prometheus endpoint -> `curl /metrics` returns valid Prometheus text format
+
+---
+
+## M9 — Pipeline DSL
+
+**Goal:** execute reviewed `.hp` pipeline specs inside the harness using the native agent loop, tool registry, project sandbox, and browser UI.
+
+Depends on M7 (destructive tools, shell execution, approvals, and hardened permissions). The DSL contract lives in [DSL.md](DSL.md); this milestone wires that language into the runtime rather than expanding the grammar speculatively.
+
+- [ ] Project-owned specs: load `.hp` files from `projects/<slug>/pipelines/`, resolve imports relative to the project root, and reject unsafe paths
+- [ ] Parser and load-time validator: grammar, type bindings, route targets, import/call graph cycles, output declarations, namespace collisions, agent/model resolution, and linter warnings
+- [ ] Pipeline runner: execute model steps through `internal/agentloop`, validate declared outputs, run `verify` and `gate` argv commands, apply retry semantics, and resolve `ok`/`reject` routes
+- [ ] Runs-step support: invoke reusable `lib` callables, materialize exported outputs, propagate child rejections, and surface child malfunctions directly
+- [ ] Durable run state: persist run id, spec SHA, step/cycle counters, reject counters, supplied agent args, consumed artifact hashes, and output hashes in SQLite
+- [ ] Artifacts: commit rendered prompts, declared outputs, extra files, verify/gate logs, and run summaries under `projects/<slug>/artifacts/<run>/`
+- [ ] UI: pipelines page with lint, dry-run preview, run graph, route logs, artifact browser, surface cards, resume controls, and minimal repro bundle export
+- [ ] Metrics: pipeline run status, step attempts, reject counts, surface counts, verify/gate duration, artifact bytes
+- [ ] Runner dispatch hook: small external runner can bind roadmap/item metadata to a named pipeline without adding roadmap concepts to the DSL
+
+**Acceptance tests:**
+- [ ] Lint a valid two-file pipeline with an imported `lib` -> preview shows resolved imports, agents, steps, routes, commands, outputs, and optional bindings
+- [ ] Load a spec with an import cycle -> validation fails before any model call or command execution
+- [ ] Run a model step that writes all declared outputs -> outputs are validated and committed under `projects/<slug>/artifacts/<run>/`
+- [ ] Run a model step that omits a declared output -> retry runs when configured; exhausted retries surface with the output-contract error
+- [ ] A failing `verify` command triggers retry, and `{last_verify.cmd}` / `{last_verify.output}` render in the repair prompt
+- [ ] A failing `gate` command increments the step's reject counter and follows the highest matching `reject(N)` route
+- [ ] A child lib returns `propagate` -> the caller step resolves as `reject`; a child `surface` stops the whole run for human review
+- [ ] Resume a surfaced run without changing the spec -> harness re-runs verify, then gate/routes; changing the spec SHA refuses resume
+- [ ] A `verify` or `gate` command with shell metacharacters is passed as argv, not shell-expanded
+- [ ] A path outside the active project root in an import, literal source, or derived artifact path is rejected at load time
+- [ ] The UI artifact browser shows rendered prompt, resolved bindings, supplied agent, transcript, outputs, extra files, command logs, and consumed-cycle records
