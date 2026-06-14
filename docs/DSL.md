@@ -25,6 +25,7 @@ step_name         ::= IDENT
 agent_name        ::= IDENT
 param_name        ::= IDENT
 output_name       ::= IDENT
+export_name       ::= IDENT
 export_alias      ::= IDENT
 open_agent_param  ::= IDENT
 
@@ -91,18 +92,18 @@ data_type       ::= "text"
 param_type      ::= data_type
                   | "agent"
 
-pipeline        ::= "pipeline" pipeline_name "(" [pipeline_params] ")"
+pipeline        ::= "pipeline" pipeline_name "(" [callable_params] ")"
                     ["->" export ("," export)*]
                     "{" agent* step+ "}"
                     ; runner entry point; declares agents; no agent params
 
-lib             ::= "lib" lib_name "(" [pipeline_params] ")"
+lib             ::= "lib" lib_name "(" [callable_params] ")"
                     ["->" export ("," export)*]
                     "{" step+ "}"
                     ; reusable callable; agents arrive only through params
 
-pipeline_params ::= pipeline_param ("," pipeline_param)*
-pipeline_param  ::= param_name ":" param_type
+callable_params ::= callable_param ("," callable_param)*
+callable_param  ::= param_name ":" param_type
 export          ::= export_alias "=" step_name "." output_name
 
 agent           ::= "agent" agent_name "{" agent_body "}"
@@ -118,7 +119,7 @@ step_param      ::= binding                        ; bound param
                   | open_agent_param ":" "agent"  ; open agent param, route-supplied
 binding         ::= param_name "=" source ["?"]    ; ? = empty-if-absent
 source          ::= step_name "." output_name      ; step.output (same pipeline)
-                  | step_name "." export_alias     ; child export through a runs step
+                  | step_name "." export_name      ; child export through a runs step
                   | param_name                     ; callable param or step param
                   | agent_ref                      ; agent name
                   | literal_path                   ; literal path, read-only
@@ -899,8 +900,8 @@ loop). `pause` needs its own resume rule: continue past the pause point
 without re-resolving the route that paused. Will be added in a future
 version; the keyword is already reserved.
 
-**Generated sub-pipelines.** A step outputs a pipeline, a later step runs
-it: a strong model splits a large item into small build steps with detailed
+**Generated sub-libraries.** A step outputs a `lib`, a later step runs it:
+a strong model splits a large item into small build steps with detailed
 prompts for a cheaper model, and the run executes the result before moving
 on. Generation, never self-editing: the parent spec stays immutable (spec
 SHA, resume, audit trail, and the human review point all survive), and the
@@ -908,17 +909,17 @@ generated `.hp` is an artifact with provenance. The design rests on the
 "specs are pure data" decision: a generated spec is data a model wrote, and
 the existing load-time validation suite becomes its safety net.
 
-Sketch: `pipeline` becomes an output type carrying a declared signature
-(`-> sub: pipeline(dev: agent, item: text)`); output-contract validation
+Sketch: `lib` becomes an output type carrying a declared signature
+(`-> sub: lib(dev: agent, item: text)`); output-contract validation
 parses the artifact, runs full load validation, and checks the signature,
 so `retry` handles bad generations with validator errors as the repair
 signal and `runs plan.sub(...)` stays statically checkable. Generated specs
 run under an expansion profile: no imports, no agent declarations (agents
-arrive only through the signature), no pipeline-typed outputs (depth 1, no
+arrive only through the signature), no lib-typed outputs (depth 1, no
 recursive expansion), and verify/gate commands restricted to an allowlist
 of known commands and checked-in script paths -- the model composes which
 checks run where, never what they do. Provenance: artifact SHA recorded,
-pipeline-path `parent/step:sub@<sha>`. Execution policy is harness config:
+callable-path `parent/step:sub@<sha>`. Execution policy is harness config:
 pause-for-review of the dry-run preview by default; auto-execute is earned
 with run history.
 
@@ -969,9 +970,9 @@ driven by a concrete spec that needs it, not added speculatively.
 reviewer chains could run in parallel in a future version; this needs a
 merge story for routes that join, and harness run-tree tracking.
 
-**Forked delegation.** A route action that forks a sub-pipeline and lets
-the parent continue, with the harness tracking run trees. Significant
-harness work; not a language change.
+**Forked delegation.** A route action that forks a sub-lib and lets the
+parent continue, with the harness tracking run trees. Significant harness
+work; not a language change.
 
 **Smarter runner dispatch.** The runner currently dispatches on item
 frontmatter; it could evaluate item metadata (size, affected packages) to
