@@ -55,7 +55,7 @@ import_path     ::= STRING
 role_name       ::= STRING
 model_name      ::= STRING
 literal_path    ::= STRING
-surface_message ::= STRING | TEXT
+surface_message ::= STRING
 
 ; Agent reference: @ followed by a visible agent name.
 agent_ref       ::= "@" agent_name
@@ -100,7 +100,6 @@ export          ::= export_alias "=" step_name "." output_name
 
 agent           ::= "agent" agent_name "{" agent_body "}"
 agent_body      ::= "as" role_name "uses" model_name
-                  | "uses" model_name "as" role_name
 
 step            ::= model_step | runs_step
 
@@ -330,7 +329,7 @@ reject(3) -> surface "keeps failing"
 | 1 | bare `reject` |
 | 2 | `reject(2)` |
 | 3 | `reject(3)` |
-| 4 | `reject(3)` (highest N ≤ 4) |
+| 4 | `reject(3)` (highest N <= 4) |
 
 Routes are typically written least-serious-first for readability, but
 matching is independent of source order.
@@ -758,8 +757,8 @@ pipeline full_feature(plan: text) {
                        rework = refactor.diff?)
       exports report
     ok        -> cleanup
-    reject(2) -> surface "security pass keeps finding blockers"
     reject    -> refactor(dev = @coder_xl)   # security blockers skip the cheap model
+    reject(2) -> surface "security pass keeps finding blockers"
   }
 
   step cleanup(dev = @coder) {
@@ -988,7 +987,7 @@ arrive only through the signature), no lib-typed outputs (depth 1, no
 recursive expansion), and verify/gate commands restricted to an allowlist
 of known commands and checked-in script paths -- the model composes which
 checks run where, never what they do. Provenance: artifact SHA recorded,
-callable-path `parent/step:sub@<sha>`. Execution policy is harness config:
+pipeline-path `parent/step:sub@<sha>`. Execution policy is harness config:
 pause-for-review of the dry-run preview by default; auto-execute is earned
 with run history.
 
