@@ -181,7 +181,7 @@ are load-time errors.
 A model step's signature declares exactly one agent param, in first position,
 either bound (`dev = @coder`) or open (`dev: agent`). A `runs` step's
 signature declares open agent params only (usually none); its data flows are
-bound directly in the runs args from pipeline scope.
+bound directly in the runs args from callable scope.
 
 A model step body has exactly one `prompt`, followed by zero or more `verify`
 commands, zero or more `gate` commands, and at most one `retry`. `retry` counts
@@ -288,7 +288,7 @@ cheap and usually sufficient.
 A "reject" means the step worked and its verdict on the input is negative.
 Rejects do not consume repair turns: there is nothing wrong with the step's
 own work, the problem is upstream, and where rejected work goes is precisely
-the pipeline-specific decision the routes exist to express.
+the callable-specific decision the routes exist to express.
 
 `reject(N)` counts consecutive rejects and matches after at least N rejects;
 the counter resets on `ok`. Resolution order: the matching `reject(N)` route
@@ -373,7 +373,7 @@ one namespace and must not collide with each other or with visible
 callable-level names.
 
 The practical rule is: if an unqualified `IDENT` could resolve to two things at
-`file.pipeline(.step.$x)` scope, the spec is rejected at load. Case-insensitive
+`file.callable(.step.$x)` scope, the spec is rejected at load. Case-insensitive
 collisions are also rejected for Windows portability.
 
 ### Outputs
@@ -394,7 +394,7 @@ tool writes fail the attempt before user `verify` commands run. Extra files
 are permitted only inside the step's artifact directory and are recorded in
 the run audit trail.
 
-### Sub-pipelines
+### Calling libs
 
 `runs child(bindings)` invokes an imported or sibling `lib` as a step. Runs
 args bind directly from the calling callable's scope -- step outputs, params,
@@ -778,7 +778,7 @@ A step that cannot produce well-formed output after its repair turns has
 malfunctioned, and the response policy is universal: repair in-session, then
 surface to the human with an auto-summary. No spec text exists for it -- no
 fail routes, no fail counters, no escalate action. The routes express the
-one thing that is genuinely pipeline-specific: where negatively-judged work
+one thing that is genuinely callable-specific: where negatively-judged work
 goes.
 
 ### Verify is not verdict
@@ -985,7 +985,7 @@ pick a pipeline. Runner logic, never DSL logic.
 future migration flow could let a human resume from step X under a new spec
 while explicitly choosing which run state survives.
 
-**Runner policy for terminal `reject`.** A top-level pipeline ending in
-`reject` currently surfaces. The runner could instead implement an external
+**Runner policy for terminal `propagate`.** A top-level pipeline ending in
+`propagate` currently surfaces. The runner could instead implement an external
 policy (skip item, park item for review, halt the roadmap). Runner concern;
 decide when the runner is built.
