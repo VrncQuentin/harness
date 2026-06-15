@@ -87,18 +87,18 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 
 - [x] `projects` and `project_directories` tables; system `global` row seeded on first run (cannot be hidden, deleted, or renamed)
 - [x] `config` additions: `active_project_slug` (NOT NULL, default `'global'`) and `project_llama_on_switch` (`'keep' | 'reload'`, default `'reload'`)
-- [ ] Memory repo layout: top-level `runtime/` and `index/` fold into `projects/global/`; episodes move out of `agents/<name>/episodes/` into `projects/<slug>/episodes/<agent-name>/` (agent dirs become definition-only); user projects live at `projects/<slug>/{rules.md, agents/, sessions.jsonl, queue.wal, episodes/<agent-name>/, index/<dir-slug>/}`
+- [x] Memory repo layout: top-level `runtime/` and `index/` fold into `projects/global/`; episodes move out of `agents/<name>/episodes/` into `projects/<slug>/episodes/<agent-name>/` (agent dirs become definition-only); user projects live at `projects/<slug>/{rules.md, agents/, sessions.jsonl, queue.wal, episodes/<agent-name>/, index/<dir-slug>/}`
 - [x] Prompt assembler: new `projects/<slug>/rules.md` layer between global rules and agent persona
 - [x] Agent resolution: per-file override of the global agents library by `projects/<slug>/agents/<name>/`
-- [ ] Activation: eager git-repo check on configured directories (warn-and-continue), fresh session, conditional llama-server swap based on `llama_on_switch`
-- [ ] UI: `/projects` page (CRUD + hide), topbar switcher with `Global` always present, project-aware `/agents`, mismatch indicator on status page when `keep` causes a model/preference divergence
+- [x] Activation: eager git-repo check on configured directories (warn-and-continue), fresh session, conditional llama-server swap based on `llama_on_switch`
+- [x] UI: `/projects` page (CRUD + hide), topbar switcher with `Global` always present, project-aware `/agents`, mismatch indicator on status page when `keep` causes a model/preference divergence
 
 **Acceptance tests:** see [M3b.md](M3b.md#acceptance-tests). Highlights:
 
-- [ ] First run seeds the `global` project; `global` cannot be hidden, deleted, or renamed
+- [x] First run seeds the `global` project; `global` cannot be hidden, deleted, or renamed
 - [ ] Switching projects with `llama_on_switch = reload` drains the queue and reloads the llama-server with the destination's effective model; identical effective configs are a no-op regardless of mode
-- [ ] Project agent overrides resolve per-file (project `persona.md` + global `rules.md` works)
-- [ ] Activating a project with a missing directory succeeds and surfaces a "directory missing" badge
+- [x] Project agent overrides resolve per-file (project `persona.md` + global `rules.md` works)
+- [x] Activating a project with a missing directory succeeds and surfaces a "directory missing" badge
 - [ ] Indexable trees produce manifest entries under `projects/<slug>/index/<dir-slug>/`; vector refresh deferred to M5
 
 ---
@@ -111,15 +111,15 @@ Depends on M3b (projects, active project directories, and sandbox roots).
 
 Design references: opencode (part-based messages, step counter, doom-loop detection, compaction-first loops, tool id/schema/execute/context contract, layered permissions and once/always/reject approvals, abort propagation) and Pi (minimal loop, minimal built-in tools, steering/follow-up queues, tree sessions, small prompts, extension hooks). These are references only; neither is a runtime dependency or integration milestone.
 
-- [ ] Chat/task surface: first-party browser UI for task input and conversation display; no external chat client needed
-- [ ] Loop engine: send conversation to the model, parse the response, dispatch tool calls, inject results, and repeat until stop/limit/cancel
+- [x] Chat/task surface: first-party browser UI for task input and conversation display; no external chat client needed
+- [x] Loop engine: send conversation to the model, parse the response, dispatch tool calls, inject results, and repeat until stop/limit/cancel
 - [ ] OpenAI-style tool-call parsing for streaming and non-streaming chat completion responses
 - [ ] Part-based message model: text, tool_call, and tool_result parts with durable state for UI display and session replay
 - [ ] Tool registry and schema contract: tools declare id, JSON Schema parameters, execute function, and context (active project, sandbox roots, caller identity)
 - [ ] Read-only file tools first: `file_read` and `file_list`; no writes, edits, shell execution, or web search in the MVP
-- [ ] Sandbox rooting: all file operations scoped to active project directories; paths outside those roots are rejected
-- [ ] Step limit and doom-loop detection for repeated identical tool calls or response patterns
-- [ ] Cancellation and abort propagation through the loop, current tool call, and in-flight model request
+- [x] Sandbox rooting: all file operations scoped to active project directories; paths outside those roots are rejected
+- [x] Step limit and doom-loop detection for repeated identical tool calls or response patterns
+- [x] Cancellation and abort propagation through the loop, current tool call, and in-flight model request
 - [ ] Visibility: UI logs/token breakdown show loop turn count, tool calls, tool results, and loop termination reason
 - [ ] Config: `loop_max_turns`, `loop_doom_threshold`, and per-tool enable/disable toggles
 
@@ -144,8 +144,8 @@ Design references: opencode (part-based messages, step counter, doom-loop detect
 - [ ] Embedder sidecar: nomic-embed-text, health check, restart on crash
 - [ ] Embed-on-commit pipeline (episodes): new episode -> embed chunks -> update `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` -> commit
 - [ ] Embed-on-commit pipeline (attached directories): for each tree configured on the active project, walk by HEAD -> embed chunks -> update `projects/<active>/index/<dir-slug>/{vectors.bin, manifest.json}` -> commit
-- [ ] ANN search: flat scan initially, upgrade to usearch if latency becomes a problem
-- [ ] Blended retrieval: `score = (semantic_weight * similarity) + (recency_weight * recency_decay)`
+- [x] ANN search: flat scan initially, upgrade to usearch if latency becomes a problem
+- [x] Blended retrieval: `score = (semantic_weight * similarity) + (recency_weight * recency_decay)`
 - [ ] Index rebuild (UI-triggered from memory browser): walk commits, re-embed missing SHAs (idempotent), per-tree
 - [ ] UI: memory browser shows retrieval scores per episode
 
@@ -166,8 +166,8 @@ Design references: opencode (part-based messages, step counter, doom-loop detect
 
 **Goal:** memory is actively curated, not just accumulated.
 
-- [ ] `PromoteToGlobalFact(text)`: UI action -> append to `global/facts.md` + commit
-- [ ] `AppendAgentNote(agent, text)`: UI action -> append to `agents/<n>/notes.md` + commit
+- [x] `PromoteToGlobalFact(text)`: UI action -> append to `global/facts.md` + commit
+- [x] `AppendAgentNote(agent, text)`: UI action -> append to `agents/<n>/notes.md` + commit
 - [ ] Cross-agent read: explicit API to pull episodes from another agent's directory
 - [ ] Dedup pass on commit: detect near-duplicate facts before appending (embedding similarity threshold)
 - [ ] UI: promotion controls in memory browser, cross-agent episode browser
