@@ -239,6 +239,6 @@ Design references: opencode (part-based messages, step counter, doom-loop detect
 
 Depends on M7 (destructive tools, shell execution, approvals, and hardened permissions). The DSL contract lives in [DSL.md](DSL.md); the detailed implementation plan and acceptance tests live in [dsl_roadmap.md](dsl_roadmap.md).
 
-- [ ] Parser, load-time validator, linter, and dry-run preview for project-owned `.hp` specs
+- [ ] Isolated `internal/dsl` parser, validator, and linter package; editor and dry-run preview for attached-repo `.hp` specs
 - [ ] Runtime execution through `internal/agentloop`, declared artifacts, verify/gate commands, retries, routes, and `lib` calls
 - [ ] Durable SQLite run state, memory-repo artifacts, UI run graph, surfacing/resume controls, and M9 metrics

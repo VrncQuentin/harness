@@ -24,20 +24,62 @@ M9 also depends on these earlier foundations:
 - Do not add a JSON intermediate format. The grammar in `DSL.md` remains the source of truth.
 - Do not add speculative constructs such as route guards, parallel execution, generated sub-libraries, schemas on `json`, or per-step timeouts in M9.
 - Do not bypass the harness tool/approval layer. Model-written outputs are normal tool writes into declared artifact paths.
+- Do not store source `.hp` specs in the memory repo by default. Specs live with the project/code repos whose scripts, tests, and paths they orchestrate.
 
-## Storage Layout
+## Package Boundary
 
-Pipeline specs and artifacts are project-owned memory repo data.
+Keep the language implementation isolated under `internal/dsl` so it can be extracted or open-sourced later without dragging the harness runtime with it.
+
+Planned shape:
+
+```
+internal/
+  dsl/
+    ast.go          # syntax tree and source span types
+    token.go        # token and position types
+    errors.go       # parse/load/lint diagnostics
+    parser/         # lexer + recursive-descent parser
+    validate/       # semantic load-time validation
+    linter/         # non-fatal warnings
+    source/         # UTF-8 sanitizer and source file graph loading
+    x/              # temporary experiments only; no runtime dependency allowed
+  pipeline/         # harness runtime: DB, artifacts, UI events, agent loop, commands
+```
+
+Rules:
+- `internal/dsl` may use the Go standard library and small self-contained helpers only.
+- `internal/dsl` must not import `internal/pipeline`, `internal/ui`, `internal/memory`, `internal/agentloop`, `internal/tools`, `internal/config`, or database packages.
+- `internal/dsl` returns typed ASTs, diagnostics, linter warnings, and a validated spec graph. It does not execute commands, open model sessions, write artifacts, or touch SQLite.
+- `internal/pipeline` owns all harness integration: project directory discovery, source repo metadata, run state, artifacts, verify/gate command execution, agent-loop calls, UI events, and metrics.
+- Experimental code in `internal/dsl/x` must not be imported by production packages. Promote or delete it before M9 is accepted.
+- Public-ish names in `internal/dsl` should be boring and stable enough to survive extraction into a standalone module later.
+
+## Source And Artifact Layout
+
+Pipeline source specs are project repo data. Pipeline run artifacts are harness-managed evidence.
+
+Source specs live in the active project's attached git directories:
+
+```
+<attached-repo>/
+  pipelines/
+    *.hp
+    **/*.hp
+  scripts/
+    ...
+```
+
+The `pipelines/` convention keeps `.hp` files reviewed alongside the code, tests, and scripts they invoke. M9 discovery scans each configured project directory for `pipelines/**/*.hp`. A later iteration may add configurable pipeline roots or a shared template library, but the default execution source is the attached repo, not memory.
+
+Run artifacts live under the memory repo project so the harness can preserve prompts, transcripts, command logs, and output evidence independently of the source repo working tree:
 
 ```
 memory/
   projects/
     <slug>/
-      pipelines/
-        *.hp
-        **/*.hp
       artifacts/
         <run>/
+          source.json
           spec.sha
           preview.json
           summary.md
@@ -58,12 +100,12 @@ memory/
 ```
 
 Rules:
-- `projects/<slug>/pipelines/` holds reviewed source specs committed to the memory repo.
-- `projects/<slug>/artifacts/<run>/` holds rendered prompts, transcripts, declared outputs, extra files, verify logs, gate logs, and summaries.
+- Attached project repos hold reviewed source specs. The UI may edit them in place; saving a spec writes to the attached repo working tree and does not auto-commit.
+- `projects/<slug>/artifacts/<run>/` holds rendered prompts, transcripts, declared outputs, extra files, verify logs, gate logs, summaries, and source metadata.
 - Artifact path components are harness-encoded, never raw user identifiers.
-- Operational run state lives in `harness.db`; the memory repo carries portable source and evidence.
-- A run records the active project slug, top-level spec path, spec SHA, and effective model/agent bindings.
-- Specs and artifacts are committed through the existing Git Backend with structured commit tags.
+- Operational run state lives in `harness.db`; the memory repo carries portable run evidence, not the source specs.
+- A run records the active project slug, source repo path, source repo HEAD, source dirty flag, top-level spec path, spec graph SHA, and effective model/agent bindings.
+- Artifacts are committed through the existing Git Backend with structured commit tags.
 
 ## SQLite State
 
@@ -72,7 +114,10 @@ M9 adds tables for durable run control and resume. Exact DDL can change during i
 `pipeline_runs`:
 - `id` stable run id.
 - `project_slug` active project at run creation.
-- `spec_path` path under `projects/<slug>/pipelines/`.
+- `source_repo_path` attached git directory containing the entrypoint spec.
+- `source_repo_head` commit checked out when the run starts.
+- `source_repo_dirty` whether the source repo had uncommitted changes at run start.
+- `spec_path` path relative to `source_repo_path`.
 - `spec_sha` hash of the loaded spec graph, including imports.
 - `entrypoint` top-level pipeline name.
 - `status` one of `running`, `succeeded`, `surfaced`, `cancelled`, `failed`.
@@ -88,7 +133,7 @@ M9 adds tables for durable run control and resume. Exact DDL can change during i
 - `agent_name` supplied agent for this entry.
 - `status` one of `running`, `ok`, `rejected`, `malfunctioned`, `surfaced`, `cancelled`.
 - `prompt_artifact_path`, `transcript_artifact_path`.
-- `started_at`, `finished_at`.
+- `started_at`, `updated_at`, `finished_at`.
 
 `pipeline_bindings`:
 - `run_id`, `pipeline_path`, `step_name`, `cycle`.
@@ -126,13 +171,13 @@ M9 adds tables for durable run control and resume. Exact DDL can change during i
 
 ### 1. Discovery
 
-The UI lists specs from `projects/<active>/pipelines/`. Discovery only reads files under that tree. It does not execute commands or call models.
+The UI lists specs from `pipelines/**/*.hp` in every git directory configured on the active project. Discovery only reads files under those attached repos. It does not execute commands or call models.
 
 Discovery validates:
 - File extension is `.hp`.
 - Source is UTF-8.
 - Bidi override and zero-width characters are rejected by the sanitizer.
-- Paths are relative to the active project root.
+- Paths are relative to the attached source repo root.
 - Case-insensitive path collisions are rejected for Windows portability.
 
 ### 2. Parse
@@ -150,7 +195,7 @@ Parse errors must report:
 Validation rejects specs that parse but cannot run safely.
 
 Required checks:
-- Imports resolve under the active project's `pipelines/` tree and end in `.hp`.
+- Imports resolve under the same attached source repo as the entrypoint and end in `.hp`.
 - Import graph is acyclic.
 - Callable graph is acyclic.
 - Imported and local callable names do not collide.
@@ -170,7 +215,7 @@ Required checks:
 - `propagate` is invalid in top-level pipelines.
 - Agent role names resolve exactly one visible agent role.
 - Model names are registered.
-- Literal paths resolve within the active project root and reject symlink escapes.
+- Literal paths resolve within the attached source repo root and reject symlink escapes.
 - JSON literal sources parse before a receiving step runs.
 
 Linter warnings are non-fatal:
@@ -205,6 +250,7 @@ Starting a run snapshots:
 - Spec graph SHA.
 - Entrypoint and params.
 - Active project slug.
+- Source repo path, HEAD commit, dirty flag, and spec path.
 - Effective agent and model resolution.
 - Current permission profile.
 - Harness version.
@@ -241,7 +287,7 @@ For each runs step entry:
 
 Rules:
 - No shell expansion, pipes, redirects, globs, or environment interpolation.
-- Working directory is the active project root.
+- Working directory is the attached source repo root containing the entrypoint spec.
 - `$output` substitutions expand to declared output artifact paths only.
 - Commands inherit the M7 approval and permission system when classified as destructive or broad.
 - Command stdout/stderr are captured, truncated for UI tails, and stored fully in artifacts subject to output-size limits.
@@ -311,12 +357,15 @@ On crash recovery:
 The page lists `.hp` specs for the active project.
 
 Each row shows:
+- Source repo.
 - Spec path.
 - Entrypoint callables.
 - Last lint result.
 - Last run status.
 - Last run time.
-- Start, preview, lint, and history actions.
+- Edit, save, start, preview, lint, and history actions.
+
+The editor writes `.hp` files directly to the attached source repo working tree. Save runs sanitizer, parse, and load-time validation before writing. It does not auto-commit; the changed spec remains a normal source repo working-tree change for the user or a later pipeline step to commit.
 
 ### Lint And Preview
 
@@ -411,7 +460,7 @@ M9 must preserve these invariants:
 - Specs are data, not executable scripts.
 - Verify/gate commands are explicit argv arrays and visible in preview.
 - Model writes go through declared artifact paths and harness tools.
-- Paths are rooted in the active project or harness-controlled artifact root.
+- Paths are rooted in the attached source repo or harness-controlled artifact root.
 - Symlink escapes, absolute paths, `..`, Windows drive paths, UNC paths, reserved device names, and case-insensitive collisions are rejected.
 - The runner never interpolates agent values into prompts or commands.
 - Surface messages are literals, not interpolated templates.
@@ -423,20 +472,28 @@ M9 must preserve these invariants:
 
 ### Phase 1 — Parser And Validator
 
-- Add `internal/pipeline` package.
-- Implement sanitizer and lexer.
-- Implement recursive-descent parser with source spans.
-- Implement AST and semantic validator.
-- Add lint warnings.
+- Add isolated `internal/dsl` package tree with no harness-runtime imports.
+- Implement sanitizer and source graph loading in `internal/dsl/source`.
+- Implement lexer and recursive-descent parser with source spans in `internal/dsl/parser`.
+- Implement AST and shared diagnostics at the `internal/dsl` package boundary.
+- Implement semantic validator in `internal/dsl/validate`.
+- Implement lint warnings in `internal/dsl/linter`.
 - Add golden tests for valid and invalid specs from `DSL.md` examples.
+- Add import-boundary tests or static checks that prevent `internal/dsl` from depending on harness runtime packages.
 
-### Phase 2 — Project Storage And Discovery
+### Phase 1b — Harness Runner Shell
 
-- Add project `pipelines/` discovery.
+- Add `internal/pipeline` package.
+- Make `internal/pipeline` consume `internal/dsl` validated spec graphs.
+- Keep DB, artifact, UI, command, and agent-loop dependencies out of `internal/dsl`.
+
+### Phase 2 — Source Repo Discovery
+
+- Add `pipelines/**/*.hp` discovery across active project directories.
 - Add safe import/literal path resolution.
 - Add spec graph hashing.
 - Add UI lint endpoint and preview rendering.
-- Add memory repo commit conventions for specs if authored through UI later.
+- Add UI spec editor that writes `.hp` files back to the attached repo working tree without auto-commit.
 
 ### Phase 3 — Run State And Artifacts
 
@@ -489,15 +546,19 @@ M9 must preserve these invariants:
 ## Acceptance Tests
 
 - [ ] Lint a valid two-file pipeline with an imported `lib` -> preview shows resolved imports, agents, steps, routes, commands, outputs, and optional bindings.
+- [ ] Run the import-boundary check -> `internal/dsl` has no dependencies on harness runtime packages such as `internal/pipeline`, `internal/ui`, `internal/memory`, `internal/agentloop`, `internal/tools`, or database packages.
+- [ ] Place a `.hp` spec under an attached repo's `pipelines/` tree -> the pipelines page discovers it and shows the source repo path.
+- [ ] Place a `.hp` spec only under the memory repo -> the pipelines page does not treat it as an executable source spec.
+- [ ] Edit a `.hp` spec through the UI -> the attached source repo file changes, the memory repo does not receive a source-spec copy, and the change remains uncommitted.
 - [ ] Load a spec with an import cycle -> validation fails before any model call or command execution.
 - [ ] Load a spec with a callable cycle -> validation fails before any model call or command execution.
 - [ ] Load a spec with an unresolved agent role -> validation fails with file, line, and role name.
 - [ ] Load a spec with a model name not registered in config -> validation fails with a model resolution error.
-- [ ] Load a spec with a path outside the active project root in an import, literal source, or derived artifact path -> validation rejects it.
+- [ ] Load a spec with a path outside the attached source repo root in an import, literal source, or derived artifact path -> validation rejects it.
 - [ ] Load a spec with Windows case-insensitive namespace collisions -> validation rejects it on every platform.
 - [ ] Preview a spec with broad verify/gate commands -> linter warns without blocking execution.
-- [ ] Start a run -> `pipeline_runs` row is created with project slug, spec path, spec SHA, entrypoint, and `running` status.
-- [ ] Run a model step that writes all declared outputs -> outputs are validated and committed under `projects/<slug>/artifacts/<run>/`.
+- [ ] Start a run -> `pipeline_runs` row is created with project slug, source repo path, source repo HEAD, dirty flag, spec path, spec SHA, entrypoint, and `running` status.
+- [ ] Run a model step that writes all declared outputs -> outputs are validated and committed as run evidence under `projects/<slug>/artifacts/<run>/`.
 - [ ] Run a model step that writes invalid JSON to a `json` output -> output validation fails before verify commands run.
 - [ ] Run a model step that omits a declared output -> retry runs when configured; exhausted retries surface with the output-contract error.
 - [ ] A failing `verify` command triggers retry, and `{last_verify.cmd}` / `{last_verify.output}` render in the repair prompt.
@@ -523,7 +584,7 @@ M9 must preserve these invariants:
 ## Open Decisions
 
 - Exact SQLite DDL and retention for old pipeline run state.
-- Whether specs can be edited in the UI in M9 or are file-authored only.
 - Exact command classification heuristics for linter warnings versus approval requirements.
 - Whether artifacts should be committed incrementally per step or batched at surface/success checkpoints.
 - How much of the transcript to include in repro bundles by default.
+- Whether a future shared pipeline template library belongs in the memory repo or another user-controlled repo.

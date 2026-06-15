@@ -123,15 +123,17 @@ Responsibilities:
 - M7 adds destructive tools, shell execution, web search, approvals, richer permissions, and extension hooks.
 
 ### Pipeline Runner (`internal/pipeline`) — planned M9
-Owns parsing, validation, and execution of Harness Pipeline DSL specs (`.hp`). The language contract is documented in [DSL.md](DSL.md). Specs are declarative project artifacts; the runner executes them through the same first-party agent loop, tool registry, queue, inference client, memory store, and UI event stream used by interactive tasks.
+Owns parsing, validation, and execution of Harness Pipeline DSL specs (`.hp`). The language contract is documented in [DSL.md](DSL.md). Specs are declarative workflow files stored with the attached project git repos they operate on; the runner executes them through the same first-party agent loop, tool registry, queue, inference client, memory store, and UI event stream used by interactive tasks.
+
+Language implementation is isolated under `internal/dsl` (`parser/`, `validate/`, `linter/`, `source/`, and core AST/diagnostic types) so it can be extracted later. `internal/dsl` does not import harness runtime packages; `internal/pipeline` is the harness-specific adapter.
 
 Responsibilities:
-- Load `.hp` specs from the active project's `pipelines/` tree and resolve imports relative to the project root.
+- Load `.hp` specs from the active project's attached git directories and resolve imports relative to the source repo root.
 - Parse and validate specs before a run starts: grammar, type bindings, route targets, import/call graph cycles, path safety, output declarations, and agent/model resolution.
 - Render the dry-run preview shown by the UI: agents, models, steps, routes, verify/gate commands, declared outputs, optional bindings, and suspicious paths.
 - Execute one step at a time by opening agent-loop sessions, applying declared bindings, validating declared outputs, running verify/gate argv commands, and resolving routes.
 - Checkpoint surfaced runs with spec SHA, supplied agent args, reject counters, consumed artifact hashes, output hashes, and verify/gate output tails so the UI can resume safely.
-- Store durable run state in SQLite and commit specs, prompts, and artifacts to the memory repo.
+- Store durable run state in SQLite, record source repo commit/spec hashes, and commit prompts/artifacts to the memory repo as run evidence.
 
 
 ### Prompt Assembler (`internal/prompt`)
@@ -305,9 +307,7 @@ memory/
         <dir-slug>/             ← embeddings of one attached directory
           vectors.bin
           manifest.json
-      pipelines/               ← .hp specs owned by this project (M9)
-        *.hp
-      artifacts/               ← pipeline run prompts, outputs, and files (M9)
+      artifacts/               ← pipeline run prompts, outputs, and evidence (M9)
         <run>/...
     <slug>/                    ← user-created projects (M3b)
       rules.md                 ← project-specific rules
@@ -317,13 +317,12 @@ memory/
       episodes/<n>/<timestamp>.md
       index/_episodes/{vectors.bin, manifest.json}
       index/<dir-slug>/{vectors.bin, manifest.json}
-      pipelines/**/*.hp
       artifacts/<run>/...
 ```
 
 Everything in the repo is committed. The repo travels with the user — portable across machines and mediums.
 
-M3 stages the `projects/global/` paths immediately (sessions, queue WAL, episodes); M3b introduces the `projects` table, the `active_project_slug` config, and user-created project rows on top of that layout. M9 adds `pipelines/` and `artifacts/` as project-owned trees so specs, prompts, and outputs travel with the memory repo while operational run state remains in SQLite.
+M3 stages the `projects/global/` paths immediately (sessions, queue WAL, episodes); M3b introduces the `projects` table, the `active_project_slug` config, and user-created project rows on top of that layout. M9 adds `artifacts/` as project-owned run evidence so prompts and outputs travel with the memory repo while operational run state remains in SQLite. Pipeline source specs do not live in the memory repo by default; they live in the attached project git repos they operate on, and runs record the source repo commit plus spec hash.
 
 The shared `harness.db` SQLite file (config + metrics) lives alongside the harness binary, not in the memory repo — it is machine-local operational data, not user data.
 
