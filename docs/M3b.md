@@ -313,3 +313,4 @@ Deliberately out of scope for M3b. Listed here so they don't get lost.
 - **Per-project embedder and per-project ports.** Currently embedder and all ports stay global.
 - **Promote project-specific agent to global.** UI affordance to copy `projects/<slug>/agents/<name>/` to `agents/<name>/`.
 - **Non-git directories.** Indexing arbitrary trees by mtime + content hash; out of scope while everything stays git-backed.
+- **Pipeline run artifacts.** M9 adds `projects/<slug>/artifacts/` for pipeline run evidence. `.hp` source specs live in attached project git directories, not in the memory repo. M3b deliberately stops at projects, agents, sessions, episodes, directories, and index layout.

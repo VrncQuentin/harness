@@ -2,7 +2,7 @@
 
 ## Overview
 
-A local AI inference harness with a git-backed memory system, layered prompt assembly, a browser-based management UI, and a planned first-party native agent loop. The harness owns chat, tool-call orchestration, and tool execution locally; external coding agents are references for design patterns, not runtime dependencies.
+A local AI inference harness with a git-backed memory system, layered prompt assembly, a browser-based management UI, a planned first-party native agent loop, and a planned declarative pipeline runner. The harness owns chat, tool-call orchestration, tool execution, and `.hp` pipeline execution locally; external coding agents are references for design patterns, not runtime dependencies.
 
 The harness runs as a native desktop binary (Windows and Linux). It starts silently, opens the management UI in the default browser if not already open, and lives in the system tray until explicitly quit. The browser UI is the only user-facing surface — all errors (unconfigured on first run, missing model, llama-server failures, missing memory repo) are surfaced there, not in a terminal.
 
@@ -15,7 +15,7 @@ The binary targets llama-server as the inference backend and uses a separate emb
 ```
 ┌─────────────────────────────────────────────────────────┐
 │           Browser (management UI)                        │
-│ chat/tasks │ model status │ agents │ projects │ memory │ logs │
+│ chat/tasks │ pipelines │ model status │ agents │ projects │ memory │ logs │
 └───────────────────────┬─────────────────────────────────┘
                         │ HTTP (htmx + SSE)
 ┌───────────────────────▼─────────────────────────────────┐
@@ -36,15 +36,21 @@ The binary targets llama-server as the inference backend and uses a separate emb
 │  └──────┬───────┘  └───────┬────────┘  └──────┬──────┘  │
 │         │                  │                  │         │
 │  ┌──────▼───────┐  ┌───────▼────────┐         ▼         │
-│  │ Agent Loop   │─▶│ Tool Registry  │   ┌────────────┐  │
-│  │ (planned)    │  │ + Sandbox      │   │ Git Backend│  │
-│  └──────┬───────┘  │ (planned)      │   └──────┬─────┘  │
-│         │          └────────────────┘          │        │
-│         ▼                                      ▼        │
-│  ┌──────────────┐                       ┌─────────────┐ │
-│  │    Queue     │                       │  Embedder   │ │
-│  └──────┬───────┘                       │  (nomic)   │ │
-│         │                               └─────────────┘ │
+│  │ Pipeline     │  │ Tool Registry  │   ┌────────────┐  │
+│  │ Runner       │  │ + Sandbox      │   │ Git Backend│  │
+│  │ (planned)    │  │ (planned)      │   └──────┬─────┘  │
+│  └──────┬───────┘  └───────▲────────┘          │        │
+│         ▼                  │                   ▼        │
+│  ┌──────────────┐          │            ┌─────────────┐ │
+│  │ Agent Loop   │──────────┘            │  Embedder   │ │
+│  │ (planned)    │                       │  (nomic)   │ │
+│  └──────┬───────┘                       └─────────────┘ │
+│         │                                               │
+│         ▼                                               │
+│  ┌──────────────┐                                      │
+│  │    Queue     │                                      │
+│  └──────┬───────┘                                      │
+│         │                                              │
 │  ┌──────▼───────┐                                     │
 │  │  Inference   │                                     │
 │  │   Client     │                                     │
@@ -56,7 +62,7 @@ The binary targets llama-server as the inference backend and uses a separate emb
 └──────────────────────┘
 ```
 
-The browser UI is the primary chat/task surface. The optional OpenAI-compatible API server remains available for external clients, but first-party agent-loop execution stays inside the harness.
+The browser UI is the primary chat/task surface and, once M9 lands, the primary pipeline execution surface. The optional OpenAI-compatible API server remains available for external clients, but first-party agent-loop and pipeline execution stay inside the harness.
 
 ---
 
@@ -74,6 +80,7 @@ Stack:
 
 Pages:
 - **Chat / Tasks** — first-party conversation and agent-loop task surface; streams model output, tool calls, tool results, and cancellation state
+- **Pipelines** — planned `.hp` authoring, lint, dry-run preview, execution graph, surfacing, resume, and artifact browser
 - **Status** — llama-server health, queue depth, VRAM usage, restart controls; errors (missing config, missing model, failed starts) displayed prominently here
 - **Projects** — create, edit, hide, and switch active project once M3b lands
 - **Agents** — switch active agent, edit persona and notes inline, trigger hot-reload
@@ -114,6 +121,19 @@ Responsibilities:
 - Pass a typed context to each tool: active project slug, sandbox roots, session id, caller identity, and cancellation context.
 - M4 starts read-only (`file_read`, `file_list`) and rejects paths outside active project directories.
 - M7 adds destructive tools, shell execution, web search, approvals, richer permissions, and extension hooks.
+
+### Pipeline Runner (`internal/pipeline`) — planned M9
+Owns parsing, validation, and execution of Harness Pipeline DSL specs (`.hp`). The language contract is documented in [DSL.md](DSL.md). Specs are declarative workflow files stored with the attached project git repos they operate on; the runner executes them through the same first-party agent loop, tool registry, queue, inference client, memory store, and UI event stream used by interactive tasks.
+
+Language implementation is isolated under `internal/dsl` (`parser/`, `validate/`, `linter/`, `source/`, and core AST/diagnostic types) so it can be extracted later. `internal/dsl` does not import harness runtime packages; `internal/pipeline` is the harness-specific adapter.
+
+Responsibilities:
+- Load `.hp` specs from the active project's attached git directories and resolve imports relative to the source repo root.
+- Parse and validate specs before a run starts: grammar, type bindings, route targets, import/call graph cycles, path safety, output declarations, and agent/model resolution.
+- Render the dry-run preview shown by the UI: agents, models, steps, routes, verify/gate commands, declared outputs, optional bindings, and suspicious paths.
+- Execute one step at a time by opening agent-loop sessions, applying declared bindings, validating declared outputs, running verify/gate argv commands, and resolving routes.
+- Checkpoint surfaced runs with spec SHA, supplied agent args, reject counters, consumed artifact hashes, output hashes, and verify/gate output tails so the UI can resume safely.
+- Store durable run state in SQLite, record source repo commit/spec hashes, and commit prompts/artifacts to the memory repo as run evidence.
 
 
 ### Prompt Assembler (`internal/prompt`)
@@ -222,6 +242,7 @@ Metrics collected grow with each milestone:
 - **M5:** retrieval latency, embedding latency, index size
 - **M7:** tool call count per type, tool error rate, approval decisions, shell execution outcomes
 - **M8:** TTFT, token throughput, VRAM usage
+- **M9:** pipeline run status, step attempts, reject counts, surface counts, verify/gate duration, artifact bytes
 
 Interface:
 ```go
@@ -253,6 +274,7 @@ Schema grows per milestone:
 - **M6:** `promotions_count`, `dedup_blocks`, `cross_agent_reads`
 - **M7:** `approval_decisions`, `shell_exec_duration_ms`, `tool_output_truncations`
 - **M8:** `ttft_ms`, `token_throughput`, `vram_usage_mb`
+- **M9:** `pipeline_runs`, `pipeline_step_attempts`, `pipeline_rejects`, `pipeline_surfaces`, `pipeline_verify_duration_ms`, `pipeline_gate_duration_ms`, `pipeline_artifact_bytes`
 
 Retention: raw rows kept for 30 days, downsampled hourly aggregates kept indefinitely. UI shows both live values (SSE) and historical charts (htmx polling).
 
@@ -285,6 +307,8 @@ memory/
         <dir-slug>/             ← embeddings of one attached directory
           vectors.bin
           manifest.json
+      artifacts/               ← pipeline run prompts, outputs, and evidence (M9)
+        <run>/...
     <slug>/                    ← user-created projects (M3b)
       rules.md                 ← project-specific rules
       agents/<n>/{persona.md, rules.md, notes.md}   ← optional project agent overrides/additions
@@ -293,11 +317,12 @@ memory/
       episodes/<n>/<timestamp>.md
       index/_episodes/{vectors.bin, manifest.json}
       index/<dir-slug>/{vectors.bin, manifest.json}
+      artifacts/<run>/...
 ```
 
 Everything in the repo is committed. The repo travels with the user — portable across machines and mediums.
 
-M3 stages the `projects/global/` paths immediately (sessions, queue WAL, episodes); M3b introduces the `projects` table, the `active_project_slug` config, and user-created project rows on top of that layout.
+M3 stages the `projects/global/` paths immediately (sessions, queue WAL, episodes); M3b introduces the `projects` table, the `active_project_slug` config, and user-created project rows on top of that layout. M9 adds `artifacts/` as project-owned run evidence so prompts and outputs travel with the memory repo while operational run state remains in SQLite. Pipeline source specs do not live in the memory repo by default; they live in the attached project git repos they operate on, and runs record the source repo commit plus spec hash.
 
 The shared `harness.db` SQLite file (config + metrics) lives alongside the harness binary, not in the memory repo — it is machine-local operational data, not user data.
 
@@ -347,3 +372,5 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 **Two HTTP servers, one binary.** UI server (port 3000) and API server (port 8080) are separate. UI is always on. API is opt-in for external OpenAI-compatible clients and is never required for the first-party browser workflow.
 
 **Native agent layer staged after Projects.** M4 introduces `internal/agentloop` and `internal/tools` as planned first-party components. `internal/agent` remains the registry/persona package. The MVP starts read-only and project-scoped; destructive tools and approvals are deferred to M7.
+
+**Pipeline DSL staged after tool permissions.** `.hp` pipelines depend on the native agent loop and the hardened tool/approval layer because model steps write declared outputs through harness tools and verify/gate commands run as trusted local processes. The DSL is deliberately not part of M4: interactive agent-loop execution comes first, safe write/shell permissions come second, declarative multi-step automation comes after those foundations.
