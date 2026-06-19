@@ -7,11 +7,11 @@ executed, how data flows between them, and what happens when things go wrong.
 File extension: `.hp` (harness pipeline). Source files are UTF-8. The harness sanitizer hard-fails on
 bidi override and zero-width characters.
 
-Runtime integration is staged in [roadmap M9](roadmap.md#m9--pipeline-dsl), detailed in [dsl_roadmap.md](dsl_roadmap.md), and bounded in [architecture.md](architecture.md#pipeline-runner-internalpipeline--planned-m9). Until that milestone lands, this document is the language contract only; it does not imply a partially supported runtime.
+Runtime integration is staged in [roadmap M10](roadmap.md#m10--pipeline-dsl), detailed in [dsl_roadmap.md](dsl_roadmap.md), and bounded in [architecture.md](architecture.md#pipeline-runner-internalpipeline--planned-m10). Until that milestone lands, this document is the language contract only; it does not imply a partially supported runtime.
 
-Specs are source-repo workflow files. M9 discovers them in the active project's attached git directories, using `pipelines/**/*.hp` by default. Prompts and outputs are stored as run evidence under `projects/<slug>/artifacts/<run>/` in the memory repo, and operational run state stays in `harness.db` alongside other metrics/config state.
+Specs are source-repo workflow files. M10 discovers them in the active project's attached git directories, using `pipelines/**/*.hp` by default. Prompts and outputs are stored as run evidence under `artifacts/<run>/` in the active project memory repo, and operational run state stays in `harness.db` alongside other metrics/config state.
 
-Where this spec says "project root", M9 runtime treats that as the attached source repo root containing the entrypoint `.hp` file.
+Where this spec says "project root", M10 runtime treats that as the attached source repo root containing the entrypoint `.hp` file.
 
 Comments run from `#` to end of line, anywhere outside a `STRING` or `TEXT`
 literal. A `#` inside a quoted string or a triple-backtick-quoted prompt is literal.
@@ -569,7 +569,7 @@ cycle and artifact hashes are recorded in SQLite as the audit trail. Run state
 (reject counters, cycle counters, consumed-cycle records, supplied agent args,
 artifact hashes, source repo commit, and spec SHA) lives in SQLite. Source
 specs live in the attached project git repo; prompts and artifacts live in the
-memory repo as run evidence.
+active project memory repo as run evidence.
 
 ### Run limits are configuration, not language
 
