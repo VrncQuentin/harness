@@ -4,6 +4,8 @@
 
 Introduce a `Project` concept: a named container for rules, agents, sessions, and 0+ git directories. Projects scope memory, prompt layering, and (optionally) the active model. The previous "no project" baseline is implemented as the always-present **global project** (slug `global`), so existing single-user setups continue to work unchanged when this milestone lands — they simply run inside the global project by default.
 
+Storage note: this document describes the M3b single-memory-repo layout (`memory/projects/<slug>/`). M9 layout-v2 supersedes only that storage shape by splitting each project into its own git-backed memory repo under `~/.harness/projects/<id>/`, with `global` as a first-class project repo. The project table, active project slug, project directories, model overrides, activation semantics, and per-file agent resolution survive.
+
 ## Dependencies
 
 Builds on M2 (agent registry, layered prompt, hot-reload) and M3 (memory repo, sessions, git backend). Cannot land before both. Indexing of project directories is deferred to M5; M3b only stages the directory layout and ensures activation eagerly validates that configured paths are valid git repos.
@@ -313,4 +315,4 @@ Deliberately out of scope for M3b. Listed here so they don't get lost.
 - **Per-project embedder and per-project ports.** Currently embedder and all ports stay global.
 - **Promote project-specific agent to global.** UI affordance to copy `projects/<slug>/agents/<name>/` to `agents/<name>/`.
 - **Non-git directories.** Indexing arbitrary trees by mtime + content hash; out of scope while everything stays git-backed.
-- **Pipeline run artifacts.** M9 adds `projects/<slug>/artifacts/` for pipeline run evidence. `.hp` source specs live in attached project git directories, not in the memory repo. M3b deliberately stops at projects, agents, sessions, episodes, directories, and index layout.
+- **Pipeline run artifacts.** M10 adds `artifacts/` in the active project memory repo for pipeline run evidence. `.hp` source specs live in attached project git directories, not in the memory repo. M3b deliberately stops at projects, agents, sessions, episodes, directories, and index layout.

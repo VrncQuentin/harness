@@ -233,12 +233,41 @@ Design references: opencode (part-based messages, step counter, doom-loop detect
 
 ---
 
-## M9 — Pipeline DSL
+## M9 — Layout V2
+
+**Goal:** move from one configured memory repo to a harness home with one git-backed memory repo per project, while keeping the harness global/resident and preserving SQLite for config, metrics, and runtime state. Full design in [layout-v2.md](layout-v2.md).
+
+Depends on M3b (projects table, active project slug, attached directories), M5 (project-scoped indexes), and M8 (startup validation and reliable packaging).
+
+- [ ] Harness home: default `~/.harness/` with `harness.db`, `projects/`, `logs/`, and `cache/`
+- [ ] Global project repo: initialize `~/.harness/projects/global` as a first-class git repo containing global rules, user facts, facts, agents, sessions, episodes, index, queue WAL, and artifacts
+- [ ] Project memory repos: one git repo per project, defaulting to `~/.harness/projects/<id>/`, with optional user-provided directories
+- [ ] Create-project flow: use existing git directory as-is, initialize non-git directory with `go-git`, or create the default directory and initialize it with `go-git`
+- [ ] Optional GitHub backup flow: opt-in only, shelling to logged-in `gh`, isolated from core local project creation
+- [ ] Path resolution: memory, session, queue, index, and artifact paths resolve relative to the active project memory repo instead of a shared memory repo root
+- [ ] Prompt layering: global rules/user/facts and fallback agents resolve from `projects/global`; active project rules and per-file agent overrides resolve from the active project repo
+- [ ] Migration: split existing single-memory-repo layout into `~/.harness/projects/global` and one project repo per existing project, preserving data and leaving the old repo untouched on failure
+- [ ] UI: create/edit project forms expose memory repo directory choice and backup action without adding cwd-driven activation
+
+**Acceptance tests:** see [layout-v2.md](layout-v2.md#acceptance-tests). Highlights:
+
+- [ ] First run creates `~/.harness/harness.db` and initializes `~/.harness/projects/global` as a git repo
+- [ ] Creating a project with no directory creates and initializes `~/.harness/projects/<id>`
+- [ ] Creating a project with a non-git directory initializes it through `go-git`
+- [ ] Creating a project with an existing git directory uses it without rewriting unrelated files
+- [ ] Starting the harness never depends on cwd and never activates a project based on the launch directory
+- [ ] One project with two attached code repos writes sessions and episodes to one project memory repo and creates separate index entries for each attached repo
+- [ ] Agent resolution falls back from active project agents to `projects/global/agents` per file
+- [ ] Pipeline discovery reads `.hp` files from attached code repos, not from project memory repos
+
+---
+
+## M10 — Pipeline DSL
 
 **Goal:** execute reviewed `.hp` pipeline specs inside the harness using the native agent loop, tool registry, project sandbox, and browser UI.
 
-Depends on M7 (destructive tools, shell execution, approvals, and hardened permissions). The DSL contract lives in [DSL.md](DSL.md); the detailed implementation plan and acceptance tests live in [dsl_roadmap.md](dsl_roadmap.md).
+Depends on M7 (destructive tools, shell execution, approvals, and hardened permissions) and M9 (layout-v2 project memory repos and attached source repo semantics). The DSL contract lives in [DSL.md](DSL.md); the detailed implementation plan and acceptance tests live in [dsl_roadmap.md](dsl_roadmap.md).
 
 - [ ] Isolated `internal/dsl` parser, validator, and linter package; editor and dry-run preview for attached-repo `.hp` specs
 - [ ] Runtime execution through `internal/agentloop`, declared artifacts, verify/gate commands, retries, routes, and `lib` calls
-- [ ] Durable SQLite run state, memory-repo artifacts, UI run graph, surfacing/resume controls, and M9 metrics
+- [ ] Durable SQLite run state, project-memory-repo artifacts, UI run graph, surfacing/resume controls, and M10 metrics
