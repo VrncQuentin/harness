@@ -82,44 +82,39 @@ against the code (file:line evidence inline).
 
 5. **Custom JS + `node_modules` instead of htmx.** Zero `hx-` attributes in any
    template, but a 20KB `assets/static/app.js` plus inline `<script>` in
-   `task.html` and `layout.html`, a `node_modules/` tree, `biome.json`, and a JS
+   `task.html`, a `node_modules/` tree, `biome.json`, and a JS
    lint CI step. Directly violates the stated design ("htmx + SSE, no JS
    framework, no build step, no node_modules"). Root cause is shared with #2: the
    chat/task surfaces keep conversation state in the **browser** and stream
    directly from a `fetch`, instead of server-owned state + SSE-driven swaps.
 
-6. **Missing `docs/agents.md`.** Referenced by [AGENTS.md](../AGENTS.md),
-   [CLAUDE.md](../CLAUDE.md), and [docs/DSL.md](DSL.md) but the file does not
-   exist. The governing instructions point readers at a file that isn't there.
-
-7. **Metrics are mostly aspirational.** Only M1 (`uptime`, `queue_depth`,
-   `process_health`) and M3 (`session_count`, `episode_count`,
-   `git_commit_latency_ms`) are actually recorded
+6. **Metrics are mostly aspirational.** M1 metrics (`uptime`, `queue_depth`,
+   `process_health`, `restart_count`) and M3 metrics (`session_count`,
+   `episode_count`, `git_commit_latency_ms`) are recorded
    ([internal/metrics/recorder.go](../internal/metrics/recorder.go)). M2/M4/M5/M6/M7
-   metric names don't exist as constants despite that code shipping; even M1
-   `restart_count` is unwired.
+   metric names don't exist as constants despite that code shipping.
 
-8. **Undocumented packages.** `internal/runtime` (owns the mutable service graph —
+7. **Undocumented packages.** `internal/runtime` (owns the mutable service graph —
    the doc's "Core" box), `internal/db` (all SQL), `internal/index` (vector
    format), plus `logbuf`, `project`, `reqid` are not described in
    [architecture.md](architecture.md).
 
-9. **Config doc is stale.** Sections `Agent`, `Log`, `Loop` and fields like
+8. **Config doc is stale.** Sections `Agent`, `Log`, `Loop` and fields like
    `cache_type_k/v`, `recency_n`, `summarizer_prompt`, `semantic_weight`,
    `recency_weight` exist in the struct + migrations but not in the doc's section
    list.
 
-10. **`tools.Context` under-specified.** Only `ProjectSlug` + `SandboxRoots`
+9. **`tools.Context` under-specified.** Only `ProjectSlug` + `SandboxRoots`
     ([internal/tools/tools.go](../internal/tools/tools.go)); the architecture
     calls for session id, caller identity, and cancellation context.
 
-11. **Storage language mixes pre-M9 and post-M9.** Code uses `harness.db` next to
+10. **Storage language mixes pre-M9 and post-M9.** Code uses `harness.db` next to
     the binary; the doc describes `~/.harness/` and `projects/<slug>/` repos as if
     current. Docs need explicit "current vs. after layout-v2" framing.
 
 ### Roadmap accuracy
 
-12. **Checkboxes are wrong in both directions.** Done-but-unticked: M4 tool
+11. **Checkboxes are wrong in both directions.** Done-but-unticked: M4 tool
     registry, M5 embedder sidecar, M5 episode embed-on-commit, M4 loop
     visibility, M3b project switch/reload. Ticked-but-broken: M5 blended
     retrieval. Genuinely missing despite milestone "progress": per-tool toggles,
@@ -128,7 +123,7 @@ against the code (file:line evidence inline).
 
 ### Not a bug (recorded to avoid re-litigating)
 
-13. **Promotion path.** `handlePromoteFact` writes `global/facts.md`
+12. **Promotion path.** `handlePromoteFact` writes `global/facts.md`
     ([internal/ui/promotion.go:50](../internal/ui/promotion.go)) and the assembler
     *reads* the same path (`factsPath = "global/facts.md"`,
     [internal/prompt/prompt.go:44](../internal/prompt/prompt.go)). Promoted facts
@@ -138,7 +133,7 @@ against the code (file:line evidence inline).
 
 ### Test coverage gaps
 
-14. `internal/agentloop` (the loop engine) and `internal/embedder` have **zero
+13. `internal/agentloop` (the loop engine) and `internal/embedder` have **zero
     tests** — the two newest, riskiest packages are uncovered.
 
 ---
@@ -164,7 +159,7 @@ UX (live status, streaming). The only client lib is **vendored htmx** (one file,
 embedded via `embed.FS`, no build step, no node_modules).
 
 - Delete `assets/static/app.js` and the inline `<script>` in `task.html`.
-- Remove `node_modules/`, `biome.json`, `package.json`/`package-lock.json`, and
+- Remove `node_modules/`, `biome.json`, any package manifest/lock files, and
   the frontend (Biome/JS) lint CI step. Add `node_modules/` and `harness.db` to
   `.gitignore`.
 - Vendor htmx as a single static asset served from `embed.FS`; load the SSE
@@ -194,7 +189,7 @@ embedded via `embed.FS`, no build step, no node_modules).
 - Add **non-streaming** tool-call parsing, or explicitly defer it in the roadmap
   with a reason (resolves #4).
 - Expand `tools.Context` with session id, caller identity, and cancellation
-  context (#10).
+  context (#9).
 
 ### Phase 3 — Fix M5
 
@@ -208,7 +203,7 @@ embedded via `embed.FS`, no build step, no node_modules).
 ### Phase 4 — Fix M6
 
 - Decide and align the facts/notes layout naming (`global/` vs `projects/global/`)
-  and update docs accordingly (#13).
+  and update docs accordingly (#12).
 - Implement the **dedup** pass on promotion, or uncheck "M6 complete."
 - Implement **cross-agent read**, or explicitly descope it.
 
@@ -222,17 +217,16 @@ embedded via `embed.FS`, no build step, no node_modules).
 
 ### Phase 6 — Docs + roadmap reconciliation
 
-- Restore or author `docs/agents.md`, or remove the references (#6).
-- Document `internal/runtime`, `db`, `index`, `logbuf`, `project`, `reqid` (#8).
-- Fix the config section list (#9) and add explicit "current vs. post-M9" storage
-  framing (#11).
-- Add the missing M2/M4/M5/M6 metrics, or mark them aspirational in the doc (#7).
+- Document `internal/runtime`, `db`, `index`, `logbuf`, `project`, `reqid` (#7).
+- Fix the config section list (#8) and add explicit "current vs. post-M9" storage
+  framing (#10).
+- Add the missing M2/M4/M5/M6 metrics, or mark them aspirational in the doc (#6).
 - Rewrite the roadmap checkboxes to reflect true state — **unchecked unless the
-  acceptance test was actually run and observed** (#12).
+  acceptance test was actually run and observed** (#11).
 
 ### Phase 7 — Test the new/risky packages
 
-- Add tests for `internal/agentloop` and `internal/embedder` (#14), plus
+- Add tests for `internal/agentloop` and `internal/embedder` (#13), plus
   regression tests for the bugs fixed in Phases 2–4.
 
 ---
