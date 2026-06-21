@@ -43,7 +43,21 @@
   <details class="chat-resume" id="chat-resume">
     <summary>Recent sessions for <code>{{.ActiveAgent}}</code></summary>
     <div class="chat-resume-body" id="chat-resume-body">
-      <p class="fg-hint">Loading...</p>
+      {{if .ResumeErr}}
+      <p class="fg-hint">Could not load sessions: {{.ResumeErr}}</p>
+      {{else if .RecentSessions}}
+      <ul class="chat-resume-list">
+        {{range .RecentSessions}}
+        <li>
+          <button type="button" class="btn btn-link" data-session-id="{{.ID}}" data-session-agent="{{.Agent}}">
+            {{.ID}} (saved {{.SavedAt}}, seq {{.SaveSeq}})
+          </button>
+        </li>
+        {{end}}
+      </ul>
+      {{else}}
+      <p class="fg-hint">No saved sessions for this agent yet.</p>
+      {{end}}
     </div>
   </details>
 

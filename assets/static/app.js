@@ -352,7 +352,6 @@ document.addEventListener('click', function (evt) {
   var inFlight = null; // AbortController while a request is open.
   var currentSessionID = '';
   var dirty = false;
-  var resumeLoaded = false;
 
   formEl.addEventListener('submit', function (evt) {
     evt.preventDefault();
@@ -408,11 +407,11 @@ document.addEventListener('click', function (evt) {
     });
   }
 
-  if (resumeEl) {
-    resumeEl.addEventListener('toggle', function () {
-      if (resumeEl.open && !resumeLoaded) {
-        loadResumeList();
-      }
+  if (resumeBodyEl) {
+    resumeBodyEl.querySelectorAll('[data-session-id]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        resumeSession(btn.getAttribute('data-session-id') || '', btn.getAttribute('data-session-agent') || '');
+      });
     });
   }
 
@@ -487,7 +486,6 @@ document.addEventListener('click', function (evt) {
     clearSaved();
     setStatus('');
     dirty = false;
-    resumeLoaded = false;
   }
 
   function sendChat() {
@@ -585,9 +583,6 @@ document.addEventListener('click', function (evt) {
       if (eventName === 'session') {
         if (obj && obj.id) {
           setSessionID(obj.id);
-          // A new session id means the resume list will be stale next
-          // time the picker opens.
-          resumeLoaded = false;
         }
         return;
       }
@@ -643,57 +638,12 @@ document.addEventListener('click', function (evt) {
       }
       setStatus('saved');
       dirty = false;
-      // The picker now needs a refresh next time it opens.
-      resumeLoaded = false;
     }).catch(function (err) {
       showError('Save failed: ' + (err.message || String(err)));
       setStatus('save failed');
     }).finally(function () {
       if (saveBtn) saveBtn.disabled = false;
     });
-  }
-
-  function loadResumeList() {
-    resumeLoaded = true;
-    resumeBodyEl.textContent = 'Loading...';
-    fetch('/chat/sessions?agent=' + encodeURIComponent(agent), { method: 'GET' })
-      .then(function (resp) {
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        return resp.json();
-      })
-      .then(function (data) {
-        var records = (data && data.records) || [];
-        renderResumeList(records);
-      })
-      .catch(function (err) {
-        resumeBodyEl.textContent = 'Could not load sessions: ' + (err.message || String(err));
-      });
-  }
-
-  function renderResumeList(records) {
-    resumeBodyEl.innerHTML = '';
-    if (records.length === 0) {
-      var empty = document.createElement('p');
-      empty.className = 'fg-hint';
-      empty.textContent = 'No saved sessions for this agent yet.';
-      resumeBodyEl.appendChild(empty);
-      return;
-    }
-    var list = document.createElement('ul');
-    list.className = 'chat-resume-list';
-    records.forEach(function (rec) {
-      var item = document.createElement('li');
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'btn btn-link';
-      btn.textContent = rec.id + ' (saved ' + (rec.saved_at || '') + ', seq ' + (rec.save_seq || 1) + ')';
-      btn.addEventListener('click', function () {
-        resumeSession(rec.id, rec.agent);
-      });
-      item.appendChild(btn);
-      list.appendChild(item);
-    });
-    resumeBodyEl.appendChild(list);
   }
 
   function resumeSession(id, recAgent) {

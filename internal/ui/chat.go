@@ -77,7 +77,16 @@ type chatView struct {
 	// flips the page to a CTA pointing at /agents.
 	HasAgents bool
 	// ActiveAgent is the current default agent (empty string means none).
-	ActiveAgent string
+	ActiveAgent    string
+	RecentSessions []chatResumeRow
+	ResumeErr      string
+}
+
+type chatResumeRow struct {
+	ID      string
+	Agent   string
+	SavedAt string
+	SaveSeq int
 }
 
 // handleChat renders the /chat page (GET only). The transcript itself
@@ -97,11 +106,38 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			data.HasAgents = len(list) > 0
 		}
 	}
+	if data.Configured && data.ActiveAgent != "" {
+		data.RecentSessions, data.ResumeErr = s.chatResumeRows(data.ActiveAgent)
+	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.chatTmpl.ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) chatResumeRows(agent string) ([]chatResumeRow, string) {
+	store := s.getSessionStore()
+	if store == nil {
+		return nil, "session manager not available"
+	}
+	records, err := store.Records(agent)
+	if err != nil {
+		return nil, err.Error()
+	}
+	if len(records) > RecentSessionLimit {
+		records = records[:RecentSessionLimit]
+	}
+	rows := make([]chatResumeRow, 0, len(records))
+	for _, rec := range records {
+		rows = append(rows, chatResumeRow{
+			ID:      rec.ID,
+			Agent:   rec.Agent,
+			SavedAt: rec.SavedAt.Format("2006-01-02 15:04"),
+			SaveSeq: rec.SaveSeq,
+		})
+	}
+	return rows, ""
 }
 
 // chatStreamRequest is the JSON body of POST /chat/stream. Agent is
