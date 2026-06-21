@@ -94,6 +94,21 @@ a:hover { text-decoration: underline; }
   gap: 0.4rem;
 }
 
+.project-create-panel {
+  margin-bottom: 1rem;
+}
+.project-create-panel > summary {
+  display: inline-flex;
+  cursor: pointer;
+  list-style: none;
+}
+.project-create-panel > summary::-webkit-details-marker {
+  display: none;
+}
+.project-create-form {
+  margin-top: 1rem;
+}
+
 .main {
   padding-top: 2rem;
   padding-bottom: 3rem;
