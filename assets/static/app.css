@@ -137,6 +137,9 @@ a:hover { text-decoration: underline; }
   color: var(--muted);
   font-size: 0.875rem;
 }
+.shutdown-confirm-form {
+  min-width: 18rem;
+}
 
 .main {
   padding-top: 2rem;
