@@ -4,3 +4,5 @@ models/
 llama.cpp/
 .sisyphus/
 harness
+harness.db
+node_modules/
