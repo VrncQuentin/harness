@@ -230,6 +230,8 @@ func (t *fileListTool) Execute(ctx context.Context, c Context, args map[string]a
 
 type fileWriteTool struct{}
 
+var _ Tool = (*fileWriteTool)(nil)
+
 func (t *fileWriteTool) ID() string { return "file_write" }
 func (t *fileWriteTool) Description() string {
 	return "Write content to a file. Creates the file if it does not exist, overwrites if it does."
@@ -262,6 +264,8 @@ func (t *fileWriteTool) Execute(ctx context.Context, c Context, args map[string]
 }
 
 type shellExecTool struct{}
+
+var _ Tool = (*shellExecTool)(nil)
 
 func (t *shellExecTool) ID() string { return "shell_exec" }
 func (t *shellExecTool) Description() string {
