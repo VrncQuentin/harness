@@ -31,21 +31,16 @@
         </select>
         <button type="submit" class="btn btn-ghost btn-sm">Switch</button>
       </form>
-      <button type="button" class="btn btn-danger btn-sm" data-open-dialog="harness-shutdown" data-confirm-text="Shut down the harness?">Shut down</button>
+      <details class="inline-confirm-panel shutdown-confirm-panel">
+        <summary class="btn btn-danger btn-sm">Shut down</summary>
+        <form method="post" action="/shutdown" class="inline-confirm-form shutdown-confirm-form">
+          <p>Stops services, drains the queue, and exits the harness.</p>
+          <button type="submit" class="btn btn-danger btn-sm">Confirm shutdown</button>
+        </form>
+      </details>
     </div>
   </div>
 </header>
-
-<dialog id="harness-shutdown" class="modal">
-  <form method="post" action="/shutdown" class="modal-form">
-    <h3 class="modal-title">Shut down the harness?</h3>
-    <p class="modal-body">Stops the API server, drains the queue, terminates llama-server and the embedder, flushes the database, and exits the process. The browser tab will lose its connection.</p>
-    <div class="modal-actions">
-      <button type="button" class="btn btn-ghost" data-close-dialog>Cancel</button>
-      <button type="submit" class="btn btn-danger">Shut down</button>
-    </div>
-  </form>
-</dialog>
 
 <main class="wrap main">
 {{template "content" .}}
