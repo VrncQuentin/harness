@@ -109,6 +109,35 @@ a:hover { text-decoration: underline; }
   margin-top: 1rem;
 }
 
+.inline-confirm-panel {
+  position: relative;
+}
+.inline-confirm-panel > summary {
+  display: inline-flex;
+  cursor: pointer;
+  list-style: none;
+}
+.inline-confirm-panel > summary::-webkit-details-marker {
+  display: none;
+}
+.inline-confirm-form {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.4rem);
+  z-index: 20;
+  min-width: 16rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+.inline-confirm-form p {
+  margin: 0 0 0.75rem;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
 .main {
   padding-top: 2rem;
   padding-bottom: 3rem;
