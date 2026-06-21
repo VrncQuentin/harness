@@ -39,6 +39,162 @@
   es.onerror = function () { setHarnessConnState('disconnected', true); };
 })();
 
+// Task page wiring. This is intentionally still the existing browser-owned
+// streaming flow; Phase 1 moves it server-side in a later, behavior-changing PR.
+(function () {
+  var form = document.getElementById('task-form');
+  if (!form) return;
+
+  var input = document.getElementById('task-input');
+  var transcript = document.getElementById('task-transcript');
+  var sendBtn = document.getElementById('task-send');
+  var stopBtn = document.getElementById('task-stop');
+  var clearBtn = document.getElementById('task-clear');
+  var controller = null;
+  var messages = [];
+  var sessionId = '';
+
+  function pushMsg(type, data) {
+    var el = document.createElement('div');
+    el.className = 'chat-msg';
+    switch (type) {
+      case 'user':
+        el.classList.add('is-user');
+        el.innerHTML = '<span class="chat-role">You</span><div class="chat-body">' + esc(data) + '</div>';
+        break;
+      case 'text':
+        el.classList.add('is-assistant');
+        el.innerHTML = '<span class="chat-role">Assistant</span><div class="chat-body">' + esc(data) + '</div>';
+        break;
+      case 'tool_call':
+        el.classList.add('is-tool');
+        el.innerHTML = '<span class="chat-role">Tool call</span><div class="chat-body"><code>' + esc(data.tool_id) + '</code><pre class="tool-args">' + esc(data.tool_args || '') + '</pre></div>';
+        break;
+      case 'tool_result':
+        el.classList.add('is-tool-result');
+        var body = data.tool_error ? '<div class="tool-error">ERROR: ' + esc(data.tool_error) + '</div>' : '';
+        if (data.tool_result) body += '<pre class="tool-content">' + esc(data.tool_result) + '</pre>';
+        el.innerHTML = '<span class="chat-role">Result</span><div class="chat-body"><code>' + esc(data.tool_id) + '</code>' + body + '</div>';
+        break;
+      case 'done':
+        el.classList.add('is-system');
+        el.innerHTML = '<span class="chat-role">Done</span><div class="chat-body">Task completed in ' + data.turn + ' turn(s).</div>';
+        break;
+      case 'limit':
+        el.classList.add('is-system', 'is-warn');
+        el.innerHTML = '<span class="chat-role">Limit</span><div class="chat-body">' + esc(data.content) + '</div>';
+        break;
+      case 'doom_loop':
+        el.classList.add('is-system', 'is-err');
+        el.innerHTML = '<span class="chat-role">Loop detected</span><div class="chat-body">' + esc(data.content) + '</div>';
+        break;
+      case 'error':
+        el.classList.add('is-system', 'is-err');
+        el.innerHTML = '<span class="chat-role">Error</span><div class="chat-body">' + esc(data.content) + '</div>';
+        break;
+      case 'cancelled':
+        el.classList.add('is-system', 'is-warn');
+        el.innerHTML = '<span class="chat-role">Cancelled</span><div class="chat-body">Task was stopped.</div>';
+        break;
+      default:
+        return;
+    }
+    transcript.appendChild(el);
+    transcript.scrollTop = transcript.scrollHeight;
+  }
+
+  function esc(s) {
+    if (!s) return '';
+    var el = document.createElement('span');
+    el.textContent = s;
+    return el.innerHTML;
+  }
+
+  function setRunning(v) {
+    sendBtn.style.display = v ? 'none' : '';
+    stopBtn.style.display = v ? '' : 'none';
+    input.disabled = v;
+  }
+
+  form.addEventListener('submit', function (evt) {
+    evt.preventDefault();
+    var text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    messages.push({ role: 'user', content: text });
+    pushMsg('user', text);
+
+    setRunning(true);
+    controller = new AbortController();
+    fetch('/task/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: '', session_id: sessionId, messages: messages }),
+      signal: controller.signal,
+    }).then(function (resp) {
+      if (!resp.ok) {
+        setRunning(false);
+        pushMsg('error', { content: 'Request failed: ' + resp.status });
+        return null;
+      }
+      return drainTaskStream(resp.body);
+    }).catch(function (err) {
+      if (err.name !== 'AbortError') pushMsg('error', { content: err.message });
+    }).finally(function () {
+      setRunning(false);
+      controller = null;
+    });
+  });
+
+  function drainTaskStream(body) {
+    var reader = body.getReader();
+    var decoder = new TextDecoder();
+    var buf = '';
+
+    function pump() {
+      return reader.read().then(function (chunk) {
+        if (chunk.done) return;
+        buf += decoder.decode(chunk.value, { stream: true });
+        var parts = buf.split('\n\n');
+        buf = parts.pop();
+        parts.forEach(handleTaskFrame);
+        return pump();
+      });
+    }
+
+    return pump();
+  }
+
+  function handleTaskFrame(part) {
+    if (!part.trim()) return;
+    var frame;
+    try { frame = JSON.parse(part); } catch (err) { return; }
+    if (frame.event === 'session') {
+      sessionId = frame.data.session_id;
+      return;
+    }
+    if (frame.data && frame.data.error) {
+      pushMsg('error', { content: frame.data.error });
+      return;
+    }
+    if (frame.data) pushMsg(frame.event, frame.data);
+    if (frame.data && frame.data.terminate) {
+      setRunning(false);
+      controller = null;
+    }
+  }
+
+  stopBtn.addEventListener('click', function () {
+    if (controller) controller.abort();
+  });
+
+  clearBtn.addEventListener('click', function () {
+    transcript.innerHTML = '';
+    messages = [];
+    sessionId = '';
+  });
+})();
+
 function setHarnessConnState(text, disconnected) {
   var el = document.getElementById('harness-log-status');
   if (!el) return;
