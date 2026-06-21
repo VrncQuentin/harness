@@ -64,3 +64,16 @@ func TestAppJSUsesMultiplexedEventsOnly(t *testing.T) {
 		t.Fatal("app.js still references removed /logs/* streams")
 	}
 }
+
+func TestAppJSDoesNotWireModalDialogs(t *testing.T) {
+	b, err := fs.ReadFile(StaticFS, "static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	body := string(b)
+	for _, marker := range []string{"data-open-dialog", "data-close-dialog", "showModal"} {
+		if strings.Contains(body, marker) {
+			t.Fatalf("app.js still contains modal dialog wiring marker %q", marker)
+		}
+	}
+}
