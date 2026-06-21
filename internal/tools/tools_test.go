@@ -84,12 +84,17 @@ func TestRegistry_ListAndGet(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltins(r)
 	all := r.List()
-	if len(all) != 4 {
-		t.Fatalf("expected 4 tools, got %d", len(all))
+	if len(all) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(all))
 	}
-	for _, id := range []string{"file_read", "file_list", "file_write", "shell_exec"} {
+	for _, id := range []string{"file_read", "file_list"} {
 		if r.Get(id) == nil {
 			t.Errorf("%s not found", id)
+		}
+	}
+	for _, id := range []string{"file_write", "shell_exec"} {
+		if r.Get(id) != nil {
+			t.Errorf("%s should not be registered before M7 approvals", id)
 		}
 	}
 }
