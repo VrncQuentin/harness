@@ -134,12 +134,11 @@ func validatePath(path string, roots []string) (string, error) {
 	return "", fmt.Errorf("%w: %s", ErrSandboxViolation, path)
 }
 
-// RegisterBuiltins registers the M4+M7 built-in tools on r.
+// RegisterBuiltins registers the M4 read-only built-in tools on r. Destructive
+// tools stay implemented but unregistered until the M7 approval layer exists.
 func RegisterBuiltins(r *Registry) {
 	r.Register(&fileReadTool{})
 	r.Register(&fileListTool{})
-	r.Register(&fileWriteTool{})
-	r.Register(&shellExecTool{})
 }
 
 // fileReadTool implements the file_read tool.
@@ -231,6 +230,8 @@ func (t *fileListTool) Execute(ctx context.Context, c Context, args map[string]a
 
 type fileWriteTool struct{}
 
+var _ Tool = (*fileWriteTool)(nil)
+
 func (t *fileWriteTool) ID() string { return "file_write" }
 func (t *fileWriteTool) Description() string {
 	return "Write content to a file. Creates the file if it does not exist, overwrites if it does."
@@ -263,6 +264,8 @@ func (t *fileWriteTool) Execute(ctx context.Context, c Context, args map[string]
 }
 
 type shellExecTool struct{}
+
+var _ Tool = (*shellExecTool)(nil)
 
 func (t *shellExecTool) ID() string { return "shell_exec" }
 func (t *shellExecTool) Description() string {
