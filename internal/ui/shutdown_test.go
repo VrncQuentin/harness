@@ -136,13 +136,13 @@ func TestHandleStatus_RendersShutdownButton(t *testing.T) {
 	s.handleStatus(rec, req)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, `data-open-dialog="harness-shutdown"`) {
+	if !strings.Contains(body, `class="inline-confirm-panel shutdown-confirm-panel"`) {
 		t.Error("layout should render the shutdown button on every page")
 	}
-	if !strings.Contains(body, `id="harness-shutdown"`) {
-		t.Error("layout should render the shutdown confirmation dialog")
+	if strings.Contains(body, `data-open-dialog="harness-shutdown"`) || strings.Contains(body, `id="harness-shutdown"`) {
+		t.Error("layout should not depend on JS dialog wiring for shutdown")
 	}
 	if !strings.Contains(body, `action="/shutdown"`) {
-		t.Error("shutdown dialog form should POST to /shutdown")
+		t.Error("shutdown confirmation form should POST to /shutdown")
 	}
 }
