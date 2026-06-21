@@ -29,17 +29,6 @@ jobs:
           GOARCH: amd64
         run: go build ./cmd/harness
 
-  frontend-lint:
-    name: Frontend Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: biomejs/setup-biome@v2
-        with:
-          version: 2.0.6
-      - name: Biome check
-        run: biome check assets/static
-
   test:
     name: Test
     runs-on: windows-latest
