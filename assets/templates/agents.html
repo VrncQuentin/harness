@@ -86,21 +86,16 @@
           {{else}}
           <a class="btn btn-ghost btn-sm" href="/agents?edit={{.Name}}">Edit</a>
           {{end}}
-          <button type="button" class="btn btn-danger btn-sm" data-open-dialog="delete-{{.Name}}" data-confirm-text="Delete agent {{.Name}}? This cannot be undone.">Delete</button>
+          <details class="inline-confirm-panel">
+            <summary class="btn btn-danger btn-sm">Delete</summary>
+            <form method="post" action="/agents/delete" class="inline-confirm-form">
+              <input type="hidden" name="name" value="{{.Name}}">
+              <p>Delete <code>{{.Name}}</code>? This cannot be undone.</p>
+              <button type="submit" class="btn btn-danger btn-sm">Delete agent</button>
+            </form>
+          </details>
         </div>
       </header>
-
-      <dialog id="delete-{{.Name}}" class="modal">
-        <form method="post" action="/agents/delete" class="modal-form">
-          <input type="hidden" name="name" value="{{.Name}}">
-          <h3 class="modal-title">Delete agent <code>{{.Name}}</code>?</h3>
-          <p class="modal-body">This permanently removes <code>agents/{{.Name}}/</code> and every file under it (persona, rules, notes, episodes). This cannot be undone from the UI.</p>
-          <div class="modal-actions">
-            <button type="button" class="btn btn-ghost" data-close-dialog>Cancel</button>
-            <button type="submit" class="btn btn-danger">Delete agent</button>
-          </div>
-        </form>
-      </dialog>
 
       {{if and $editing $.SaveErr}}
       <div class="alert alert-warn">
