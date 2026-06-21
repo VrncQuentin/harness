@@ -108,6 +108,12 @@ a:hover { text-decoration: underline; }
 .project-create-form {
   margin-top: 1rem;
 }
+.project-edit-panel {
+  margin-top: 1rem;
+}
+.project-edit-form {
+  padding: 0;
+}
 
 .inline-confirm-panel {
   position: relative;

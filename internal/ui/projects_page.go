@@ -27,10 +27,11 @@ type projectRow struct {
 
 type projectsView struct {
 	basePage
-	Projects   []projectRow
-	Error      string
-	Flash      string
-	ShowHidden bool
+	Projects    []projectRow
+	EditProject *projectRow
+	Error       string
+	Flash       string
+	ShowHidden  bool
 }
 
 func (s *Server) renderProjects(w http.ResponseWriter, data projectsView) {
@@ -109,6 +110,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 
 	dirs := s.countDirectories(projects)
 
+	editSlug := strings.TrimSpace(r.URL.Query().Get("edit"))
 	for _, p := range projects {
 		row := projectRow{
 			Slug:           p.Slug,
@@ -134,6 +136,10 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 			row.ModelNParallel = strconv.Itoa(*p.ModelNParallel)
 		}
 		data.Projects = append(data.Projects, row)
+		if editSlug != "" && editSlug == row.Slug && !row.IsGlobal {
+			editRow := row
+			data.EditProject = &editRow
+		}
 	}
 
 	s.renderProjects(w, data)
