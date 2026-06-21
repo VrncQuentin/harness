@@ -8,7 +8,7 @@ This file is the entry point for Claude Code. Read it fully before touching anyt
 
 A local AI inference harness. Double-clickable binary, always-on, browser-based management UI. No cloud, no telemetry, no dependencies at runtime beyond what the harness manages itself.
 
-- **Docs:** `docs/architecture.md`, `docs/roadmap.md`, `docs/agents.md`
+- **Docs:** `docs/architecture.md`, `docs/roadmap.md`
 - **Language:** Go
 - **Target OS:** Windows native, Linux (GTK-based systray)
 
@@ -37,7 +37,6 @@ internal/
 docs/
   architecture.md
   roadmap.md
-  agents.md
 harness.db          ← SQLite database: config (single-row typed table) + metrics history (created on first run)
 ```
 
@@ -178,10 +177,6 @@ memory/
       index/_episodes/{vectors.bin, manifest.json}
       index/<dir-slug>/{vectors.bin, manifest.json}
 ```
-
-See `docs/agents.md` for the content of `rules.md`, `user.md`, and agent personas.
-
----
 
 ## Current milestone
 
