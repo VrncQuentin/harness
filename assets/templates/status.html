@@ -1,9 +1,10 @@
 {{define "title"}}Status{{end}}
 {{define "logbox"}}
-<div class="logs-body" id="{{.BodyID}}">
+<div class="logs-body" id="{{.BodyID}}" sse-swap="{{.EventName}}" hx-swap="beforeend">
   {{range .Entries}}<div class="log-row"><span class="log-time">{{.Time}}</span><span class="log-line">{{.Line}}</span></div>{{else}}<div class="log-empty">No output yet.</div>{{end}}
 </div>
 {{end}}
+{{define "log_row"}}<div class="log-row"><span class="log-time">{{.Time}}</span><span class="log-line">{{.Line}}</span></div>{{end}}
 {{define "queue_card"}}
   <div class="card" id="queue-card">
     <header class="card-head">
@@ -40,6 +41,7 @@
     </div>
 {{end}}
 {{define "content"}}
+<div hx-ext="sse" sse-connect="/events">
 <h1 class="page-title">Status</h1>
 
 {{if .ScaffoldCreated}}
@@ -149,5 +151,6 @@
     <span class="logs-meta" id="harness-log-status">live</span>
   </header>
   {{template "logbox" .HarnessLog}}
+</div>
 </div>
 {{end}}
