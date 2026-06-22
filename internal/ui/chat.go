@@ -89,6 +89,9 @@ type chatResumeRow struct {
 	SaveSeq int
 }
 
+// RecentSessionLimit is the cap on how many records the resume picker shows.
+const RecentSessionLimit = 10
+
 // handleChat renders the /chat page (GET only). The transcript itself
 // lives client-side in JS - the server only renders the shell and the
 // streaming endpoint.
