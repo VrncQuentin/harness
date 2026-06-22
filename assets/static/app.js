@@ -17,14 +17,8 @@
   es.addEventListener('state', function (evt) {
     var d;
     try { d = JSON.parse(evt.data); } catch (e) { return; }
-    setBadge('llama-badge', d.llama_healthy, d.llama_failed);
-    setBadge('embed-badge', d.embed_healthy, d.embed_failed);
-    setText('llama-running', d.llama_running ? 'Yes' : 'No');
-    setText('embed-running', d.embed_running ? 'Yes' : 'No');
-    setText('llama-restarts', d.llama_restarts);
-    setText('embed-restarts', d.embed_restarts);
-    toggleHidden('llama-restart-form', !d.llama_failed);
-    toggleHidden('embed-restart-form', !d.embed_failed);
+    replaceHTML('llama-status-panel', d.llama_html);
+    replaceHTML('embed-status-panel', d.embed_html);
     setQueue(d.queue_html);
     setUptime(d.uptime_text);
   });
@@ -203,28 +197,13 @@ function setHarnessConnState(text, disconnected) {
   else el.classList.remove('is-disconnected');
 }
 
-function setBadge(id, ok, failed) {
+function replaceHTML(id, html) {
   var el = document.getElementById(id);
-  if (!el) return;
-  var text = failed ? 'Failed' : (ok ? 'Healthy' : 'Unhealthy');
-  el.textContent = text;
-  el.className = 'badge ' + (ok ? 'badge-ok' : 'badge-err');
-}
-
-function toggleHidden(id, hidden) {
-  var el = document.getElementById(id);
-  if (!el) return;
-  if (hidden) el.setAttribute('hidden', ''); else el.removeAttribute('hidden');
-}
-
-function setText(id, v) {
-  var el = document.getElementById(id);
-  if (el) el.textContent = v;
+  if (el && html) el.outerHTML = html;
 }
 
 function setQueue(html) {
-  var card = document.getElementById('queue-card');
-  if (card && html) card.outerHTML = html;
+  replaceHTML('queue-card', html);
 }
 
 function setUptime(text) {
