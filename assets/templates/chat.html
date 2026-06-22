@@ -72,7 +72,14 @@
 
   <div class="chat-error" id="chat-error" hidden></div>
 
-  <form id="chat-form" class="chat-form" autocomplete="off">
+  <form id="chat-form" class="chat-form" autocomplete="off"
+    hx-post="/chat/send"
+    hx-target="#chat-transcript"
+    hx-swap="beforeend"
+    hx-disabled-elt="#chat-send,#chat-input"
+    hx-on::after-request="var t = this.elements.message; t.value = ''; t.style.height = ''">
+    <input type="hidden" name="agent" id="chat-agent-input" value="{{.ActiveAgent}}">
+    <input type="hidden" name="session_id" id="chat-session-input" value="">
     <div class="chat-input-wrap">
       <textarea id="chat-input" name="message" rows="3" placeholder="Type a message. Enter sends, Shift+Enter inserts a newline." required></textarea>
     </div>
@@ -104,4 +111,22 @@
 <span id="chat-state" hx-swap-oob="true" hidden
       data-session-id="{{.SessionID}}"
       data-messages="{{.MessagesJSON}}"></span>
+{{end}}
+
+{{/* chat-send-fragment is the htmx response fragment for /chat/send.
+   The server renders the user message and an empty assistant placeholder
+   into the transcript. The HX-Trigger response header fires a chatSend
+   event so the browser JS can start the streaming fetch. */}}
+{{define "chat-send-fragment"}}
+<div class="chat-msg is-user">
+  <span class="chat-msg-role">You</span>
+  <span class="chat-msg-body">{{.UserContent}}</span>
+</div>
+<div class="chat-msg is-assistant is-streaming" id="chat-assistant">
+  <span class="chat-msg-role">assistant</span>
+  <span class="chat-msg-body"></span>
+</div>
+<code id="chat-session-id" hx-swap-oob="true">{{.SessionID}}</code>
+<input type="hidden" id="chat-session-input" name="session_id" hx-swap-oob="true" value="{{.SessionID}}">
+<input type="hidden" id="chat-agent-input" name="agent" hx-swap-oob="true" value="{{.Agent}}">
 {{end}}

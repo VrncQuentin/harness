@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 // ChatMessage is a single message in the browser-side chat transcript.
@@ -287,4 +288,55 @@ func writeChatSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string
 	}
 	flusher.Flush()
 	return true
+}
+
+// chatSendView is the template data for the chat-send-fragment partial.
+// The server renders the user message and an empty assistant placeholder;
+// the browser JS starts the streaming fetch after the fragment is swapped
+// (triggered by the HX-Trigger response header).
+type chatSendView struct {
+	UserContent string
+	SessionID   string
+	Agent       string
+}
+
+// chatSendMaxBytes caps the form body. A single message plus small
+// hidden fields fits well within 32 KiB.
+const chatSendMaxBytes = 32 * 1024
+
+// handleChatSend is the htmx POST handler for the chat input form. It
+// renders the user's message and an empty assistant placeholder into
+// the transcript via htmx swap and fires a chatSend browser event so
+// the JS can start the streaming fetch against /chat/stream.
+func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.getChatRunner() == nil {
+		http.Error(w, "chat backend not configured", http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, chatSendMaxBytes)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	msg := strings.TrimSpace(r.FormValue("message"))
+	if msg == "" {
+		http.Error(w, "message must not be empty", http.StatusBadRequest)
+		return
+	}
+	agent := strings.TrimSpace(r.FormValue("agent"))
+	sessionID := strings.TrimSpace(r.FormValue("session_id"))
+
+	w.Header().Set("HX-Trigger", "chatSend")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.chatTmpl.ExecuteTemplate(w, "chat-send-fragment", chatSendView{
+		UserContent: msg,
+		SessionID:   sessionID,
+		Agent:       agent,
+	}); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
 }
