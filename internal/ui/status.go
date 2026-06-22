@@ -33,6 +33,12 @@ type statusPageData struct {
 	EmbedLog        logboxData
 }
 
+type queueCardData struct {
+	QueueDepth int
+	QueueMax   int
+	QueuePct   int
+}
+
 // memoryLayoutView is the template-friendly form of the missing-items
 // list. Show is the gating boolean - the template uses it instead of
 // `{{if .MemoryLayout.Items}}` so a non-error "no missing items" outcome
@@ -146,6 +152,14 @@ func queuePct(depth, capacity int) int {
 		return 100
 	}
 	return p
+}
+
+func queueCardFromSnapshot(s stateSnapshot) queueCardData {
+	return queueCardData{
+		QueueDepth: s.QueueDepth,
+		QueueMax:   s.QueueMax,
+		QueuePct:   queuePct(s.QueueDepth, s.QueueMax),
+	}
 }
 
 // recentEntries returns the last n log entries from ring formatted for the
