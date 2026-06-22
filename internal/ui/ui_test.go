@@ -859,6 +859,9 @@ func TestSSE_EmitsConnectedAndInitialState(t *testing.T) {
 	if !strings.Contains(body, `"llama_healthy":true`) {
 		t.Errorf("SSE payload missing state JSON, got: %q", body)
 	}
+	if !strings.Contains(body, `"uptime_text":`) {
+		t.Errorf("SSE payload missing server-formatted uptime text, got: %q", body)
+	}
 }
 
 func TestSSE_EmitsProjectDirectoryWarnings(t *testing.T) {
