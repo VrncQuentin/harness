@@ -26,7 +26,7 @@
     toggleHidden('llama-restart-form', !d.llama_failed);
     toggleHidden('embed-restart-form', !d.embed_failed);
     setQueue(d.queue_depth, d.queue_max);
-    setUptime(d.uptime_seconds);
+    setUptime(d.uptime_text);
   });
 
   es.addEventListener('llama-log', logEventHandler('llama-log'));
@@ -234,21 +234,10 @@ function setQueue(depth, max) {
   }
 }
 
-function setUptime(s) {
+function setUptime(text) {
   var el = document.getElementById('uptime');
   if (!el) return;
-  el.textContent = formatUptime(s);
-}
-
-function formatUptime(s) {
-  s = Math.max(0, Math.floor(s));
-  var d = Math.floor(s / 86400); s -= d * 86400;
-  var h = Math.floor(s / 3600);  s -= h * 3600;
-  var m = Math.floor(s / 60);    s -= m * 60;
-  if (d > 0) return d + 'd ' + h + 'h';
-  if (h > 0) return h + 'h ' + m + 'm';
-  if (m > 0) return m + 'm ' + s + 's';
-  return s + 's';
+  if (text) el.textContent = text;
 }
 
 // logEventHandler appends multiplexed log events to one log box, caps DOM
