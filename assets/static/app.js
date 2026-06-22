@@ -1,15 +1,5 @@
-// Live updates. One EventSource carries every server-pushed update so we
-// don't burn 4 of the browser's ~6 HTTP/1.1 connection slots per origin and
-// stall navigation behind held-open SSE connections.
-//
-// The server tags each frame with `event: <type>`:
-//   - state        → patches status-page badges, counters, queue, uptime
-//   - llama-log    → appended to the llama log card (status page only)
-//   - embed-log    → appended to the embedder log card (status page only)
-//   - harness-log  → appended to the harness log card (status page only)
-//
-// Log handlers no-op when their target DOM nodes don't exist, so non-status
-// pages still get state updates over the same connection at no extra cost.
+// Live status fragments. htmx consumes the log events from /events; this
+// legacy script only handles the JSON state event until Phase 1 removes app.js.
 (function () {
   if (typeof EventSource === 'undefined') return;
   var es = new EventSource('/events');
@@ -22,10 +12,6 @@
     setQueue(d.queue_html);
     setUptime(d.uptime_text);
   });
-
-  es.addEventListener('llama-log', logEventHandler('llama-log'));
-  es.addEventListener('embed-log', logEventHandler('embed-log'));
-  es.addEventListener('harness-log', logEventHandler('harness-log'));
 
   // The harness log card has a connection indicator. With one shared stream
   // it now reflects the /events connection itself.
@@ -210,38 +196,6 @@ function setUptime(text) {
   var el = document.getElementById('uptime');
   if (!el) return;
   if (text) el.textContent = text;
-}
-
-// logEventHandler appends multiplexed log events to one log box, caps DOM
-// size, and keeps the latest server-rendered log line visible.
-function logEventHandler(bodyId) {
-  return function (evt) {
-    var body = document.getElementById(bodyId);
-    if (!body) return;
-
-    var entry;
-    try { entry = JSON.parse(evt.data); } catch (e) { return; }
-
-    var empty = body.querySelector('.log-empty');
-    if (empty) empty.remove();
-
-    var row = document.createElement('div');
-    row.className = 'log-row';
-    var t = document.createElement('span');
-    t.className = 'log-time';
-    t.textContent = entry.time || '';
-    var l = document.createElement('span');
-    l.className = 'log-line';
-    l.textContent = entry.line || '';
-    row.appendChild(t);
-    row.appendChild(l);
-    body.appendChild(row);
-
-    while (body.childElementCount > 500) {
-      body.removeChild(body.firstElementChild);
-    }
-    body.scrollTop = body.scrollHeight;
-  };
 }
 
 // Chat page wiring. Activates when the chat shell is on the page; the

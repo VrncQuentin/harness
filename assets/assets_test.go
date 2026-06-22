@@ -101,3 +101,16 @@ func TestAppJSDoesNotPatchStatusFields(t *testing.T) {
 		}
 	}
 }
+
+func TestAppJSDoesNotParseLogEvents(t *testing.T) {
+	b, err := fs.ReadFile(StaticFS, "static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	body := string(b)
+	for _, marker := range []string{"logEventHandler", "llama-log',", "embed-log',", "harness-log',", "querySelector('.log-empty')"} {
+		if strings.Contains(body, marker) {
+			t.Fatalf("app.js still contains log event parser marker %q", marker)
+		}
+	}
+}

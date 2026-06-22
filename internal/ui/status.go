@@ -69,8 +69,9 @@ type memoryLayoutItemView struct {
 // logboxData is the data passed to the shared "logbox" template partial. One
 // instance per card: harness logs, llama-server output, embedder output.
 type logboxData struct {
-	BodyID  string
-	Entries []logEntryView
+	BodyID    string
+	EventName string
+	Entries   []logEntryView
 }
 
 // logEntryView is the template-friendly form of a logbuf entry.
@@ -111,9 +112,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ScaffoldCreated: scaffoldCreated,
 		LlamaPanel:      llamaPanelFromSnapshot(snap),
 		EmbedPanel:      embedPanelFromSnapshot(snap),
-		HarnessLog:      logboxData{BodyID: "harness-log", Entries: recentEntries(s.getLogRing(), statusLogTail)},
-		LlamaLog:        logboxData{BodyID: "llama-log", Entries: recentEntries(s.getLlamaRing(), procLogTail)},
-		EmbedLog:        logboxData{BodyID: "embed-log", Entries: recentEntries(s.getEmbedRing(), procLogTail)},
+		HarnessLog:      logboxData{BodyID: "harness-log", EventName: "harness-log", Entries: recentEntries(s.getLogRing(), statusLogTail)},
+		LlamaLog:        logboxData{BodyID: "llama-log", EventName: "llama-log", Entries: recentEntries(s.getLlamaRing(), procLogTail)},
+		EmbedLog:        logboxData{BodyID: "embed-log", EventName: "embed-log", Entries: recentEntries(s.getEmbedRing(), procLogTail)},
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.statusTmpl.ExecuteTemplate(w, "layout", data); err != nil {
