@@ -77,3 +77,27 @@ func TestAppJSDoesNotWireModalDialogs(t *testing.T) {
 		}
 	}
 }
+
+func TestAppJSDoesNotPatchStatusFields(t *testing.T) {
+	b, err := fs.ReadFile(StaticFS, "static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	body := string(b)
+	for _, marker := range []string{
+		"llama-badge",
+		"embed-badge",
+		"llama-running",
+		"embed-running",
+		"llama-restarts",
+		"embed-restarts",
+		"queue-meter",
+		"queue-depth",
+		"function setBadge",
+		"function toggleHidden",
+	} {
+		if strings.Contains(body, marker) {
+			t.Fatalf("app.js still contains status field patch marker %q", marker)
+		}
+	}
+}
