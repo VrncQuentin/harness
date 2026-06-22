@@ -29,6 +29,7 @@ type ssePayload struct {
 	PreferredModel           string                    `json:"preferred_model,omitempty"`
 	FirstRun                 bool                      `json:"first_run"`
 	UptimeSeconds            int64                     `json:"uptime_seconds"`
+	UptimeText               string                    `json:"uptime_text"`
 }
 
 // logEventEntry is the JSON shape of an `event: *-log` frame.
@@ -235,6 +236,7 @@ func stateToPayload(s stateSnapshot) ssePayload {
 	for _, e := range s.StartupErrors {
 		errs = append(errs, e.Error())
 	}
+	uptime := time.Since(s.StartTime)
 	return ssePayload{
 		LlamaHealthy:             s.LlamaStatus.Healthy,
 		LlamaRunning:             s.LlamaStatus.Running,
@@ -253,6 +255,7 @@ func stateToPayload(s stateSnapshot) ssePayload {
 		LoadedModel:              s.LoadedModel,
 		PreferredModel:           s.PreferredModel,
 		FirstRun:                 s.FirstRun,
-		UptimeSeconds:            int64(time.Since(s.StartTime).Seconds()),
+		UptimeSeconds:            int64(uptime.Seconds()),
+		UptimeText:               formatUptime(uptime),
 	}
 }
