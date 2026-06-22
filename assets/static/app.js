@@ -227,22 +227,36 @@ function setUptime(text) {
   var currentSessionID = '';
   var dirty = false;
 
-  formEl.addEventListener('submit', function (evt) {
-    evt.preventDefault();
-    var text = (inputEl.value || '').trim();
-    if (!text || inFlight) return;
-    pushMessage('user', text);
-    inputEl.value = '';
-    inputEl.style.height = '';
-    sendChat();
-  });
-
-  // Enter sends, Shift+Enter inserts a newline. Matches the placeholder hint.
+  // Form submit is handled by htmx (hx-post="/chat/send").
+  // Enter sends, Shift+Enter inserts a newline; textarea does not
+  // auto-submit on Enter so we keep a minimal key handler.
   inputEl.addEventListener('keydown', function (evt) {
     if (evt.key === 'Enter' && !evt.shiftKey) {
       evt.preventDefault();
-      formEl.requestSubmit();
+      htmx.trigger(formEl, 'submit');
     }
+  });
+
+  // After htmx swaps the server-rendered user message + assistant
+  // placeholder, the server fires a chatSend browser event so we can
+  // sync JS state and start the streaming fetch.
+  document.body.addEventListener('chatSend', function () {
+    var sessionInput = document.getElementById('chat-session-input');
+    if (sessionInput && sessionInput.value) {
+      setSessionID(sessionInput.value);
+    }
+    // Read the user message from the just-rendered DOM fragment.
+    var userEls = transcriptEl.querySelectorAll('.chat-msg.is-user');
+    var lastUser = userEls[userEls.length - 1];
+    if (lastUser) {
+      var body = lastUser.querySelector('.chat-msg-body');
+      if (body) {
+        messages.push({ role: 'user', content: body.textContent });
+      }
+    }
+    // Push an assistant placeholder so the payload logic strips it.
+    messages.push({ role: 'assistant', content: '' });
+    sendChat();
   });
 
   stopBtn.addEventListener('click', function () {
@@ -256,6 +270,8 @@ function setUptime(text) {
     clearError();
     clearSaved();
     setStatus('');
+    var si = document.getElementById('chat-session-input');
+    if (si) si.value = '';
   });
 
   if (saveBtn) {
@@ -348,6 +364,8 @@ function setUptime(text) {
     if (sessionIDEl) {
       sessionIDEl.textContent = currentSessionID || '(unsaved)';
     }
+    var si = document.getElementById('chat-session-input');
+    if (si) si.value = currentSessionID;
   }
 
   function setBusy(busy) {
@@ -365,6 +383,9 @@ function setUptime(text) {
     clearSaved();
     setStatus('');
     dirty = false;
+    // Sync hidden form fields so the next send starts a fresh session.
+    var si = document.getElementById('chat-session-input');
+    if (si) si.value = '';
   }
 
   function sendChat() {
@@ -373,13 +394,25 @@ function setUptime(text) {
     setBusy(true);
     setStatus('thinking...');
 
-    var assistant = pushMessage('assistant', '');
-    assistant.el.classList.add('is-streaming');
-    // The server sees the assistant placeholder we just appended so we
-    // strip it from the request body - only completed turns go up.
+    // The assistant placeholder is already in the DOM, rendered by
+    // the /chat/send handler. Find it by its id and build the same
+    // {el, body} shape that drainStream / finalizeAssistant expect.
+    var assistantEl = document.getElementById('chat-assistant');
+    if (!assistantEl) {
+      showError('Could not find assistant placeholder.');
+      setBusy(false);
+      return;
+    }
+    var assistant = {
+      el: assistantEl,
+      body: assistantEl.querySelector('.chat-msg-body'),
+    };
+
     var payload = {
       agent: agent,
       session_id: currentSessionID,
+      // Strip the last (assistant placeholder) so the server
+      // assembles only completed turns.
       messages: messages.slice(0, -1),
     };
 
@@ -483,6 +516,9 @@ function setUptime(text) {
 
   function finalizeAssistant(assistant, suffix) {
     assistant.el.classList.remove('is-streaming');
+    // Remove the id so the next /chat/send response can use it for a
+    // new pre-rendered assistant placeholder.
+    assistant.el.removeAttribute('id');
     if (suffix) {
       assistant.body.textContent += (assistant.body.textContent ? '\n\n' : '') + suffix;
     }
