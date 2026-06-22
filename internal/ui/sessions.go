@@ -66,8 +66,7 @@ func (s *Server) getSessionStore() SessionStore {
 	return s.sessionStore
 }
 
-// chatSaveRequest is the JSON body of POST /chat/save and
-// /chat/save/beacon. SessionID is required.
+// chatSaveRequest is the JSON body of POST /chat/save. SessionID is required.
 type chatSaveRequest struct {
 	SessionID string `json:"session_id"`
 }
@@ -100,41 +99,6 @@ func (s *Server) handleChatSave(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(res)
-}
-
-// handleChatSaveBeacon mirrors handleChatSave but always returns 204 -
-// navigator.sendBeacon ignores the response anyway, so a 200 OK with a
-// body would just be wasted bytes. Errors are silently swallowed; the
-// next explicit Save (or the Quit flush) will cover for it.
-func (s *Server) handleChatSaveBeacon(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	store := s.getSessionStore()
-	if store == nil {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	id, ok := decodeSaveRequest(w, r)
-	if !ok {
-		// decodeSaveRequest already wrote a 400; the beacon endpoint
-		// prefers 204 but the body has already shipped, so just bail.
-		return
-	}
-	// 8s hedge: the browser will be tearing down regardless. Keep the
-	// timeout short of the 10s shutdown flush so a beacon never
-	// out-survives the Quit path.
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	if _, err := store.Save(ctx, id); err != nil {
-		// The beacon path is best-effort by design: the user has
-		// already navigated away. Logging is too aggressive (every
-		// page-switch would warn), so we only surface the failure when
-		// the manager is wired up but rejected the request.
-		_ = err
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 // decodeSaveRequest reads the small JSON body and pulls out the

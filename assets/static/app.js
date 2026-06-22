@@ -377,16 +377,6 @@ function logEventHandler(bodyId) {
     });
   }
 
-  // beforeunload beacon: persist the live session before the tab is
-  // closed or navigated away. sendBeacon keeps the request alive past
-  // the page teardown without blocking it.
-  window.addEventListener('beforeunload', function () {
-    if (currentSessionID && dirty && navigator && typeof navigator.sendBeacon === 'function') {
-      var blob = new Blob([JSON.stringify({ session_id: currentSessionID })], { type: 'application/json' });
-      navigator.sendBeacon('/chat/save/beacon', blob);
-    }
-  });
-
   function pushMessage(role, content) {
     messages.push({ role: role, content: content });
     var empty = transcriptEl.querySelector('.chat-empty');
