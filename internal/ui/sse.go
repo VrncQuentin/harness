@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -30,6 +31,7 @@ type ssePayload struct {
 	FirstRun                 bool                      `json:"first_run"`
 	UptimeSeconds            int64                     `json:"uptime_seconds"`
 	UptimeText               string                    `json:"uptime_text"`
+	QueueHTML                string                    `json:"queue_html,omitempty"`
 }
 
 // logEventEntry is the JSON shape of an `event: *-log` frame.
@@ -206,7 +208,7 @@ func writeLogBatch(w http.ResponseWriter, eventName string, batch []logbuf.Entry
 // broadcastState sends the current state to all SSE clients. Non-blocking; a
 // client whose buffer is full drops this frame and picks up the next tick.
 func (s *Server) broadcastState() {
-	b, _ := json.Marshal(stateToPayload(s.state.snapshot()))
+	b, _ := json.Marshal(s.statePayload(s.state.snapshot()))
 	msg := string(b)
 
 	s.sseClients.Range(func(key, _ any) bool {
@@ -224,38 +226,52 @@ func (s *Server) broadcastState() {
 
 // sendState marshals the current state and sends it to a specific client channel.
 func (s *Server) sendState(ch chan string) {
-	b, _ := json.Marshal(stateToPayload(s.state.snapshot()))
+	b, _ := json.Marshal(s.statePayload(s.state.snapshot()))
 	select {
 	case ch <- string(b):
 	default:
 	}
 }
 
-func stateToPayload(s stateSnapshot) ssePayload {
-	errs := make([]string, 0, len(s.StartupErrors))
-	for _, e := range s.StartupErrors {
+func (s *Server) statePayload(snap stateSnapshot) ssePayload {
+	payload := stateToPayload(snap)
+	payload.QueueHTML = s.renderQueueCard(snap)
+	return payload
+}
+
+func stateToPayload(snap stateSnapshot) ssePayload {
+	errs := make([]string, 0, len(snap.StartupErrors))
+	for _, e := range snap.StartupErrors {
 		errs = append(errs, e.Error())
 	}
-	uptime := time.Since(s.StartTime)
+	uptime := time.Since(snap.StartTime)
 	return ssePayload{
-		LlamaHealthy:             s.LlamaStatus.Healthy,
-		LlamaRunning:             s.LlamaStatus.Running,
-		LlamaRestarts:            s.LlamaStatus.RestartCount,
-		LlamaFailed:              s.LlamaStatus.Failed,
-		EmbedHealthy:             s.EmbedderStatus.Healthy,
-		EmbedRunning:             s.EmbedderStatus.Running,
-		EmbedRestarts:            s.EmbedderStatus.RestartCount,
-		EmbedFailed:              s.EmbedderStatus.Failed,
-		QueueDepth:               s.QueueDepth,
-		QueueMax:                 s.QueueMax,
+		LlamaHealthy:             snap.LlamaStatus.Healthy,
+		LlamaRunning:             snap.LlamaStatus.Running,
+		LlamaRestarts:            snap.LlamaStatus.RestartCount,
+		LlamaFailed:              snap.LlamaStatus.Failed,
+		EmbedHealthy:             snap.EmbedderStatus.Healthy,
+		EmbedRunning:             snap.EmbedderStatus.Running,
+		EmbedRestarts:            snap.EmbedderStatus.RestartCount,
+		EmbedFailed:              snap.EmbedderStatus.Failed,
+		QueueDepth:               snap.QueueDepth,
+		QueueMax:                 snap.QueueMax,
 		StartupErrors:            errs,
-		ProjectSlug:              s.ProjectSlug,
-		ProjectDirectoryWarnings: s.ProjectDirectoryWarnings,
-		ModelMismatch:            s.ModelMismatch,
-		LoadedModel:              s.LoadedModel,
-		PreferredModel:           s.PreferredModel,
-		FirstRun:                 s.FirstRun,
+		ProjectSlug:              snap.ProjectSlug,
+		ProjectDirectoryWarnings: snap.ProjectDirectoryWarnings,
+		ModelMismatch:            snap.ModelMismatch,
+		LoadedModel:              snap.LoadedModel,
+		PreferredModel:           snap.PreferredModel,
+		FirstRun:                 snap.FirstRun,
 		UptimeSeconds:            int64(uptime.Seconds()),
 		UptimeText:               formatUptime(uptime),
 	}
+}
+
+func (s *Server) renderQueueCard(snap stateSnapshot) string {
+	var buf bytes.Buffer
+	if err := s.statusTmpl.ExecuteTemplate(&buf, "queue_card", queueCardFromSnapshot(snap)); err != nil {
+		return ""
+	}
+	return buf.String()
 }

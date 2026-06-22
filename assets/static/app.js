@@ -25,7 +25,7 @@
     setText('embed-restarts', d.embed_restarts);
     toggleHidden('llama-restart-form', !d.llama_failed);
     toggleHidden('embed-restart-form', !d.embed_failed);
-    setQueue(d.queue_depth, d.queue_max);
+    setQueue(d.queue_html);
     setUptime(d.uptime_text);
   });
 
@@ -222,16 +222,9 @@ function setText(id, v) {
   if (el) el.textContent = v;
 }
 
-function setQueue(depth, max) {
-  var qd = document.getElementById('queue-depth');
-  if (qd) {
-    qd.innerHTML = depth + '<span class="num-max"> / ' + max + '</span>';
-  }
-  var m = document.getElementById('queue-meter');
-  if (m) {
-    var pct = max > 0 ? (depth * 100 / max) : 0;
-    m.style.width = pct + '%';
-  }
+function setQueue(html) {
+  var card = document.getElementById('queue-card');
+  if (card && html) card.outerHTML = html;
 }
 
 function setUptime(text) {

@@ -4,6 +4,17 @@
   {{range .Entries}}<div class="log-row"><span class="log-time">{{.Time}}</span><span class="log-line">{{.Line}}</span></div>{{else}}<div class="log-empty">No output yet.</div>{{end}}
 </div>
 {{end}}
+{{define "queue_card"}}
+  <div class="card" id="queue-card">
+    <header class="card-head">
+      <h3>Queue</h3>
+      <span class="num">{{.QueueDepth}}<span class="num-max"> / {{.QueueMax}}</span></span>
+    </header>
+    <div class="meter">
+      <div class="meter-fill" style="width:{{.QueuePct}}%"></div>
+    </div>
+  </div>
+{{end}}
 {{define "content"}}
 <h1 class="page-title">Status</h1>
 
@@ -143,15 +154,7 @@
     {{template "logbox" .EmbedLog}}
   </div>
 
-  <div class="card">
-    <header class="card-head">
-      <h3>Queue</h3>
-      <span class="num" id="queue-depth">{{.QueueDepth}}<span class="num-max"> / {{.QueueMax}}</span></span>
-    </header>
-    <div class="meter">
-      <div class="meter-fill" id="queue-meter" style="width:{{.QueuePct}}%"></div>
-    </div>
-  </div>
+  {{template "queue_card" .}}
 </section>
 
 <div class="card logs-card">
