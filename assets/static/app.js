@@ -220,7 +220,6 @@ function setUptime(text) {
   var savedEl = document.getElementById('chat-saved');
   var sessionIDEl = document.getElementById('chat-session-id');
   var resumeEl = document.getElementById('chat-resume');
-  var resumeBodyEl = document.getElementById('chat-resume-body');
 
   var agent = root.getAttribute('data-agent') || '';
   var messages = [];
@@ -282,13 +281,28 @@ function setUptime(text) {
     });
   }
 
-  if (resumeBodyEl) {
-    resumeBodyEl.querySelectorAll('[data-session-id]').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        resumeSession(btn.getAttribute('data-session-id') || '', btn.getAttribute('data-session-agent') || '');
-      });
-    });
-  }
+  // Resume is handled server-side via htmx: the resume buttons carry
+  // hx-get, hx-target, and hx-swap so clicking them fetches an HTML
+  // transcript fragment from /chat/session and swaps it into place.
+  // The fragment also delivers session id + messages data via hidden
+  // OOB swaps read below.
+  document.body.addEventListener('htmx:afterSettle', function () {
+    var state = document.getElementById('chat-state');
+    if (!state) return;
+    var sid = state.getAttribute('data-session-id');
+    if (sid) {
+      setSessionID(sid);
+    }
+    var msgsJSON = state.getAttribute('data-messages');
+    if (msgsJSON) {
+      try { messages = JSON.parse(msgsJSON); } catch (e) { /* ignore */ }
+    }
+    dirty = false;
+    clearError();
+    clearSaved();
+    setStatus('resumed');
+    if (resumeEl) resumeEl.open = false;
+  });
 
   function pushMessage(role, content) {
     messages.push({ role: role, content: content });
@@ -509,56 +523,5 @@ function setUptime(text) {
     }).finally(function () {
       if (saveBtn) saveBtn.disabled = false;
     });
-  }
-
-  function resumeSession(id, recAgent) {
-    setStatus('resuming...');
-    fetch('/chat/session?agent=' + encodeURIComponent(recAgent) + '&id=' + encodeURIComponent(id))
-      .then(function (resp) {
-        if (resp.status === 404) {
-          throw new Error('Conversation history not available for this session.');
-        }
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        return resp.json();
-      })
-      .then(function (data) {
-        messages = (data.messages || []).slice();
-        transcriptEl.innerHTML = '';
-        if (messages.length === 0) {
-          transcriptEl.innerHTML = '<p class="chat-empty">Send a message to begin.</p>';
-        } else {
-          messages.forEach(function (m) {
-            // pushMessage appends to messages too; rebuild manually.
-            renderMessage(m.role, m.content);
-          });
-        }
-        setSessionID(id);
-        clearError();
-        clearSaved();
-        setStatus('resumed');
-        dirty = false;
-        if (resumeEl) resumeEl.open = false;
-      })
-      .catch(function (err) {
-        showError('Resume failed: ' + (err.message || String(err)));
-        setStatus('resume failed');
-      });
-  }
-
-  function renderMessage(role, content) {
-    var empty = transcriptEl.querySelector('.chat-empty');
-    if (empty) empty.remove();
-    var el = document.createElement('div');
-    el.className = 'chat-msg is-' + role;
-    var roleEl = document.createElement('span');
-    roleEl.className = 'chat-msg-role';
-    roleEl.textContent = role === 'user' ? 'You' : (role === 'assistant' ? agent : role);
-    var bodyEl = document.createElement('span');
-    bodyEl.className = 'chat-msg-body';
-    bodyEl.textContent = content;
-    el.appendChild(roleEl);
-    el.appendChild(bodyEl);
-    transcriptEl.appendChild(el);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
 })();

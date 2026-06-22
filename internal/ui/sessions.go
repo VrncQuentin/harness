@@ -126,8 +126,20 @@ type chatSessionResponse struct {
 	Messages []ChatMessage `json:"messages"`
 }
 
+// chatSessionView is the template data for the chat-transcript-fragment
+// partial. It renders the transcript as HTML fragments for htmx-driven
+// resume, replacing the browser's JS transcript rebuild.
+type chatSessionView struct {
+	SessionID    string
+	Messages     []ChatMessage
+	MessagesJSON string
+}
+
 // handleChatSessionResume hydrates one session's conversation from the
-// .json sidecar so the browser can replace its transcript.
+// .json sidecar so the browser can replace its transcript. When the
+// request carries the HX-Request header (htmx), it returns an HTML
+// fragment rendered server-side instead of JSON, moving transcript
+// state ownership to the server.
 func (s *Server) handleChatSessionResume(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -165,6 +177,27 @@ func (s *Server) handleChatSessionResume(w http.ResponseWriter, r *http.Request)
 		}
 		return
 	}
+
+	// When driven by htmx, return a server-rendered transcript fragment
+	// so the browser no longer needs JS to rebuild the conversation.
+	if r.Header.Get("HX-Request") == "true" {
+		jsonBytes, err := json.Marshal(msgs)
+		if err != nil {
+			writeChatJSONError(w, http.StatusInternalServerError, "marshal messages: "+err.Error())
+			return
+		}
+		view := chatSessionView{
+			SessionID:    id,
+			Messages:     msgs,
+			MessagesJSON: string(jsonBytes),
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := s.chatTmpl.ExecuteTemplate(w, "chat-transcript-fragment", view); err != nil {
+			http.Error(w, "template error", http.StatusInternalServerError)
+		}
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(chatSessionResponse{
 		ID:       id,
