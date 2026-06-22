@@ -222,23 +222,23 @@ func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
 
 	for tok := range tokens {
 		if tok.Err != nil {
-			writeChatSSE(w, flusher, map[string]any{"error": tok.Err.Error()})
+			writeChatSSEError(w, flusher, tok.Err.Error())
 			return
 		}
 		if tok.Done {
-			writeChatSSE(w, flusher, map[string]any{"done": true})
+			writeChatSSEDone(w, flusher)
 			return
 		}
 		if tok.Content == "" {
 			continue
 		}
-		if !writeChatSSE(w, flusher, map[string]any{"content": tok.Content}) {
+		if !writeChatSSEContent(w, flusher, tok.Content) {
 			return
 		}
 	}
 	// Channel closed without an explicit Done token. Emit one so the
 	// client always sees a terminal frame and can re-enable input.
-	writeChatSSE(w, flusher, map[string]any{"done": true})
+	writeChatSSEDone(w, flusher)
 }
 
 func statusFromChatErr(err error) int {
@@ -260,15 +260,25 @@ func writeChatJSONError(w http.ResponseWriter, status int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-// writeChatSSE encodes payload as a JSON object and emits a single SSE
-// data event. Returns false on the first write error so callers can
-// abort the stream.
-func writeChatSSE(w http.ResponseWriter, flusher http.Flusher, payload map[string]any) bool {
-	b, err := json.Marshal(payload)
-	if err != nil {
+// writeChatSSEContent emits a single SSE data frame with plain-text
+// content. No JSON wrapping — the browser inserts the text directly.
+func writeChatSSEContent(w http.ResponseWriter, flusher http.Flusher, content string) bool {
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", content); err != nil {
 		return false
 	}
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+	flusher.Flush()
+	return true
+}
+
+// writeChatSSEDone emits a named event signalling the stream is complete.
+func writeChatSSEDone(w http.ResponseWriter, flusher http.Flusher) {
+	_, _ = fmt.Fprint(w, "event: chat-done\ndata: \n\n")
+	flusher.Flush()
+}
+
+// writeChatSSEError emits a named event carrying an error message.
+func writeChatSSEError(w http.ResponseWriter, flusher http.Flusher, msg string) bool {
+	if _, err := fmt.Fprintf(w, "event: chat-error\ndata: %s\n\n", msg); err != nil {
 		return false
 	}
 	flusher.Flush()
@@ -276,8 +286,8 @@ func writeChatSSE(w http.ResponseWriter, flusher http.Flusher, payload map[strin
 }
 
 // writeChatSSEEvent is writeChatSSE with an explicit event: name. Used
-// to tag the session-id frame so the browser can pin subsequent calls
-// without parsing every JSON payload.
+// to tag the session-id frame; JSON is kept here since the session id
+// is a small structured payload.
 func writeChatSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, payload map[string]any) bool {
 	b, err := json.Marshal(payload)
 	if err != nil {
