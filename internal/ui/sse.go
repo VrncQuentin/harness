@@ -32,6 +32,8 @@ type ssePayload struct {
 	UptimeSeconds            int64                     `json:"uptime_seconds"`
 	UptimeText               string                    `json:"uptime_text"`
 	QueueHTML                string                    `json:"queue_html,omitempty"`
+	LlamaHTML                string                    `json:"llama_html,omitempty"`
+	EmbedHTML                string                    `json:"embed_html,omitempty"`
 }
 
 // logEventEntry is the JSON shape of an `event: *-log` frame.
@@ -236,6 +238,8 @@ func (s *Server) sendState(ch chan string) {
 func (s *Server) statePayload(snap stateSnapshot) ssePayload {
 	payload := stateToPayload(snap)
 	payload.QueueHTML = s.renderQueueCard(snap)
+	payload.LlamaHTML = s.renderProcStatusPanel(llamaPanelFromSnapshot(snap))
+	payload.EmbedHTML = s.renderProcStatusPanel(embedPanelFromSnapshot(snap))
 	return payload
 }
 
@@ -271,6 +275,14 @@ func stateToPayload(snap stateSnapshot) ssePayload {
 func (s *Server) renderQueueCard(snap stateSnapshot) string {
 	var buf bytes.Buffer
 	if err := s.statusTmpl.ExecuteTemplate(&buf, "queue_card", queueCardFromSnapshot(snap)); err != nil {
+		return ""
+	}
+	return buf.String()
+}
+
+func (s *Server) renderProcStatusPanel(data procStatusPanelData) string {
+	var buf bytes.Buffer
+	if err := s.statusTmpl.ExecuteTemplate(&buf, "proc_status_panel", data); err != nil {
 		return ""
 	}
 	return buf.String()

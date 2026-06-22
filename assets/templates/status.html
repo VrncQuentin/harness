@@ -15,6 +15,30 @@
     </div>
   </div>
 {{end}}
+{{define "proc_status_panel"}}
+    <div id="{{.PanelID}}">
+      <header class="card-head">
+        <h3>{{.Title}}</h3>
+        <span class="badge {{if .Status.Healthy}}badge-ok{{else}}badge-err{{end}}">
+          {{if .Status.Failed}}Failed{{else if .Status.Healthy}}Healthy{{else}}Unhealthy{{end}}
+        </span>
+      </header>
+      <dl class="stats">
+        <div><dt>Running</dt><dd>{{if .Status.Running}}Yes{{else}}No{{end}}</dd></div>
+        <div><dt>Restarts</dt><dd>{{.Status.RestartCount}}</dd></div>
+      </dl>
+      {{if .Status.LastError}}
+      <p class="card-err">{{.Status.LastError}}</p>
+      {{end}}
+      {{with .Status.ExitCode}}
+      <p class="card-meta">Last exit code: <code>{{.}}</code></p>
+      {{end}}
+      <form method="post" action="/procs/{{.ProcID}}/restart" class="card-actions" id="{{.ProcID}}-restart-form"{{if not .Status.Failed}} hidden{{end}}>
+        <p class="card-err">Circuit open after repeated failures. Fix the underlying issue, then click Restart.</p>
+        <button type="submit" class="btn btn-primary">Restart</button>
+      </form>
+    </div>
+{{end}}
 {{define "content"}}
 <h1 class="page-title">Status</h1>
 
@@ -107,50 +131,12 @@
 
 <section class="grid">
   <div class="card">
-    <header class="card-head">
-      <h3>llama-server</h3>
-      <span class="badge {{if .LlamaStatus.Healthy}}badge-ok{{else}}badge-err{{end}}" id="llama-badge">
-        {{if .LlamaStatus.Failed}}Failed{{else if .LlamaStatus.Healthy}}Healthy{{else}}Unhealthy{{end}}
-      </span>
-    </header>
-    <dl class="stats">
-      <div><dt>Running</dt><dd id="llama-running">{{if .LlamaStatus.Running}}Yes{{else}}No{{end}}</dd></div>
-      <div><dt>Restarts</dt><dd id="llama-restarts">{{.LlamaStatus.RestartCount}}</dd></div>
-    </dl>
-    {{if .LlamaStatus.LastError}}
-    <p class="card-err">{{.LlamaStatus.LastError}}</p>
-    {{end}}
-    {{with .LlamaStatus.ExitCode}}
-    <p class="card-meta">Last exit code: <code>{{.}}</code></p>
-    {{end}}
-    <form method="post" action="/procs/llama/restart" class="card-actions" id="llama-restart-form"{{if not .LlamaStatus.Failed}} hidden{{end}}>
-      <p class="card-err">Circuit open after repeated failures. Fix the underlying issue, then click Restart.</p>
-      <button type="submit" class="btn btn-primary">Restart</button>
-    </form>
+    {{template "proc_status_panel" .LlamaPanel}}
     {{template "logbox" .LlamaLog}}
   </div>
 
   <div class="card">
-    <header class="card-head">
-      <h3>Embedder</h3>
-      <span class="badge {{if .EmbedderStatus.Healthy}}badge-ok{{else}}badge-err{{end}}" id="embed-badge">
-        {{if .EmbedderStatus.Failed}}Failed{{else if .EmbedderStatus.Healthy}}Healthy{{else}}Unhealthy{{end}}
-      </span>
-    </header>
-    <dl class="stats">
-      <div><dt>Running</dt><dd id="embed-running">{{if .EmbedderStatus.Running}}Yes{{else}}No{{end}}</dd></div>
-      <div><dt>Restarts</dt><dd id="embed-restarts">{{.EmbedderStatus.RestartCount}}</dd></div>
-    </dl>
-    {{if .EmbedderStatus.LastError}}
-    <p class="card-err">{{.EmbedderStatus.LastError}}</p>
-    {{end}}
-    {{with .EmbedderStatus.ExitCode}}
-    <p class="card-meta">Last exit code: <code>{{.}}</code></p>
-    {{end}}
-    <form method="post" action="/procs/embed/restart" class="card-actions" id="embed-restart-form"{{if not .EmbedderStatus.Failed}} hidden{{end}}>
-      <p class="card-err">Circuit open after repeated failures. Fix the underlying issue, then click Restart.</p>
-      <button type="submit" class="btn btn-primary">Restart</button>
-    </form>
+    {{template "proc_status_panel" .EmbedPanel}}
     {{template "logbox" .EmbedLog}}
   </div>
 
