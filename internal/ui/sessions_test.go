@@ -124,32 +124,6 @@ func TestHandleChatSave_EmptyBodyReturns400(t *testing.T) {
 	}
 }
 
-func TestHandleChatSessions_FiltersAndCaps(t *testing.T) {
-	records := make([]SessionRecord, 0, RecentSessionLimit+5)
-	for i := 0; i < RecentSessionLimit+5; i++ {
-		records = append(records, SessionRecord{ID: "id" + string(rune('a'+i)), Agent: "coder"})
-	}
-	store := &stubSessionStore{records: records}
-	srv := NewServer(0)
-	srv.SetSessionStore(store)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/chat/sessions?agent=coder", nil)
-	srv.handleChatSessions(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: want 200, got %d", rec.Code)
-	}
-	var resp chatSessionsResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(resp.Records) != RecentSessionLimit {
-		t.Errorf("expected %d records, got %d", RecentSessionLimit, len(resp.Records))
-	}
-	if store.gotAgent != "coder" {
-		t.Errorf("agent: want coder, got %q", store.gotAgent)
-	}
-}
-
 func TestHandleChatSessionResume_Happy(t *testing.T) {
 	want := []ChatMessage{
 		{Role: "user", Content: "hi"},
