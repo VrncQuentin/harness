@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -337,5 +338,131 @@ func TestHandleChatStream_SyntheticDoneOnClosedChannel(t *testing.T) {
 
 	if !strings.Contains(rec.Body.String(), `"done":true`) {
 		t.Errorf("expected synthetic done frame, got %s", rec.Body.String())
+	}
+}
+
+// --- /chat/send tests --------------------------------------------------
+
+// TestHandleChatSend_NoRunnerReturns503: if the chat runner is not wired,
+// the handler refuses to render a fragment.
+func TestHandleChatSend_NoRunnerReturns503(t *testing.T) {
+	s := NewServer(3000)
+	rec := httptest.NewRecorder()
+	body := strings.NewReader("message=hello")
+	req := httptest.NewRequest(http.MethodPost, "/chat/send", body)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleChatSend(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleChatSend_NonPOSTReturns405 ensures GET (etc.) are rejected.
+func TestHandleChatSend_NonPOSTReturns405(t *testing.T) {
+	s := NewServer(3000)
+	rec := httptest.NewRecorder()
+	s.handleChatSend(rec, httptest.NewRequest(http.MethodGet, "/chat/send", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
+// TestHandleChatSend_EmptyMessageReturns400: a form with no message field
+// or whitespace-only content is rejected.
+func TestHandleChatSend_EmptyMessageReturns400(t *testing.T) {
+	s := NewServer(3000)
+	s.SetChatRunner(&stubChatRunner{})
+	for _, bodyStr := range []string{"", "message=", "message=+++"} {
+		rec := httptest.NewRecorder()
+		body := strings.NewReader(bodyStr)
+		req := httptest.NewRequest(http.MethodPost, "/chat/send", body)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		s.handleChatSend(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body=%q: expected 400, got %d", bodyStr, rec.Code)
+		}
+	}
+}
+
+// TestHandleChatSend_RendersFragment checks that a valid message produces
+// the server-rendered user + assistant placeholder fragment.
+func TestHandleChatSend_RendersFragment(t *testing.T) {
+	s := NewServer(3000)
+	s.SetChatRunner(&stubChatRunner{})
+
+	form := url.Values{
+		"message":    {"hello world"},
+		"agent":      {"coder"},
+		"session_id": {"s1"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleChatSend(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("content-type: want text/html, got %q", ct)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="chat-msg is-user"`,
+		`hello world`,
+		`class="chat-msg is-assistant is-streaming"`,
+		`id="chat-assistant"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing %q", want)
+		}
+	}
+}
+
+// TestHandleChatSend_IncludesHXTrigger verifies the HX-Trigger response
+// header is set so the browser can start the streaming fetch.
+func TestHandleChatSend_IncludesHXTrigger(t *testing.T) {
+	s := NewServer(3000)
+	s.SetChatRunner(&stubChatRunner{})
+
+	form := url.Values{"message": {"hi"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleChatSend(rec, req)
+
+	if got := rec.Header().Get("HX-Trigger"); got != "chatSend" {
+		t.Errorf("HX-Trigger: want chatSend, got %q", got)
+	}
+}
+
+// TestHandleChatSend_OOBSessionElements verifies the fragment includes
+// out-of-band swaps for session-id display and hidden form fields.
+func TestHandleChatSend_OOBSessionElements(t *testing.T) {
+	s := NewServer(3000)
+	s.SetChatRunner(&stubChatRunner{})
+
+	form := url.Values{
+		"message":    {"hi"},
+		"agent":      {"coder"},
+		"session_id": {"s42"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleChatSend(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="chat-session-id" hx-swap-oob="true"`,
+		`>s42<`,
+		`id="chat-session-input"`,
+		`value="s42"`,
+		`id="chat-agent-input"`,
+		`value="coder"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response missing %q", want)
+		}
 	}
 }
