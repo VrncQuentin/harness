@@ -124,21 +124,6 @@ func TestHandleChatSave_EmptyBodyReturns400(t *testing.T) {
 	}
 }
 
-func TestHandleChatSaveBeacon_Returns204(t *testing.T) {
-	store := &stubSessionStore{}
-	srv := NewServer(0)
-	srv.SetSessionStore(store)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/chat/save/beacon", strings.NewReader(`{"session_id":"abc"}`))
-	srv.handleChatSaveBeacon(rec, req)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status: want 204, got %d", rec.Code)
-	}
-	if store.saveCalls != 1 {
-		t.Errorf("store.Save calls: want 1, got %d", store.saveCalls)
-	}
-}
-
 func TestHandleChatSessions_FiltersAndCaps(t *testing.T) {
 	records := make([]SessionRecord, 0, RecentSessionLimit+5)
 	for i := 0; i < RecentSessionLimit+5; i++ {

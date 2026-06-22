@@ -458,7 +458,6 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/chat", s.handleChat)
 	mux.HandleFunc("/chat/stream", s.handleChatStream)
 	mux.HandleFunc("/chat/save", s.handleChatSave)
-	mux.HandleFunc("/chat/save/beacon", s.handleChatSaveBeacon)
 	mux.HandleFunc("/chat/sessions", s.handleChatSessions)
 	mux.HandleFunc("/chat/session", s.handleChatSessionResume)
 	mux.HandleFunc("/memory", s.handleMemory)
