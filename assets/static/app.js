@@ -213,7 +213,7 @@ function setUptime(text) {
 }
 
 // logEventHandler appends multiplexed log events to one log box, caps DOM
-// size, and auto-scrolls only when the user is already pinned to the bottom.
+// size, and keeps the latest server-rendered log line visible.
 function logEventHandler(bodyId) {
   return function (evt) {
     var body = document.getElementById(bodyId);
@@ -224,8 +224,6 @@ function logEventHandler(bodyId) {
 
     var empty = body.querySelector('.log-empty');
     if (empty) empty.remove();
-
-    var atBottom = (body.scrollHeight - body.scrollTop - body.clientHeight) < 4;
 
     var row = document.createElement('div');
     row.className = 'log-row';
@@ -242,7 +240,7 @@ function logEventHandler(bodyId) {
     while (body.childElementCount > 500) {
       body.removeChild(body.firstElementChild);
     }
-    if (atBottom) body.scrollTop = body.scrollHeight;
+    body.scrollTop = body.scrollHeight;
   };
 }
 
