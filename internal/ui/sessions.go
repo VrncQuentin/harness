@@ -119,42 +119,6 @@ func decodeSaveRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return id, true
 }
 
-// chatSessionsResponse is the JSON body of GET /chat/sessions. Records
-// is sorted newest-first and capped to RecentSessionLimit.
-type chatSessionsResponse struct {
-	Records []SessionRecord `json:"records"`
-}
-
-// RecentSessionLimit is the cap on how many records the resume picker
-// shows. M3 defaults to 10 because the picker is a small dropdown; a
-// future iteration may surface a paginated browser instead.
-const RecentSessionLimit = 10
-
-// handleChatSessions returns the recent saved sessions for agent so
-// the resume picker can populate itself.
-func (s *Server) handleChatSessions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	store := s.getSessionStore()
-	if store == nil {
-		writeChatJSONError(w, http.StatusServiceUnavailable, "session manager not available")
-		return
-	}
-	agent := strings.TrimSpace(r.URL.Query().Get("agent"))
-	records, err := store.Records(agent)
-	if err != nil {
-		writeChatJSONError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if len(records) > RecentSessionLimit {
-		records = records[:RecentSessionLimit]
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(chatSessionsResponse{Records: records})
-}
-
 // chatSessionResponse is the JSON body of GET /chat/session.
 type chatSessionResponse struct {
 	ID       string        `json:"id"`
