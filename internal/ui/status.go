@@ -28,6 +28,8 @@ type statusPageData struct {
 	MemoryLayout    memoryLayoutView
 	ScaffoldErr     string
 	ScaffoldCreated int
+	LlamaPanel      procStatusPanelData
+	EmbedPanel      procStatusPanelData
 	HarnessLog      logboxData
 	LlamaLog        logboxData
 	EmbedLog        logboxData
@@ -37,6 +39,13 @@ type queueCardData struct {
 	QueueDepth int
 	QueueMax   int
 	QueuePct   int
+}
+
+type procStatusPanelData struct {
+	PanelID string
+	ProcID  string
+	Title   string
+	Status  ProcessStatus
 }
 
 // memoryLayoutView is the template-friendly form of the missing-items
@@ -100,6 +109,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		MemoryLayout:    s.memoryLayoutView(),
 		ScaffoldErr:     r.URL.Query().Get("scaffold_err"),
 		ScaffoldCreated: scaffoldCreated,
+		LlamaPanel:      llamaPanelFromSnapshot(snap),
+		EmbedPanel:      embedPanelFromSnapshot(snap),
 		HarnessLog:      logboxData{BodyID: "harness-log", Entries: recentEntries(s.getLogRing(), statusLogTail)},
 		LlamaLog:        logboxData{BodyID: "llama-log", Entries: recentEntries(s.getLlamaRing(), procLogTail)},
 		EmbedLog:        logboxData{BodyID: "embed-log", Entries: recentEntries(s.getEmbedRing(), procLogTail)},
@@ -160,6 +171,14 @@ func queueCardFromSnapshot(s stateSnapshot) queueCardData {
 		QueueMax:   s.QueueMax,
 		QueuePct:   queuePct(s.QueueDepth, s.QueueMax),
 	}
+}
+
+func llamaPanelFromSnapshot(s stateSnapshot) procStatusPanelData {
+	return procStatusPanelData{PanelID: "llama-status-panel", ProcID: "llama", Title: "llama-server", Status: s.LlamaStatus}
+}
+
+func embedPanelFromSnapshot(s stateSnapshot) procStatusPanelData {
+	return procStatusPanelData{PanelID: "embed-status-panel", ProcID: "embed", Title: "Embedder", Status: s.EmbedderStatus}
 }
 
 // recentEntries returns the last n log entries from ring formatted for the

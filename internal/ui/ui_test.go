@@ -736,22 +736,20 @@ func TestHandleStatus_RendersRestartFormWhenFailed(t *testing.T) {
 		strings.Contains(body, `hidden id="llama-restart-form"`) {
 		t.Error("llama restart form should not be hidden when Failed=true")
 	}
-	// Badge text can have surrounding whitespace from the template; just
-	// verify the word appears and the other two options do not.
-	if !strings.Contains(body, "Failed") {
-		t.Error("badge should read 'Failed' when Status.Failed is true")
-	}
-	// When Failed=true the badge must not simultaneously render the other
-	// two states. Look for them between the open tag and its close.
-	const open = `id="llama-badge"`
+	// Status text can have surrounding whitespace from the template; just
+	// verify the word appears in the status panel and the other states do not.
+	const open = `id="llama-status-panel"`
 	i := strings.Index(body, open)
-	j := strings.Index(body[i:], "</span>")
+	j := strings.Index(body[i:], `id="llama-restart-form"`)
 	if i < 0 || j < 0 {
-		t.Fatal("could not locate llama-badge span in rendered body")
+		t.Fatal("could not locate llama status panel in rendered body")
 	}
-	badge := body[i : i+j]
-	if strings.Contains(badge, "Healthy") || strings.Contains(badge, "Unhealthy") {
-		t.Errorf("badge should not render Healthy/Unhealthy when Failed; got %q", badge)
+	panelHead := body[i : i+j]
+	if !strings.Contains(panelHead, "Failed") {
+		t.Error("status panel should read 'Failed' when Status.Failed is true")
+	}
+	if strings.Contains(panelHead, "Healthy") || strings.Contains(panelHead, "Unhealthy") {
+		t.Errorf("status panel should not render Healthy/Unhealthy when Failed; got %q", panelHead)
 	}
 }
 
@@ -765,7 +763,7 @@ func TestHandleStatus_HidesRestartFormWhenNotFailed(t *testing.T) {
 
 	body := rec.Body.String()
 	if !strings.Contains(body, `id="llama-restart-form"`) {
-		t.Fatal("llama restart form should still be in DOM so JS can toggle it")
+		t.Fatal("llama restart form should still be in DOM")
 	}
 	if !strings.Contains(body, `hidden`) {
 		t.Error("llama restart form should be hidden when not Failed")
@@ -864,6 +862,9 @@ func TestSSE_EmitsConnectedAndInitialState(t *testing.T) {
 	}
 	if !strings.Contains(body, `"queue_html":`) {
 		t.Errorf("SSE payload missing server-rendered queue HTML, got: %q", body)
+	}
+	if !strings.Contains(body, `"llama_html":`) || !strings.Contains(body, `"embed_html":`) {
+		t.Errorf("SSE payload missing server-rendered process HTML, got: %q", body)
 	}
 }
 
