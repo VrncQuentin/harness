@@ -391,6 +391,7 @@ a:hover { text-decoration: underline; }
   font-style: italic;
   padding: 0.25rem 0;
 }
+.logs-body:has(.log-row) .log-empty { display: none; }
 
 /* Buttons */
 .btn {

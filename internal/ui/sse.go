@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/vrnc/harness/internal/logbuf"
@@ -34,12 +35,6 @@ type ssePayload struct {
 	QueueHTML                string                    `json:"queue_html,omitempty"`
 	LlamaHTML                string                    `json:"llama_html,omitempty"`
 	EmbedHTML                string                    `json:"embed_html,omitempty"`
-}
-
-// logEventEntry is the JSON shape of an `event: *-log` frame.
-type logEventEntry struct {
-	Time string `json:"time"`
-	Line string `json:"line"`
 }
 
 // logSubBuffer is the per-subscription channel buffer for a log ring.
@@ -132,7 +127,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if !writeLogBatch(w, "llama-log", drainEntries(llamaCh, e)) {
+			if !s.writeLogBatch(w, "llama-log", drainEntries(llamaCh, e)) {
 				return
 			}
 			flusher.Flush()
@@ -140,7 +135,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if !writeLogBatch(w, "embed-log", drainEntries(embedCh, e)) {
+			if !s.writeLogBatch(w, "embed-log", drainEntries(embedCh, e)) {
 				return
 			}
 			flusher.Flush()
@@ -148,7 +143,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if !writeLogBatch(w, "harness-log", drainEntries(harnessCh, e)) {
+			if !s.writeLogBatch(w, "harness-log", drainEntries(harnessCh, e)) {
 				return
 			}
 			flusher.Flush()
@@ -188,23 +183,26 @@ func drainEntries(ch chan logbuf.Entry, first logbuf.Entry) []logbuf.Entry {
 	return batch
 }
 
-// writeLogBatch encodes each entry as one `event: <name>` SSE frame. Returns
-// false on the first write error so the caller can tear down. A marshal
-// failure drops the offending entry rather than the whole batch.
-func writeLogBatch(w http.ResponseWriter, eventName string, batch []logbuf.Entry) bool {
+// writeLogBatch renders each entry as one HTML `event: <name>` SSE frame.
+// htmx consumes these frames directly with sse-swap="<name>".
+func (s *Server) writeLogBatch(w http.ResponseWriter, eventName string, batch []logbuf.Entry) bool {
 	for _, e := range batch {
-		payload, err := json.Marshal(logEventEntry{
+		html := s.renderLogRow(logEntryView{
 			Time: e.Time.Format("15:04:05"),
 			Line: e.Line,
 		})
-		if err != nil {
+		if html == "" {
 			continue
 		}
-		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, payload); err != nil {
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, sseData(html)); err != nil {
 			return false
 		}
 	}
 	return true
+}
+
+func sseData(html string) string {
+	return strings.ReplaceAll(html, "\n", "\ndata: ")
 }
 
 // broadcastState sends the current state to all SSE clients. Non-blocking; a
@@ -275,6 +273,14 @@ func stateToPayload(snap stateSnapshot) ssePayload {
 func (s *Server) renderQueueCard(snap stateSnapshot) string {
 	var buf bytes.Buffer
 	if err := s.statusTmpl.ExecuteTemplate(&buf, "queue_card", queueCardFromSnapshot(snap)); err != nil {
+		return ""
+	}
+	return buf.String()
+}
+
+func (s *Server) renderLogRow(row logEntryView) string {
+	var buf bytes.Buffer
+	if err := s.statusTmpl.ExecuteTemplate(&buf, "log_row", row); err != nil {
 		return ""
 	}
 	return buf.String()
