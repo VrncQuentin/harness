@@ -49,7 +49,12 @@
       <ul class="chat-resume-list">
         {{range .RecentSessions}}
         <li>
-          <button type="button" class="btn btn-link" data-session-id="{{.ID}}" data-session-agent="{{.Agent}}">
+          <button type="button" class="btn btn-link"
+            hx-get="/chat/session?agent={{.Agent}}&id={{.ID}}"
+            hx-target="#chat-transcript"
+            hx-swap="innerHTML"
+            data-session-id="{{.ID}}"
+            data-session-agent="{{.Agent}}">
             {{.ID}} (saved {{.SavedAt}}, seq {{.SaveSeq}})
           </button>
         </li>
@@ -80,4 +85,23 @@
 </section>
 
 {{end}}
+{{end}}
+
+{{/* chat-transcript-fragment is the htmx response for /chat/session with
+   HX-Request. It replaces #chat-transcript innerHTML and updates the
+   session-id display via an out-of-band swap. */}}
+{{define "chat-transcript-fragment"}}
+{{if .Messages}}
+{{range .Messages}}<div class="chat-msg is-{{.Role}}">
+  <span class="chat-msg-role">{{if eq .Role "user"}}You{{else}}assistant{{end}}</span>
+  <span class="chat-msg-body">{{.Content}}</span>
+</div>
+{{end}}
+{{else}}
+<p class="chat-empty">Send a message to begin.</p>
+{{end}}
+<code id="chat-session-id" hx-swap-oob="true">{{.SessionID}}</code>
+<span id="chat-state" hx-swap-oob="true" hidden
+      data-session-id="{{.SessionID}}"
+      data-messages="{{.MessagesJSON}}"></span>
 {{end}}
