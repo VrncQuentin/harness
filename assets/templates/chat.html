@@ -33,7 +33,11 @@
     </div>
     <div class="chat-head-actions">
       <button type="button" class="btn btn-ghost btn-sm" id="chat-new">New session</button>
-      <button type="button" class="btn btn-ghost btn-sm" id="chat-save">Save session</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="chat-save"
+        hx-post="/chat/save"
+        hx-include="#chat-session-input"
+        hx-target="#chat-saved"
+        hx-swap="innerHTML">Save session</button>
       <button type="button" class="btn btn-ghost btn-sm" id="chat-clear">Clear</button>
     </div>
   </header>
@@ -129,4 +133,11 @@
 <code id="chat-session-id" hx-swap-oob="true">{{.SessionID}}</code>
 <input type="hidden" id="chat-session-input" name="session_id" hx-swap-oob="true" value="{{.SessionID}}">
 <input type="hidden" id="chat-agent-input" name="agent" hx-swap-oob="true" value="{{.Agent}}">
+{{end}}
+
+{{/* chat-save-fragment is the htmx response for /chat/save. It replaces
+   #chat-saved innerHTML with a confirmation message. */}}
+{{define "chat-save-fragment"}}
+Saved session {{.SessionID}} (seq {{.SaveSeq}}).
+<span id="chat-dirty" hidden></span>
 {{end}}
