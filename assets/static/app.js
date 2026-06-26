@@ -477,8 +477,8 @@ function setUptime(text) {
 
     function handleFrame(frame, assistant) {
       // SSE frames may carry an `event:` tag and one or more `data:`
-      // lines. We treat the session frame specially so the browser can
-      // pin subsequent calls without parsing every JSON payload.
+      // lines. Content frames are plain text (no JSON wrapper); the
+      // session frame still uses JSON since it carries structured data.
       var eventName = '';
       var dataLines = [];
       frame.split('\n').forEach(function (line) {
@@ -490,23 +490,22 @@ function setUptime(text) {
       });
       if (dataLines.length === 0) return;
       var data = dataLines.join('\n');
-      var obj;
-      try { obj = JSON.parse(data); } catch (e) { return; }
       if (eventName === 'session') {
-        if (obj && obj.id) {
-          setSessionID(obj.id);
-        }
+        var obj;
+        try { obj = JSON.parse(data); } catch (e) { return; }
+        if (obj && obj.id) setSessionID(obj.id);
         return;
       }
-      if (obj.error) {
-        streamErr = new Error(obj.error);
+      if (eventName === 'chat-error') {
+        streamErr = new Error(data);
         throw streamErr;
       }
-      if (obj.done) {
+      if (eventName === 'chat-done') {
         return;
       }
-      if (typeof obj.content === 'string' && obj.content.length > 0) {
-        assistant.body.textContent += obj.content;
+      // Default: content frame. Append plain text directly.
+      if (data.length > 0) {
+        assistant.body.textContent += data;
         transcriptEl.scrollTop = transcriptEl.scrollHeight;
       }
     }
