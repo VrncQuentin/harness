@@ -88,6 +88,9 @@ type Server struct {
 	// sseClients maps chan string → struct{} for active SSE subscribers.
 	sseClients sync.Map
 
+	// chatSSEClients maps chan string → struct{} for chat token subscribers.
+	chatSSEClients sync.Map
+
 	// Each page has its own template set because status.html, config.html,
 	// and agents.html all define "title" and "content" - sharing one set
 	// would let the later parse clobber the earlier one.
@@ -456,6 +459,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/agents/rules", s.handleAgentsRules)
 	mux.HandleFunc("/agents/notes", s.handleAgentsNotes)
 	mux.HandleFunc("/chat", s.handleChat)
+	mux.HandleFunc("/chat/events", s.handleChatEvents)
 	mux.HandleFunc("/chat/send", s.handleChatSend)
 	mux.HandleFunc("/chat/stream", s.handleChatStream)
 	mux.HandleFunc("/chat/save", s.handleChatSave)
