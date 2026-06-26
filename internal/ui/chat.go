@@ -340,6 +340,14 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	agent := strings.TrimSpace(r.FormValue("agent"))
 	sessionID := strings.TrimSpace(r.FormValue("session_id"))
 
+	// Parse the messages JSON so the runner gets the full conversation.
+	//nolint:prealloc // size depends on deserialized form data
+	var conversation []ChatMessage
+	if msgsJSON := strings.TrimSpace(r.FormValue("messages")); msgsJSON != "" {
+		_ = json.Unmarshal([]byte(msgsJSON), &conversation)
+	}
+	conversation = append(conversation, ChatMessage{Role: "user", Content: msg})
+
 	w.Header().Set("HX-Trigger", "chatSend")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.chatTmpl.ExecuteTemplate(w, "chat-send-fragment", chatSendView{
@@ -348,5 +356,95 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		Agent:       agent,
 	}); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
+		return
 	}
+
+	// Start the runner in the background and broadcast tokens via SSE.
+	runner := s.getChatRunner()
+	if runner != nil {
+		go s.streamChatTokens(r.Context(), runner, agent, sessionID, conversation)
+	}
+}
+
+// streamChatTokens runs the chat runner in a goroutine and broadcasts
+// tokens, done, and error events to the chat SSE subscribers.
+func (s *Server) streamChatTokens(ctx context.Context, runner ChatRunner, agent, sessionID string, conversation []ChatMessage) {
+	newID, tokens, err := runner.Run(ctx, agent, sessionID, conversation)
+	if err != nil {
+		s.broadcastChatSSE(fmt.Sprintf("event: chat-error\ndata: %s\n\n", err.Error()))
+		return
+	}
+	if newID != "" && newID != sessionID {
+		s.broadcastChatSSE(fmt.Sprintf("event: chat-session\ndata: {\"id\":\"%s\"}\n\n", newID))
+	}
+	for tok := range tokens {
+		if tok.Err != nil {
+			s.broadcastChatSSE(fmt.Sprintf("event: chat-error\ndata: %s\n\n", tok.Err.Error()))
+			return
+		}
+		if tok.Done {
+			s.broadcastChatSSE("event: chat-done\ndata: \n\n")
+			return
+		}
+		if tok.Content != "" {
+			s.broadcastChatSSE(fmt.Sprintf("event: chat-token\ndata: %s\n\n", tok.Content))
+		}
+	}
+	s.broadcastChatSSE("event: chat-done\ndata: \n\n")
+}
+
+// handleChatEvents is the SSE endpoint for chat token streaming. The
+// chat page connects via hx-ext="sse" sse-connect="/chat/events" and
+// the assistant placeholder consumes tokens via sse-swap.
+func (s *Server) handleChatEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	if _, err := fmt.Fprint(w, ": chat-connected\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	ch := make(chan string, 8)
+	s.chatSSEClients.Store(ch, struct{}{})
+	defer s.chatSSEClients.Delete(ch)
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			if _, err := fmt.Fprint(w, msg); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+// broadcastChatSSE sends an SSE frame to all chat SSE subscribers. The
+// frame must be a complete SSE frame (event + data lines with trailing
+// blank line). Non-blocking; a slow client drops this frame.
+func (s *Server) broadcastChatSSE(frame string) {
+	s.chatSSEClients.Range(func(key, _ any) bool {
+		ch, ok := key.(chan string)
+		if !ok {
+			return true
+		}
+		select {
+		case ch <- frame:
+		default:
+		}
+		return true
+	})
 }

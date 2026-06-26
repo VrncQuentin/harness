@@ -144,11 +144,12 @@
   }
 
   stopBtn.addEventListener('click', function () {
-    if (controller) controller.abort();
+    // Stopping an active SSE stream is not yet wired; the runner will
+    // complete on its own. The UI returns to idle when chat-done or
+    // chat-error arrives.
   });
 
   clearBtn.addEventListener('click', function () {
-    transcript.innerHTML = '';
     messages = [];
     sessionId = '';
   });
@@ -178,7 +179,6 @@
 
   var agent = root.getAttribute('data-agent') || '';
   var messages = [];
-  var inFlight = null; // AbortController while a request is open.
   var currentSessionID = '';
 
   // Form submit is handled by htmx (hx-post="/chat/send").
@@ -193,7 +193,8 @@
 
   // After htmx swaps the server-rendered user message + assistant
   // placeholder, the server fires a chatSend browser event so we can
-  // sync JS state and start the streaming fetch.
+  // sync JS state. Token streaming is handled by htmx SSE via the
+  // /chat/events connection on #chat-root.
   document.body.addEventListener('chatSend', function () {
     var sessionInput = document.getElementById('chat-session-input');
     if (sessionInput && sessionInput.value) {
@@ -208,238 +209,51 @@
         messages.push({ role: 'user', content: body.textContent });
       }
     }
-    // Push an assistant placeholder so the payload logic strips it.
+    // Push an assistant placeholder so the payload logic works.
     messages.push({ role: 'assistant', content: '' });
-    sendChat();
-  });
-
-  stopBtn.addEventListener('click', function () {
-    if (inFlight) inFlight.abort();
-  });
-
-  clearBtn.addEventListener('click', function () {
-    if (inFlight) inFlight.abort();
-    messages = [];
-    transcriptEl.innerHTML = '<p class="chat-empty">Send a message to begin.</p>';
-    clearError();
-    clearSaved();
-    setStatus('');
-    var si = document.getElementById('chat-session-input');
-    if (si) si.value = '';
-  });
-
-  // Save is handled by htmx (hx-post="/chat/save" with
-  // hx-include="#chat-session-input" on the save button). The server
-  // returns an HTML confirmation fragment.
-
-  if (newBtn) {
-    newBtn.addEventListener('click', function () {
-      if (inFlight) inFlight.abort();
-      resetSession();
-    });
-  }
-
-  // Resume is handled server-side via htmx: the resume buttons carry
-  // hx-get, hx-target, and hx-swap so clicking them fetches an HTML
-  // transcript fragment from /chat/session and swaps it into place.
-  // The fragment also delivers session id + messages data via hidden
-  // OOB swaps read below.
-  document.body.addEventListener('htmx:afterSettle', function () {
-    var state = document.getElementById('chat-state');
-    if (!state) return;
-    var sid = state.getAttribute('data-session-id');
-    if (sid) {
-      setSessionID(sid);
-    }
-    var msgsJSON = state.getAttribute('data-messages');
-    if (msgsJSON) {
-      try { messages = JSON.parse(msgsJSON); } catch (e) { /* ignore */ }
-    }
-    clearError();
-    clearSaved();
-    setStatus('resumed');
-    if (resumeEl) resumeEl.open = false;
-  });
-
-  function setStatus(text) { statusEl.textContent = text || ''; }
-  function showError(msg) {
-    errorEl.textContent = msg;
-    errorEl.removeAttribute('hidden');
-  }
-  function clearError() {
-    errorEl.textContent = '';
-    errorEl.setAttribute('hidden', '');
-  }
-  function clearSaved() {
-    if (!savedEl) return;
-    savedEl.textContent = '';
-    savedEl.setAttribute('hidden', '');
-  }
-  function setSessionID(id) {
-    currentSessionID = id || '';
-    if (sessionIDEl) {
-      sessionIDEl.textContent = currentSessionID || '(unsaved)';
-    }
-    var si = document.getElementById('chat-session-input');
-    if (si) si.value = currentSessionID;
-  }
-
-  function setBusy(busy) {
-    sendBtn.disabled = busy;
-    inputEl.disabled = busy;
-    if (busy) stopBtn.removeAttribute('hidden');
-    else stopBtn.setAttribute('hidden', '');
-  }
-
-  function resetSession() {
-    setSessionID('');
-    messages = [];
-    transcriptEl.innerHTML = '<p class="chat-empty">Send a message to begin.</p>';
-    clearError();
-    clearSaved();
-    setStatus('');
-    // Sync hidden form fields so the next send starts a fresh session.
-    var si = document.getElementById('chat-session-input');
-    if (si) si.value = '';
-  }
-
-  function sendChat() {
-    clearError();
-    clearSaved();
+    // Sync the hidden messages field for the next turn.
+    var mi = document.getElementById('chat-messages-input');
+    if (mi) mi.value = JSON.stringify(messages.slice(0, -1));
     setBusy(true);
     setStatus('thinking...');
+  });
 
-    // The assistant placeholder is already in the DOM, rendered by
-    // the /chat/send handler. Find it by its id and build the same
-    // {el, body} shape that drainStream / finalizeAssistant expect.
-    var assistantEl = document.getElementById('chat-assistant');
-    if (!assistantEl) {
-      showError('Could not find assistant placeholder.');
-      setBusy(false);
-      return;
-    }
-    var assistant = {
-      el: assistantEl,
-      body: assistantEl.querySelector('.chat-msg-body'),
-    };
-
-    var payload = {
-      agent: agent,
-      session_id: currentSessionID,
-      // Strip the last (assistant placeholder) so the server
-      // assembles only completed turns.
-      messages: messages.slice(0, -1),
-    };
-
-    inFlight = new AbortController();
-    fetch('/chat/stream', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: inFlight.signal,
-    }).then(function (resp) {
-      if (!resp.ok) {
-        return resp.text().then(function (body) {
-          var msg = body;
-          try { msg = JSON.parse(body).error || body; } catch (e) { /* keep raw */ }
-          throw new Error(msg || ('HTTP ' + resp.status));
-        });
+  // Token streaming is handled server-side via /chat/events SSE.
+  // The assistant placeholder's .chat-msg-body consumes chat-token
+  // events via sse-swap. These handlers sync JS state on done/error.
+  document.body.addEventListener('htmx:sseMessage', function (evt) {
+    var e = evt.detail;
+    if (e.type === 'chat-done') {
+      var el = document.getElementById('chat-assistant');
+      if (el) {
+        el.classList.remove('is-streaming');
+        el.removeAttribute('id');
+        var body = el.querySelector('.chat-msg-body');
+        if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
+          messages[messages.length - 1].content = body ? body.textContent : '';
+        }
       }
-      return drainStream(resp.body, assistant);
-    }).then(function () {
-      finalizeAssistant(assistant);
+      setBusy(false);
       setStatus('');
-    }).catch(function (err) {
-      if (err.name === 'AbortError') {
-        finalizeAssistant(assistant, '[stopped]');
-        setStatus('stopped');
-      } else {
-        finalizeAssistant(assistant, err.message ? '[error: ' + err.message + ']' : '[error]');
-        showError(err.message || String(err));
-        setStatus('error');
-      }
-    }).finally(function () {
-      inFlight = null;
-      setBusy(false);
       inputEl.focus();
-    });
-  }
-
-  function drainStream(body, assistant) {
-    if (!body || !body.getReader) {
-      return Promise.reject(new Error('streaming not supported in this browser'));
     }
-    var reader = body.getReader();
-    var decoder = new TextDecoder('utf-8');
-    var buffer = '';
-    var streamErr = null;
-
-    function pump() {
-      return reader.read().then(function (chunk) {
-        if (chunk.done) return;
-        buffer += decoder.decode(chunk.value, { stream: true });
-        var idx = buffer.indexOf('\n\n');
-        while (idx !== -1) {
-          var frame = buffer.slice(0, idx);
-          buffer = buffer.slice(idx + 2);
-          handleFrame(frame, assistant);
-          if (streamErr) return;
-          idx = buffer.indexOf('\n\n');
-        }
-        return pump();
-      });
+    if (e.type === 'chat-error') {
+      var el2 = document.getElementById('chat-assistant');
+      if (el2) {
+        el2.classList.remove('is-streaming');
+        el2.removeAttribute('id');
+        var body2 = el2.querySelector('.chat-msg-body');
+        if (body2) body2.textContent += (body2.textContent ? '\n\n' : '') + '[error]';
+      }
+      showError(e.data || 'stream error');
+      setBusy(false);
+      setStatus('error');
     }
-
-    function handleFrame(frame, assistant) {
-      // SSE frames may carry an `event:` tag and one or more `data:`
-      // lines. Content frames are plain text (no JSON wrapper); the
-      // session frame still uses JSON since it carries structured data.
-      var eventName = '';
-      var dataLines = [];
-      frame.split('\n').forEach(function (line) {
-        if (line.indexOf('event:') === 0) {
-          eventName = line.slice(6).replace(/^ /, '').trim();
-        } else if (line.indexOf('data:') === 0) {
-          dataLines.push(line.slice(5).replace(/^ /, ''));
-        }
-      });
-      if (dataLines.length === 0) return;
-      var data = dataLines.join('\n');
-      if (eventName === 'session') {
-        var obj;
-        try { obj = JSON.parse(data); } catch (e) { return; }
+    if (e.type === 'chat-session') {
+      try {
+        var obj = JSON.parse(e.data);
         if (obj && obj.id) setSessionID(obj.id);
-        return;
-      }
-      if (eventName === 'chat-error') {
-        streamErr = new Error(data);
-        throw streamErr;
-      }
-      if (eventName === 'chat-done') {
-        return;
-      }
-      // Default: content frame. Append plain text directly.
-      if (data.length > 0) {
-        assistant.body.textContent += data;
-        transcriptEl.scrollTop = transcriptEl.scrollHeight;
-      }
+      } catch (_) { /* ignore */ }
     }
-
-    return pump();
-  }
-
-  function finalizeAssistant(assistant, suffix) {
-    assistant.el.classList.remove('is-streaming');
-    // Remove the id so the next /chat/send response can use it for a
-    // new pre-rendered assistant placeholder.
-    assistant.el.removeAttribute('id');
-    if (suffix) {
-      assistant.body.textContent += (assistant.body.textContent ? '\n\n' : '') + suffix;
-    }
-    // Persist the assembled content back into the message log so the
-    // next turn carries it as history.
-    if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
-      messages[messages.length - 1].content = assistant.body.textContent;
-    }
-  }
+  });
 })();
