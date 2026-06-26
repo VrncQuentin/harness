@@ -71,13 +71,20 @@ type chatSaveRequest struct {
 	SessionID string `json:"session_id"`
 }
 
+// chatSaveView is the template data for the chat-save-fragment partial.
+type chatSaveView struct {
+	SessionID string
+	SaveSeq   int
+}
+
 // chatSaveMaxBytes caps the save request body. The body is tiny by
 // design (just the session id), so a generous limit still rejects
 // runaway payloads from a misbehaving extension.
 const chatSaveMaxBytes = 8 * 1024
 
-// handleChatSave persists the live session and returns the SaveResult
-// JSON. Used by the explicit Save button on /chat.
+// handleChatSave persists the live session and returns the SaveResult.
+// When driven by htmx (HX-Request header), returns an HTML fragment
+// with a confirmation message instead of JSON.
 func (s *Server) handleChatSave(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -88,13 +95,46 @@ func (s *Server) handleChatSave(w http.ResponseWriter, r *http.Request) {
 		writeChatJSONError(w, http.StatusServiceUnavailable, "session manager not available")
 		return
 	}
-	id, ok := decodeSaveRequest(w, r)
-	if !ok {
-		return
+
+	isHX := r.Header.Get("HX-Request") == "true"
+	var id string
+	if isHX {
+		r.Body = http.MaxBytesReader(w, r.Body, chatSaveMaxBytes)
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, "invalid form", http.StatusBadRequest)
+			return
+		}
+		id = strings.TrimSpace(r.FormValue("session_id"))
+		if id == "" {
+			http.Error(w, "session_id is required", http.StatusBadRequest)
+			return
+		}
+	} else {
+		var ok bool
+		id, ok = decodeSaveRequest(w, r)
+		if !ok {
+			return
+		}
 	}
+
 	res, err := store.Save(r.Context(), id)
 	if err != nil {
+		if isHX {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		writeChatJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if isHX {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if err := s.chatTmpl.ExecuteTemplate(w, "chat-save-fragment", chatSaveView{
+			SessionID: res.ID,
+			SaveSeq:   res.SaveSeq,
+		}); err != nil {
+			http.Error(w, "template error", http.StatusInternalServerError)
+		}
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
