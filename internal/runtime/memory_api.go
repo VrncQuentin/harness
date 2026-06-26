@@ -112,11 +112,16 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		}
 	}
 
-	// Wire the M4 task runner (loop engine).
+	// Wire the M4 task runner (loop engine) with assembler + queue.
 	registry := tools.NewRegistry()
 	tools.RegisterBuiltins(registry)
 	rt.loopRegistry = registry
-	taskAdapter := &taskRunnerAdapter{rt: rt, registry: registry}
+	taskAdapter := &taskRunnerAdapter{
+		rt:       rt,
+		registry: registry,
+		asm:      asmAdapter,
+		q:        rt.reqQueue,
+	}
 	uiServer.SetTaskRunner(taskAdapter)
 }
 
