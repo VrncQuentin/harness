@@ -265,9 +265,9 @@ func TestHandleChatStream_StreamsTokens(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		`data: {"content":"hel"}`,
-		`data: {"content":"lo"}`,
-		`data: {"done":true}`,
+		`data: hel`,
+		`data: lo`,
+		`event: chat-done`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("stream missing frame %q, full body:\n%s", want, body)
@@ -309,11 +309,14 @@ func TestHandleChatStream_TokenErrorEmitsErrorFrame(t *testing.T) {
 		t.Fatalf("expected 200, got %d (body %s)", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `"content":"partial"`) {
+	if !strings.Contains(body, `data: partial`) {
 		t.Errorf("expected partial token in stream, got %s", body)
 	}
-	if !strings.Contains(body, `"error":"model exploded"`) {
+	if !strings.Contains(body, `event: chat-error`) {
 		t.Errorf("expected error frame in stream, got %s", body)
+	}
+	if !strings.Contains(body, `model exploded`) {
+		t.Errorf("expected error message in stream, got %s", body)
 	}
 }
 
@@ -336,7 +339,7 @@ func TestHandleChatStream_SyntheticDoneOnClosedChannel(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	s.handleChatStream(rec, req)
 
-	if !strings.Contains(rec.Body.String(), `"done":true`) {
+	if !strings.Contains(rec.Body.String(), `event: chat-done`) {
 		t.Errorf("expected synthetic done frame, got %s", rec.Body.String())
 	}
 }
