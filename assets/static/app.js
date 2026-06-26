@@ -1,24 +1,3 @@
-// Live status fragments. htmx consumes the log events from /events; this
-// legacy script only handles the JSON state event until Phase 1 removes app.js.
-(function () {
-  if (typeof EventSource === 'undefined') return;
-  var es = new EventSource('/events');
-
-  es.addEventListener('state', function (evt) {
-    var d;
-    try { d = JSON.parse(evt.data); } catch (e) { return; }
-    replaceHTML('llama-status-panel', d.llama_html);
-    replaceHTML('embed-status-panel', d.embed_html);
-    setQueue(d.queue_html);
-    setUptime(d.uptime_text);
-  });
-
-  // The harness log card has a connection indicator. With one shared stream
-  // it now reflects the /events connection itself.
-  es.onopen = function () { setHarnessConnState('live', false); };
-  es.onerror = function () { setHarnessConnState('disconnected', true); };
-})();
-
 // Task page wiring. This is intentionally still the existing browser-owned
 // streaming flow; Phase 1 moves it server-side in a later, behavior-changing PR.
 (function () {
@@ -174,29 +153,6 @@
     sessionId = '';
   });
 })();
-
-function setHarnessConnState(text, disconnected) {
-  var el = document.getElementById('harness-log-status');
-  if (!el) return;
-  el.textContent = text;
-  if (disconnected) el.classList.add('is-disconnected');
-  else el.classList.remove('is-disconnected');
-}
-
-function replaceHTML(id, html) {
-  var el = document.getElementById(id);
-  if (el && html) el.outerHTML = html;
-}
-
-function setQueue(html) {
-  replaceHTML('queue-card', html);
-}
-
-function setUptime(text) {
-  var el = document.getElementById('uptime');
-  if (!el) return;
-  if (text) el.textContent = text;
-}
 
 // Chat page wiring. Activates when the chat shell is on the page; the
 // transcript lives in this module's `messages` array. M3 adds explicit
