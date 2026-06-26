@@ -22,9 +22,15 @@ var ErrSandboxViolation = errors.New("tools: path is outside sandbox roots")
 var ErrPathNotFound = errors.New("tools: path not found")
 
 // Context provides the active project context available to every tool call.
+// CallerIdentity records who or what requested the tool (e.g. "agent:coder",
+// "api", "pipeline:deploy"). SessionID pins the call to the owning session
+// for audit trails and episode recording.
 type Context struct {
-	ProjectSlug  string
-	SandboxRoots []string
+	ProjectSlug    string
+	SandboxRoots   []string
+	SessionID      string
+	CallerIdentity string
+	Ctx            context.Context
 }
 
 // Result is the outcome of a tool execution. Error is set for tool-level
