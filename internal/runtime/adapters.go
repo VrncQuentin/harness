@@ -504,6 +504,36 @@ func (a *apiSessionAdapter) Append(id, role, content string) error {
 type taskRunnerAdapter struct {
 	rt       *Runtime
 	registry *tools.Registry
+	asm      *apiAssemblerAdapter
+	q        *queue.Queue
+}
+
+// queuedInferClient wraps a Queue so the agent loop routes through the
+// bounded channel with backpressure + WAL instead of calling the
+// llama-server inference client directly.
+type queuedInferClient struct {
+	q   *queue.Queue
+	raw inference.Client // fallback for Health()
+}
+
+func (c *queuedInferClient) Complete(ctx context.Context, req inference.CompletionRequest) (<-chan inference.Token, error) {
+	ch := make(chan inference.Token, 64)
+	if err := c.q.Enqueue(queue.Request{
+		ID:       fmt.Sprintf("task-%d", time.Now().UnixNano()),
+		Messages: req.Messages,
+		Response: ch,
+		Ctx:      ctx,
+	}); err != nil {
+		return nil, err
+	}
+	return ch, nil
+}
+
+func (c *queuedInferClient) Health(ctx context.Context) error {
+	if c.raw != nil {
+		return c.raw.Health(ctx)
+	}
+	return nil
 }
 
 func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sessionID string, conversation []ui.ChatMessage) (string, <-chan agentloop.Event, error) {
@@ -517,6 +547,19 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	msgs := make([]inference.Message, len(conversation))
 	for i, m := range conversation {
 		msgs[i] = inference.Message{Role: m.Role, Content: m.Content}
+	}
+
+	// Route through the Prompt Assembler so the model receives rules,
+	// persona, memory, and episodes — not just raw conversation.
+	var assembled []inference.Message
+	if ad.asm != nil {
+		var err error
+		assembled, err = ad.asm.Assemble(ctx, agentName, msgs)
+		if err != nil {
+			return "", nil, fmt.Errorf("task: assemble: %w", err)
+		}
+	} else {
+		assembled = msgs
 	}
 
 	// Mint or attach to a session.
@@ -533,8 +576,17 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	}
 
 	inferClient := ad.rt.getInferClient()
-	if inferClient == nil {
+	if inferClient == nil && ad.q == nil {
 		return "", nil, fmt.Errorf("inference client not ready")
+	}
+
+	// When a Queue is wired, route through it for backpressure + WAL.
+	// Otherwise fall back to direct inference (useful for testing).
+	var loopClient inference.Client
+	if ad.q != nil {
+		loopClient = &queuedInferClient{q: ad.q, raw: inferClient}
+	} else {
+		loopClient = inferClient
 	}
 
 	// Resolve sandbox roots from the active project's directories.
@@ -567,11 +619,11 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		SandboxRoots: sandboxRoots,
 	}
 
-	engine := agentloop.NewEngine(inferClient, ad.registry, loopCfg, toolCtx)
+	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
 
 	evch := make(chan agentloop.Event, 64)
 	go func() {
-		if err := engine.Run(ctx, msgs, evch); err != nil {
+		if err := engine.Run(ctx, assembled, evch); err != nil {
 			slog.Warn("task engine", "err", err)
 		}
 		// engine.Run closes evch via defer
