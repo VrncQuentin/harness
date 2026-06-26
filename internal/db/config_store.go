@@ -42,23 +42,25 @@ func (s *ConfigStore) seed() error {
 			queue_max_depth, queue_wal_path,
 			metrics_retention_days,
 			log_ring_max_entries, log_proc_max_lines,
-			active_project_slug, project_llama_on_switch,
-			loop_max_turns, loop_doom_threshold
-		) VALUES (
-			1,
-			?, ?, ?, ?,
-			?, ?, ?,
-			?, ?,
-			?, ?, ?, ?,
-			?,
-			?,
-			?, ?,
-			?, ?,
-			?, ?, ?,
-			?, ?,
-			?, ?,
-			?, ?,
+		active_project_slug, project_llama_on_switch,
+		loop_max_turns, loop_doom_threshold,
+		loop_file_read_enabled, loop_file_list_enabled
+	) VALUES (
+		1,
+		?, ?, ?, ?,
+		?, ?, ?,
+		?, ?,
+		?, ?, ?, ?,
 		?,
+		?,
+		?, ?,
+		?, ?,
+		?, ?, ?,
+		?, ?,
+		?, ?,
+		?, ?,
+		?,
+		?, ?,
 		?, ?,
 		?, ?,
 		?, ?
@@ -79,6 +81,7 @@ func (s *ConfigStore) seed() error {
 		d.Log.RingMaxEntries, d.Log.ProcMaxLines,
 		d.Project.ActiveProjectSlug, d.Project.LlamaOnSwitch,
 		d.Loop.MaxTurns, d.Loop.DoomThreshold,
+		boolInt(d.Loop.FileReadEnabled), boolInt(d.Loop.FileListEnabled),
 	)
 	if err != nil {
 		return fmt.Errorf("db: seed config: %w", err)
@@ -107,6 +110,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 			log_ring_max_entries, log_proc_max_lines,
 			active_project_slug, project_llama_on_switch,
 			loop_max_turns, loop_doom_threshold,
+			loop_file_read_enabled, loop_file_list_enabled,
 			saved_at
 		FROM config WHERE id = 1`)
 
@@ -117,6 +121,8 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		openOnStart     int
 		apiEnabled      int
 		savedAt         sql.NullInt64
+		fileRead        int
+		fileList        int
 	)
 	err := row.Scan(
 		&cfg.Model.Binary, &cfg.Model.ModelPath, &cfg.Model.CtxSize, &cfg.Model.GPULayers,
@@ -135,6 +141,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		&cfg.Log.RingMaxEntries, &cfg.Log.ProcMaxLines,
 		&cfg.Project.ActiveProjectSlug, &cfg.Project.LlamaOnSwitch,
 		&cfg.Loop.MaxTurns, &cfg.Loop.DoomThreshold,
+		&fileRead, &fileList,
 		&savedAt,
 	)
 	if err != nil {
@@ -144,6 +151,8 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	cfg.Embedder.Verbose = embedderVerbose != 0
 	cfg.UI.OpenOnStart = openOnStart != 0
 	cfg.API.Enabled = apiEnabled != 0
+	cfg.Loop.FileReadEnabled = fileRead != 0
+	cfg.Loop.FileListEnabled = fileList != 0
 	return &cfg, savedAt.Valid, nil
 }
 
@@ -170,6 +179,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			log_ring_max_entries = ?, log_proc_max_lines = ?,
 			active_project_slug = ?, project_llama_on_switch = ?,
 			loop_max_turns = ?, loop_doom_threshold = ?,
+			loop_file_read_enabled = ?, loop_file_list_enabled = ?,
 			saved_at = ?
 		WHERE id = 1`,
 		cfg.Model.Binary, cfg.Model.ModelPath, cfg.Model.CtxSize, cfg.Model.GPULayers,
@@ -188,6 +198,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 		cfg.Log.RingMaxEntries, cfg.Log.ProcMaxLines,
 		cfg.Project.ActiveProjectSlug, cfg.Project.LlamaOnSwitch,
 		cfg.Loop.MaxTurns, cfg.Loop.DoomThreshold,
+		boolInt(cfg.Loop.FileReadEnabled), boolInt(cfg.Loop.FileListEnabled),
 		time.Now().Unix(),
 	)
 	if err != nil {

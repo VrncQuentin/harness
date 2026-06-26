@@ -90,9 +90,12 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 			return ErrCancelled
 		}
 
-		// Assemble tool schemas for this turn.
+		// Assemble tool schemas for this turn, respecting enable toggles.
 		var reqTools []inference.Tool
 		for _, t := range e.registry.List() {
+			if !e.isToolEnabled(t.ID()) {
+				continue
+			}
 			reqTools = append(reqTools, inference.Tool{
 				Type: "function",
 				Function: inference.ToolDefinition{
@@ -210,7 +213,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 			})
 
 			var res tools.Result
-			if tool == nil {
+			if tool == nil || !e.isToolEnabled(tc.Function.Name) {
 				res = tools.Result{Error: fmt.Sprintf("tool %q not available", tc.Function.Name)}
 			} else {
 				start := time.Now()
@@ -249,6 +252,17 @@ func (e *Engine) emit(evch chan<- Event, ev Event) {
 	select {
 	case evch <- ev:
 	default:
+	}
+}
+
+func (e *Engine) isToolEnabled(id string) bool {
+	switch id {
+	case "file_read":
+		return e.loopCfg.FileReadEnabled
+	case "file_list":
+		return e.loopCfg.FileListEnabled
+	default:
+		return true
 	}
 }
 
