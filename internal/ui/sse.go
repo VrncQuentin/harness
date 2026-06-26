@@ -2,7 +2,6 @@ package ui
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -10,32 +9,6 @@ import (
 
 	"github.com/vrnc/harness/internal/logbuf"
 )
-
-// ssePayload is the JSON shape of an `event: state` frame.
-type ssePayload struct {
-	LlamaHealthy             bool                      `json:"llama_healthy"`
-	LlamaRunning             bool                      `json:"llama_running"`
-	LlamaRestarts            int                       `json:"llama_restarts"`
-	LlamaFailed              bool                      `json:"llama_failed"`
-	EmbedHealthy             bool                      `json:"embed_healthy"`
-	EmbedRunning             bool                      `json:"embed_running"`
-	EmbedRestarts            int                       `json:"embed_restarts"`
-	EmbedFailed              bool                      `json:"embed_failed"`
-	QueueDepth               int                       `json:"queue_depth"`
-	QueueMax                 int                       `json:"queue_max"`
-	StartupErrors            []string                  `json:"startup_errors,omitempty"`
-	ProjectSlug              string                    `json:"project_slug,omitempty"`
-	ProjectDirectoryWarnings []ProjectDirectoryWarning `json:"project_directory_warnings,omitempty"`
-	ModelMismatch            bool                      `json:"model_mismatch,omitempty"`
-	LoadedModel              string                    `json:"loaded_model,omitempty"`
-	PreferredModel           string                    `json:"preferred_model,omitempty"`
-	FirstRun                 bool                      `json:"first_run"`
-	UptimeSeconds            int64                     `json:"uptime_seconds"`
-	UptimeText               string                    `json:"uptime_text"`
-	QueueHTML                string                    `json:"queue_html,omitempty"`
-	LlamaHTML                string                    `json:"llama_html,omitempty"`
-	EmbedHTML                string                    `json:"embed_html,omitempty"`
-}
 
 // logSubBuffer is the per-subscription channel buffer for a log ring.
 //
@@ -205,11 +178,14 @@ func sseData(html string) string {
 	return strings.ReplaceAll(html, "\n", "\ndata: ")
 }
 
-// broadcastState sends the current state to all SSE clients. Non-blocking; a
-// client whose buffer is full drops this frame and picks up the next tick.
+// broadcastState sends OOB HTML fragments to all SSE clients so htmx can
+// swap them directly without browser-side JSON parsing. Each fragment is a
+// self-contained element with hx-swap-oob="true". The fragments are joined
+// with newlines and run through sseData so each line carries the required
+// data: prefix.
 func (s *Server) broadcastState() {
-	b, _ := json.Marshal(s.statePayload(s.state.snapshot()))
-	msg := string(b)
+	snap := s.state.snapshot()
+	msg := s.stateFragments(snap)
 
 	s.sseClients.Range(func(key, _ any) bool {
 		ch, ok := key.(chan string)
@@ -226,48 +202,31 @@ func (s *Server) broadcastState() {
 
 // sendState marshals the current state and sends it to a specific client channel.
 func (s *Server) sendState(ch chan string) {
-	b, _ := json.Marshal(s.statePayload(s.state.snapshot()))
+	snap := s.state.snapshot()
+	msg := s.stateFragments(snap)
 	select {
-	case ch <- string(b):
+	case ch <- msg:
 	default:
 	}
 }
 
-func (s *Server) statePayload(snap stateSnapshot) ssePayload {
-	payload := stateToPayload(snap)
-	payload.QueueHTML = s.renderQueueCard(snap)
-	payload.LlamaHTML = s.renderProcStatusPanel(llamaPanelFromSnapshot(snap))
-	payload.EmbedHTML = s.renderProcStatusPanel(embedPanelFromSnapshot(snap))
-	return payload
+// stateFragments renders the live-updated page elements as OOB HTML fragments
+// joined with newlines and formatted as multi-line SSE data.
+func (s *Server) stateFragments(snap stateSnapshot) string {
+	llamaHTML := injectOOB(s.renderProcStatusPanel(llamaPanelFromSnapshot(snap)), "llama-status-panel")
+	embedHTML := injectOOB(s.renderProcStatusPanel(embedPanelFromSnapshot(snap)), "embed-status-panel")
+	queueHTML := injectOOB(s.renderQueueCard(snap), "queue-card")
+	uptimeHTML := fmt.Sprintf(`<span id="uptime" hx-swap-oob="true">%s</span>`, formatUptime(time.Since(snap.StartTime)))
+
+	joined := strings.Join([]string{llamaHTML, embedHTML, queueHTML, uptimeHTML}, "\n")
+	return sseData(joined)
 }
 
-func stateToPayload(snap stateSnapshot) ssePayload {
-	errs := make([]string, 0, len(snap.StartupErrors))
-	for _, e := range snap.StartupErrors {
-		errs = append(errs, e.Error())
-	}
-	uptime := time.Since(snap.StartTime)
-	return ssePayload{
-		LlamaHealthy:             snap.LlamaStatus.Healthy,
-		LlamaRunning:             snap.LlamaStatus.Running,
-		LlamaRestarts:            snap.LlamaStatus.RestartCount,
-		LlamaFailed:              snap.LlamaStatus.Failed,
-		EmbedHealthy:             snap.EmbedderStatus.Healthy,
-		EmbedRunning:             snap.EmbedderStatus.Running,
-		EmbedRestarts:            snap.EmbedderStatus.RestartCount,
-		EmbedFailed:              snap.EmbedderStatus.Failed,
-		QueueDepth:               snap.QueueDepth,
-		QueueMax:                 snap.QueueMax,
-		StartupErrors:            errs,
-		ProjectSlug:              snap.ProjectSlug,
-		ProjectDirectoryWarnings: snap.ProjectDirectoryWarnings,
-		ModelMismatch:            snap.ModelMismatch,
-		LoadedModel:              snap.LoadedModel,
-		PreferredModel:           snap.PreferredModel,
-		FirstRun:                 snap.FirstRun,
-		UptimeSeconds:            int64(uptime.Seconds()),
-		UptimeText:               formatUptime(uptime),
-	}
+// injectOOB adds hx-swap-oob="true" to the root element's id attribute so
+// htmx processes the fragment as an out-of-band swap when it appears in
+// an SSE data payload.
+func injectOOB(html, id string) string {
+	return strings.Replace(html, `id="`+id+`"`, `id="`+id+`" hx-swap-oob="true"`, 1)
 }
 
 func (s *Server) renderQueueCard(snap stateSnapshot) string {

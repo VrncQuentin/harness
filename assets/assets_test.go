@@ -57,9 +57,9 @@ func TestAppJSUsesMultiplexedEventsOnly(t *testing.T) {
 		t.Fatalf("read app.js: %v", err)
 	}
 	body := string(b)
-	if !strings.Contains(body, "new EventSource('/events')") {
-		t.Fatal("app.js does not subscribe to multiplexed /events stream")
-	}
+	// Status state events are now consumed by htmx (sse-swap) — the JS
+	// no longer needs to open its own EventSource. Verify the old
+	// per-field stream references are gone.
 	if strings.Contains(body, "/logs/") {
 		t.Fatal("app.js still references removed /logs/* streams")
 	}
