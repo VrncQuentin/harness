@@ -615,8 +615,11 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	}
 
 	toolCtx := tools.Context{
-		ProjectSlug:  slug,
-		SandboxRoots: sandboxRoots,
+		ProjectSlug:    slug,
+		SandboxRoots:   sandboxRoots,
+		SessionID:      id,
+		CallerIdentity: "agent:" + agentName,
+		Ctx:            ctx,
 	}
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
