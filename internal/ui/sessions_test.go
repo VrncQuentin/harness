@@ -7,6 +7,7 @@ import (
 	"html"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -333,5 +334,71 @@ func TestHandleChatSessionResume_HXRequestConversationLost(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status: want 404, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleChatSave_HXRequestReturnsHTML verifies the htmx save flow
+// returns an HTML confirmation fragment.
+func TestHandleChatSave_HXRequestReturnsHTML(t *testing.T) {
+	store := &stubSessionStore{
+		saveRes: SessionSaveResult{
+			ID:      "abc",
+			SaveSeq: 1,
+		},
+	}
+	srv := NewServer(0)
+	srv.SetSessionStore(store)
+
+	form := url.Values{"session_id": {"abc"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	srv.handleChatSave(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: want 200, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("content-type: want text/html, got %q", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Saved session abc (seq 1)") {
+		t.Errorf("expected save confirmation, got: %s", body)
+	}
+}
+
+// TestHandleChatSave_HXRequestMissingIDReturns400 verifies validation
+// when the form lacks session_id.
+func TestHandleChatSave_HXRequestMissingIDReturns400(t *testing.T) {
+	srv := NewServer(0)
+	srv.SetSessionStore(&stubSessionStore{})
+
+	form := url.Values{"session_id": {""}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	srv.handleChatSave(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: want 400, got %d", rec.Code)
+	}
+}
+
+// TestHandleChatSave_HXRequestNoStoreReturns503 verifies the 503 when
+// no session store is wired.
+func TestHandleChatSave_HXRequestNoStoreReturns503(t *testing.T) {
+	srv := NewServer(0)
+
+	form := url.Values{"session_id": {"x"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	srv.handleChatSave(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status: want 503, got %d", rec.Code)
 	}
 }

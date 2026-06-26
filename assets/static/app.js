@@ -274,26 +274,14 @@ function setUptime(text) {
     if (si) si.value = '';
   });
 
-  if (saveBtn) {
-    saveBtn.addEventListener('click', function () {
-      if (!currentSessionID) {
-        showError('Send at least one message before saving.');
-        return;
-      }
-      saveSession();
-    });
-  }
+  // Save is handled by htmx (hx-post="/chat/save" with
+  // hx-include="#chat-session-input" on the save button). The server
+  // returns an HTML confirmation fragment.
 
   if (newBtn) {
     newBtn.addEventListener('click', function () {
       if (inFlight) inFlight.abort();
-      // Best-effort save of the current session before resetting so
-      // users do not lose work by clicking "New" too quickly.
-      if (currentSessionID && dirty) {
-        saveSession({ silent: true }).finally(resetSession);
-      } else {
-        resetSession();
-      }
+      resetSession();
     });
   }
 
@@ -348,11 +336,6 @@ function setUptime(text) {
   function clearError() {
     errorEl.textContent = '';
     errorEl.setAttribute('hidden', '');
-  }
-  function setSaved(msg) {
-    if (!savedEl) return;
-    savedEl.textContent = msg;
-    savedEl.removeAttribute('hidden');
   }
   function clearSaved() {
     if (!savedEl) return;
@@ -527,36 +510,5 @@ function setUptime(text) {
       messages[messages.length - 1].content = assistant.body.textContent;
     }
     dirty = true;
-  }
-
-  function saveSession(opts) {
-    opts = opts || {};
-    setStatus('saving...');
-    if (saveBtn) saveBtn.disabled = true;
-    return fetch('/chat/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: currentSessionID }),
-    }).then(function (resp) {
-      if (!resp.ok) {
-        return resp.text().then(function (body) {
-          var msg = body;
-          try { msg = JSON.parse(body).error || body; } catch (e) { /* keep raw */ }
-          throw new Error(msg || ('HTTP ' + resp.status));
-        });
-      }
-      return resp.json();
-    }).then(function (res) {
-      if (!opts.silent) {
-        setSaved('Saved session ' + (res.id || '') + ' (seq ' + (res.save_seq || 1) + ').');
-      }
-      setStatus('saved');
-      dirty = false;
-    }).catch(function (err) {
-      showError('Save failed: ' + (err.message || String(err)));
-      setStatus('save failed');
-    }).finally(function () {
-      if (saveBtn) saveBtn.disabled = false;
-    });
   }
 })();
