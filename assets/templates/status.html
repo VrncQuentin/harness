@@ -42,6 +42,7 @@
 {{end}}
 {{define "content"}}
 <div hx-ext="sse" sse-connect="/events">
+<span sse-swap="state" hidden></span>
 <h1 class="page-title">Status</h1>
 
 {{if .ScaffoldCreated}}

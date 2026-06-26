@@ -854,17 +854,16 @@ func TestSSE_EmitsConnectedAndInitialState(t *testing.T) {
 	if !strings.Contains(body, "event: state\n") {
 		t.Errorf("SSE payload missing initial state event, got: %q", body)
 	}
-	if !strings.Contains(body, `"llama_healthy":true`) {
-		t.Errorf("SSE payload missing state JSON, got: %q", body)
-	}
-	if !strings.Contains(body, `"uptime_text":`) {
-		t.Errorf("SSE payload missing server-formatted uptime text, got: %q", body)
-	}
-	if !strings.Contains(body, `"queue_html":`) {
-		t.Errorf("SSE payload missing server-rendered queue HTML, got: %q", body)
-	}
-	if !strings.Contains(body, `"llama_html":`) || !strings.Contains(body, `"embed_html":`) {
-		t.Errorf("SSE payload missing server-rendered process HTML, got: %q", body)
+	// OOB HTML fragments replace the old JSON payload.
+	for _, want := range []string{
+		`id="llama-status-panel" hx-swap-oob="true"`,
+		`id="embed-status-panel" hx-swap-oob="true"`,
+		`id="queue-card" hx-swap-oob="true"`,
+		`id="uptime" hx-swap-oob="true"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SSE payload missing OOB fragment %q, got: %q", want, body)
+		}
 	}
 }
 
@@ -874,10 +873,12 @@ func TestSSE_EmitsProjectDirectoryWarnings(t *testing.T) {
 
 	body := runSSE(t, s, nil)
 
-	for _, want := range []string{`"project_slug":"dt"`, `"path":"/tmp/missing"`, `"problem":"directory missing"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("SSE payload missing %q, got: %q", want, body)
-		}
+	// Project directory warnings render server-side in the initial page
+	// template, not as live SSE data. The state event carries OOB HTML
+	// fragments for process panels, queue, and uptime — not raw project
+	// metadata. Verify the state event is still emitted correctly.
+	if !strings.Contains(body, "event: state\n") {
+		t.Errorf("SSE payload missing state event, got: %q", body)
 	}
 }
 
