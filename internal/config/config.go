@@ -176,6 +176,11 @@ type LoopConfig struct {
 	// (same tool id + same args JSON) the loop tolerates before
 	// terminating with a doom-loop error.
 	DoomThreshold int
+	// FileReadEnabled toggles the file_read tool. When false the model
+	// receives a tool-not-available result instead.
+	FileReadEnabled bool
+	// FileListEnabled toggles the file_list tool.
+	FileListEnabled bool
 }
 
 // Store persists and retrieves Config. The concrete implementation lives in
@@ -230,8 +235,10 @@ func Defaults() Config {
 			ProcMaxLines:   64,
 		},
 		Loop: LoopConfig{
-			MaxTurns:      10,
-			DoomThreshold: 3,
+			MaxTurns:        10,
+			DoomThreshold:   3,
+			FileReadEnabled: true,
+			FileListEnabled: true,
 		},
 		Project: ProjectConfig{
 			ActiveProjectSlug: "global",
