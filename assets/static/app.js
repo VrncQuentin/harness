@@ -171,7 +171,6 @@
   var statusEl = document.getElementById('chat-status');
   var errorEl = document.getElementById('chat-error');
   var clearBtn = document.getElementById('chat-clear');
-  var saveBtn = document.getElementById('chat-save');
   var newBtn = document.getElementById('chat-new');
   var savedEl = document.getElementById('chat-saved');
   var sessionIDEl = document.getElementById('chat-session-id');
@@ -181,7 +180,6 @@
   var messages = [];
   var inFlight = null; // AbortController while a request is open.
   var currentSessionID = '';
-  var dirty = false;
 
   // Form submit is handled by htmx (hx-post="/chat/send").
   // Enter sends, Shift+Enter inserts a newline; textarea does not
@@ -257,32 +255,11 @@
     if (msgsJSON) {
       try { messages = JSON.parse(msgsJSON); } catch (e) { /* ignore */ }
     }
-    dirty = false;
     clearError();
     clearSaved();
     setStatus('resumed');
     if (resumeEl) resumeEl.open = false;
   });
-
-  function pushMessage(role, content) {
-    messages.push({ role: role, content: content });
-    var empty = transcriptEl.querySelector('.chat-empty');
-    if (empty) empty.remove();
-    var el = document.createElement('div');
-    el.className = 'chat-msg is-' + role;
-    var roleEl = document.createElement('span');
-    roleEl.className = 'chat-msg-role';
-    roleEl.textContent = role === 'user' ? 'You' : (role === 'assistant' ? agent : role);
-    var bodyEl = document.createElement('span');
-    bodyEl.className = 'chat-msg-body';
-    bodyEl.textContent = content;
-    el.appendChild(roleEl);
-    el.appendChild(bodyEl);
-    transcriptEl.appendChild(el);
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
-    dirty = true;
-    return { el: el, body: bodyEl };
-  }
 
   function setStatus(text) { statusEl.textContent = text || ''; }
   function showError(msg) {
@@ -321,7 +298,6 @@
     clearError();
     clearSaved();
     setStatus('');
-    dirty = false;
     // Sync hidden form fields so the next send starts a fresh session.
     var si = document.getElementById('chat-session-input');
     if (si) si.value = '';
@@ -465,6 +441,5 @@
     if (messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
       messages[messages.length - 1].content = assistant.body.textContent;
     }
-    dirty = true;
   }
 })();
