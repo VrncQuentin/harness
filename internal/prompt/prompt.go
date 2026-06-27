@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"math"
 	"path"
 	"sort"
 	"strings"
@@ -399,6 +400,7 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 	}
 
 	// Blended retrieval: semantic similarity + recency.
+	blended := false
 	if a.idx != nil && a.emb != nil && len(out) > 0 && query != "" {
 		vecs, err := a.emb.Embed(ctx, []string{query})
 		if err == nil && len(vecs) > 0 {
@@ -408,22 +410,30 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 				for _, r := range results {
 					scores[r.SHA] = float64(r.Score)
 				}
-				n := len(out)
+				n := float64(len(out))
 				for i := range out {
 					semScore := scores[extractID(out[i].path)]
-					recScore := float64(i+1) / float64(n)
+					// Exponential recency decay: newest episode (largest i
+					// in oldest-first ordering) gets 1.0, older episodes
+					// decay toward zero.
+					recScore := expDecay(len(out)-1-i, n)
 					out[i].score = a.cfg.SemanticWeight*semScore +
 						a.cfg.RecencyWeight*recScore
 				}
 				sort.SliceStable(out, func(i, j int) bool {
 					return out[i].score > out[j].score
 				})
+				blended = true
 			}
 		}
 	}
 
 	if n := a.cfg.RecencyN; n > 0 && len(out) > n {
-		out = out[len(out)-n:]
+		if blended {
+			out = out[:n]
+		} else {
+			out = out[len(out)-n:]
+		}
 	}
 	return out, nil
 }
@@ -622,4 +632,11 @@ func writeSection(b *strings.Builder, header, content string) {
 func extractID(epPath string) string {
 	base := path.Base(epPath)
 	return strings.TrimSuffix(base, ".md")
+}
+
+// expDecay returns an exponential recency score where distanceFromNewest=0
+// (most recent) gives 1.0 and older episodes decay toward zero. n is the
+// total number of episodes (> 0) used to scale the decay rate.
+func expDecay(distanceFromNewest int, n float64) float64 {
+	return math.Exp(-float64(distanceFromNewest) / n)
 }
