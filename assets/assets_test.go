@@ -43,7 +43,7 @@ func TestTemplatesParse(t *testing.T) {
 // TestStaticAssetsPresent guards against an //go:embed pattern that silently
 // stops matching the files the UI serves at /static/*.
 func TestStaticAssetsPresent(t *testing.T) {
-	want := []string{"static/app.css", "static/htmx.min.js", "static/htmx-ext-sse.js", "static/app.js"}
+	want := []string{"static/app.css", "static/htmx.min.js", "static/htmx-ext-sse.js"}
 	for _, name := range want {
 		if _, err := fs.Stat(StaticFS, name); err != nil {
 			t.Errorf("missing static asset %s: %v", name, err)
@@ -51,66 +51,15 @@ func TestStaticAssetsPresent(t *testing.T) {
 	}
 }
 
-func TestAppJSUsesMultiplexedEventsOnly(t *testing.T) {
-	b, err := fs.ReadFile(StaticFS, "static/app.js")
+func TestNoCustomAppJS(t *testing.T) {
+	if _, err := fs.Stat(StaticFS, "static/app.js"); err == nil {
+		t.Fatal("static/app.js should not be embedded; UI behavior must be server-rendered htmx/SSE")
+	}
+	b, err := fs.ReadFile(TemplateFS, "templates/layout.html")
 	if err != nil {
-		t.Fatalf("read app.js: %v", err)
+		t.Fatalf("read layout: %v", err)
 	}
-	body := string(b)
-	// Status state events are now consumed by htmx (sse-swap) — the JS
-	// no longer needs to open its own EventSource. Verify the old
-	// per-field stream references are gone.
-	if strings.Contains(body, "/logs/") {
-		t.Fatal("app.js still references removed /logs/* streams")
-	}
-}
-
-func TestAppJSDoesNotWireModalDialogs(t *testing.T) {
-	b, err := fs.ReadFile(StaticFS, "static/app.js")
-	if err != nil {
-		t.Fatalf("read app.js: %v", err)
-	}
-	body := string(b)
-	for _, marker := range []string{"data-open-dialog", "data-close-dialog", "showModal"} {
-		if strings.Contains(body, marker) {
-			t.Fatalf("app.js still contains modal dialog wiring marker %q", marker)
-		}
-	}
-}
-
-func TestAppJSDoesNotPatchStatusFields(t *testing.T) {
-	b, err := fs.ReadFile(StaticFS, "static/app.js")
-	if err != nil {
-		t.Fatalf("read app.js: %v", err)
-	}
-	body := string(b)
-	for _, marker := range []string{
-		"llama-badge",
-		"embed-badge",
-		"llama-running",
-		"embed-running",
-		"llama-restarts",
-		"embed-restarts",
-		"queue-meter",
-		"queue-depth",
-		"function setBadge",
-		"function toggleHidden",
-	} {
-		if strings.Contains(body, marker) {
-			t.Fatalf("app.js still contains status field patch marker %q", marker)
-		}
-	}
-}
-
-func TestAppJSDoesNotParseLogEvents(t *testing.T) {
-	b, err := fs.ReadFile(StaticFS, "static/app.js")
-	if err != nil {
-		t.Fatalf("read app.js: %v", err)
-	}
-	body := string(b)
-	for _, marker := range []string{"logEventHandler", "llama-log',", "embed-log',", "harness-log',", "querySelector('.log-empty')"} {
-		if strings.Contains(body, marker) {
-			t.Fatalf("app.js still contains log event parser marker %q", marker)
-		}
+	if strings.Contains(string(b), "app.js") {
+		t.Fatal("layout still references app.js")
 	}
 }

@@ -24,6 +24,9 @@ type SessionStore interface {
 	// Returns ErrSessionConversationLost when the sidecar is missing
 	// (typical on a fresh clone) so the UI can disable the resume row.
 	Conversation(agent, id string) ([]ChatMessage, error)
+	// LiveConversation returns the in-memory conversation for an active
+	// session, if it exists in this process.
+	LiveConversation(id string) ([]ChatMessage, error)
 	// Resume registers id with the manager so the next /chat/stream
 	// call appends onto the resumed conversation.
 	Resume(id string) error

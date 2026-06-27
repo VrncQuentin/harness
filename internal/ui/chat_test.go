@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // stubChatRunner is a test double that records the last Run invocation
@@ -25,6 +26,20 @@ type stubChatRunner struct {
 
 	preErr error
 	tokens []ChatToken
+}
+
+type blockingChatRunner struct {
+	called  chan context.Context
+	release chan struct{}
+}
+
+func (r *blockingChatRunner) Run(ctx context.Context, _, _ string, _ []ChatMessage) (string, <-chan ChatToken, error) {
+	r.called <- ctx
+	<-r.release
+	ch := make(chan ChatToken, 1)
+	ch <- ChatToken{Done: true}
+	close(ch)
+	return "", ch, nil
 }
 
 func (r *stubChatRunner) Run(ctx context.Context, agent, sessionID string, conv []ChatMessage) (string, <-chan ChatToken, error) {
@@ -422,9 +437,7 @@ func TestHandleChatSend_RendersFragment(t *testing.T) {
 	}
 }
 
-// TestHandleChatSend_IncludesHXTrigger verifies the HX-Trigger response
-// header is set so the browser can start the streaming fetch.
-func TestHandleChatSend_IncludesHXTrigger(t *testing.T) {
+func TestHandleChatSend_DoesNotRequireBrowserTrigger(t *testing.T) {
 	s := NewServer(3000)
 	s.SetChatRunner(&stubChatRunner{})
 
@@ -434,8 +447,30 @@ func TestHandleChatSend_IncludesHXTrigger(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	s.handleChatSend(rec, req)
 
-	if got := rec.Header().Get("HX-Trigger"); got != "chatSend" {
-		t.Errorf("HX-Trigger: want chatSend, got %q", got)
+	if got := rec.Header().Get("HX-Trigger"); got != "" {
+		t.Errorf("HX-Trigger: want empty, got %q", got)
+	}
+}
+
+func TestHandleChatSend_UsesRequestIndependentStreamContext(t *testing.T) {
+	s := NewServer(3000)
+	runner := &blockingChatRunner{called: make(chan context.Context, 1), release: make(chan struct{})}
+	s.SetChatRunner(runner)
+
+	form := url.Values{"message": {"hi"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleChatSend(rec, req)
+	defer close(runner.release)
+
+	select {
+	case ctx := <-runner.called:
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("stream context was canceled with request: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runner was not called")
 	}
 }
 

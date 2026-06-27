@@ -183,6 +183,9 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	form.Set("prompt_recency_n", "7")
 	form.Set("prompt_summarizer_prompt", "summarize the user's intent in one paragraph.")
 	form.Set("queue_max_depth", "8")
+	form.Set("loop_max_turns", "12")
+	form.Set("loop_doom_threshold", "4")
+	form.Set("loop_file_read_enabled", "on")
 	form.Set("metrics_retention_days", "30")
 
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
@@ -218,6 +221,18 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	}
 	if loaded.Prompt.SummarizerPrompt != "summarize the user's intent in one paragraph." {
 		t.Errorf("Prompt.SummarizerPrompt not persisted: got %q", loaded.Prompt.SummarizerPrompt)
+	}
+	if loaded.Loop.MaxTurns != 12 {
+		t.Errorf("Loop.MaxTurns not persisted: got %d, want 12", loaded.Loop.MaxTurns)
+	}
+	if loaded.Loop.DoomThreshold != 4 {
+		t.Errorf("Loop.DoomThreshold not persisted: got %d, want 4", loaded.Loop.DoomThreshold)
+	}
+	if !loaded.Loop.FileReadEnabled {
+		t.Error("expected Loop.FileReadEnabled=true after POST with loop_file_read_enabled=on")
+	}
+	if loaded.Loop.FileListEnabled {
+		t.Error("expected Loop.FileListEnabled=false after POST without loop_file_list_enabled")
 	}
 
 	if atomic.LoadInt32(&retryCalls) != 1 {
