@@ -31,6 +31,8 @@ type stubSessionStore struct {
 	convID      string
 	convResult  []ChatMessage
 	convErr     error
+	liveResult  []ChatMessage
+	liveErr     error
 	resumeErr   error
 	resumeCalls int
 }
@@ -66,6 +68,15 @@ func (s *stubSessionStore) Conversation(agent, id string) ([]ChatMessage, error)
 		return nil, s.convErr
 	}
 	return s.convResult, nil
+}
+
+func (s *stubSessionStore) LiveConversation(id string) ([]ChatMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.liveErr != nil {
+		return nil, s.liveErr
+	}
+	return s.liveResult, nil
 }
 
 func (s *stubSessionStore) Resume(id string) error {

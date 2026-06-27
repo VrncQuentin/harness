@@ -177,6 +177,11 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.Queue.MaxDepth = atoiOr(r.FormValue("queue_max_depth"), cfg.Queue.MaxDepth)
 	cfg.Queue.WALPath = strings.TrimSpace(r.FormValue("queue_wal_path"))
 
+	cfg.Loop.MaxTurns = atoiOr(r.FormValue("loop_max_turns"), cfg.Loop.MaxTurns)
+	cfg.Loop.DoomThreshold = atoiOr(r.FormValue("loop_doom_threshold"), cfg.Loop.DoomThreshold)
+	cfg.Loop.FileReadEnabled = r.FormValue("loop_file_read_enabled") == "on"
+	cfg.Loop.FileListEnabled = r.FormValue("loop_file_list_enabled") == "on"
+
 	cfg.Metrics.RetentionDays = atoiOr(r.FormValue("metrics_retention_days"), cfg.Metrics.RetentionDays)
 
 	cfg.Log.RingMaxEntries = atoiOr(r.FormValue("log_ring_max_entries"), cfg.Log.RingMaxEntries)

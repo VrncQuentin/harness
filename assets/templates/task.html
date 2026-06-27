@@ -10,18 +10,62 @@
   <div class="alert alert-err"><p>{{.Error}}</p></div>
   {{end}}
 
-  <div class="chat" id="task-container">
-    <div class="chat-transcript" id="task-transcript"></div>
+  <div class="chat" id="task-container" hx-ext="sse" sse-connect="/task/events">
+    <div class="chat-transcript" id="task-transcript" sse-swap="task-event" hx-swap="beforeend"></div>
+    <span sse-swap="task-session" hidden></span>
 
-    <form id="task-form" class="chat-input-form" autocomplete="off">
-      <textarea id="task-input" class="chat-input" rows="3" placeholder="Ask the harness to do something... (e.g. read file.txt and summarize it)" required></textarea>
+    <form id="task-form" class="chat-input-form" autocomplete="off"
+      hx-post="/task/send"
+      hx-target="#task-transcript"
+      hx-swap="beforeend"
+      hx-disabled-elt="#task-send,#task-input">
+      <input type="hidden" id="task-session-input" name="session_id" value="">
+      <textarea id="task-input" name="message" class="chat-input" rows="3" placeholder="Ask the harness to do something... (e.g. read file.txt and summarize it)" required></textarea>
       <div class="chat-input-actions">
         <button type="submit" class="btn" id="task-send">Send</button>
-        <button type="button" class="btn btn-ghost" id="task-stop" style="display:none">Stop</button>
-        <button type="button" class="btn btn-danger btn-sm" id="task-clear">Clear</button>
+        <a href="/task" class="btn btn-danger btn-sm" id="task-clear">Clear</a>
       </div>
     </form>
   </div>
 </section>
 
+{{end}}
+
+{{define "task-send-fragment"}}
+<div class="chat-msg is-user">
+  <span class="chat-msg-role">You</span>
+  <span class="chat-msg-body">{{.UserContent}}</span>
+</div>
+<div class="chat-msg is-assistant is-streaming">
+  <span class="chat-msg-role">assistant</span>
+  <span class="chat-msg-body" sse-swap="task-text" hx-swap="beforeend"></span>
+</div>
+<input type="hidden" id="task-session-input" name="session_id" hx-swap-oob="true" value="{{.SessionID}}">
+<textarea id="task-input" name="message" class="chat-input" rows="3" placeholder="Ask the harness to do something... (e.g. read file.txt and summarize it)" required hx-swap-oob="true"></textarea>
+{{end}}
+
+{{define "task-text-fragment"}}{{.}}{{end}}
+
+{{define "task-event-fragment"}}
+{{if eq .Type "tool_call"}}
+<div class="chat-msg is-tool">
+  <span class="chat-msg-role">Tool call</span>
+  <div class="chat-msg-body"><code>{{.ToolID}}</code><pre class="tool-args">{{.ToolArgs}}</pre></div>
+</div>
+{{else if eq .Type "tool_result"}}
+<div class="chat-msg is-tool-result">
+  <span class="chat-msg-role">Result</span>
+  <div class="chat-msg-body"><code>{{.ToolID}}</code>{{if .ToolError}}<div class="tool-error">ERROR: {{.ToolError}}</div>{{end}}{{if .ToolResult}}<pre class="tool-content">{{.ToolResult}}</pre>{{end}}</div>
+</div>
+{{else if eq .Type "done"}}
+<div class="chat-msg is-system"><span class="chat-msg-role">Done</span><div class="chat-msg-body">Task completed in {{.Turn}} turn(s).</div></div>
+{{else if eq .Type "limit"}}
+<div class="chat-msg is-system is-warn"><span class="chat-msg-role">Limit</span><div class="chat-msg-body">{{.Content}}</div></div>
+{{else if eq .Type "doom_loop"}}
+<div class="chat-msg is-system is-err"><span class="chat-msg-role">Loop detected</span><div class="chat-msg-body">{{.Content}}</div></div>
+{{else if eq .Type "cancelled"}}
+<div class="chat-msg is-system is-warn"><span class="chat-msg-role">Cancelled</span><div class="chat-msg-body">Task was stopped.</div></div>
+{{else if eq .Type "error"}}
+<div class="chat-msg is-system is-err"><span class="chat-msg-role">Error</span><div class="chat-msg-body">{{.Content}}</div></div>
+{{end}}
 {{end}}

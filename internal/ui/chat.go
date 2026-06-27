@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-// ChatMessage is a single message in the browser-side chat transcript.
+// ChatMessage is a single message in the server-owned chat transcript.
 // Mirrors the OpenAI shape so the JSON exchanged with the page can be
 // re-fed into the API server unchanged.
 type ChatMessage struct {
@@ -93,9 +93,7 @@ type chatResumeRow struct {
 // RecentSessionLimit is the cap on how many records the resume picker shows.
 const RecentSessionLimit = 10
 
-// handleChat renders the /chat page (GET only). The transcript itself
-// lives client-side in JS - the server only renders the shell and the
-// streaming endpoint.
+// handleChat renders the /chat page (GET only).
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -301,9 +299,8 @@ func writeChatSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string
 }
 
 // chatSendView is the template data for the chat-send-fragment partial.
-// The server renders the user message and an empty assistant placeholder;
-// the browser JS starts the streaming fetch after the fragment is swapped
-// (triggered by the HX-Trigger response header).
+// The server renders the user message and an empty assistant placeholder,
+// then streams tokens to that placeholder through /chat/events.
 type chatSendView struct {
 	UserContent string
 	SessionID   string
@@ -316,8 +313,7 @@ const chatSendMaxBytes = 32 * 1024
 
 // handleChatSend is the htmx POST handler for the chat input form. It
 // renders the user's message and an empty assistant placeholder into
-// the transcript via htmx swap and fires a chatSend browser event so
-// the JS can start the streaming fetch against /chat/stream.
+// the transcript via htmx swap, then starts server-owned token streaming.
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -340,15 +336,16 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	agent := strings.TrimSpace(r.FormValue("agent"))
 	sessionID := strings.TrimSpace(r.FormValue("session_id"))
 
-	// Parse the messages JSON so the runner gets the full conversation.
-	//nolint:prealloc // size depends on deserialized form data
 	var conversation []ChatMessage
-	if msgsJSON := strings.TrimSpace(r.FormValue("messages")); msgsJSON != "" {
-		_ = json.Unmarshal([]byte(msgsJSON), &conversation)
+	if sessionID != "" {
+		if store := s.getSessionStore(); store != nil {
+			if live, err := store.LiveConversation(sessionID); err == nil {
+				conversation = live
+			}
+		}
 	}
 	conversation = append(conversation, ChatMessage{Role: "user", Content: msg})
 
-	w.Header().Set("HX-Trigger", "chatSend")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.chatTmpl.ExecuteTemplate(w, "chat-send-fragment", chatSendView{
 		UserContent: msg,
@@ -362,7 +359,11 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	// Start the runner in the background and broadcast tokens via SSE.
 	runner := s.getChatRunner()
 	if runner != nil {
-		go s.streamChatTokens(r.Context(), runner, agent, sessionID, conversation)
+		ctx, cancel := context.WithCancel(s.asyncContext())
+		go func() {
+			defer cancel()
+			s.streamChatTokens(ctx, runner, agent, sessionID, conversation)
+		}()
 	}
 }
 
@@ -371,15 +372,15 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 func (s *Server) streamChatTokens(ctx context.Context, runner ChatRunner, agent, sessionID string, conversation []ChatMessage) {
 	newID, tokens, err := runner.Run(ctx, agent, sessionID, conversation)
 	if err != nil {
-		s.broadcastChatSSE(fmt.Sprintf("event: chat-error\ndata: %s\n\n", err.Error()))
+		s.broadcastChatSSE(fmt.Sprintf("event: chat-error\ndata: %s\n\n", sseData(err.Error())))
 		return
 	}
 	if newID != "" && newID != sessionID {
-		s.broadcastChatSSE(fmt.Sprintf("event: chat-session\ndata: {\"id\":\"%s\"}\n\n", newID))
+		s.broadcastChatSSE(fmt.Sprintf("event: chat-session\ndata: %s\n\n", sseData(chatSessionOOB(newID))))
 	}
 	for tok := range tokens {
 		if tok.Err != nil {
-			s.broadcastChatSSE(fmt.Sprintf("event: chat-error\ndata: %s\n\n", tok.Err.Error()))
+			s.broadcastChatSSE(fmt.Sprintf("event: chat-error\ndata: %s\n\n", sseData(tok.Err.Error())))
 			return
 		}
 		if tok.Done {
@@ -391,6 +392,11 @@ func (s *Server) streamChatTokens(ctx context.Context, runner ChatRunner, agent,
 		}
 	}
 	s.broadcastChatSSE("event: chat-done\ndata: \n\n")
+}
+
+func chatSessionOOB(id string) string {
+	return fmt.Sprintf(`<code id="chat-session-id" hx-swap-oob="true">%s</code>
+<input type="hidden" id="chat-session-input" name="session_id" hx-swap-oob="true" value="%s">`, id, id)
 }
 
 // handleChatEvents is the SSE endpoint for chat token streaming. The

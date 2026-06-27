@@ -1,10 +1,13 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/vrnc/harness/internal/agentloop"
 )
@@ -101,6 +104,139 @@ func (s *Server) handleTaskStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+const taskSendMaxBytes = 32 * 1024
+
+type taskSendView struct {
+	UserContent string
+	SessionID   string
+}
+
+func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	runner := s.getTaskRunner()
+	if runner == nil {
+		http.Error(w, ErrTaskNotReady.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, taskSendMaxBytes)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	msg := strings.TrimSpace(r.FormValue("message"))
+	if msg == "" {
+		http.Error(w, "message must not be empty", http.StatusBadRequest)
+		return
+	}
+	agent := strings.TrimSpace(r.FormValue("agent"))
+	sessionID := strings.TrimSpace(r.FormValue("session_id"))
+	conversation := []ChatMessage{{Role: "user", Content: msg}}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.taskTmpl.ExecuteTemplate(w, "task-send-fragment", taskSendView{
+		UserContent: msg,
+		SessionID:   sessionID,
+	}); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+		return
+	}
+
+	ctx, cancel := context.WithCancel(s.asyncContext())
+	go func() {
+		defer cancel()
+		s.streamTaskEvents(ctx, runner, agent, sessionID, conversation)
+	}()
+}
+
+func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent, sessionID string, conversation []ChatMessage) {
+	newID, evch, err := runner.RunTask(ctx, agent, sessionID, conversation)
+	if err != nil {
+		s.broadcastTaskSSE(renderTaskSSE("task-event", s.renderTaskEvent(agentloop.Event{Type: agentloop.EvtError, Content: err.Error(), Terminate: agentloop.EvtError})))
+		return
+	}
+	if newID != "" && newID != sessionID {
+		s.broadcastTaskSSE(fmt.Sprintf("event: task-session\ndata: %s\n\n", sseData(fmt.Sprintf(`<input type="hidden" id="task-session-input" name="session_id" hx-swap-oob="true" value="%s">`, newID))))
+	}
+	for ev := range evch {
+		switch ev.Type {
+		case agentloop.EvtText:
+			s.broadcastTaskSSE(renderTaskSSE("task-text", s.renderTaskText(ev.Content)))
+		default:
+			s.broadcastTaskSSE(renderTaskSSE("task-event", s.renderTaskEvent(ev)))
+		}
+	}
+}
+
+func (s *Server) handleTaskEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	if _, err := fmt.Fprint(w, ": task-connected\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	ch := make(chan string, 8)
+	s.taskSSEClients.Store(ch, struct{}{})
+	defer s.taskSSEClients.Delete(ch)
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			if _, err := fmt.Fprint(w, msg); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func (s *Server) renderTaskEvent(ev agentloop.Event) string {
+	var buf bytes.Buffer
+	if err := s.taskTmpl.ExecuteTemplate(&buf, "task-event-fragment", ev); err != nil {
+		return ""
+	}
+	return buf.String()
+}
+
+func (s *Server) renderTaskText(content string) string {
+	var buf bytes.Buffer
+	if err := s.taskTmpl.ExecuteTemplate(&buf, "task-text-fragment", content); err != nil {
+		return ""
+	}
+	return buf.String()
+}
+
+func renderTaskSSE(eventName, html string) string {
+	return fmt.Sprintf("event: %s\ndata: %s\n\n", eventName, sseData(html))
+}
+
+func (s *Server) broadcastTaskSSE(frame string) {
+	s.taskSSEClients.Range(func(key, _ any) bool {
+		ch, ok := key.(chan string)
+		if !ok {
+			return true
+		}
+		select {
+		case ch <- frame:
+		default:
+		}
+		return true
+	})
 }
 
 func writeTaskSSE(w http.ResponseWriter, flusher http.Flusher, payload map[string]any) {

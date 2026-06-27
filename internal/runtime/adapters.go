@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/vrnc/harness/internal/agent"
@@ -458,6 +459,24 @@ func (ad *uiSessionStoreAdapter) Conversation(agent, id string) ([]ui.ChatMessag
 	return out, nil
 }
 
+func (ad *uiSessionStoreAdapter) LiveConversation(id string) ([]ui.ChatMessage, error) {
+	if ad.mgr == nil {
+		return nil, ui.ErrSessionUnavailable
+	}
+	snap := ad.mgr.Snapshot(id)
+	if snap == nil {
+		return nil, ui.ErrSessionUnknown
+	}
+	out := make([]ui.ChatMessage, 0, len(snap.Conversation))
+	for _, m := range snap.Conversation {
+		if m.Role == "" || m.Content == "" {
+			continue
+		}
+		out = append(out, ui.ChatMessage{Role: m.Role, Content: m.Content})
+	}
+	return out, nil
+}
+
 // Resume registers the session id with the manager so subsequent
 // streams append onto the resumed conversation.
 func (ad *uiSessionStoreAdapter) Resume(id string) error {
@@ -519,10 +538,16 @@ type queuedInferClient struct {
 func (c *queuedInferClient) Complete(ctx context.Context, req inference.CompletionRequest) (<-chan inference.Token, error) {
 	ch := make(chan inference.Token, 64)
 	if err := c.q.Enqueue(queue.Request{
-		ID:       fmt.Sprintf("task-%d", time.Now().UnixNano()),
-		Messages: req.Messages,
-		Response: ch,
-		Ctx:      ctx,
+		ID:          fmt.Sprintf("task-%d", time.Now().UnixNano()),
+		Model:       req.Model,
+		Messages:    req.Messages,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		MaxTokens:   req.MaxTokens,
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
+		Response:    ch,
+		Ctx:         ctx,
 	}); err != nil {
 		return nil, err
 	}
@@ -572,6 +597,13 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		} else if mgr.Snapshot(id) == nil {
 			s := mgr.Start(agentName)
 			id = s.ID
+		}
+		if len(msgs) == 1 {
+			if err := mgr.Append(id, msgs[0]); err != nil {
+				slog.Warn("session: append task user turn", "id", id, "err", err)
+			}
+		} else {
+			appendUserSide(mgr, id, msgs)
 		}
 	}
 
@@ -624,15 +656,81 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
 
+	rawEvch := make(chan agentloop.Event, 64)
 	evch := make(chan agentloop.Event, 64)
 	go func() {
-		if err := engine.Run(ctx, assembled, evch); err != nil {
+		if err := engine.Run(ctx, assembled, rawEvch); err != nil {
 			slog.Warn("task engine", "err", err)
 		}
-		// engine.Run closes evch via defer
+	}()
+	go func() {
+		defer close(evch)
+		var events []agentloop.Event
+		for ev := range rawEvch {
+			events = append(events, ev)
+			select {
+			case evch <- ev:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if mgr != nil && id != "" {
+			recordTaskEvents(mgr, id, events)
+		}
 	}()
 
 	return id, evch, nil
+}
+
+func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event) {
+	var assistant strings.Builder
+	flushAssistant := func() {
+		if assistant.Len() == 0 {
+			return
+		}
+		if err := mgr.Append(id, inference.Message{Role: "assistant", Content: assistant.String()}); err != nil {
+			slog.Warn("session: append task assistant turn", "id", id, "err", err)
+		}
+		assistant.Reset()
+	}
+
+	toolSeq := 0
+	for _, ev := range events {
+		switch ev.Type {
+		case agentloop.EvtText:
+			assistant.WriteString(ev.Content)
+		case agentloop.EvtToolCall:
+			flushAssistant()
+			toolSeq++
+			if err := mgr.Append(id, inference.Message{
+				Role: "assistant",
+				ToolCalls: []inference.ToolCall{{
+					ID:   fmt.Sprintf("task_%d", toolSeq),
+					Type: "function",
+					Function: inference.ToolCallFunction{
+						Name:      ev.ToolID,
+						Arguments: ev.ToolArgs,
+					},
+				}},
+			}); err != nil {
+				slog.Warn("session: append task tool call", "id", id, "err", err)
+			}
+		case agentloop.EvtToolResult:
+			content := ev.ToolResult
+			if ev.ToolError != "" {
+				content = "ERROR: " + ev.ToolError
+			}
+			if err := mgr.Append(id, inference.Message{
+				Role:       "tool",
+				ToolCallID: fmt.Sprintf("task_%d", toolSeq),
+				Name:       ev.ToolID,
+				Content:    content,
+			}); err != nil {
+				slog.Warn("session: append task tool result", "id", id, "err", err)
+			}
+		}
+	}
+	flushAssistant()
 }
 
 func (rt *Runtime) getInferClient() inference.Client {

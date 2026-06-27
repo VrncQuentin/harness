@@ -25,6 +25,8 @@ type Request struct {
 	Temperature float64
 	TopP        float64
 	MaxTokens   int
+	Tools       []inference.Tool
+	ToolChoice  any
 	// Response is closed after the last token or on error.
 	Response chan<- inference.Token
 	Ctx      context.Context
@@ -51,6 +53,8 @@ type walPayload struct {
 	Temperature float64             `json:"temperature,omitempty"`
 	TopP        float64             `json:"top_p,omitempty"`
 	MaxTokens   int                 `json:"max_tokens,omitempty"`
+	Tools       []inference.Tool    `json:"tools,omitempty"`
+	ToolChoice  any                 `json:"tool_choice,omitempty"`
 }
 
 // walRecord is a single WAL entry, JSON-encoded.
@@ -214,6 +218,8 @@ func (q *Queue) dispatch(req Request) bool {
 		TopP:        req.TopP,
 		MaxTokens:   req.MaxTokens,
 		Stream:      true,
+		Tools:       req.Tools,
+		ToolChoice:  req.ToolChoice,
 	})
 	if err != nil {
 		q.send(req.Ctx, req.Response, inference.Token{Err: fmt.Errorf("queue: inference: %w", err)})
@@ -256,6 +262,8 @@ func (r Request) walPayload() *walPayload {
 		Temperature: r.Temperature,
 		TopP:        r.TopP,
 		MaxTokens:   r.MaxTokens,
+		Tools:       append([]inference.Tool(nil), r.Tools...),
+		ToolChoice:  r.ToolChoice,
 	}
 }
 
@@ -272,6 +280,8 @@ func (p walPayload) request(ctx context.Context) Request {
 		Temperature: p.Temperature,
 		TopP:        p.TopP,
 		MaxTokens:   p.MaxTokens,
+		Tools:       append([]inference.Tool(nil), p.Tools...),
+		ToolChoice:  p.ToolChoice,
 		Response:    resp,
 		Ctx:         ctx,
 		replayed:    true,

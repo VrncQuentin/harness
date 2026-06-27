@@ -63,6 +63,46 @@ func TestEnqueue_And_Dispatch(t *testing.T) {
 	}
 }
 
+func TestEnqueue_DispatchPreservesTools(t *testing.T) {
+	client := &captureClient{seen: make(chan inference.CompletionRequest, 1)}
+	q := New(8, "", client)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := q.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer q.Stop()
+
+	resp := make(chan inference.Token, 4)
+	if err := q.Enqueue(Request{
+		ID:       "tool-test",
+		Messages: []inference.Message{{Role: "user", Content: "read"}},
+		Tools: []inference.Tool{{
+			Type: "function",
+			Function: inference.ToolDefinition{
+				Name:        "file_read",
+				Description: "Read a file",
+				Parameters:  map[string]any{"type": "object"},
+			},
+		}},
+		Response: resp,
+		Ctx:      context.Background(),
+	}); err != nil {
+		t.Fatalf("enqueue failed: %v", err)
+	}
+	for range resp {
+	}
+
+	select {
+	case got := <-client.seen:
+		if len(got.Tools) != 1 || got.Tools[0].Function.Name != "file_read" {
+			t.Fatalf("tools not preserved: %+v", got.Tools)
+		}
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for dispatched request")
+	}
+}
+
 func TestEnqueue_Full(t *testing.T) {
 	// Use nil client - worker will stall so queue fills up.
 	q := New(2, "", nil)
@@ -295,8 +335,12 @@ func TestWAL_ReplaysUnfinishedRequest(t *testing.T) {
 		Temperature: 0.6,
 		TopP:        0.8,
 		MaxTokens:   42,
-		Response:    resp,
-		Ctx:         context.Background(),
+		Tools: []inference.Tool{{
+			Type:     "function",
+			Function: inference.ToolDefinition{Name: "file_list", Parameters: map[string]any{"type": "object"}},
+		}},
+		Response: resp,
+		Ctx:      context.Background(),
 	}); err != nil {
 		t.Fatalf("enqueue pending: %v", err)
 	}
@@ -329,6 +373,9 @@ func TestWAL_ReplaysUnfinishedRequest(t *testing.T) {
 		}
 		if got.MaxTokens != 42 {
 			t.Errorf("replayed max_tokens = %d, want 42", got.MaxTokens)
+		}
+		if len(got.Tools) != 1 || got.Tools[0].Function.Name != "file_list" {
+			t.Fatalf("replayed tools = %+v, want file_list", got.Tools)
 		}
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for WAL replay")
