@@ -19,6 +19,7 @@
           <span class="tree-name"><a href="/memory/episodes/view?path={{.Path}}">{{.Name}}</a></span>
         </span>
         <span class="tree-meta">
+          {{if ge .Score 0.0}}<span class="badge badge-ok">indexed</span>{{end}}
           <span class="tree-tokens mono">~{{.Tokens}} tok</span>
         </span>
       </li>

@@ -6,7 +6,10 @@
   <div class="card">
     <header class="card-head">
       <h3>{{.Name}}</h3>
-      <span class="logs-meta mono">~{{.Tokens}} tok</span>
+      <span class="logs-meta mono">
+        {{if ge .Score 0.0}}<span class="badge badge-ok">indexed</span>{{end}}
+        ~{{.Tokens}} tok
+      </span>
     </header>
     <p class="card-meta">Agent: <code>{{.Agent}}</code></p>
     <p class="card-meta"><code>{{.Path}}</code></p>
