@@ -90,6 +90,11 @@ type Server struct {
 
 	// chatSSEClients maps chan string → struct{} for chat token subscribers.
 	chatSSEClients sync.Map
+	// taskSSEClients maps chan string → struct{} for task event subscribers.
+	taskSSEClients sync.Map
+
+	serverCtxMu sync.RWMutex
+	serverCtx   context.Context
 
 	// Each page has its own template set because status.html, config.html,
 	// and agents.html all define "title" and "content" - sharing one set
@@ -168,8 +173,9 @@ type Server struct {
 // injected separately via SetConfigStore once the shared database is open.
 func NewServer(port int) *Server {
 	s := &Server{
-		port:  port,
-		state: &State{data: stateSnapshot{StartTime: time.Now()}},
+		port:      port,
+		state:     &State{data: stateSnapshot{StartTime: time.Now()}},
+		serverCtx: context.Background(),
 	}
 	s.statusTmpl = template.Must(template.ParseFS(
 		assets.TemplateFS,
@@ -447,6 +453,10 @@ func (s *Server) SetFirstRun(v bool) {
 // Start begins serving on the configured port in a background goroutine.
 // It returns an error immediately if the listener cannot bind.
 func (s *Server) Start(ctx context.Context) error {
+	s.serverCtxMu.Lock()
+	s.serverCtx = ctx
+	s.serverCtxMu.Unlock()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleStatus)
 	mux.HandleFunc("/events", s.handleSSE)
@@ -474,6 +484,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/projects", s.handleProjects)
 	mux.HandleFunc("/projects/edit", s.handleProjectEdit)
 	mux.HandleFunc("/task", s.handleTask)
+	mux.HandleFunc("/task/events", s.handleTaskEvents)
+	mux.HandleFunc("/task/send", s.handleTaskSend)
 	mux.HandleFunc("/task/stream", s.handleTaskStream)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
@@ -505,6 +517,16 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+func (s *Server) asyncContext() context.Context {
+	s.serverCtxMu.RLock()
+	ctx := s.serverCtx
+	s.serverCtxMu.RUnlock()
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 // basePage holds template fields shared by every rendered page (nav highlight

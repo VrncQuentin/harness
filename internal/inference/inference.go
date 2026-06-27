@@ -106,6 +106,22 @@ type sseChunk struct {
 	} `json:"choices"`
 }
 
+type completionResponse struct {
+	Choices []struct {
+		Message struct {
+			Content   string `json:"content"`
+			ToolCalls []struct {
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
 // implClient implements Client against a base URL.
 type implClient struct {
 	baseURL    string
@@ -147,11 +163,10 @@ func (c *implClient) Health(ctx context.Context) error {
 	return nil
 }
 
-// Complete sends a streaming chat completion request and returns a channel of tokens.
-// The channel is closed after the last token or on error. Cancelling ctx stops the stream.
+// Complete sends a chat completion request and returns a channel of tokens.
+// Streaming requests are forwarded as SSE; non-streaming requests are converted
+// into one or more tokens followed by Done. Cancelling ctx stops the request.
 func (c *implClient) Complete(ctx context.Context, req CompletionRequest) (<-chan Token, error) {
-	req.Stream = true
-
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("inference: marshal request: %w", err)
@@ -163,7 +178,9 @@ func (c *implClient) Complete(ctx context.Context, req CompletionRequest) (<-cha
 		return nil, fmt.Errorf("inference: build request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
+	if req.Stream {
+		httpReq.Header.Set("Accept", "text/event-stream")
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -176,10 +193,19 @@ func (c *implClient) Complete(ctx context.Context, req CompletionRequest) (<-cha
 		return nil, fmt.Errorf("inference: unexpected status %d: %s", resp.StatusCode, string(b))
 	}
 
-	// Token buffer absorbs short network bursts so the SSE reader does not
+	// Token buffer absorbs short network bursts so the reader does not
 	// block on a slow consumer mid-stream. 64 covers a handful of round
 	// trips of llama-server token batches.
 	ch := make(chan Token, 64)
+	if !req.Stream {
+		go func() {
+			defer close(ch)
+			defer func() { _ = resp.Body.Close() }()
+			readCompletion(ctx, resp.Body, ch)
+		}()
+		return ch, nil
+	}
+
 	go func() {
 		defer close(ch)
 		defer func() { _ = resp.Body.Close() }()
@@ -187,6 +213,32 @@ func (c *implClient) Complete(ctx context.Context, req CompletionRequest) (<-cha
 	}()
 
 	return ch, nil
+}
+
+func readCompletion(ctx context.Context, r io.Reader, ch chan<- Token) {
+	var body completionResponse
+	if err := json.NewDecoder(r).Decode(&body); err != nil {
+		emitToken(ctx, ch, Token{Err: fmt.Errorf("inference: decode completion: %w", err)})
+		return
+	}
+	for _, choice := range body.Choices {
+		if choice.Message.Content != "" {
+			if !emitToken(ctx, ch, Token{Content: choice.Message.Content}) {
+				return
+			}
+		}
+		for i, tc := range choice.Message.ToolCalls {
+			if !emitToken(ctx, ch, Token{ToolCallDelta: &ToolCallDelta{
+				Index:     i,
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			}}) {
+				return
+			}
+		}
+	}
+	emitToken(ctx, ch, Token{Done: true})
 }
 
 // readSSE reads the SSE stream from r and sends tokens on ch.

@@ -54,6 +54,7 @@ func TestComplete_Streaming(t *testing.T) {
 	c := NewClient(srv.URL, nil)
 	ch, err := c.Complete(context.Background(), CompletionRequest{
 		Messages: []Message{{Role: "user", Content: "hi"}},
+		Stream:   true,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -90,6 +91,7 @@ func TestComplete_TruncatedStreamReturnsError(t *testing.T) {
 	c := NewClient(srv.URL, nil)
 	ch, err := c.Complete(context.Background(), CompletionRequest{
 		Messages: []Message{{Role: "user", Content: "hi"}},
+		Stream:   true,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -121,8 +123,55 @@ func TestComplete_ContextCancellation(t *testing.T) {
 	c := NewClient(srv.URL, nil)
 	_, err := c.Complete(ctx, CompletionRequest{
 		Messages: []Message{{Role: "user", Content: "hi"}},
+		Stream:   true,
 	})
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestComplete_NonStreamingToolCalls(t *testing.T) {
+	body := `{"choices":[{"message":{"content":"Need a file","tool_calls":[{"id":"call_1","type":"function","function":{"name":"file_read","arguments":"{\"path\":\"README.md\"}"}}]}}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(body)) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil)
+	ch, err := c.Complete(context.Background(), CompletionRequest{
+		Messages: []Message{{Role: "user", Content: "read"}},
+		Stream:   false,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var content string
+	var tool *ToolCallDelta
+	var done bool
+	for tok := range ch {
+		if tok.Err != nil {
+			t.Fatalf("token error: %v", tok.Err)
+		}
+		if tok.Content != "" {
+			content += tok.Content
+		}
+		if tok.ToolCallDelta != nil {
+			tool = tok.ToolCallDelta
+		}
+		if tok.Done {
+			done = true
+		}
+	}
+	if content != "Need a file" {
+		t.Fatalf("content = %q", content)
+	}
+	if tool == nil || tool.ID != "call_1" || tool.Name != "file_read" || !strings.Contains(tool.Arguments, "README.md") {
+		t.Fatalf("tool delta not parsed: %#v", tool)
+	}
+	if !done {
+		t.Fatal("expected done token")
 	}
 }
