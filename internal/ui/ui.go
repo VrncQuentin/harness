@@ -486,7 +486,6 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/task", s.handleTask)
 	mux.HandleFunc("/task/events", s.handleTaskEvents)
 	mux.HandleFunc("/task/send", s.handleTaskSend)
-	mux.HandleFunc("/task/stream", s.handleTaskStream)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
