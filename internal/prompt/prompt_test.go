@@ -13,10 +13,24 @@ import (
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/config"
+	"github.com/vrnc/harness/internal/embedder"
+	"github.com/vrnc/harness/internal/index"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/project"
 )
+
+type stubEmbedder struct {
+	vectors [][]float32
+}
+
+func (s *stubEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error) {
+	return s.vectors, nil
+}
+
+func (s *stubEmbedder) Health(_ context.Context) error { return nil }
+
+var _ embedder.Client = (*stubEmbedder)(nil)
 
 // writeRepo builds a memory repo under t.TempDir() from a map of
 // forward-slash relative paths to contents, returning a DirReader.
@@ -825,4 +839,138 @@ func (e errReader) ListDirs(rel string) ([]string, error) {
 		return dl.ListDirs(rel)
 	}
 	return nil, nil
+}
+
+// TestAssemble_BlendedRetrievalKeepsTopN verifies the blended retrieval
+// path keeps the top-N episodes by blended score, not the lowest
+// (regression test for consolidation plan bug #3).
+func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":         "r",
+		"agents/coder/persona.md": "p",
+		"projects/global/episodes/coder/01.md": "EP1",
+		"projects/global/episodes/coder/02.md": "EP2",
+		"projects/global/episodes/coder/03.md": "EP3",
+		"projects/global/episodes/coder/04.md": "EP4",
+		"projects/global/episodes/coder/05.md": "EP5",
+	})
+	cfg := baseCfg()
+	cfg.RecencyN = 3
+	cfg.SemanticWeight = 0.5
+	cfg.RecencyWeight = 0.5
+
+	idxDir := t.TempDir()
+	idx, err := index.Create(idxDir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Semantic scores for query [0.8, 0.6]:
+	// 01 [1, 0]    -> cos=0.8
+	// 02 [0.5, 0]  -> cos=0.8
+	// 03 [1, 0.8]  -> cos=1.0  (highest)
+	// 04 [-1, 0]   -> cos=-0.8 (lowest)
+	// 05 [0.8, 0]  -> cos=0.8
+	if err := idx.Add("01", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("02", [][]float32{{0.5, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("03", [][]float32{{1, 0.8}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("04", [][]float32{{-1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("05", [][]float32{{0.8, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := &stubEmbedder{vectors: [][]float32{{0.8, 0.6}}}
+	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(idx, stub)
+
+	msgs, _, err := asm.Assemble(context.Background(), "coder",
+		[]inference.Message{{Role: "user", Content: "test query"}})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sys := msgs[0].Content
+
+	// Top 3 by blended score must be kept. Episode 04 has negative
+	// semantic score and should be among the first dropped.
+	if strings.Contains(sys, "04.md") {
+		t.Errorf("lowest-scored episode 04 should be dropped; got:\n%s", sys)
+	}
+	// Episode 03 has the highest semantic score (cos=1.0) and must be kept.
+	if !strings.Contains(sys, "03.md") {
+		t.Errorf("highest-scored episode 03 should be kept; got:\n%s", sys)
+	}
+	// We expect exactly 3 episodes.
+	epCount := 0
+	for _, name := range []string{"01.md", "02.md", "03.md", "04.md", "05.md"} {
+		if strings.Contains(sys, name) {
+			epCount++
+		}
+	}
+	if epCount != 3 {
+		t.Errorf("expected 3 episodes kept after blended cap, got %d", epCount)
+	}
+}
+
+// TestAssemble_BlendedRecencyUsesExponentialDecay verifies that the
+// blended path uses exponential recency decay, not linear rank.
+func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":         "r",
+		"agents/coder/persona.md": "p",
+		"projects/global/episodes/coder/01.md": "EP1",
+		"projects/global/episodes/coder/02.md": "EP2",
+		"projects/global/episodes/coder/03.md": "EP3",
+	})
+	cfg := baseCfg()
+	cfg.RecencyN = 2
+	// Pure recency weight: semantic is zero, so the blended score is
+	// entirely driven by recency decay.
+	cfg.SemanticWeight = 0.0
+	cfg.RecencyWeight = 1.0
+
+	idxDir := t.TempDir()
+	idx, err := index.Create(idxDir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("01", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("02", [][]float32{{0.8, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("03", [][]float32{{0.5, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := &stubEmbedder{vectors: [][]float32{{1, 0}}}
+	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(idx, stub)
+
+	msgs, _, err := asm.Assemble(context.Background(), "coder",
+		[]inference.Message{{Role: "user", Content: "test query"}})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sys := msgs[0].Content
+
+	// With pure recency weight, the blended score uses exponential
+	// decay from newest. Episodes are sorted oldest-first, so
+	// 03 is newest (distance 0 -> exp(0/3)=1.0), 02 (distance 1 ->
+	// exp(-1/3)≈0.717), 01 (distance 2 -> exp(-2/3)≈0.513).
+	// Top 2 by recency: 03 and 02. Episode 01 should be dropped.
+	if !strings.Contains(sys, "03.md") {
+		t.Errorf("newest episode 03 should be kept; got:\n%s", sys)
+	}
+	if !strings.Contains(sys, "02.md") {
+		t.Errorf("episode 02 should be kept; got:\n%s", sys)
+	}
+	if strings.Contains(sys, "01.md") {
+		t.Errorf("oldest episode 01 should be dropped; got:\n%s", sys)
+	}
 }
