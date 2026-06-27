@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -44,6 +45,14 @@ const episodeFileSuffix = ".md"
 // scorer is not wired or the index doesn't contain the episode.
 type RetrievalScorer interface {
 	ScoreEpisode(ctx context.Context, episodePath string) (float64, error)
+}
+
+// IndexRebuilder triggers an idempotent index rebuild for one tree.
+// The memory browser calls this when the user invokes "Rebuild Index".
+// Implementations walk episodes (or directory trees), embed any SHA
+// missing from the index, and commit the updated manifest.
+type IndexRebuilder interface {
+	Rebuild(ctx context.Context) error
 }
 
 // MemoryStore is the surface the /memory page needs from the memory
@@ -111,6 +120,20 @@ func (s *Server) retrievalScorer() RetrievalScorer {
 	return s.scorerData
 }
 
+// SetIndexRebuilder wires the index rebuild handler. Pass nil to
+// detach; the memory page hides the rebuild button.
+func (s *Server) SetIndexRebuilder(rb IndexRebuilder) {
+	s.rebuilderMu.Lock()
+	s.rebuilderData = rb
+	s.rebuilderMu.Unlock()
+}
+
+func (s *Server) indexRebuilder() IndexRebuilder {
+	s.rebuilderMu.RLock()
+	defer s.rebuilderMu.RUnlock()
+	return s.rebuilderData
+}
+
 // memoryView is the template context for /memory.
 type memoryView struct {
 	basePage
@@ -123,6 +146,7 @@ type memoryView struct {
 	SavedPath       string // flash: file just saved
 	EpisodesByAgent []agentEpisodeCount
 	EpisodesLoadErr string
+	CanRebuild      bool
 }
 
 // agentEpisodeCount counts how many .md episodes live under an agent's
@@ -224,6 +248,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		}
 		data.EpisodesByAgent = counts
 	}
+	data.CanRebuild = s.indexRebuilder() != nil
 	if saved := strings.TrimSpace(r.URL.Query().Get("saved")); saved != "" {
 		data.SavedPath = saved
 	}
@@ -489,6 +514,27 @@ func (s *Server) handleMemoryEdit(w http.ResponseWriter, r *http.Request) {
 		data.SaveErr = err.Error()
 	}
 	s.renderMemoryEdit(w, data)
+}
+
+// handleMemoryRebuildIndex triggers an idempotent index rebuild for
+// episodes under the active project. The rebuild walks all .md episode
+// files, re-embeds any SHA missing from the index, and updates the
+// manifest. Completed episodes become findable through semantic search.
+func (s *Server) handleMemoryRebuildIndex(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rb := s.indexRebuilder()
+	if rb == nil {
+		http.Error(w, "index rebuild not available (embedder or index is not ready)", http.StatusServiceUnavailable)
+		return
+	}
+	if err := rb.Rebuild(r.Context()); err != nil {
+		http.Error(w, fmt.Sprintf("index rebuild failed: %v", err), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/memory?rebuilt=1", http.StatusSeeOther)
 }
 
 // handleMemorySave persists the textarea content for one editable

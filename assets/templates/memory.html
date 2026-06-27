@@ -32,6 +32,11 @@
   <div class="card">
     <header class="card-head">
       <h3>Episodes by agent</h3>
+      {{if .CanRebuild}}
+      <form method="post" action="/memory/rebuild-index" style="display:inline">
+        <button type="submit" class="btn btn-sm btn-ghost">Rebuild Index</button>
+      </form>
+      {{end}}
     </header>
     {{if .EpisodesLoadErr}}
     <p class="fg-hint">Could not list episodes: {{.EpisodesLoadErr}}</p>

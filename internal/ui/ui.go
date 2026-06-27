@@ -148,6 +148,9 @@ type Server struct {
 	scorerMu   sync.RWMutex
 	scorerData RetrievalScorer
 
+	rebuilderMu   sync.RWMutex
+	rebuilderData IndexRebuilder
+
 	chatRunnerMu sync.RWMutex
 	chatRunner   ChatRunner
 
@@ -491,6 +494,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/task/send", s.handleTaskSend)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
+	mux.HandleFunc("/memory/rebuild-index", s.handleMemoryRebuildIndex)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
 	mux.HandleFunc("/procs/embed/restart", s.handleProcRestart("embed"))
 	mux.HandleFunc("/shutdown", s.handleShutdown)

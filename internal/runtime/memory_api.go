@@ -59,6 +59,14 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		)
 		rt.assembler = rt.assembler.WithBlendedRetrieval(epIdx, embedClient)
 		uiServer.SetRetrievalScorer(&indexScorer{idx: epIdx})
+		uiServer.SetIndexRebuilder(&indexRebuilder{
+			mem:      rt.memReader,
+			emb:      embedClient,
+			idx:      epIdx,
+			repoPath: rt.cfg.Memory.RepoPath,
+			slug:     rt.cfg.Project.ActiveProjectSlug,
+			gitRepo:  rt.gitRepo,
+		})
 	}
 	uiServer.SetMemoryStore(rt.memReader)
 
@@ -315,6 +323,7 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	uiServer.SetSessionStore(nil)
 	uiServer.SetTaskRunner(nil)
 	uiServer.SetRetrievalScorer(nil)
+	uiServer.SetIndexRebuilder(nil)
 	rt.loopRegistry = nil
 }
 
@@ -380,4 +389,103 @@ func (s *indexScorer) ScoreEpisode(_ context.Context, episodePath string) (float
 		return 1.0, nil
 	}
 	return -1, nil
+}
+
+// indexRebuilder implements ui.IndexRebuilder by walking episode files,
+// re-embedding any SHA missing from the index, and committing the
+// updated manifest and vectors. The operation is idempotent: already-
+// indexed episodes are skipped.
+type indexRebuilder struct {
+	mem      *memory.DirReader
+	emb      embedder.Client
+	idx      *index.Index
+	repoPath string
+	slug     string
+	gitRepo  *gitw.Repo
+}
+
+func (rb *indexRebuilder) Rebuild(ctx context.Context) error {
+	// Walk all episode files under the active project.
+	pattern := fmt.Sprintf("projects/%s/episodes/*/*.md", rb.slug)
+	paths, err := rb.mem.Glob(pattern)
+	if err != nil {
+		return fmt.Errorf("index rebuild: glob episodes: %w", err)
+	}
+
+	if len(paths) == 0 {
+		return nil
+	}
+
+	// Collect episodes not yet indexed by computing SHA from file path
+	// (same ID scheme as afterSaveEmbed: base name without .md).
+	type pending struct {
+		path    string
+		id      string
+		content string
+	}
+	var work []pending
+	for _, p := range paths {
+		id := strings.TrimSuffix(path.Base(p), ".md")
+		if rb.idx.Contains(id) {
+			continue
+		}
+		body, err := rb.mem.Read(p)
+		if err != nil {
+			slog.Warn("index rebuild: skip unreadable episode", "path", p, "err", err)
+			continue
+		}
+		chunks := chunkSummary(string(body))
+		if len(chunks) == 0 {
+			continue
+		}
+		work = append(work, pending{path: p, id: id, content: string(body)})
+	}
+
+	if len(work) == 0 {
+		return nil
+	}
+
+	// Batch embed all pending chunks.
+	allChunks := make([]string, 0)
+	chunkCounts := make([]int, len(work))
+	for i, w := range work {
+		chunks := chunkSummary(string(w.content))
+		allChunks = append(allChunks, chunks...)
+		chunkCounts[i] = len(chunks)
+	}
+
+	vectors, err := rb.emb.Embed(ctx, allChunks)
+	if err != nil {
+		return fmt.Errorf("index rebuild: embed: %w", err)
+	}
+
+	// Assign vectors back to each episode and add to index.
+	offset := 0
+	for i, w := range work {
+		n := chunkCounts[i]
+		if n == 0 {
+			continue
+		}
+		epVecs := vectors[offset : offset+n]
+		offset += n
+		if err := rb.idx.Add(w.id, epVecs); err != nil {
+			slog.Warn("index rebuild: add episode", "id", w.id, "err", err)
+		}
+	}
+
+	// Commit the updated index files.
+	if rb.gitRepo != nil {
+		relVectors := path.Join("projects", rb.slug, "index", "_episodes", "vectors.bin")
+		relManifest := path.Join("projects", rb.slug, "index", "_episodes", "manifest.json")
+		msg := gitw.BuildMessage(
+			map[string]string{"type": "index-rebuild"},
+			fmt.Sprintf("rebuild episode index: %d new episodes", len(work)),
+		)
+		if _, err := rb.gitRepo.Commit(msg, []string{relVectors, relManifest}); err != nil {
+			slog.Warn("index rebuild: commit", "err", err)
+		}
+	}
+
+	slog.Info("index rebuild complete", "new_episodes", len(work))
+	return nil
 }
