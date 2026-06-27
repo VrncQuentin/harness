@@ -164,6 +164,18 @@ func (idx *Index) Search(query []float32, k int) ([]Result, error) {
 // Dim returns the vector dimension for this index.
 func (idx *Index) Dim() int { return idx.dim }
 
+// Contains reports whether sha is present in the index manifest.
+func (idx *Index) Contains(sha string) bool {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	for _, e := range idx.manifest.Chunks {
+		if e.SHA == sha {
+			return true
+		}
+	}
+	return false
+}
+
 // currentFileSize returns the size of vectors.bin, or 0 if it doesn't exist.
 func (idx *Index) currentFileSize() int64 {
 	info, err := os.Stat(filepath.Join(idx.dir, vectorsFile))

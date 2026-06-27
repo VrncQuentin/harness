@@ -58,6 +58,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			httpclient.NewStreaming(),
 		)
 		rt.assembler = rt.assembler.WithBlendedRetrieval(epIdx, embedClient)
+		uiServer.SetRetrievalScorer(&indexScorer{idx: epIdx})
 	}
 	uiServer.SetMemoryStore(rt.memReader)
 
@@ -313,6 +314,7 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	uiServer.SetChatRunner(nil)
 	uiServer.SetSessionStore(nil)
 	uiServer.SetTaskRunner(nil)
+	uiServer.SetRetrievalScorer(nil)
 	rt.loopRegistry = nil
 }
 
@@ -358,4 +360,24 @@ func (rt *Runtime) setActiveAgent(name string) error {
 		hr.SetActiveAgent(name)
 	}
 	return nil
+}
+
+// indexScorer implements ui.RetrievalScorer by looking up the episode
+// ID in the ANN index manifest. It returns 1.0 when the episode is
+// indexed (available for semantic retrieval), -1.0 otherwise so the
+// UI can distinguish "not indexed" from "score is zero".
+type indexScorer struct {
+	idx *index.Index
+}
+
+func (s *indexScorer) ScoreEpisode(_ context.Context, episodePath string) (float64, error) {
+	if s.idx == nil {
+		return -1, nil
+	}
+	base := path.Base(episodePath)
+	id := strings.TrimSuffix(base, ".md")
+	if s.idx.Contains(id) {
+		return 1.0, nil
+	}
+	return -1, nil
 }

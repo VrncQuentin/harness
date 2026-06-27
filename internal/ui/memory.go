@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -36,6 +37,14 @@ const episodesRoot = "projects/global/episodes"
 // Anything else under the agent directory is ignored by the browser
 // because only markdown is committed by the session writer.
 const episodeFileSuffix = ".md"
+
+// RetrievalScorer returns the blended retrieval score for an episode.
+// Implementations look up the episode ID in the ANN index and compute
+// the combined semantic+recency score. Returns 0 and no error when the
+// scorer is not wired or the index doesn't contain the episode.
+type RetrievalScorer interface {
+	ScoreEpisode(ctx context.Context, episodePath string) (float64, error)
+}
 
 // MemoryStore is the surface the /memory page needs from the memory
 // repo. Implemented by *memory.DirReader; broken out so tests can stub
@@ -88,6 +97,20 @@ func (s *Server) memoryStore() MemoryStore {
 	return s.memStore
 }
 
+// SetRetrievalScorer wires the scorer used by the memory episode view.
+// Pass nil to detach; the page then hides the score column.
+func (s *Server) SetRetrievalScorer(scorer RetrievalScorer) {
+	s.scorerMu.Lock()
+	s.scorerData = scorer
+	s.scorerMu.Unlock()
+}
+
+func (s *Server) retrievalScorer() RetrievalScorer {
+	s.scorerMu.RLock()
+	defer s.scorerMu.RUnlock()
+	return s.scorerData
+}
+
 // memoryView is the template context for /memory.
 type memoryView struct {
 	basePage
@@ -124,6 +147,7 @@ type episodeRow struct {
 	Name   string
 	Path   string
 	Tokens int
+	Score  float64
 }
 
 // memoryEpisodeView is the template context for
@@ -137,6 +161,7 @@ type memoryEpisodeView struct {
 	Path    string
 	Content string
 	Tokens  int
+	Score   float64
 }
 
 // memoryTreeNode is one node in the rendered tree. Children is a slice
@@ -227,7 +252,8 @@ func (s *Server) handleMemoryEpisodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := listAgentEpisodes(store, agent)
+	scorer := s.retrievalScorer()
+	rows, err := listAgentEpisodes(store, agent, scorer)
 	if err != nil {
 		http.Error(w, "could not list episodes: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -295,6 +321,12 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 	}
 
 	content := string(body)
+	score := -1.0
+	if scorer := s.retrievalScorer(); scorer != nil {
+		if s, serr := scorer.ScoreEpisode(r.Context(), p); serr == nil {
+			score = s
+		}
+	}
 	data := memoryEpisodeView{
 		basePage: s.newBasePage("memory"),
 		Agent:    agent,
@@ -302,6 +334,7 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 		Path:     p,
 		Content:  content,
 		Tokens:   prompt.EstimateTokens(content),
+		Score:    score,
 	}
 	s.renderMemoryEpisodeView(w, data)
 }
@@ -329,7 +362,7 @@ func validAgentName(name string) bool {
 // chronological order without parsing every filename. A missing agent
 // directory yields an empty slice and no error so the page can render
 // an empty-state hint rather than a 404.
-func listAgentEpisodes(store MemoryStore, agent string) ([]episodeRow, error) {
+func listAgentEpisodes(store MemoryStore, agent string, scorer RetrievalScorer) ([]episodeRow, error) {
 	dir := episodesRoot + "/" + agent
 	entries, err := store.Walk(dir)
 	if err != nil {
@@ -342,13 +375,8 @@ func listAgentEpisodes(store MemoryStore, agent string) ([]episodeRow, error) {
 			continue
 		}
 		if !strings.HasPrefix(e.Path, prefix) {
-			// The Walker contract returns repo-relative paths, but the
-			// stub used in tests yields the full set on every call. The
-			// prefix filter keeps both implementations honest.
 			continue
 		}
-		// Skip nested subdirectories; episodes live directly under the
-		// agent dir, so anything deeper is non-canonical and ignored.
 		rest := strings.TrimPrefix(e.Path, prefix)
 		if strings.Contains(rest, "/") {
 			continue
@@ -361,10 +389,17 @@ func listAgentEpisodes(store MemoryStore, agent string) ([]episodeRow, error) {
 		if rerr == nil {
 			tokens = prompt.EstimateTokens(string(body))
 		}
+		score := -1.0
+		if scorer != nil {
+			if s, serr := scorer.ScoreEpisode(context.Background(), e.Path); serr == nil {
+				score = s
+			}
+		}
 		rows = append(rows, episodeRow{
 			Name:   path.Base(e.Path),
 			Path:   e.Path,
 			Tokens: tokens,
+			Score:  score,
 		})
 	}
 	// Newest-first: ISO timestamps sort lexicographically, so a
