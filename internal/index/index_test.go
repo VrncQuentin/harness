@@ -120,3 +120,28 @@ func TestIndex_OpenMissing(t *testing.T) {
 		t.Fatal("expected error for missing index")
 	}
 }
+
+func TestIndex_Contains(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("sha-abc", [][]float32{{1, 0, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if !idx.Contains("sha-abc") {
+		t.Error("expected sha-abc to be found")
+	}
+	if idx.Contains("sha-xyz") {
+		t.Error("expected sha-xyz to not be found")
+	}
+	// Re-open and check persistence.
+	idx2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idx2.Contains("sha-abc") {
+		t.Error("re-opened: expected sha-abc to be found")
+	}
+}

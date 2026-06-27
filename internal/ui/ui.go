@@ -145,6 +145,9 @@ type Server struct {
 	committerMu   sync.RWMutex
 	committerData Committer
 
+	scorerMu   sync.RWMutex
+	scorerData RetrievalScorer
+
 	chatRunnerMu sync.RWMutex
 	chatRunner   ChatRunner
 
