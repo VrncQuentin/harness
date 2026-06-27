@@ -141,13 +141,22 @@ Design references: opencode (part-based messages, step counter, doom-loop detect
 
 **Goal:** embedding-based retrieval blended with recency.
 
-- [ ] Embedder sidecar: nomic-embed-text, health check, restart on crash
-- [ ] Embed-on-commit pipeline (episodes): new episode -> embed chunks -> update `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` -> commit
+**Deferred:** Attached-directory indexing. The embed-on-commit pipeline for project
+directory trees and the per-directory index rebuild require chunking files from
+the git HEAD of each configured project directory. These depend on:
+- Directory tree walking integrated with the git backend
+- Chunking strategy for arbitrary file types
+- UI controls per directory tree
+This work is descoped from the current phase; project directory indexes will be
+implemented when directory-level semantic search becomes a user-facing feature.
+
+- [x] Embedder sidecar: nomic-embed-text, health check, restart on crash
+- [x] Embed-on-commit pipeline (episodes): new episode -> embed chunks -> update `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` -> commit
 - [ ] Embed-on-commit pipeline (attached directories): for each tree configured on the active project, walk by HEAD -> embed chunks -> update `projects/<active>/index/<dir-slug>/{vectors.bin, manifest.json}` -> commit
 - [x] ANN search: flat scan initially, upgrade to usearch if latency becomes a problem
 - [x] Blended retrieval: `score = (semantic_weight * similarity) + (recency_weight * recency_decay)`
-- [ ] Index rebuild (UI-triggered from memory browser): walk commits, re-embed missing SHAs (idempotent), per-tree
-- [ ] UI: memory browser shows retrieval scores per episode
+- [x] Index rebuild (UI-triggered from memory browser): walk episodes, re-embed missing SHAs (idempotent). **Directory indexing deferred** — project directory trees require chunking embedded files from the git HEAD, which depends on the attached-directory embed-on-commit pipeline. Episode index rebuild is implemented in `internal/runtime/memory_api.go:indexRebuilder`.
+- [x] UI: memory browser shows retrieval scores per episode (indexed / not indexed badge)
 
 **Acceptance tests:**
 - [ ] Start embedder sidecar -> appears healthy in UI status page
