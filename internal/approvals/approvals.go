@@ -5,6 +5,7 @@ package approvals
 
 import (
 	"strings"
+	"sync"
 )
 
 // Decision is the outcome of a permission check for a single tool call.
@@ -63,25 +64,50 @@ type Layer struct {
 // layer takes precedence over Ask in earlier layers; the tool call
 // is blocked immediately.
 type Evaluator struct {
-	layers []Layer
+	mu      sync.Mutex
+	layers  []Layer
+	session *Layer // mutable session layer, appended to on "always"
 }
 
 // NewEvaluator creates an Evaluator with the given layers. Layers are
 // evaluated in order: agent defaults → user config → session approvals,
 // with last-match-wins semantics.
+//
+// Use AddSessionRule to append runtime decisions during a session
+// (e.g. when the user clicks "Always Allow").
 func NewEvaluator(layers ...Layer) *Evaluator {
-	return &Evaluator{layers: layers}
+	session := &Layer{Name: "session"}
+	return &Evaluator{
+		layers:  layers,
+		session: session,
+	}
+}
+
+// AddSessionRule appends a runtime rule to the session layer. Session
+// rules are evaluated after all configured layers and take precedence.
+// Call this when the user chooses "always allow" or "always reject".
+func (e *Evaluator) AddSessionRule(r Rule) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.session.Rules = append(e.session.Rules, r)
 }
 
 // Evaluate checks whether toolID with commandArg (for shell_exec) is
 // permitted. Returns the decision and the matching Rule source for
 // audit trails.
 func (e *Evaluator) Evaluate(toolID, commandArg string) (Decision, string) {
+	e.mu.Lock()
+	effectiveLayers := append([]Layer{}, e.layers...)
+	if len(e.session.Rules) > 0 {
+		effectiveLayers = append(effectiveLayers, *e.session)
+	}
+	e.mu.Unlock()
+
 	// Evaluate layers in order (agent defaults → user config → session).
 	// Last layer with a matching rule wins.
 	best := Decision(Allowed)
 	source := "default"
-	for _, layer := range e.layers {
+	for _, layer := range effectiveLayers {
 		for _, rule := range layer.Rules {
 			if !matchRule(rule, toolID, commandArg) {
 				continue
