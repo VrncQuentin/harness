@@ -15,7 +15,6 @@ import (
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/project"
-	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/queue"
 	"github.com/vrnc/harness/internal/reqid"
 	"github.com/vrnc/harness/internal/session"
@@ -222,7 +221,6 @@ func (ad *uiAgentRegistryAdapter) Delete(name string) error {
 var errNoActiveAgent = errors.New("api: no agent specified and no active agent configured (set one in /agents)")
 
 type apiAssemblerAdapter struct {
-	a  *prompt.DiskAssembler
 	rt *Runtime
 }
 
@@ -233,7 +231,11 @@ func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, c
 	if agentName == "" {
 		return nil, errNoActiveAgent
 	}
-	msgs, _, err := ad.a.Assemble(ctx, agentName, conversation)
+	asm := ad.rt.getAssembler()
+	if asm == nil {
+		return nil, errors.New("api: prompt assembler unavailable")
+	}
+	msgs, _, err := asm.Assemble(ctx, agentName, conversation)
 	return msgs, err
 }
 

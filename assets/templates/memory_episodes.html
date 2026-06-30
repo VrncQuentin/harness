@@ -9,6 +9,14 @@
       <span class="logs-meta mono">{{len .Episodes}} episode{{if ne (len .Episodes) 1}}s{{end}}</span>
     </header>
     <p class="card-meta"><a href="/memory">&larr; Back to memory</a></p>
+    <form method="get" action="/memory/episodes" class="inline-form">
+      <input type="hidden" name="agent" value="{{.Agent}}">
+      <label>
+        Retrieval query
+        <input type="text" name="q" value="{{.Query}}" placeholder="score episodes for a query">
+      </label>
+      <button type="submit" class="btn btn-sm btn-ghost">Score</button>
+    </form>
 
     {{if .Episodes}}
     <ul class="tree">
@@ -16,10 +24,11 @@
       <li class="tree-row">
         <span class="tree-label">
           <span class="tree-kind">file</span>
-          <span class="tree-name"><a href="/memory/episodes/view?path={{.Path}}">{{.Name}}</a></span>
+          <span class="tree-name"><a href="/memory/episodes/view?path={{.Path}}{{if $.Query}}&q={{$.Query}}{{end}}">{{.Name}}</a></span>
         </span>
         <span class="tree-meta">
-          {{if ge .Score 0.0}}<span class="badge badge-ok">indexed</span>{{end}}
+          {{if .HasScore}}<span class="tree-tokens mono">score {{printf "%.3f" .Score}}</span>{{end}}
+          {{if .Indexed}}<span class="badge badge-ok">indexed</span>{{end}}
           <span class="tree-tokens mono">~{{.Tokens}} tok</span>
         </span>
       </li>
