@@ -84,17 +84,36 @@ func TestRegistry_ListAndGet(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltins(r)
 	all := r.List()
-	if len(all) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(all))
+	if len(all) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(all))
 	}
-	for _, id := range []string{"file_read", "file_list"} {
+	for _, id := range []string{"file_read", "file_list", "file_write", "shell_exec"} {
 		if r.Get(id) == nil {
 			t.Errorf("%s not found", id)
 		}
 	}
+}
+
+func TestDestructiveToolsRegisteredButDisabledByDefault(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltins(r)
+
+	// Destructive tools exist in the registry.
 	for _, id := range []string{"file_write", "shell_exec"} {
-		if r.Get(id) != nil {
-			t.Errorf("%s should not be registered before M7 approvals", id)
+		if r.Get(id) == nil {
+			t.Errorf("%s should be registered (M7 approval layer is active)", id)
+		}
+	}
+	// Schemas includes destructive tools.
+	schemas := r.Schemas()
+	if len(schemas) != 4 {
+		t.Fatalf("expected 4 schemas, got %d", len(schemas))
+	}
+	// Tool IDs are in insertion order: file_read, file_list, file_write, shell_exec.
+	expectedIDs := []string{"file_read", "file_list", "file_write", "shell_exec"}
+	for i, id := range expectedIDs {
+		if schemas[i]["function"].(map[string]any)["name"] != id {
+			t.Errorf("schema %d: expected %s, got %v", i, id, schemas[i]["function"].(map[string]any)["name"])
 		}
 	}
 }
