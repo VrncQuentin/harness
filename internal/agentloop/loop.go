@@ -1,6 +1,12 @@
 // Package agentloop provides the M4 native loop engine: send conversation
 // to the model, parse tool calls, dispatch to the tool registry, inject
 // results, and repeat until stop/limit/cancel.
+//
+// M7 adds an optional approval layer: when an approvals.Evaluator is
+// configured, destructive tool calls are checked before dispatch. Allowed
+// calls proceed immediately; Denied calls inject a tool-error; Ask calls
+// pause the loop, emit an approval event, and wait for the caller to
+// apply a decision via ApplyApproval.
 package agentloop
 
 import (
@@ -11,8 +17,10 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/tools"
@@ -29,20 +37,29 @@ type Event struct {
 	ToolResult string `json:"tool_result,omitempty"`
 	ToolError  string `json:"tool_error,omitempty"`
 
+	// ApprovalID links an approval-needed event to its response.
+	ApprovalID string `json:"approval_id,omitempty"`
+
 	// Terminate is the reason the loop stopped, set on the final event.
 	Terminate string `json:"terminate,omitempty"`
 }
 
 const (
-	EvtDone       = "done"
-	EvtError      = "error"
-	EvtText       = "text"
-	EvtToolCall   = "tool_call"
-	EvtToolResult = "tool_result"
-	EvtLimit      = "limit"
-	EvtDoom       = "doom_loop"
-	EvtCancel     = "cancelled"
+	EvtDone           = "done"
+	EvtError          = "error"
+	EvtText           = "text"
+	EvtToolCall       = "tool_call"
+	EvtToolResult     = "tool_result"
+	EvtLimit          = "limit"
+	EvtDoom           = "doom_loop"
+	EvtCancel         = "cancelled"
+	EvtApprovalNeeded = "approval_needed"
+	EvtApproval       = "approval"
 )
+
+// ErrApprovalTimeout is returned when the caller does not apply an
+// approval decision within the allowed window.
+var ErrApprovalTimeout = errors.New("agentloop: approval timeout")
 
 // Engine orchestrates the agent loop.
 type Engine struct {
@@ -50,6 +67,17 @@ type Engine struct {
 	registry *tools.Registry
 	loopCfg  config.LoopConfig
 	toolCtx  tools.Context
+
+	// evl is the optional M7 permission evaluator. When nil, no
+	// approval checks are performed (all tools dispatch immediately).
+	evl *approvals.Evaluator
+
+	// pending guards the approval routing map and counter.
+	pendingMu sync.Mutex
+	// pending maps approval IDs to response channels.
+	pending map[string]chan approvals.Decision
+	// approvalSeq is a monotonic counter for generating unique IDs.
+	approvalSeq int
 }
 
 // NewEngine creates a loop engine with the given dependencies.
@@ -64,6 +92,31 @@ func NewEngine(
 		registry: registry,
 		loopCfg:  loopCfg,
 		toolCtx:  toolCtx,
+	}
+}
+
+// WithApprovals installs an M7 permission evaluator. When nil (the
+// default), no approval checks are performed. Call before Run().
+func (e *Engine) WithApprovals(evl *approvals.Evaluator) *Engine {
+	e.evl = evl
+	return e
+}
+
+// ApplyApproval delivers the user's decision for the approval event
+// identified by approvalID. Returns an error when the id is unknown
+// (already answered, timed out, or never emitted).
+func (e *Engine) ApplyApproval(approvalID string, d approvals.Decision) error {
+	e.pendingMu.Lock()
+	ch, ok := e.pending[approvalID]
+	e.pendingMu.Unlock()
+	if !ok {
+		return fmt.Errorf("agentloop: unknown approval id %q", approvalID)
+	}
+	select {
+	case ch <- d:
+		return nil
+	default:
+		return fmt.Errorf("agentloop: approval id %q already resolved", approvalID)
 	}
 }
 
@@ -216,13 +269,30 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 			if tool == nil || !e.isToolEnabled(tc.Function.Name) {
 				res = tools.Result{Error: fmt.Sprintf("tool %q not available", tc.Function.Name)}
 			} else {
-				start := time.Now()
-				res = tool.Execute(ctx, e.toolCtx, args)
-				slog.Info("tool executed",
-					"tool", tc.Function.Name,
-					"duration_ms", time.Since(start).Milliseconds(),
-					"has_error", res.Error != "",
-				)
+				// M7: check approvals before dispatch.
+				decision, err := e.checkApproval(ctx, evch, turns, tc.Function.Name, args)
+				if err != nil {
+					e.emit(evch, Event{Turn: turns, Type: EvtError, Content: err.Error(), Terminate: EvtError})
+					return err
+				}
+				switch decision {
+				case approvals.Denied:
+					res = tools.Result{Error: fmt.Sprintf("tool %q denied by permission policy", tc.Function.Name)}
+					e.emit(evch, Event{
+						Turn:      turns,
+						Type:      EvtApproval,
+						ToolID:    tc.Function.Name,
+						ToolError: "denied",
+					})
+				case approvals.Allowed, approvals.Ask:
+					start := time.Now()
+					res = tool.Execute(ctx, e.toolCtx, args)
+					slog.Info("tool executed",
+						"tool", tc.Function.Name,
+						"duration_ms", time.Since(start).Milliseconds(),
+						"has_error", res.Error != "",
+					)
+				}
 			}
 
 			e.emit(evch, Event{
@@ -246,6 +316,88 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 			})
 		}
 	}
+}
+
+// checkApproval evaluates the permission policy and, when the decision
+// is Ask, emits an approval-needed event and waits for the caller to
+// apply a decision via ApplyApproval.
+func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int, toolID string, args map[string]any) (approvals.Decision, error) {
+	if e.evl == nil {
+		return approvals.Allowed, nil
+	}
+
+	cmdArg := ""
+	if toolID == "shell_exec" {
+		if s, ok := args["command"].(string); ok {
+			cmdArg = s
+		}
+	}
+
+	dec, src := e.evl.Evaluate(toolID, cmdArg)
+	if dec != approvals.Ask {
+		slog.Debug("approval check", "tool", toolID, "decision", dec, "source", src)
+		return dec, nil
+	}
+
+	// Generate a unique approval ID and set up the response channel.
+	e.pendingMu.Lock()
+	if e.pending == nil {
+		e.pending = make(map[string]chan approvals.Decision)
+	}
+	e.approvalSeq++
+	approvalID := fmt.Sprintf("%s-%d-%d", toolID, turn, e.approvalSeq)
+	ch := make(chan approvals.Decision, 1)
+	e.pending[approvalID] = ch
+	e.pendingMu.Unlock()
+
+	defer func() {
+		e.pendingMu.Lock()
+		delete(e.pending, approvalID)
+		e.pendingMu.Unlock()
+	}()
+
+	// Emit approval-needed event.
+	e.emit(evch, Event{
+		Turn:       turn,
+		Type:       EvtApprovalNeeded,
+		ToolID:     toolID,
+		ToolArgs:   jsonString(args),
+		ApprovalID: approvalID,
+		Content:    fmt.Sprintf("%s requires approval (%s)", toolID, src),
+	})
+
+	// Wait for user decision with timeout.
+	select {
+	case <-ctx.Done():
+		return approvals.Denied, ErrCancelled
+	case d := <-ch:
+		slog.Debug("approval resolved", "tool", toolID, "id", approvalID, "decision", d)
+		if d == approvals.Denied {
+			e.emit(evch, Event{
+				Turn:       turn,
+				Type:       EvtApproval,
+				ToolID:     toolID,
+				ToolError:  "denied",
+				ApprovalID: approvalID,
+			})
+		} else {
+			e.emit(evch, Event{
+				Turn:       turn,
+				Type:       EvtApproval,
+				ToolID:     toolID,
+				ApprovalID: approvalID,
+			})
+		}
+		return d, nil
+	}
+}
+
+func jsonString(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 func (e *Engine) emit(evch chan<- Event, ev Event) {
