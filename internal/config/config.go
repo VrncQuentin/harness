@@ -185,6 +185,12 @@ type LoopConfig struct {
 	FileReadEnabled bool
 	// FileListEnabled toggles the file_list tool.
 	FileListEnabled bool
+	// FileWriteEnabled toggles the file_write tool. Off by default; requires
+	// the M7 approval layer before it can be enabled safely.
+	FileWriteEnabled bool
+	// ShellExecEnabled toggles the shell_exec tool. Off by default; requires
+	// the M7 approval layer before it can be enabled safely.
+	ShellExecEnabled bool
 }
 
 // Store persists and retrieves Config. The concrete implementation lives in
@@ -240,10 +246,12 @@ func Defaults() Config {
 			ProcMaxLines:   64,
 		},
 		Loop: LoopConfig{
-			MaxTurns:        10,
-			DoomThreshold:   3,
-			FileReadEnabled: true,
-			FileListEnabled: true,
+			MaxTurns:         10,
+			DoomThreshold:    3,
+			FileReadEnabled:  true,
+			FileListEnabled:  true,
+			FileWriteEnabled: false,
+			ShellExecEnabled: false,
 		},
 		Project: ProjectConfig{
 			ActiveProjectSlug: "global",
