@@ -727,6 +727,8 @@ func (ad *taskRunnerAdapter) ApplyApproval(sessionID, approvalID, decision strin
 		d = approvals.Allowed
 	case "reject":
 		d = approvals.Denied
+	case "always":
+		d = approvals.Allowed // allowed + session rule is added in engine
 	default:
 		return fmt.Errorf("task: unknown decision %q", decision)
 	}

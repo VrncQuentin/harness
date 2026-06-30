@@ -69,6 +69,14 @@
       <button class="btn btn-primary btn-sm"
         hx-post="/task/approval"
         hx-include="#task-session-input"
+        hx-vals='{"approval_id":"{{.ApprovalID}}","decision":"always"}'
+        hx-target="#approval-card-{{.ApprovalID}}"
+        hx-swap="outerHTML">
+        Always Allow
+      </button>
+      <button class="btn btn-primary btn-sm"
+        hx-post="/task/approval"
+        hx-include="#task-session-input"
         hx-vals='{"approval_id":"{{.ApprovalID}}","decision":"allow"}'
         hx-target="#approval-card-{{.ApprovalID}}"
         hx-swap="outerHTML">
