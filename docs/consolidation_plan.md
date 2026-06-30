@@ -123,13 +123,13 @@ against the code (file:line evidence inline).
 
 ### Not a bug (recorded to avoid re-litigating)
 
-12. **Promotion path.** `handlePromoteFact` writes `global/facts.md`
-    ([internal/ui/promotion.go:50](../internal/ui/promotion.go)) and the assembler
-    *reads* the same path (`factsPath = "global/facts.md"`,
-    [internal/prompt/prompt.go:44](../internal/prompt/prompt.go)). Promoted facts
-    **do** surface — it is a doc/layout naming drift (architecture.md says
-    `projects/global/facts.md`, which is the future layout-v2 path), not a runtime
-    break.
+12. **Promotion path (resolved).** `handlePromoteFact` writes `global/facts.md`
+     ([internal/ui/promotion.go:50](../internal/ui/promotion.go)) and the assembler
+     *reads* the same path (`factsPath = "global/facts.md"`,
+     [internal/prompt/prompt.go:44](../internal/prompt/prompt.go)). Promoted facts
+     **do** surface — the architecture doc previously showed the future layout-v2
+     path `projects/global/facts.md`. Docs updated in Phase 4 to reflect the
+     current pre-M9 layout and note the planned v2 migration.
 
 ### Test coverage gaps
 

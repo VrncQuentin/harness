@@ -140,16 +140,21 @@ Responsibilities:
 Builds the final context sent to the model. Layers assembled in order:
 
 ```
-1. projects/global/rules.md           — always injected, never trimmed
-2. projects/global/user.md            — always injected, never trimmed
+1. global/rules.md                    — always injected, never trimmed
+2. global/user.md                     — always injected, never trimmed
 3. projects/<active>/rules.md         — never trimmed, skipped when active is global
 4. resolved agent persona.md          — active project overrides global per file
 5. resolved agent rules.md            — active project overrides global per file
-6. projects/global/facts.md           — always injected (keep lean by design)
+6. global/facts.md                    — always injected (keep lean by design)
 7. resolved agent notes.md            — active project overrides global per file
 8. retrieved episodes                 — active-project top-K by blended score, trimmed oldest-first
 9. conversation turns                 — current session history
 ```
+
+> **Current vs. layout-v2:** The paths above reflect the pre-M9 single-repo
+> layout. After layout-v2, global paths move under `projects/global/`
+> (e.g. `projects/global/rules.md`). The code and this doc will be updated
+> together when M9 lands.
 
 Responsibilities:
 - **Total memory cap:** sum of layers 6–8 must not exceed `memory_token_budget` (default 6144). Episodes are trimmed oldest-first to fit. Layers 1–5 are never trimmed — keep them small by convention.
@@ -172,9 +177,10 @@ Mediates all reads and writes to git-backed project memory repos.
 3. Commit via Git Backend with structured message in that repo
 
 **Promotion API:**
-- `PromoteToGlobalFact(text string)` → append to `projects/global/facts.md` + commit in the global project repo
-- `AppendAgentNote(agent, text string)` → append to resolved `agents/<n>/notes.md` + commit in the owning project repo
+- `PromoteToGlobalFact(text string)` → append to `global/facts.md` + commit
+- `AppendAgentNote(agent, text string)` → append to resolved `agents/<n>/notes.md` + commit
 - Both exposed in the UI memory page
+- After layout-v2: `global/facts.md` will move to `projects/global/facts.md`
 
 **Cross-agent reads:** explicit only. An agent may request episodes from another agent's directory. Not automatic.
 
@@ -283,8 +289,14 @@ Retention: raw rows kept for 30 days, downsampled hourly aggregates kept indefin
 
 ## Harness Home And Memory Repo Layout
 
+> **Planned layout-v2 (not yet current).** The tree below describes the target
+> directory layout after M9. The current pre-M9 single-repo layout is simpler:
+> `global/rules.md`, `global/user.md`, `global/facts.md`, `agents/<n>/`, and
+> `projects/global/` all live under a single user-configured `memory.repo_path`.
+> See the Prompt Assembler section for the current runtime paths.
+
 ```
-~/.harness/
+~/.harness/                    ← planned harness home (M9)
   harness.db                   ← config, metrics, and runtime control state
   projects/
     global/                    ← git repo: global project and fallback agent library
@@ -312,9 +324,9 @@ Retention: raw rows kept for 30 days, downsampled hourly aggregates kept indefin
 
 Each directory under `~/.harness/projects/` is its own git repo. `harness.db`, logs, and cache files are machine-local and are never committed.
 
-M3 stages the single-repo `projects/global/` paths immediately; M3b introduces the `projects` table, the `active_project_slug` config, and user-created project rows on top of that layout. M9 layout-v2 splits those project subdirectories into separate project memory repos under `~/.harness/projects/`, with `global` as a first-class project repo. M10 adds `artifacts/` as project-owned run evidence so prompts and outputs travel with the active project memory repo while operational run state remains in SQLite. Pipeline source specs do not live in memory repos by default; they live in the attached project git repos they operate on, and runs record the source repo commit plus spec hash.
+M3 stages the single-repo `projects/global/` paths within the configured `memory.repo_path`; M3b introduces the `projects` table, the `active_project_slug` config, and user-created project rows on top of that layout. M9 layout-v2 splits those project subdirectories into separate project memory repos under `~/.harness/projects/`, with `global` as a first-class project repo. M10 adds `artifacts/` as project-owned run evidence so prompts and outputs travel with the active project memory repo while operational run state remains in SQLite. Pipeline source specs do not live in memory repos by default; they live in the attached project git repos they operate on, and runs record the source repo commit plus spec hash.
 
-The shared `harness.db` SQLite file (config + metrics + runtime control state) lives in `~/.harness/`, not in any memory repo — it is machine-local operational data, not user data.
+The shared `harness.db` SQLite file (config + metrics + runtime control state) lives next to the binary pre-M9, and under `~/.harness/` after M9 — it is machine-local operational data, not user data.
 
 ---
 
