@@ -181,6 +181,7 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	form.Set("prompt_memory_budget", "2048")
 	form.Set("prompt_conversation_reserve", "4096")
 	form.Set("prompt_recency_n", "7")
+	form.Set("prompt_promotion_dedup_threshold", "0.83")
 	form.Set("prompt_summarizer_prompt", "summarize the user's intent in one paragraph.")
 	form.Set("queue_max_depth", "8")
 	form.Set("loop_max_turns", "12")
@@ -221,6 +222,9 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	}
 	if loaded.Prompt.SummarizerPrompt != "summarize the user's intent in one paragraph." {
 		t.Errorf("Prompt.SummarizerPrompt not persisted: got %q", loaded.Prompt.SummarizerPrompt)
+	}
+	if loaded.Prompt.PromotionDedupThreshold != 0.83 {
+		t.Errorf("Prompt.PromotionDedupThreshold not persisted: got %v, want 0.83", loaded.Prompt.PromotionDedupThreshold)
 	}
 	if loaded.Loop.MaxTurns != 12 {
 		t.Errorf("Loop.MaxTurns not persisted: got %d, want 12", loaded.Loop.MaxTurns)
@@ -435,6 +439,21 @@ func TestHandleConfig_GETRendersLogFields(t *testing.T) {
 
 	body := rec.Body.String()
 	for _, want := range []string{`name="log_ring_max_entries"`, `name="log_proc_max_lines"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected config form to include %q", want)
+		}
+	}
+}
+
+func TestHandleConfig_GETRendersPromotionDedupThreshold(t *testing.T) {
+	s, _ := newServerWithStore(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{`name="prompt_promotion_dedup_threshold"`, `Promotion dedup threshold`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected config form to include %q", want)
 		}

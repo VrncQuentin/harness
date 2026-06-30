@@ -38,6 +38,21 @@ type stubRetrievalScorer struct {
 	scores map[string]RetrievalScore
 }
 
+type stubCommitter struct {
+	err      error
+	messages []string
+	files    [][]string
+}
+
+func (s *stubCommitter) Commit(msg string, files []string) (string, error) {
+	s.messages = append(s.messages, msg)
+	s.files = append(s.files, append([]string(nil), files...))
+	if s.err != nil {
+		return "", s.err
+	}
+	return "abc123", nil
+}
+
 func (s *stubRetrievalScorer) ScoreEpisodes(_ context.Context, slug, agent, query string, paths []string) (map[string]RetrievalScore, error) {
 	s.slug = slug
 	s.agent = agent
@@ -244,6 +259,51 @@ func TestHandleMemory_RejectsPOST(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
+func TestHandlePromoteFact_CommitErrorReturns500(t *testing.T) {
+	s := NewServer(3000)
+	s.SetMemoryStore(newStubMemoryStore(map[string]string{
+		"global/facts.md": "existing fact\n",
+	}))
+	s.SetCommitter(&stubCommitter{err: errors.New("git offline")})
+
+	form := url.Values{}
+	form.Set("text", "new fact")
+	req := httptest.NewRequest(http.MethodPost, "/memory/promote", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handlePromoteFact(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "commit fact") {
+		t.Errorf("expected commit error in body, got %q", rec.Body.String())
+	}
+}
+
+func TestHandleAppendNote_CommitErrorReturns500(t *testing.T) {
+	s := NewServer(3000)
+	s.SetMemoryStore(newStubMemoryStore(map[string]string{
+		"agents/coder/notes.md": "existing note\n",
+	}))
+	s.SetCommitter(&stubCommitter{err: errors.New("git offline")})
+
+	form := url.Values{}
+	form.Set("agent", "coder")
+	form.Set("text", "new note")
+	req := httptest.NewRequest(http.MethodPost, "/memory/note", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleAppendNote(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "commit note") {
+		t.Errorf("expected commit error in body, got %q", rec.Body.String())
 	}
 }
 
