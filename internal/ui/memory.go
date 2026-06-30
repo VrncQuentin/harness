@@ -175,9 +175,10 @@ type agentEpisodeCount struct {
 // memoryEpisodesView is the template context for /memory/episodes.
 type memoryEpisodesView struct {
 	basePage
-	Agent    string
-	Query    string
-	Episodes []episodeRow
+	Agent      string
+	AgentNames []string
+	Query      string
+	Episodes   []episodeRow
 }
 
 // episodeRow is one row in the per-agent episode list. Path is the full
@@ -328,6 +329,13 @@ func (s *Server) handleMemoryEpisodes(w http.ResponseWriter, r *http.Request) {
 		Agent:    agent,
 		Query:    query,
 		Episodes: rows,
+	}
+	if reg := s.agentRegistry(); reg != nil {
+		if list, err := reg.List(); err == nil {
+			for _, a := range list {
+				data.AgentNames = append(data.AgentNames, a.Name)
+			}
+		}
 	}
 	s.renderMemoryEpisodes(w, data)
 }

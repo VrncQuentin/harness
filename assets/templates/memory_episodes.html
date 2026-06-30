@@ -5,7 +5,18 @@
 <section class="grid">
   <div class="card">
     <header class="card-head">
+      {{if .AgentNames}}
+      <form method="get" action="/memory/episodes" style="display:inline">
+        <select name="agent" class="cfg-input" onchange="this.form.submit()" style="max-width:12em">
+          {{range .AgentNames}}
+          <option value="{{.}}"{{if eq $.Agent .}} selected{{end}}>{{.}}</option>
+          {{end}}
+        </select>
+        {{if .Query}}<input type="hidden" name="q" value="{{.Query}}">{{end}}
+      </form>
+      {{else}}
       <h3>{{.Agent}}</h3>
+      {{end}}
       <span class="logs-meta mono">{{len .Episodes}} episode{{if ne (len .Episodes) 1}}s{{end}}</span>
     </header>
     <p class="card-meta"><a href="/memory">&larr; Back to memory</a></p>

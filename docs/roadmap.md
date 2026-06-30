@@ -177,16 +177,21 @@ implemented when directory-level semantic search becomes a user-facing feature.
 
 - [x] `PromoteToGlobalFact(text)`: UI action -> append to `global/facts.md` + commit
 - [x] `AppendAgentNote(agent, text)`: UI action -> append to `agents/<n>/notes.md` + commit
-- [ ] Cross-agent read: explicit API to pull episodes from another agent's directory
-- [ ] Dedup pass on commit: detect near-duplicate facts before appending (embedding similarity threshold)
-- [ ] UI: promotion controls in memory browser, cross-agent episode browser
+- [x] Cross-agent episode browser: view episodes for any agent from the memory page
+- [x] Dedup pass on commit: detect near-duplicate facts before appending (embedding similarity threshold)
+- [x] UI: promotion controls (promote fact + append note forms) in memory browser, cross-agent episode picker
+
+**Descoped from M6:** Cross-agent episode injection into the prompt assembler. The
+assembler currently retrieves episodes only for the active agent. Cross-agent
+injection (e.g. loading `reviewer` episodes during a `coder` task) will be
+implemented when the permission + retrieval architecture matures (M7+).
 
 **Acceptance tests:**
-- [ ] Promote a fact via UI -> text appears in `global/facts.md`, git commit present
-- [ ] Promoted fact appears in the assembled prompt of the next session (verify via logs page)
-- [ ] Promote a near-duplicate of an existing fact -> dedup pass blocks it, user sees a warning
-- [ ] Append a note to `agents/coder/notes.md` via UI -> appears in next coder session prompt
-- [ ] Request cross-agent episodes from `reviewer` while in a `coder` session -> episodes injected correctly
+- [x] Promote a fact via UI -> text appears in `global/facts.md`, git commit present
+- [x] Promoted fact appears in the assembled prompt of the next session (verify via logs page)
+- [x] Promote a near-duplicate of an existing fact -> dedup pass blocks it, user sees a warning
+- [x] Append a note to `agents/coder/notes.md` via UI -> appears in next coder session prompt
+- [ ] Request cross-agent episodes from `reviewer` while in a `coder` session -> episodes injected correctly (descoped to M7+)
 - [ ] `global/facts.md` grows beyond a reasonable size -> assembler still respects `memory_token_budget`, oldest facts are not silently dropped (warn instead)
 
 ---
