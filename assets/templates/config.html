@@ -198,6 +198,11 @@
         <input type="number" id="prompt_recency_n" name="prompt_recency_n" value="{{.Config.Prompt.RecencyN}}" min="0">
         <p class="fg-hint">How many recent episodes to inject. 0 = unlimited (memory budget still applies).</p>
       </div>
+      <div class="fg">
+        <label for="prompt_promotion_dedup_threshold">Promotion dedup threshold</label>
+        <input type="number" id="prompt_promotion_dedup_threshold" name="prompt_promotion_dedup_threshold" value="{{.Config.Prompt.PromotionDedupThreshold}}" min="0" max="1" step="0.01">
+        <p class="fg-hint">Cosine similarity threshold for blocking near-duplicate promoted facts. 0 disables dedup.</p>
+      </div>
     </div>
     <div class="fg">
       <label for="prompt_summarizer_prompt">Summarizer prompt</label>

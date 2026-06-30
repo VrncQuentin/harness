@@ -113,7 +113,10 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("write facts: %v", err), http.StatusInternalServerError)
 		return
 	}
-	c.Commit("[type:fact] promote fact", []string{"global/facts.md"}) //nolint:errcheck
+	if _, err := c.Commit("[type:fact] promote fact", []string{"global/facts.md"}); err != nil {
+		http.Error(w, fmt.Sprintf("commit fact: %v", err), http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/memory?promoted=1", http.StatusSeeOther)
 }
 
@@ -157,6 +160,9 @@ func (s *Server) handleAppendNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("write note: %v", err), http.StatusInternalServerError)
 		return
 	}
-	c.Commit(fmt.Sprintf("[agent:%s] [type:note] agent note", agent), []string{notePath}) //nolint:errcheck
+	if _, err := c.Commit(fmt.Sprintf("[agent:%s] [type:note] agent note", agent), []string{notePath}); err != nil {
+		http.Error(w, fmt.Sprintf("commit note: %v", err), http.StatusInternalServerError)
+		return
+	}
 	http.Redirect(w, r, "/memory?noted=1&agent="+url.QueryEscape(agent), http.StatusSeeOther)
 }
