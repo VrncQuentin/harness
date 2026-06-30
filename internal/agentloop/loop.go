@@ -76,6 +76,9 @@ type Engine struct {
 	pendingMu sync.Mutex
 	// pending maps approval IDs to response channels.
 	pending map[string]chan approvals.Decision
+	// pendingRules maps approval IDs to the session rule that should
+	// be added when the user chooses "always".
+	pendingRules map[string]approvals.Rule
 	// approvalSeq is a monotonic counter for generating unique IDs.
 	approvalSeq int
 }
@@ -108,9 +111,15 @@ func (e *Engine) WithApprovals(evl *approvals.Evaluator) *Engine {
 func (e *Engine) ApplyApproval(approvalID string, d approvals.Decision) error {
 	e.pendingMu.Lock()
 	ch, ok := e.pending[approvalID]
+	rule, hasRule := e.pendingRules[approvalID]
 	e.pendingMu.Unlock()
 	if !ok {
 		return fmt.Errorf("agentloop: unknown approval id %q", approvalID)
+	}
+	// When the user chose "always", add a session rule so future
+	// matching tool calls skip the approval prompt.
+	if hasRule && e.evl != nil {
+		e.evl.AddSessionRule(rule)
 	}
 	select {
 	case ch <- d:
@@ -344,15 +353,36 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 	if e.pending == nil {
 		e.pending = make(map[string]chan approvals.Decision)
 	}
+	if e.pendingRules == nil {
+		e.pendingRules = make(map[string]approvals.Rule)
+	}
 	e.approvalSeq++
 	approvalID := fmt.Sprintf("%s-%d-%d", toolID, turn, e.approvalSeq)
 	ch := make(chan approvals.Decision, 1)
 	e.pending[approvalID] = ch
+
+	// Store a pending session rule for the "always" decision.
+	// For shell_exec, the command prefix up to the first space is
+	// used as the pattern (e.g. "git" matches "git status").
+	cmdPattern := ""
+	if toolID == "shell_exec" && cmdArg != "" {
+		parts := strings.Fields(cmdArg)
+		if len(parts) > 0 {
+			cmdPattern = parts[0]
+		}
+	}
+	e.pendingRules[approvalID] = approvals.Rule{
+		ToolID:         toolID,
+		CommandPattern: cmdPattern,
+		Decision:       approvals.Allowed,
+		Source:         "session: always allowed",
+	}
 	e.pendingMu.Unlock()
 
 	defer func() {
 		e.pendingMu.Lock()
 		delete(e.pending, approvalID)
+		delete(e.pendingRules, approvalID)
 		e.pendingMu.Unlock()
 	}()
 

@@ -216,8 +216,8 @@ func (s *Server) handleTaskApproval(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session_id, approval_id, and decision are required", http.StatusBadRequest)
 		return
 	}
-	if decision != "allow" && decision != "reject" {
-		http.Error(w, "decision must be allow or reject", http.StatusBadRequest)
+	if decision != "allow" && decision != "reject" && decision != "always" {
+		http.Error(w, "decision must be allow, reject, or always", http.StatusBadRequest)
 		return
 	}
 	if err := runner.ApplyApproval(sessionID, approvalID, decision); err != nil {
