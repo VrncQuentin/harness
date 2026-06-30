@@ -251,7 +251,21 @@
         </label>
       </div>
     </div>
-    <p class="fg-hint">M4 exposes read-only file tools only. Destructive tools remain unavailable until the M7 approval layer exists.</p>
+    <div class="fg-row">
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="loop_file_write_enabled" name="loop_file_write_enabled" {{if .Config.Loop.FileWriteEnabled}}checked{{end}}>
+          <span>Enable <code>file_write</code></span>
+        </label>
+      </div>
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="loop_shell_exec_enabled" name="loop_shell_exec_enabled" {{if .Config.Loop.ShellExecEnabled}}checked{{end}}>
+          <span>Enable <code>shell_exec</code></span>
+        </label>
+      </div>
+    </div>
+    <p class="fg-hint">M7 destructive tools (<code>file_write</code>, <code>shell_exec</code>) require the approval layer to be active before they can execute. They default to disabled.</p>
   </fieldset>
 
   <fieldset class="cfg-section">

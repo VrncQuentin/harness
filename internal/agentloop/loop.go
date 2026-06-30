@@ -261,6 +261,10 @@ func (e *Engine) isToolEnabled(id string) bool {
 		return e.loopCfg.FileReadEnabled
 	case "file_list":
 		return e.loopCfg.FileListEnabled
+	case "file_write":
+		return e.loopCfg.FileWriteEnabled
+	case "shell_exec":
+		return e.loopCfg.ShellExecEnabled
 	default:
 		return true
 	}
