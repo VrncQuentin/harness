@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -12,6 +13,13 @@ import (
 // Wired by the runtime from the go-git Repo.
 type Committer interface {
 	Commit(msg string, files []string) (string, error)
+}
+
+// DedupChecker checks whether promoting a fact would create a near-duplicate
+// of an existing fact. Threshold is the cosine similarity above which the
+// new fact is considered a duplicate and blocked.
+type DedupChecker interface {
+	CheckSimilar(ctx context.Context, text string, threshold float64) (blocked bool, similarFact string, score float64, err error)
 }
 
 func (s *Server) SetCommitter(c Committer) {
@@ -26,7 +34,34 @@ func (s *Server) getCommitter() Committer {
 	return s.committerData
 }
 
+func (s *Server) SetDedupChecker(dc DedupChecker) {
+	s.dedupMu.Lock()
+	s.dedupData = dc
+	s.dedupMu.Unlock()
+}
+
+func (s *Server) getDedupChecker() DedupChecker {
+	s.dedupMu.RLock()
+	defer s.dedupMu.RUnlock()
+	return s.dedupData
+}
+
+func (s *Server) SetPromotionDedupThreshold(t float64) {
+	s.promotionDedupThresholdMu.Lock()
+	s.promotionDedupThreshold = t
+	s.promotionDedupThresholdMu.Unlock()
+}
+
+func (s *Server) getPromotionDedupThreshold() float64 {
+	s.promotionDedupThresholdMu.RLock()
+	defer s.promotionDedupThresholdMu.RUnlock()
+	return s.promotionDedupThreshold
+}
+
 // handlePromoteFact appends text to global/facts.md and commits it.
+// When a DedupChecker and non-zero threshold are available, the handler
+// checks for near-duplicate facts before writing and redirects with a
+// dedup-blocked flash message if one is found.
 func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -47,6 +82,24 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "text is required", http.StatusBadRequest)
 		return
 	}
+
+	// Dedup check (optional — skipped when checker or threshold is absent).
+	if checker := s.getDedupChecker(); checker != nil {
+		threshold := s.getPromotionDedupThreshold()
+		if threshold > 0 {
+			blocked, similar, score, err := checker.CheckSimilar(r.Context(), text, threshold)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("dedup check failed: %v", err), http.StatusInternalServerError)
+				return
+			}
+			if blocked {
+				u := fmt.Sprintf("/memory?dedup=1&similar=%s&score=%.2f", url.QueryEscape(similar), score)
+				http.Redirect(w, r, u, http.StatusSeeOther)
+				return
+			}
+		}
+	}
+
 	existing, _ := store.Read("global/facts.md")
 	var builder strings.Builder
 	builder.Write(existing)

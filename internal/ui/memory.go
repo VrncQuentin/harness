@@ -156,6 +156,12 @@ type memoryView struct {
 	Promoted bool
 	// NotedAgent shows the agent name after successfully appending a note.
 	NotedAgent string
+	// DedupBlocked is true when a fact promotion was blocked by dedup.
+	DedupBlocked bool
+	// DedupSimilar is the closest existing fact text when dedup blocked.
+	DedupSimilar string
+	// DedupScore is the cosine similarity score when dedup blocked.
+	DedupScore float64
 }
 
 // agentEpisodeCount counts how many .md episodes live under an agent's
@@ -272,6 +278,11 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	data.NotedAgent = strings.TrimSpace(q.Get("agent"))
 	if q.Get("noted") != "1" {
 		data.NotedAgent = ""
+	}
+	data.DedupBlocked = q.Get("dedup") == "1"
+	data.DedupSimilar = strings.TrimSpace(q.Get("similar"))
+	if s := strings.TrimSpace(q.Get("score")); s != "" {
+		fmt.Sscanf(s, "%f", &data.DedupScore)
 	}
 	if reg := s.agentRegistry(); reg != nil {
 		if list, err := reg.List(); err == nil {

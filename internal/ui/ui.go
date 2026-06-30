@@ -145,6 +145,12 @@ type Server struct {
 	committerMu   sync.RWMutex
 	committerData Committer
 
+	dedupMu   sync.RWMutex
+	dedupData DedupChecker
+
+	promotionDedupThresholdMu sync.RWMutex
+	promotionDedupThreshold   float64
+
 	scorerMu   sync.RWMutex
 	scorerData RetrievalScorer
 

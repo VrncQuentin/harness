@@ -142,6 +142,10 @@ type PromptConfig struct {
 	// RecencyWeight controls the influence of recency in blended episode
 	// retrieval. 0 means pure semantic search.
 	RecencyWeight float64
+	// PromotionDedupThreshold is the cosine similarity threshold for
+	// blocking near-duplicate fact promotions. 0 disables dedup entirely;
+	// 0.95 is recommended for normal use.
+	PromotionDedupThreshold float64
 }
 
 // QueueConfig holds queue configuration.
@@ -216,13 +220,14 @@ func Defaults() Config {
 			Port:    8080,
 		},
 		Prompt: PromptConfig{
-			CtxSize:             32768,
-			MemoryTokenBudget:   6144,
-			ConversationReserve: 8192,
-			RecencyN:            5,
-			SummarizerPrompt:    defaultSummarizerPrompt,
-			SemanticWeight:      0.5,
-			RecencyWeight:       0.5,
+			CtxSize:                 32768,
+			MemoryTokenBudget:       6144,
+			ConversationReserve:     8192,
+			RecencyN:                5,
+			SummarizerPrompt:        defaultSummarizerPrompt,
+			SemanticWeight:          0.5,
+			RecencyWeight:           0.5,
+			PromotionDedupThreshold: 0.95,
 		},
 		Queue: QueueConfig{
 			MaxDepth: 8,

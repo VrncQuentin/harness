@@ -1,0 +1,1 @@
+-- no-op: dropping the column would be lossy; down migrations are never run in production

@@ -97,6 +97,12 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	if rt.gitRepo != nil {
 		uiServer.SetCommitter(rt.gitRepo)
 	}
+	// Wire dedup checker for M6 fact deduplication.
+	uiServer.SetDedupChecker(&dedupChecker{
+		mem: rt.memReader,
+		emb: embedClient,
+	})
+	uiServer.SetPromotionDedupThreshold(rt.cfg.Prompt.PromotionDedupThreshold)
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
 	uiServer.SetIndexRebuilder(&indexRebuilder{
@@ -619,4 +625,92 @@ func episodeID(epPath string) string {
 
 func retrievalDecay(distanceFromNewest int, n float64) float64 {
 	return math.Exp(-float64(distanceFromNewest) / n)
+}
+
+// dedupChecker implements ui.DedupChecker by embedding the candidate text and
+// existing facts, then comparing cosine similarity.
+type dedupChecker struct {
+	mem *memory.DirReader
+	emb embedder.Client
+}
+
+func (dc *dedupChecker) CheckSimilar(ctx context.Context, text string, threshold float64) (bool, string, float64, error) {
+	if dc.mem == nil || dc.emb == nil {
+		return false, "", 0, nil
+	}
+	existing, err := dc.mem.Read("global/facts.md")
+	if err != nil || len(existing) == 0 {
+		return false, "", 0, nil
+	}
+	// Split existing facts into individual lines — non-empty, trimmed.
+	facts := extractFactLines(string(existing))
+	if len(facts) == 0 {
+		return false, "", 0, nil
+	}
+
+	// Embed the candidate + all existing facts in one batch call.
+	chunks := make([]string, 0, len(facts)+1)
+	chunks = append(chunks, text)
+	chunks = append(chunks, facts...)
+
+	vectors, err := dc.emb.Embed(ctx, chunks)
+	if err != nil || len(vectors) == 0 || len(vectors[0]) == 0 {
+		return false, "", 0, err
+	}
+	if len(vectors) != len(chunks) {
+		return false, "", 0, fmt.Errorf("embedder returned %d vectors for %d chunks", len(vectors), len(chunks))
+	}
+
+	candidate := vectors[0]
+	bestScore := 0.0
+	bestFact := ""
+	for i, v := range vectors[1:] {
+		sim := cosineSimilarity(candidate, v)
+		if sim > bestScore {
+			bestScore = sim
+			bestFact = facts[i]
+			// Truncate for the flash message.
+			if len(bestFact) > 120 {
+				bestFact = bestFact[:120] + "..."
+			}
+		}
+	}
+	if bestScore >= threshold {
+		return true, bestFact, bestScore, nil
+	}
+	return false, "", bestScore, nil
+}
+
+// extractFactLines splits content into non-empty trimmed lines. The facts.md
+// file stores one fact per line; leading dashes and bullets are stripped.
+func extractFactLines(content string) []string {
+	lines := strings.Split(content, "\n")
+	facts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, "-* \t")
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		facts = append(facts, line)
+	}
+	return facts
+}
+
+// cosineSimilarity returns the cosine similarity between two vectors.
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, normA, normB float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		normA += float64(a[i]) * float64(a[i])
+		normB += float64(b[i]) * float64(b[i])
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
