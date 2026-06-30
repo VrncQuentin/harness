@@ -150,6 +150,12 @@ type memoryView struct {
 	EpisodesByAgent []agentEpisodeCount
 	EpisodesLoadErr string
 	CanRebuild      bool
+	// AgentNames is the list of agent names for the append-note dropdown.
+	AgentNames []string
+	// Promoted shows a success flash after promoting a fact.
+	Promoted bool
+	// NotedAgent shows the agent name after successfully appending a note.
+	NotedAgent string
 }
 
 // agentEpisodeCount counts how many .md episodes live under an agent's
@@ -260,6 +266,19 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	data.CanRebuild = s.indexRebuilder() != nil
 	if saved := strings.TrimSpace(r.URL.Query().Get("saved")); saved != "" {
 		data.SavedPath = saved
+	}
+	q := r.URL.Query()
+	data.Promoted = q.Get("promoted") == "1"
+	data.NotedAgent = strings.TrimSpace(q.Get("agent"))
+	if q.Get("noted") != "1" {
+		data.NotedAgent = ""
+	}
+	if reg := s.agentRegistry(); reg != nil {
+		if list, err := reg.List(); err == nil {
+			for _, a := range list {
+				data.AgentNames = append(data.AgentNames, a.Name)
+			}
+		}
 	}
 	s.renderMemory(w, data)
 }
