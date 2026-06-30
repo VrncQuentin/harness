@@ -202,10 +202,10 @@ embedded via `embed.FS`, no build step, no node_modules).
 
 ### Phase 4 — Fix M6
 
-- Decide and align the facts/notes layout naming (`global/` vs `projects/global/`)
+- [x] Decide and align the facts/notes layout naming (`global/` vs `projects/global/`)
   and update docs accordingly (#12).
-- Implement the **dedup** pass on promotion, or uncheck "M6 complete."
-- Implement **cross-agent read**, or explicitly descope it.
+- [x] Implement the **dedup** pass on promotion (cosine similarity threshold via embedder).
+- [x] Implement **cross-agent read** episode browser; descope cross-agent prompt injection to M7+.
 
 ### Phase 5 — M7 (only after a real permission layer exists)
 
