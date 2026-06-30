@@ -140,11 +140,16 @@ func validatePath(path string, roots []string) (string, error) {
 	return "", fmt.Errorf("%w: %s", ErrSandboxViolation, path)
 }
 
-// RegisterBuiltins registers the M4 read-only built-in tools on r. Destructive
-// tools stay implemented but unregistered until the M7 approval layer exists.
+// RegisterBuiltins registers the built-in tools on r. Read-only tools
+// (file_read, file_list) are always registered. Destructive tools
+// (file_write, shell_exec) are registered but disabled by default in
+// config — they must be explicitly enabled and pass the M7 approval
+// layer before they can execute.
 func RegisterBuiltins(r *Registry) {
 	r.Register(&fileReadTool{})
 	r.Register(&fileListTool{})
+	r.Register(&fileWriteTool{})
+	r.Register(&shellExecTool{})
 }
 
 // fileReadTool implements the file_read tool.
