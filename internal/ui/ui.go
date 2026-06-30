@@ -498,6 +498,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/task", s.handleTask)
 	mux.HandleFunc("/task/events", s.handleTaskEvents)
 	mux.HandleFunc("/task/send", s.handleTaskSend)
+	mux.HandleFunc("/task/approval", s.handleTaskApproval)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
 	mux.HandleFunc("/memory/rebuild-index", s.handleMemoryRebuildIndex)
