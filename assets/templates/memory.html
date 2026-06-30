@@ -19,6 +19,22 @@
 </div>
 {{end}}
 
+{{if .Promoted}}
+<div class="alert alert-ok">
+  <div class="alert-head">
+    <h2>Fact promoted to <code>global/facts.md</code></h2>
+  </div>
+</div>
+{{end}}
+
+{{if .NotedAgent}}
+<div class="alert alert-ok">
+  <div class="alert-head">
+    <h2>Note appended to <code>agents/{{.NotedAgent}}/notes.md</code></h2>
+  </div>
+</div>
+{{end}}
+
 {{if .LoadErr}}
 <div class="alert alert-err">
   <div class="alert-head">
@@ -75,6 +91,38 @@
     {{end}}
   </div>
 </section>
+
+{{if .AgentNames}}
+<section class="grid">
+  <div class="card">
+    <header class="card-head">
+      <h3>Promote fact</h3>
+    </header>
+    <p class="card-meta">Add a fact to <code>global/facts.md</code>. Promoted facts are injected into every prompt.</p>
+    <form method="post" action="/memory/promote">
+      <textarea name="text" rows="3" placeholder="A fact you want the agent to always know..." required class="cfg-input" style="width:100%"></textarea>
+      <button type="submit" class="btn" style="margin-top:0.5rem">Promote</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <header class="card-head">
+      <h3>Append agent note</h3>
+    </header>
+    <p class="card-meta">Add a note to an agent's <code>notes.md</code>. Only that agent will see it in its prompt.</p>
+    <form method="post" action="/memory/note">
+      <select name="agent" required class="cfg-input" style="margin-bottom:0.5rem">
+        <option value="">Select agent…</option>
+        {{range .AgentNames}}
+        <option value="{{.}}">{{.}}</option>
+        {{end}}
+      </select>
+      <textarea name="text" rows="3" placeholder="A note for this specific agent…" required class="cfg-input" style="width:100%"></textarea>
+      <button type="submit" class="btn" style="margin-top:0.5rem">Append</button>
+    </form>
+  </div>
+</section>
+{{end}}
 
 {{end}}
 {{end}}
