@@ -57,6 +57,39 @@
   <span class="chat-msg-role">Result</span>
   <div class="chat-msg-body"><code>{{.ToolID}}</code>{{if .ToolError}}<div class="tool-error">ERROR: {{.ToolError}}</div>{{end}}{{if .ToolResult}}<pre class="tool-content">{{.ToolResult}}</pre>{{end}}</div>
 </div>
+{{else if eq .Type "approval_needed"}}
+<div class="chat-msg is-approval" id="approval-card-{{.ApprovalID}}">
+  <span class="chat-msg-role">Approval needed</span>
+  <div class="chat-msg-body">
+    <p>{{.Content}}</p>
+    <p><code>{{.ToolID}}</code></p>
+    <pre class="tool-args">{{.ToolArgs}}</pre>
+    <p class="fg-hint">This destructive tool requires your approval before it can execute.</p>
+    <div class="approval-actions">
+      <button class="btn btn-primary btn-sm"
+        hx-post="/task/approval"
+        hx-include="#task-session-input"
+        hx-vals='{"approval_id":"{{.ApprovalID}}","decision":"allow"}'
+        hx-target="#approval-card-{{.ApprovalID}}"
+        hx-swap="outerHTML">
+        Allow
+      </button>
+      <button class="btn btn-danger btn-sm btn-ghost"
+        hx-post="/task/approval"
+        hx-include="#task-session-input"
+        hx-vals='{"approval_id":"{{.ApprovalID}}","decision":"reject"}'
+        hx-target="#approval-card-{{.ApprovalID}}"
+        hx-swap="outerHTML">
+        Reject
+      </button>
+    </div>
+  </div>
+</div>
+{{else if eq .Type "approval"}}
+<div class="chat-msg is-system {{if .ToolError}}is-warn{{end}}">
+  <span class="chat-msg-role">{{if .ToolError}}Denied{{else}}Approved{{end}}</span>
+  <div class="chat-msg-body">Tool <code>{{.ToolID}}</code> was {{if .ToolError}}denied{{else}}approved{{end}}.</div>
+</div>
 {{else if eq .Type "done"}}
 <div class="chat-msg is-system"><span class="chat-msg-role">Done</span><div class="chat-msg-body">Task completed in {{.Turn}} turn(s).</div></div>
 {{else if eq .Type "limit"}}
