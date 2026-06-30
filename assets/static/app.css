@@ -866,6 +866,16 @@ code {
   color: var(--muted);
   margin-bottom: 0.2rem;
 }
+.chat-msg.is-approval {
+  align-self: flex-start;
+  border-color: var(--primary);
+  background: var(--primary-soft, #eef2ff);
+}
+.approval-actions {
+  margin-top: 0.6rem;
+  display: flex;
+  gap: 0.45rem;
+}
 .chat-error {
   margin: 0.5rem 1.1rem 0;
   padding: 0.55rem 0.75rem;
