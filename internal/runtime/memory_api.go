@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/vrnc/harness/internal/agent"
+	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/api"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/embedder"
@@ -154,6 +155,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		registry: registry,
 		asm:      asmAdapter,
 		q:        rt.reqQueue,
+		evl:      approvals.NewEvaluator(approvals.DefaultLayer()),
 	}
 	uiServer.SetTaskRunner(taskAdapter)
 }

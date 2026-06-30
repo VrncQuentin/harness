@@ -7,11 +7,13 @@ import (
 	"io/fs"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/agentloop"
 	"github.com/vrnc/harness/internal/api"
+	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/project"
@@ -527,6 +529,11 @@ type taskRunnerAdapter struct {
 	registry *tools.Registry
 	asm      *apiAssemblerAdapter
 	q        *queue.Queue
+	// evl is the M7 permission evaluator. When nil, no approval checks are
+	// performed and all enabled tools dispatch immediately.
+	evl        *approvals.Evaluator
+	enginesMu  sync.Mutex
+	engines    map[string]*agentloop.Engine // sessionID → engine
 }
 
 // queuedInferClient wraps a Queue so the agent loop routes through the
@@ -657,6 +664,12 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	}
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
+	if ad.evl != nil {
+		engine.WithApprovals(ad.evl)
+	}
+
+	// Register engine so approval decisions can be routed back.
+	ad.registerEngine(id, engine)
 
 	rawEvch := make(chan agentloop.Event, 64)
 	evch := make(chan agentloop.Event, 64)
@@ -667,6 +680,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	}()
 	go func() {
 		defer close(evch)
+		defer ad.unregisterEngine(id)
 		var events []agentloop.Event
 		for ev := range rawEvch {
 			events = append(events, ev)
@@ -682,6 +696,41 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	}()
 
 	return id, evch, nil
+}
+
+func (ad *taskRunnerAdapter) registerEngine(sessionID string, engine *agentloop.Engine) {
+	ad.enginesMu.Lock()
+	if ad.engines == nil {
+		ad.engines = make(map[string]*agentloop.Engine)
+	}
+	ad.engines[sessionID] = engine
+	ad.enginesMu.Unlock()
+}
+
+func (ad *taskRunnerAdapter) unregisterEngine(sessionID string) {
+	ad.enginesMu.Lock()
+	delete(ad.engines, sessionID)
+	ad.enginesMu.Unlock()
+}
+
+// ApplyApproval routes a user decision to the correct running engine.
+func (ad *taskRunnerAdapter) ApplyApproval(sessionID, approvalID, decision string) error {
+	ad.enginesMu.Lock()
+	engine, ok := ad.engines[sessionID]
+	ad.enginesMu.Unlock()
+	if !ok {
+		return fmt.Errorf("task: no active engine for session %q", sessionID)
+	}
+	var d approvals.Decision
+	switch decision {
+	case "allow":
+		d = approvals.Allowed
+	case "reject":
+		d = approvals.Denied
+	default:
+		return fmt.Errorf("task: unknown decision %q", decision)
+	}
+	return engine.ApplyApproval(approvalID, d)
 }
 
 func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event) {
