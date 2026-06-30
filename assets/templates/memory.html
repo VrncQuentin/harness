@@ -35,6 +35,15 @@
 </div>
 {{end}}
 
+{{if .DedupBlocked}}
+<div class="alert alert-err">
+  <div class="alert-head">
+    <h2>Fact blocked (near-duplicate)</h2>
+    <p class="alert-sub">Similarity <strong>{{.DedupScore}}</strong> with existing fact: <code>{{.DedupSimilar}}</code>. Adjust the dedup threshold in <a href="/config">/config</a> or refine the fact text.</p>
+  </div>
+</div>
+{{end}}
+
 {{if .LoadErr}}
 <div class="alert alert-err">
   <div class="alert-head">
