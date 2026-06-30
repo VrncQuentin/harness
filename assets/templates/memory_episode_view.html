@@ -7,13 +7,14 @@
     <header class="card-head">
       <h3>{{.Name}}</h3>
       <span class="logs-meta mono">
-        {{if ge .Score 0.0}}<span class="badge badge-ok">indexed</span>{{end}}
+        {{if .HasScore}}score {{printf "%.3f" .Score}}{{end}}
+        {{if .Indexed}}<span class="badge badge-ok">indexed</span>{{end}}
         ~{{.Tokens}} tok
       </span>
     </header>
     <p class="card-meta">Agent: <code>{{.Agent}}</code></p>
     <p class="card-meta"><code>{{.Path}}</code></p>
-    <p class="card-meta"><a href="/memory/episodes?agent={{.Agent}}">&larr; Back to episodes</a></p>
+    <p class="card-meta"><a href="/memory/episodes?agent={{.Agent}}{{if .Query}}&q={{.Query}}{{end}}">&larr; Back to episodes</a></p>
 
     <pre class="tree-content">{{.Content}}</pre>
 

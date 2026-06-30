@@ -5,12 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/api"
+	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/embedder"
 	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/index"
@@ -47,27 +51,25 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.agentReg = agent.NewDiskRegistry(rt.memReader, rt.getActiveAgent, rt.setActiveAgent)
 	rt.assembler = prompt.NewDiskAssembler(rt.memReader, rt.agentReg, rt.cfg.Prompt).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
 
-	// Open the episode index for blended retrieval.
+	// Open the episode index for blended retrieval. The UI rebuilder is wired even
+	// when the index is missing so a fresh clone can reconstruct it in-place.
 	indexDir := filepath.Join(rt.cfg.Memory.RepoPath, "projects", rt.cfg.Project.ActiveProjectSlug, "index", "_episodes")
+	embedClient := embedder.NewClient(
+		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
+		httpclient.NewStreaming(),
+	)
 	epIdx, err := index.Open(indexDir)
 	if err != nil {
 		slog.Debug("no episode index found, retrieval will use recency only", "dir", indexDir)
 	} else {
-		embedClient := embedder.NewClient(
-			fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
-			httpclient.NewStreaming(),
-		)
 		rt.assembler = rt.assembler.WithBlendedRetrieval(epIdx, embedClient)
-		uiServer.SetRetrievalScorer(&indexScorer{idx: epIdx})
-		uiServer.SetIndexRebuilder(&indexRebuilder{
-			mem:      rt.memReader,
-			emb:      embedClient,
-			idx:      epIdx,
-			repoPath: rt.cfg.Memory.RepoPath,
-			slug:     rt.cfg.Project.ActiveProjectSlug,
-			gitRepo:  rt.gitRepo,
-		})
 	}
+	uiServer.SetRetrievalScorer(&indexScorer{
+		indexDir: indexDir,
+		emb:      embedClient,
+		cfg:      rt.cfg.Prompt,
+		idx:      epIdx,
+	})
 	uiServer.SetMemoryStore(rt.memReader)
 
 	hr, err := prompt.NewHotReload(rt.cfg.Memory.RepoPath, rt.cfg.Agent.Active, rt.cfg.Project.ActiveProjectSlug, slog.Default())
@@ -96,7 +98,23 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		uiServer.SetCommitter(rt.gitRepo)
 	}
 
-	asmAdapter := &apiAssemblerAdapter{a: rt.assembler, rt: rt}
+	asmAdapter := &apiAssemblerAdapter{rt: rt}
+	uiServer.SetIndexRebuilder(&indexRebuilder{
+		mem:      rt.memReader,
+		emb:      embedClient,
+		idx:      epIdx,
+		indexDir: indexDir,
+		repoPath: rt.cfg.Memory.RepoPath,
+		slug:     rt.cfg.Project.ActiveProjectSlug,
+		gitRepo:  rt.gitRepo,
+		onRebuilt: func(idx *index.Index) {
+			rt.mu.Lock()
+			if rt.assembler != nil {
+				rt.assembler = rt.assembler.WithBlendedRetrieval(idx, embedClient)
+			}
+			rt.mu.Unlock()
+		},
+	})
 	if rt.reqQueue != nil {
 		uiServer.SetChatRunner(&chatRunnerAdapter{
 			asm: asmAdapter,
@@ -343,6 +361,12 @@ func (rt *Runtime) getActiveProjectSlug() string {
 	return slug
 }
 
+func (rt *Runtime) getAssembler() *prompt.DiskAssembler {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	return rt.assembler
+}
+
 func (rt *Runtime) setActiveAgent(name string) error {
 	rt.mu.Lock()
 	store := rt.cfgStore
@@ -371,24 +395,80 @@ func (rt *Runtime) setActiveAgent(name string) error {
 	return nil
 }
 
-// indexScorer implements ui.RetrievalScorer by looking up the episode
-// ID in the ANN index manifest. It returns 1.0 when the episode is
-// indexed (available for semantic retrieval), -1.0 otherwise so the
-// UI can distinguish "not indexed" from "score is zero".
+// indexScorer implements ui.RetrievalScorer for the active project's episode
+// index. It opens lazily so the memory browser can show scores immediately
+// after a fresh-clone rebuild creates the index files.
 type indexScorer struct {
-	idx *index.Index
+	mu       sync.Mutex
+	indexDir string
+	emb      embedder.Client
+	cfg      config.PromptConfig
+	idx      *index.Index
 }
 
-func (s *indexScorer) ScoreEpisode(_ context.Context, episodePath string) (float64, error) {
-	if s.idx == nil {
-		return -1, nil
+func (s *indexScorer) ScoreEpisodes(ctx context.Context, _, _ string, query string, episodePaths []string) (map[string]ui.RetrievalScore, error) {
+	out := make(map[string]ui.RetrievalScore, len(episodePaths))
+	for _, p := range episodePaths {
+		out[p] = ui.RetrievalScore{}
 	}
-	base := path.Base(episodePath)
-	id := strings.TrimSuffix(base, ".md")
-	if s.idx.Contains(id) {
-		return 1.0, nil
+	idx, err := s.open()
+	if err != nil {
+		return out, nil
 	}
-	return -1, nil
+
+	for _, p := range episodePaths {
+		id := episodeID(p)
+		score := out[p]
+		score.Indexed = idx.Contains(id)
+		out[p] = score
+	}
+	if strings.TrimSpace(query) == "" || s.emb == nil || len(episodePaths) == 0 {
+		return out, nil
+	}
+
+	vecs, err := s.emb.Embed(ctx, []string{query})
+	if err != nil {
+		return out, err
+	}
+	if len(vecs) == 0 || len(vecs[0]) == 0 {
+		return out, nil
+	}
+	results, err := idx.Search(vecs[0], len(episodePaths)*2)
+	if err != nil {
+		return out, err
+	}
+	semantic := make(map[string]float64, len(results))
+	for _, r := range results {
+		if existing, ok := semantic[r.SHA]; !ok || float64(r.Score) > existing {
+			semantic[r.SHA] = float64(r.Score)
+		}
+	}
+
+	oldestFirst := append([]string(nil), episodePaths...)
+	sort.Strings(oldestFirst)
+	n := float64(len(oldestFirst))
+	for i, p := range oldestFirst {
+		score := out[p]
+		score.Score = s.cfg.SemanticWeight*semantic[episodeID(p)] +
+			s.cfg.RecencyWeight*retrievalDecay(len(oldestFirst)-1-i, n)
+		score.HasScore = true
+		out[p] = score
+	}
+	return out, nil
+}
+
+func (s *indexScorer) open() (*index.Index, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.idx != nil {
+		return s.idx, nil
+	}
+	idx, err := index.Open(s.indexDir)
+	if err != nil {
+		return nil, err
+	}
+	s.idx = idx
+	return idx, nil
 }
 
 // indexRebuilder implements ui.IndexRebuilder by walking episode files,
@@ -396,21 +476,39 @@ func (s *indexScorer) ScoreEpisode(_ context.Context, episodePath string) (float
 // updated manifest and vectors. The operation is idempotent: already-
 // indexed episodes are skipped.
 type indexRebuilder struct {
-	mem      *memory.DirReader
-	emb      embedder.Client
-	idx      *index.Index
-	repoPath string
-	slug     string
-	gitRepo  *gitw.Repo
+	mem       *memory.DirReader
+	emb       embedder.Client
+	idx       *index.Index
+	indexDir  string
+	repoPath  string
+	slug      string
+	gitRepo   *gitw.Repo
+	onRebuilt func(*index.Index)
 }
 
 func (rb *indexRebuilder) Rebuild(ctx context.Context) error {
-	// Walk all episode files under the active project.
-	pattern := fmt.Sprintf("projects/%s/episodes/*/*.md", rb.slug)
-	paths, err := rb.mem.Glob(pattern)
-	if err != nil {
-		return fmt.Errorf("index rebuild: glob episodes: %w", err)
+	if rb.idx == nil {
+		if idx, err := index.Open(rb.indexDir); err == nil {
+			rb.idx = idx
+		}
 	}
+
+	// Walk all episode files under the active project. DirReader.Glob only
+	// supports wildcards in the final path segment, so recursive episode lookup
+	// needs Walk rather than a projects/<slug>/episodes/*/*.md glob.
+	episodesRoot := path.Join("projects", rb.slug, "episodes")
+	entries, err := rb.mem.Walk(episodesRoot)
+	if err != nil {
+		return fmt.Errorf("index rebuild: walk episodes: %w", err)
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Dir || !strings.HasSuffix(e.Path, ".md") {
+			continue
+		}
+		paths = append(paths, e.Path)
+	}
+	sort.Strings(paths)
 
 	if len(paths) == 0 {
 		return nil
@@ -426,7 +524,7 @@ func (rb *indexRebuilder) Rebuild(ctx context.Context) error {
 	var work []pending
 	for _, p := range paths {
 		id := strings.TrimSuffix(path.Base(p), ".md")
-		if rb.idx.Contains(id) {
+		if rb.idx != nil && rb.idx.Contains(id) {
 			continue
 		}
 		body, err := rb.mem.Read(p)
@@ -458,6 +556,28 @@ func (rb *indexRebuilder) Rebuild(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("index rebuild: embed: %w", err)
 	}
+	if len(vectors) == 0 || len(vectors[0]) == 0 {
+		return nil
+	}
+	if len(vectors) != len(allChunks) {
+		return fmt.Errorf("index rebuild: embed returned %d vectors for %d chunks", len(vectors), len(allChunks))
+	}
+	dim := len(vectors[0])
+	for i, v := range vectors {
+		if len(v) != dim {
+			return fmt.Errorf("index rebuild: vector %d dimension mismatch: got %d, want %d", i, len(v), dim)
+		}
+	}
+	if rb.idx == nil {
+		idx, err := index.Create(rb.indexDir, dim)
+		if err != nil {
+			return fmt.Errorf("index rebuild: create index %s: %w", rb.indexDir, err)
+		}
+		rb.idx = idx
+	}
+	if rb.idx.Dim() != dim {
+		return fmt.Errorf("index rebuild: dimension mismatch: index has %d, got %d", rb.idx.Dim(), dim)
+	}
 
 	// Assign vectors back to each episode and add to index.
 	offset := 0
@@ -487,5 +607,16 @@ func (rb *indexRebuilder) Rebuild(ctx context.Context) error {
 	}
 
 	slog.Info("index rebuild complete", "new_episodes", len(work))
+	if rb.onRebuilt != nil {
+		rb.onRebuilt(rb.idx)
+	}
 	return nil
+}
+
+func episodeID(epPath string) string {
+	return strings.TrimSuffix(path.Base(epPath), ".md")
+}
+
+func retrievalDecay(distanceFromNewest int, n float64) float64 {
+	return math.Exp(-float64(distanceFromNewest) / n)
 }

@@ -32,19 +32,22 @@ const agentsDirName = "agents"
 // episodesRoot is the project-scoped directory under the memory repo
 // where session episodes live. The browser lists files under
 // <episodesRoot>/<agent>/, sorted newest-first by ISO timestamp.
-const episodesRoot = "projects/global/episodes"
-
 // episodeFileSuffix is the on-disk extension for an episode file.
 // Anything else under the agent directory is ignored by the browser
 // because only markdown is committed by the session writer.
 const episodeFileSuffix = ".md"
 
-// RetrievalScorer returns the blended retrieval score for an episode.
-// Implementations look up the episode ID in the ANN index and compute
-// the combined semantic+recency score. Returns 0 and no error when the
-// scorer is not wired or the index doesn't contain the episode.
+// RetrievalScore is the memory browser's retrieval metadata for one episode.
+type RetrievalScore struct {
+	Indexed  bool
+	Score    float64
+	HasScore bool
+}
+
+// RetrievalScorer returns index status and, when a query is supplied, the
+// blended retrieval score for a batch of episode paths.
 type RetrievalScorer interface {
-	ScoreEpisode(ctx context.Context, episodePath string) (float64, error)
+	ScoreEpisodes(ctx context.Context, projectSlug, agent, query string, episodePaths []string) (map[string]RetrievalScore, error)
 }
 
 // IndexRebuilder triggers an idempotent index rebuild for one tree.
@@ -161,6 +164,7 @@ type agentEpisodeCount struct {
 type memoryEpisodesView struct {
 	basePage
 	Agent    string
+	Query    string
 	Episodes []episodeRow
 }
 
@@ -168,10 +172,12 @@ type memoryEpisodesView struct {
 // repo-relative path the view handler expects in its `path` query
 // parameter; Name is what gets displayed in the table.
 type episodeRow struct {
-	Name   string
-	Path   string
-	Tokens int
-	Score  float64
+	Name     string
+	Path     string
+	Tokens   int
+	Indexed  bool
+	Score    float64
+	HasScore bool
 }
 
 // memoryEpisodeView is the template context for
@@ -180,12 +186,15 @@ type episodeRow struct {
 // the harness pulling in a markdown renderer.
 type memoryEpisodeView struct {
 	basePage
-	Agent   string
-	Name    string
-	Path    string
-	Content string
-	Tokens  int
-	Score   float64
+	Agent    string
+	Name     string
+	Path     string
+	Content  string
+	Tokens   int
+	Query    string
+	Indexed  bool
+	Score    float64
+	HasScore bool
 }
 
 // memoryTreeNode is one node in the rendered tree. Children is a slice
@@ -242,7 +251,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		data.Tree = tree
 		data.TotalTokens = total
 
-		counts, err := countEpisodesByAgent(store)
+		counts, err := countEpisodesByAgent(store, s.activeProjectSlug())
 		if err != nil {
 			data.EpisodesLoadErr = err.Error()
 		}
@@ -276,9 +285,10 @@ func (s *Server) handleMemoryEpisodes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid agent name", http.StatusBadRequest)
 		return
 	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	scorer := s.retrievalScorer()
-	rows, err := listAgentEpisodes(store, agent, scorer)
+	rows, err := listAgentEpisodes(r.Context(), store, s.activeProjectSlug(), agent, query, scorer)
 	if err != nil {
 		http.Error(w, "could not list episodes: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -286,6 +296,7 @@ func (s *Server) handleMemoryEpisodes(w http.ResponseWriter, r *http.Request) {
 	data := memoryEpisodesView{
 		basePage: s.newBasePage("memory"),
 		Agent:    agent,
+		Query:    query,
 		Episodes: rows,
 	}
 	s.renderMemoryEpisodes(w, data)
@@ -319,6 +330,7 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "path must not contain ..", http.StatusBadRequest)
 		return
 	}
+	episodesRoot := episodesRootForSlug(s.activeProjectSlug())
 	if !strings.HasPrefix(p, episodesRoot+"/") {
 		http.Error(w, "path must be under "+episodesRoot+"/", http.StatusBadRequest)
 		return
@@ -346,10 +358,11 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 	}
 
 	content := string(body)
-	score := -1.0
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	retrieval := RetrievalScore{}
 	if scorer := s.retrievalScorer(); scorer != nil {
-		if s, serr := scorer.ScoreEpisode(r.Context(), p); serr == nil {
-			score = s
+		if scores, serr := scorer.ScoreEpisodes(r.Context(), s.activeProjectSlug(), agent, query, []string{p}); serr == nil {
+			retrieval = scores[p]
 		}
 	}
 	data := memoryEpisodeView{
@@ -359,7 +372,10 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 		Path:     p,
 		Content:  content,
 		Tokens:   prompt.EstimateTokens(content),
-		Score:    score,
+		Query:    query,
+		Indexed:  retrieval.Indexed,
+		Score:    retrieval.Score,
+		HasScore: retrieval.HasScore,
 	}
 	s.renderMemoryEpisodeView(w, data)
 }
@@ -387,14 +403,15 @@ func validAgentName(name string) bool {
 // chronological order without parsing every filename. A missing agent
 // directory yields an empty slice and no error so the page can render
 // an empty-state hint rather than a 404.
-func listAgentEpisodes(store MemoryStore, agent string, scorer RetrievalScorer) ([]episodeRow, error) {
-	dir := episodesRoot + "/" + agent
+func listAgentEpisodes(ctx context.Context, store MemoryStore, slug, agent, query string, scorer RetrievalScorer) ([]episodeRow, error) {
+	dir := episodesRootForSlug(slug) + "/" + agent
 	entries, err := store.Walk(dir)
 	if err != nil {
 		return nil, err
 	}
 	prefix := dir + "/"
 	var rows []episodeRow
+	var paths []string
 	for _, e := range entries {
 		if e.Dir {
 			continue
@@ -414,18 +431,23 @@ func listAgentEpisodes(store MemoryStore, agent string, scorer RetrievalScorer) 
 		if rerr == nil {
 			tokens = prompt.EstimateTokens(string(body))
 		}
-		score := -1.0
-		if scorer != nil {
-			if s, serr := scorer.ScoreEpisode(context.Background(), e.Path); serr == nil {
-				score = s
-			}
-		}
 		rows = append(rows, episodeRow{
 			Name:   path.Base(e.Path),
 			Path:   e.Path,
 			Tokens: tokens,
-			Score:  score,
 		})
+		paths = append(paths, e.Path)
+	}
+	if scorer != nil && len(paths) > 0 {
+		if scores, serr := scorer.ScoreEpisodes(ctx, slug, agent, query, paths); serr == nil {
+			for i := range rows {
+				if score, ok := scores[rows[i].Path]; ok {
+					rows[i].Indexed = score.Indexed
+					rows[i].Score = score.Score
+					rows[i].HasScore = score.HasScore
+				}
+			}
+		}
 	}
 	// Newest-first: ISO timestamps sort lexicographically, so a
 	// descending sort by Name is the cheapest "newest first" we can
@@ -438,7 +460,8 @@ func listAgentEpisodes(store MemoryStore, agent string, scorer RetrievalScorer) 
 // row per agent directory containing at least one .md file. The
 // resulting slice is sorted by agent name so the /memory page renders
 // stably across reloads.
-func countEpisodesByAgent(store MemoryStore) ([]agentEpisodeCount, error) {
+func countEpisodesByAgent(store MemoryStore, slug string) ([]agentEpisodeCount, error) {
+	episodesRoot := episodesRootForSlug(slug)
 	entries, err := store.Walk(episodesRoot)
 	if err != nil {
 		return nil, err
@@ -476,6 +499,13 @@ func countEpisodesByAgent(store MemoryStore) ([]agentEpisodeCount, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+func episodesRootForSlug(slug string) string {
+	if slug == "" {
+		slug = "global"
+	}
+	return "projects/" + slug + "/episodes"
 }
 
 // handleMemoryEdit renders the textarea form for one editable file.

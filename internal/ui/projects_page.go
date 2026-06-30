@@ -265,16 +265,24 @@ func (s *Server) activateProject(slug string) error {
 func (s *Server) activeProjectSlug() string {
 	store := s.configStore()
 	if store == nil {
-		return project.GlobalSlug
+		return s.activeProjectSlugFallback()
 	}
 	loaded, _, err := store.Load()
 	if err != nil {
-		return project.GlobalSlug
+		return s.activeProjectSlugFallback()
 	}
 	if loaded.Project.ActiveProjectSlug == "" {
-		return project.GlobalSlug
+		return s.activeProjectSlugFallback()
 	}
 	return loaded.Project.ActiveProjectSlug
+}
+
+func (s *Server) activeProjectSlugFallback() string {
+	snap := s.state.snapshot()
+	if snap.ProjectSlug != "" {
+		return snap.ProjectSlug
+	}
+	return project.GlobalSlug
 }
 
 // countDirectories returns per-project directory counts.

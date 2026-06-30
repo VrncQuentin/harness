@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"net/http"
@@ -27,6 +28,22 @@ type stubMemoryStore struct {
 
 	lastWritePath string
 	lastWriteData []byte
+}
+
+type stubRetrievalScorer struct {
+	slug   string
+	agent  string
+	query  string
+	paths  []string
+	scores map[string]RetrievalScore
+}
+
+func (s *stubRetrievalScorer) ScoreEpisodes(_ context.Context, slug, agent, query string, paths []string) (map[string]RetrievalScore, error) {
+	s.slug = slug
+	s.agent = agent
+	s.query = query
+	s.paths = append([]string(nil), paths...)
+	return s.scores, nil
 }
 
 func newStubMemoryStore(files map[string]string) *stubMemoryStore {
@@ -571,6 +588,62 @@ func TestHandleMemoryEpisodes_ListsNewestFirst(t *testing.T) {
 	idxOldest := strings.Index(body, "2026-04-20T10:00:00Z.md")
 	if idxNewest >= idxMiddle || idxMiddle >= idxOldest {
 		t.Errorf("expected newest-first ordering; got positions newest=%d middle=%d oldest=%d", idxNewest, idxMiddle, idxOldest)
+	}
+}
+
+func TestHandleMemoryEpisodes_UsesActiveProject(t *testing.T) {
+	s := NewServer(3000)
+	s.SetProjectDirectoryWarnings("dt", nil)
+	store := newStubMemoryStore(map[string]string{
+		"projects/global/episodes/coder/global.md": "global",
+		"projects/dt/episodes/coder/dt.md":         "project",
+	})
+	s.SetMemoryStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes?agent=coder", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryEpisodes(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "dt.md") {
+		t.Errorf("active project episode missing from body:\n%s", body)
+	}
+	if strings.Contains(body, "global.md") {
+		t.Errorf("global episode leaked into active project listing:\n%s", body)
+	}
+}
+
+func TestHandleMemoryEpisodes_RendersRetrievalScores(t *testing.T) {
+	s := NewServer(3000)
+	path := "projects/global/episodes/coder/2026-04-25T09:15:00Z.md"
+	store := newStubMemoryStore(map[string]string{path: "episode"})
+	s.SetMemoryStore(store)
+	scorer := &stubRetrievalScorer{scores: map[string]RetrievalScore{
+		path: {Indexed: true, Score: 0.75, HasScore: true},
+	}}
+	s.SetRetrievalScorer(scorer)
+
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes?agent=coder&q=needle", nil)
+	rec := httptest.NewRecorder()
+	s.handleMemoryEpisodes(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"score 0.750", "indexed", `name="q" value="needle"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("episodes body missing %q", want)
+		}
+	}
+	if scorer.slug != "global" || scorer.agent != "coder" || scorer.query != "needle" {
+		t.Errorf("scorer args = slug %q agent %q query %q", scorer.slug, scorer.agent, scorer.query)
+	}
+	if len(scorer.paths) != 1 || scorer.paths[0] != path {
+		t.Errorf("scorer paths = %v, want [%s]", scorer.paths, path)
 	}
 }
 
