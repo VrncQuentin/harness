@@ -169,6 +169,7 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.Prompt.MemoryTokenBudget = atoiOr(r.FormValue("prompt_memory_budget"), cfg.Prompt.MemoryTokenBudget)
 	cfg.Prompt.ConversationReserve = atoiOr(r.FormValue("prompt_conversation_reserve"), cfg.Prompt.ConversationReserve)
 	cfg.Prompt.RecencyN = atoiOr(r.FormValue("prompt_recency_n"), cfg.Prompt.RecencyN)
+	cfg.Prompt.PromotionDedupThreshold = atofOr(r.FormValue("prompt_promotion_dedup_threshold"), cfg.Prompt.PromotionDedupThreshold)
 	// Trim trailing whitespace so an empty textarea (which browsers may
 	// pad with a stray newline) is treated as "use the built-in default"
 	// rather than persisting whitespace.
@@ -196,6 +197,18 @@ func atoiOr(s string, fallback int) int {
 		return fallback
 	}
 	n, err := strconv.Atoi(s)
+	if err != nil {
+		return fallback
+	}
+	return n
+}
+
+func atofOr(s string, fallback float64) float64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return fallback
+	}
+	n, err := strconv.ParseFloat(s, 64)
 	if err != nil {
 		return fallback
 	}
