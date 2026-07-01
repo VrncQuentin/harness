@@ -297,9 +297,14 @@ func (t *shellExecTool) Execute(ctx context.Context, c Context, args map[string]
 	if !ok || cmdStr == "" {
 		return Result{Error: "shell_exec: missing or invalid command argument"}
 	}
+	if len(c.SandboxRoots) == 0 || c.SandboxRoots[0] == "" {
+		return Result{Error: "shell_exec: no sandbox root configured — cannot determine working directory"}
+	}
 	workDir := c.SandboxRoots[0]
-	if workDir == "" {
-		workDir = "/"
+
+	// Validate workDir the same way file tools validate paths.
+	if _, err := validatePath(workDir, c.SandboxRoots); err != nil {
+		return Result{Error: fmt.Sprintf("shell_exec: invalid working directory: %v", err)}
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)

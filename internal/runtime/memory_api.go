@@ -150,12 +150,27 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	registry := tools.NewRegistry()
 	tools.RegisterBuiltins(registry)
 	rt.loopRegistry = registry
+
+	// Build the M7 permission evaluator with layered rules:
+	// agent defaults → user config → session approvals.
+	loopCfg := rt.cfg.Loop
+	userLayer := approvals.Layer{Name: "user-config"}
+	if !loopCfg.FileWriteEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
+			ToolID: "file_write", Decision: approvals.Denied, Source: "user: file_write disabled in config",
+		})
+	}
+	if !loopCfg.ShellExecEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
+			ToolID: "shell_exec", Decision: approvals.Denied, Source: "user: shell_exec disabled in config",
+		})
+	}
 	taskAdapter := &taskRunnerAdapter{
 		rt:       rt,
 		registry: registry,
 		asm:      asmAdapter,
 		q:        rt.reqQueue,
-		evl:      approvals.NewEvaluator(approvals.DefaultLayer()),
+		evl:      approvals.NewEvaluator(approvals.DefaultLayer(), userLayer),
 	}
 	uiServer.SetTaskRunner(taskAdapter)
 }
