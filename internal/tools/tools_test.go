@@ -117,3 +117,40 @@ func TestDestructiveToolsRegisteredButDisabledByDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestShellExec_EmptySandboxRoots(t *testing.T) {
+	tool := &shellExecTool{}
+	// Empty slice.
+	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{}}, map[string]any{"command": "ls"})
+	if res.Error == "" {
+		t.Fatal("expected error for empty sandbox roots, got none")
+	}
+	if !strings.Contains(res.Error, "no sandbox root") {
+		t.Errorf("expected sandbox error, got %q", res.Error)
+	}
+}
+
+func TestShellExec_BlankSandboxRoot(t *testing.T) {
+	tool := &shellExecTool{}
+	// Slice with one empty string.
+	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{""}}, map[string]any{"command": "ls"})
+	if res.Error == "" {
+		t.Fatal("expected error for blank sandbox root, got none")
+	}
+	if !strings.Contains(res.Error, "no sandbox root") {
+		t.Errorf("expected sandbox error, got %q", res.Error)
+	}
+}
+
+func TestShellExec_DirValidatedLikeFileTools(t *testing.T) {
+	dir := t.TempDir()
+	tool := &shellExecTool{}
+	// Valid sandbox root → command runs.
+	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{"command": "echo hello"})
+	if res.Error != "" {
+		t.Fatalf("unexpected error: %s", res.Error)
+	}
+	if !strings.Contains(res.Content, "hello") {
+		t.Errorf("expected 'hello' in output, got %q", res.Content)
+	}
+}
