@@ -250,6 +250,23 @@ func TestEvaluator_DestructiveCmdRequiresAskEvenWithBroadAllow(t *testing.T) {
 	}
 }
 
+func TestEvaluator_DestructiveCmdDeniedRuleStaysDenied(t *testing.T) {
+	userLayer := Layer{
+		Name: "user-config",
+		Rules: []Rule{
+			{ToolID: "shell_exec", Decision: Denied, Source: "user: shell denied"},
+		},
+	}
+	eval := NewEvaluator(DefaultLayer(), userLayer)
+	dec, src := eval.Evaluate("shell_exec", "rm -rf /tmp/test")
+	if dec != Denied {
+		t.Errorf("destructive shell deny should remain Denied, got %s", dec)
+	}
+	if src != "user: shell denied" {
+		t.Errorf("unexpected source: %s", src)
+	}
+}
+
 func TestEvaluator_DestructiveCmdAllowedWithExactSessionMatch(t *testing.T) {
 	eval := NewEvaluator(DefaultLayer())
 	eval.AddSessionRule(Rule{

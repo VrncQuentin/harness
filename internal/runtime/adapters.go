@@ -529,11 +529,11 @@ type taskRunnerAdapter struct {
 	registry *tools.Registry
 	asm      *apiAssemblerAdapter
 	q        *queue.Queue
-	// evl is the M7 permission evaluator. When nil, no approval checks are
-	// performed and all enabled tools dispatch immediately.
-	evl        *approvals.Evaluator
-	enginesMu  sync.Mutex
-	engines    map[string]*agentloop.Engine // sessionID → engine
+	// approvalLayers are immutable base layers. Each task engine gets a
+	// fresh evaluator so session approval rules cannot leak across tasks.
+	approvalLayers []approvals.Layer
+	enginesMu      sync.Mutex
+	engines        map[string]*agentloop.Engine // sessionID → engine
 }
 
 // queuedInferClient wraps a Queue so the agent loop routes through the
@@ -664,8 +664,8 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	}
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
-	if ad.evl != nil {
-		engine.WithApprovals(ad.evl)
+	if evl := ad.newApprovalEvaluator(); evl != nil {
+		engine.WithApprovals(evl)
 	}
 
 	// Register engine so approval decisions can be routed back.
@@ -696,6 +696,13 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	}()
 
 	return id, evch, nil
+}
+
+func (ad *taskRunnerAdapter) newApprovalEvaluator() *approvals.Evaluator {
+	if len(ad.approvalLayers) == 0 {
+		return nil
+	}
+	return approvals.NewEvaluator(ad.approvalLayers...)
 }
 
 func (ad *taskRunnerAdapter) registerEngine(sessionID string, engine *agentloop.Engine) {
@@ -735,7 +742,11 @@ func (ad *taskRunnerAdapter) ApplyApproval(sessionID, approvalID, decision strin
 	return engine.ApplyApproval(approvalID, resp)
 }
 
-func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event) {
+type taskEventAppender interface {
+	Append(id string, msg inference.Message) error
+}
+
+func recordTaskEvents(mgr taskEventAppender, id string, events []agentloop.Event) {
 	var assistant strings.Builder
 	flushAssistant := func() {
 		if assistant.Len() == 0 {
@@ -785,7 +796,7 @@ func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event)
 		case agentloop.EvtApprovalNeeded:
 			flushAssistant()
 			approvalSeq++
-			trail := fmt.Sprintf("[approval_needed #%d] %s: %s", approvalSeq, ev.ToolID, ev.ToolArgs)
+			trail := fmt.Sprintf("[approval_needed #%d] id=%s tool=%s reason=%q args=%s", approvalSeq, ev.ApprovalID, ev.ToolID, ev.ApprovalReason, ev.ToolArgs)
 			if err := mgr.Append(id, inference.Message{
 				Role:    "system",
 				Name:    "approval",
@@ -795,11 +806,18 @@ func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event)
 			}
 		case agentloop.EvtApproval:
 			approvalSeq++
-			decision := "approved"
-			if ev.ToolError == "denied" {
-				decision = "denied"
+			decision := ev.ApprovalDecision
+			if decision == "" {
+				decision = "allowed"
+				if ev.ToolError == "denied" {
+					decision = "denied"
+				}
 			}
-			trail := fmt.Sprintf("[approval #%d] %s: %s", approvalSeq, ev.ToolID, decision)
+			scope := ev.ApprovalScope
+			if scope == "" {
+				scope = "once"
+			}
+			trail := fmt.Sprintf("[approval #%d] id=%s tool=%s decision=%s scope=%s reason=%q", approvalSeq, ev.ApprovalID, ev.ToolID, decision, scope, ev.ApprovalReason)
 			if err := mgr.Append(id, inference.Message{
 				Role:    "system",
 				Name:    "approval",

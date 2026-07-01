@@ -136,9 +136,13 @@ func (e *Evaluator) Evaluate(toolID, commandArg string) (Decision, string) {
 	}
 
 	// Destructive-command classification: if the command is destructive,
-	// only an exact-match session rule (stored as the full command string)
-	// can auto-allow it. Broad/default rules always require Ask.
+	// an effective Denied remains Denied, and only an exact-match session
+	// rule (stored as the full command string) can auto-allow it.
+	// Broad/default allows always require Ask.
 	if toolID == "shell_exec" && commandArg != "" && ClassifyShellCmd(commandArg) {
+		if best == Denied {
+			return Denied, source
+		}
 		if fromSession && commandArg != "" {
 			// Check that the session rule is an exact command match,
 			// not just a broad prefix pattern.

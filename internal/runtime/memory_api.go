@@ -13,8 +13,8 @@ import (
 	"sync"
 
 	"github.com/vrnc/harness/internal/agent"
-	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/api"
+	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/embedder"
 	gitw "github.com/vrnc/harness/internal/git"
@@ -166,11 +166,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		})
 	}
 	taskAdapter := &taskRunnerAdapter{
-		rt:       rt,
-		registry: registry,
-		asm:      asmAdapter,
-		q:        rt.reqQueue,
-		evl:      approvals.NewEvaluator(approvals.DefaultLayer(), userLayer),
+		rt:             rt,
+		registry:       registry,
+		asm:            asmAdapter,
+		q:              rt.reqQueue,
+		approvalLayers: []approvals.Layer{approvals.DefaultLayer(), userLayer},
 	}
 	uiServer.SetTaskRunner(taskAdapter)
 }

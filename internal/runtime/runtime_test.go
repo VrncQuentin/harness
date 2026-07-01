@@ -7,11 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/vrnc/harness/internal/agent"
+	"github.com/vrnc/harness/internal/agentloop"
+	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/index"
+	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/proc"
 	"github.com/vrnc/harness/internal/queue"
@@ -199,6 +203,80 @@ func TestIndexRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if !opened.Contains("ep1") {
 		t.Fatal("rebuilt index does not contain ep1")
 	}
+}
+
+func TestTaskRunnerApprovalEvaluatorIsPerRun(t *testing.T) {
+	ad := &taskRunnerAdapter{approvalLayers: []approvals.Layer{approvals.DefaultLayer()}}
+	one := ad.newApprovalEvaluator()
+	two := ad.newApprovalEvaluator()
+	if one == nil || two == nil {
+		t.Fatal("expected evaluators")
+	}
+
+	one.AddSessionRule(approvals.Rule{
+		ToolID:   "file_write",
+		Decision: approvals.Allowed,
+		Source:   "session: always allowed",
+	})
+
+	if dec, _ := one.Evaluate("file_write", ""); dec != approvals.Allowed {
+		t.Fatalf("first evaluator session rule not applied, got %s", dec)
+	}
+	if dec, _ := two.Evaluate("file_write", ""); dec != approvals.Ask {
+		t.Fatalf("session approval leaked into another evaluator, got %s", dec)
+	}
+}
+
+func TestRecordTaskEventsPersistsApprovalAuditDetails(t *testing.T) {
+	rec := &recordingAppender{}
+	events := []agentloop.Event{
+		{
+			Type:           agentloop.EvtApprovalNeeded,
+			ToolID:         "shell_exec",
+			ToolArgs:       `{"command":"git status"}`,
+			ApprovalID:     "shell_exec-1-1",
+			ApprovalReason: "builtin: shell commands require approval",
+		},
+		{
+			Type:             agentloop.EvtApproval,
+			ToolID:           "shell_exec",
+			ApprovalID:       "shell_exec-1-1",
+			ApprovalReason:   "builtin: shell commands require approval",
+			ApprovalDecision: "allowed",
+			ApprovalScope:    "always",
+		},
+	}
+
+	recordTaskEvents(rec, "sid", events)
+	if len(rec.messages) != 2 {
+		t.Fatalf("expected 2 audit messages, got %d", len(rec.messages))
+	}
+
+	needed := rec.messages[0]
+	if needed.Role != "system" || needed.Name != "approval" {
+		t.Fatalf("approval-needed message role/name = %q/%q", needed.Role, needed.Name)
+	}
+	for _, want := range []string{"approval_needed", "id=shell_exec-1-1", "tool=shell_exec", "reason=\"builtin: shell commands require approval\"", `args={"command":"git status"}`} {
+		if !strings.Contains(needed.Content, want) {
+			t.Errorf("approval-needed audit missing %q in %q", want, needed.Content)
+		}
+	}
+
+	result := rec.messages[1]
+	for _, want := range []string{"approval", "id=shell_exec-1-1", "tool=shell_exec", "decision=allowed", "scope=always", "reason=\"builtin: shell commands require approval\""} {
+		if !strings.Contains(result.Content, want) {
+			t.Errorf("approval result audit missing %q in %q", want, result.Content)
+		}
+	}
+}
+
+type recordingAppender struct {
+	messages []inference.Message
+}
+
+func (r *recordingAppender) Append(_ string, msg inference.Message) error {
+	r.messages = append(r.messages, msg)
+	return nil
 }
 
 type stubEmbedder struct {
