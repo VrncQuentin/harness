@@ -35,6 +35,15 @@ func (d Decision) String() string {
 	}
 }
 
+// ApprovalResponse carries a decision and whether the user chose
+// to remember it (scope: once vs. always).
+type ApprovalResponse struct {
+	Decision Decision
+	// Remember is true when the user selected "always" and the
+	// resulting session rule should persist for future matching calls.
+	Remember bool
+}
+
 // Rule is a single permission entry. It matches on tool id and optional
 // command arguments (for shell_exec). The decision applies when the rule
 // is the best match within its layer.
