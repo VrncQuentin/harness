@@ -75,7 +75,7 @@ type Engine struct {
 	// pending guards the approval routing map and counter.
 	pendingMu sync.Mutex
 	// pending maps approval IDs to response channels.
-	pending map[string]chan approvals.Decision
+	pending map[string]chan approvals.ApprovalResponse
 	// pendingRules maps approval IDs to the session rule that should
 	// be added when the user chooses "always".
 	pendingRules map[string]approvals.Rule
@@ -108,7 +108,7 @@ func (e *Engine) WithApprovals(evl *approvals.Evaluator) *Engine {
 // ApplyApproval delivers the user's decision for the approval event
 // identified by approvalID. Returns an error when the id is unknown
 // (already answered, timed out, or never emitted).
-func (e *Engine) ApplyApproval(approvalID string, d approvals.Decision) error {
+func (e *Engine) ApplyApproval(approvalID string, resp approvals.ApprovalResponse) error {
 	e.pendingMu.Lock()
 	ch, ok := e.pending[approvalID]
 	rule, hasRule := e.pendingRules[approvalID]
@@ -116,13 +116,13 @@ func (e *Engine) ApplyApproval(approvalID string, d approvals.Decision) error {
 	if !ok {
 		return fmt.Errorf("agentloop: unknown approval id %q", approvalID)
 	}
-	// When the user chose "always", add a session rule so future
-	// matching tool calls skip the approval prompt.
-	if hasRule && e.evl != nil {
+	// Only add a session rule when the user explicitly chose "always".
+	if hasRule && resp.Remember {
+		rule.Decision = resp.Decision
 		e.evl.AddSessionRule(rule)
 	}
 	select {
-	case ch <- d:
+	case ch <- resp:
 		return nil
 	default:
 		return fmt.Errorf("agentloop: approval id %q already resolved", approvalID)
@@ -351,25 +351,22 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 	// Generate a unique approval ID and set up the response channel.
 	e.pendingMu.Lock()
 	if e.pending == nil {
-		e.pending = make(map[string]chan approvals.Decision)
+		e.pending = make(map[string]chan approvals.ApprovalResponse)
 	}
 	if e.pendingRules == nil {
 		e.pendingRules = make(map[string]approvals.Rule)
 	}
 	e.approvalSeq++
 	approvalID := fmt.Sprintf("%s-%d-%d", toolID, turn, e.approvalSeq)
-	ch := make(chan approvals.Decision, 1)
+	ch := make(chan approvals.ApprovalResponse, 1)
 	e.pending[approvalID] = ch
 
 	// Store a pending session rule for the "always" decision.
-	// For shell_exec, the command prefix up to the first space is
-	// used as the pattern (e.g. "git" matches "git status").
+	// For shell_exec, store the exact command string so "always"
+	// only matches that specific command, not a broad prefix.
 	cmdPattern := ""
 	if toolID == "shell_exec" && cmdArg != "" {
-		parts := strings.Fields(cmdArg)
-		if len(parts) > 0 {
-			cmdPattern = parts[0]
-		}
+		cmdPattern = cmdArg
 	}
 	e.pendingRules[approvalID] = approvals.Rule{
 		ToolID:         toolID,
@@ -400,9 +397,9 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 	select {
 	case <-ctx.Done():
 		return approvals.Denied, ErrCancelled
-	case d := <-ch:
-		slog.Debug("approval resolved", "tool", toolID, "id", approvalID, "decision", d)
-		if d == approvals.Denied {
+	case resp := <-ch:
+		slog.Debug("approval resolved", "tool", toolID, "id", approvalID, "decision", resp.Decision, "remember", resp.Remember)
+		if resp.Decision == approvals.Denied {
 			e.emit(evch, Event{
 				Turn:       turn,
 				Type:       EvtApproval,
@@ -418,7 +415,7 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 				ApprovalID: approvalID,
 			})
 		}
-		return d, nil
+		return resp.Decision, nil
 	}
 }
 

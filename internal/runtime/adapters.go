@@ -721,18 +721,18 @@ func (ad *taskRunnerAdapter) ApplyApproval(sessionID, approvalID, decision strin
 	if !ok {
 		return fmt.Errorf("task: no active engine for session %q", sessionID)
 	}
-	var d approvals.Decision
+	var resp approvals.ApprovalResponse
 	switch decision {
 	case "allow":
-		d = approvals.Allowed
+		resp = approvals.ApprovalResponse{Decision: approvals.Allowed, Remember: false}
 	case "reject":
-		d = approvals.Denied
+		resp = approvals.ApprovalResponse{Decision: approvals.Denied, Remember: false}
 	case "always":
-		d = approvals.Allowed // allowed + session rule is added in engine
+		resp = approvals.ApprovalResponse{Decision: approvals.Allowed, Remember: true}
 	default:
 		return fmt.Errorf("task: unknown decision %q", decision)
 	}
-	return engine.ApplyApproval(approvalID, d)
+	return engine.ApplyApproval(approvalID, resp)
 }
 
 func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event) {
