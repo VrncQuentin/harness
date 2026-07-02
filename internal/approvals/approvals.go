@@ -21,6 +21,13 @@ const (
 	Ask
 )
 
+const (
+	// ApprovalScopeOnce records a one-time approval decision.
+	ApprovalScopeOnce = "once"
+	// ApprovalScopeAlways records a remembered session approval decision.
+	ApprovalScopeAlways = "always"
+)
+
 // String returns a compact representation for audit trails.
 func (d Decision) String() string {
 	switch d {
@@ -120,7 +127,7 @@ func (e *Evaluator) Evaluate(toolID, commandArg string) (Decision, string) {
 
 	// Evaluate layers in order (agent defaults → user config → session).
 	// Last layer with a matching rule wins.
-	best := Decision(Allowed)
+	best := Allowed
 	source := "default"
 	fromSession := false
 	for _, layer := range effectiveLayers {

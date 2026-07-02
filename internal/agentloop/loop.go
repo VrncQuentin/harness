@@ -400,16 +400,16 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 		return approvals.Denied, ErrCancelled
 	case resp := <-ch:
 		slog.Debug("approval resolved", "tool", toolID, "id", approvalID, "decision", resp.Decision, "remember", resp.Remember)
-		scope := "once"
+		scope := approvals.ApprovalScopeOnce
 		if resp.Remember {
-			scope = "always"
+			scope = approvals.ApprovalScopeAlways
 		}
 		if resp.Decision == approvals.Denied {
 			e.emit(evch, Event{
 				Turn:             turn,
 				Type:             EvtApproval,
 				ToolID:           toolID,
-				ToolError:        "denied",
+				ToolError:        approvals.Denied.String(),
 				ApprovalID:       approvalID,
 				ApprovalReason:   src,
 				ApprovalDecision: resp.Decision.String(),

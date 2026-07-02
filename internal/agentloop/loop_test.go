@@ -34,18 +34,18 @@ func (m *mockInferClient) Complete(ctx context.Context, req inference.Completion
 func (m *mockInferClient) Health(ctx context.Context) error { return nil }
 
 // toolCallTokens returns tokens that simulate a model calling a tool.
-func toolCallTokens(toolName, args string, index int) []inference.Token {
+func toolCallTokens(toolName, args string) []inference.Token {
 	return []inference.Token{
 		{
 			ToolCallDelta: &inference.ToolCallDelta{
-				Index: index,
+				Index: 0,
 				ID:    "call_1",
 				Name:  toolName,
 			},
 		},
 		{
 			ToolCallDelta: &inference.ToolCallDelta{
-				Index:     index,
+				Index:     0,
 				Arguments: args,
 			},
 		},
@@ -65,7 +65,7 @@ func TestRejectDoesNotAddSessionRule(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
 	engine := newTestEngine(cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`, 0)}
+	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -111,7 +111,7 @@ func TestAllowDoesNotAddSessionRule(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
 	engine := newTestEngine(cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`, 0)}
+	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -154,7 +154,7 @@ func TestAlwaysAddsSessionRule(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
 	engine := newTestEngine(cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`, 0)}
+	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -197,7 +197,7 @@ func TestAlwaysForGitStatusDoesNotAllowGitPush(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, ShellExecEnabled: true}
 	engine := newTestEngine(cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("shell_exec", `{"command":"git status"}`, 0)}
+	client := &mockInferClient{tokens: toolCallTokens("shell_exec", `{"command":"git status"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -306,7 +306,7 @@ func TestApprovalNeededEventHasCorrectFields(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
 	engine := newTestEngine(cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`, 0)}
+	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -353,7 +353,7 @@ func TestApprovalDeniedInjectsError(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
 	engine := newTestEngine(cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`, 0)}
+	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -382,13 +382,13 @@ func TestApprovalDeniedInjectsError(t *testing.T) {
 	// Check that a denied approval event and a tool_result with error appear.
 	var foundApproval, foundError bool
 	for ev := range evch {
-		if ev.Type == EvtApproval && ev.ToolError == "denied" {
+		if ev.Type == EvtApproval && ev.ToolError == approvals.Denied.String() {
 			foundApproval = true
 			if ev.ApprovalDecision != approvals.Denied.String() {
 				t.Errorf("approval decision = %q, want %q", ev.ApprovalDecision, approvals.Denied.String())
 			}
-			if ev.ApprovalScope != "once" {
-				t.Errorf("approval scope = %q, want once", ev.ApprovalScope)
+			if ev.ApprovalScope != approvals.ApprovalScopeOnce {
+				t.Errorf("approval scope = %q, want %s", ev.ApprovalScope, approvals.ApprovalScopeOnce)
 			}
 			if ev.ApprovalReason == "" {
 				t.Error("approval reason should not be empty")

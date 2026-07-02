@@ -536,6 +536,12 @@ type taskRunnerAdapter struct {
 	engines        map[string]*agentloop.Engine // sessionID → engine
 }
 
+const (
+	approvalAuditMessageName  = "approval"
+	approvalAuditNeededFormat = "[approval_needed #%d] id=%s tool=%s reason=%q args=%s"
+	approvalAuditResultFormat = "[approval #%d] id=%s tool=%s decision=%s scope=%s reason=%q"
+)
+
 // queuedInferClient wraps a Queue so the agent loop routes through the
 // bounded channel with backpressure + WAL instead of calling the
 // llama-server inference client directly.
@@ -730,11 +736,11 @@ func (ad *taskRunnerAdapter) ApplyApproval(sessionID, approvalID, decision strin
 	}
 	var resp approvals.ApprovalResponse
 	switch decision {
-	case "allow":
+	case ui.TaskApprovalAllow:
 		resp = approvals.ApprovalResponse{Decision: approvals.Allowed, Remember: false}
-	case "reject":
+	case ui.TaskApprovalReject:
 		resp = approvals.ApprovalResponse{Decision: approvals.Denied, Remember: false}
-	case "always":
+	case ui.TaskApprovalAlways:
 		resp = approvals.ApprovalResponse{Decision: approvals.Allowed, Remember: true}
 	default:
 		return fmt.Errorf("task: unknown decision %q", decision)
@@ -796,10 +802,10 @@ func recordTaskEvents(mgr taskEventAppender, id string, events []agentloop.Event
 		case agentloop.EvtApprovalNeeded:
 			flushAssistant()
 			approvalSeq++
-			trail := fmt.Sprintf("[approval_needed #%d] id=%s tool=%s reason=%q args=%s", approvalSeq, ev.ApprovalID, ev.ToolID, ev.ApprovalReason, ev.ToolArgs)
+			trail := fmt.Sprintf(approvalAuditNeededFormat, approvalSeq, ev.ApprovalID, ev.ToolID, ev.ApprovalReason, ev.ToolArgs)
 			if err := mgr.Append(id, inference.Message{
 				Role:    "system",
-				Name:    "approval",
+				Name:    approvalAuditMessageName,
 				Content: trail,
 			}); err != nil {
 				slog.Warn("session: append approval needed", "id", id, "err", err)
@@ -808,19 +814,19 @@ func recordTaskEvents(mgr taskEventAppender, id string, events []agentloop.Event
 			approvalSeq++
 			decision := ev.ApprovalDecision
 			if decision == "" {
-				decision = "allowed"
-				if ev.ToolError == "denied" {
-					decision = "denied"
+				decision = approvals.Allowed.String()
+				if ev.ToolError == approvals.Denied.String() {
+					decision = approvals.Denied.String()
 				}
 			}
 			scope := ev.ApprovalScope
 			if scope == "" {
-				scope = "once"
+				scope = approvals.ApprovalScopeOnce
 			}
-			trail := fmt.Sprintf("[approval #%d] id=%s tool=%s decision=%s scope=%s reason=%q", approvalSeq, ev.ApprovalID, ev.ToolID, decision, scope, ev.ApprovalReason)
+			trail := fmt.Sprintf(approvalAuditResultFormat, approvalSeq, ev.ApprovalID, ev.ToolID, decision, scope, ev.ApprovalReason)
 			if err := mgr.Append(id, inference.Message{
 				Role:    "system",
-				Name:    "approval",
+				Name:    approvalAuditMessageName,
 				Content: trail,
 			}); err != nil {
 				slog.Warn("session: append approval result", "id", id, "err", err)

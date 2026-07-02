@@ -242,8 +242,8 @@ func TestRecordTaskEventsPersistsApprovalAuditDetails(t *testing.T) {
 			ToolID:           "shell_exec",
 			ApprovalID:       "shell_exec-1-1",
 			ApprovalReason:   "builtin: shell commands require approval",
-			ApprovalDecision: "allowed",
-			ApprovalScope:    "always",
+			ApprovalDecision: approvals.Allowed.String(),
+			ApprovalScope:    approvals.ApprovalScopeAlways,
 		},
 	}
 
@@ -253,17 +253,17 @@ func TestRecordTaskEventsPersistsApprovalAuditDetails(t *testing.T) {
 	}
 
 	needed := rec.messages[0]
-	if needed.Role != "system" || needed.Name != "approval" {
+	if needed.Role != "system" || needed.Name != approvalAuditMessageName {
 		t.Fatalf("approval-needed message role/name = %q/%q", needed.Role, needed.Name)
 	}
-	for _, want := range []string{"approval_needed", "id=shell_exec-1-1", "tool=shell_exec", "reason=\"builtin: shell commands require approval\"", `args={"command":"git status"}`} {
+	for _, want := range []string{agentloop.EvtApprovalNeeded, "id=shell_exec-1-1", "tool=shell_exec", "reason=\"builtin: shell commands require approval\"", `args={"command":"git status"}`} {
 		if !strings.Contains(needed.Content, want) {
 			t.Errorf("approval-needed audit missing %q in %q", want, needed.Content)
 		}
 	}
 
 	result := rec.messages[1]
-	for _, want := range []string{"approval", "id=shell_exec-1-1", "tool=shell_exec", "decision=allowed", "scope=always", "reason=\"builtin: shell commands require approval\""} {
+	for _, want := range []string{approvalAuditMessageName, "id=shell_exec-1-1", "tool=shell_exec", "decision=" + approvals.Allowed.String(), "scope=" + approvals.ApprovalScopeAlways, "reason=\"builtin: shell commands require approval\""} {
 		if !strings.Contains(result.Content, want) {
 			t.Errorf("approval result audit missing %q in %q", want, result.Content)
 		}

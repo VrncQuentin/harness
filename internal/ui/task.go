@@ -27,6 +27,12 @@ var (
 	ErrTaskNotReady  = errors.New("task runner not available — the harness may still be starting")
 )
 
+const (
+	TaskApprovalAllow  = "allow"
+	TaskApprovalReject = "reject"
+	TaskApprovalAlways = "always"
+)
+
 // SetTaskRunner installs the runner used by /task/send. Safe to leave
 // unset; the page then renders a "not ready" state.
 func (s *Server) SetTaskRunner(r TaskRunner) {
@@ -216,7 +222,7 @@ func (s *Server) handleTaskApproval(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session_id, approval_id, and decision are required", http.StatusBadRequest)
 		return
 	}
-	if decision != "allow" && decision != "reject" && decision != "always" {
+	if decision != TaskApprovalAllow && decision != TaskApprovalReject && decision != TaskApprovalAlways {
 		http.Error(w, "decision must be allow, reject, or always", http.StatusBadRequest)
 		return
 	}
@@ -225,5 +231,4 @@ func (s *Server) handleTaskApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, "")
 }

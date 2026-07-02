@@ -570,7 +570,7 @@ func (rb *indexRebuilder) Rebuild(ctx context.Context) error {
 	allChunks := make([]string, 0)
 	chunkCounts := make([]int, len(work))
 	for i, w := range work {
-		chunks := chunkSummary(string(w.content))
+		chunks := chunkSummary(w.content)
 		allChunks = append(allChunks, chunks...)
 		chunkCounts[i] = len(chunks)
 	}
