@@ -2,6 +2,8 @@
 
 Each milestone ends with a usable, stable state. Don't start the next until all acceptance tests pass.
 
+Implementation checkboxes track code that has landed. Acceptance-test checkboxes stay unchecked unless the test was explicitly run and observed passing.
+
 ---
 
 ## M1 — Inference Core
@@ -113,17 +115,18 @@ Design references: opencode (part-based messages, step counter, doom-loop detect
 
 - [x] Chat/task surface: first-party browser UI for task input and conversation display; no external chat client needed
 - [x] Loop engine: send conversation to the model, parse the response, dispatch tool calls, inject results, and repeat until stop/limit/cancel
-- [ ] OpenAI-style tool-call parsing for streaming and non-streaming chat completion responses
-- [ ] Part-based message model: text, tool_call, and tool_result parts with durable state for UI display and session replay
-- [ ] Tool registry and schema contract: tools declare id, JSON Schema parameters, execute function, and context (active project, sandbox roots, caller identity)
-- [ ] Read-only file tools first: `file_read` and `file_list`; no writes, edits, shell execution, or web search in the MVP
+- [x] `/task` route uses the Prompt Assembler and Queue, so personas/memory apply and model calls are serialized/backpressured
+- [x] Inference client parses OpenAI-style tool calls for streaming and non-streaming chat completion responses; the agent loop currently requests streaming completions
+- [x] Part-based message model: text, tool_call, and tool_result parts are represented for UI display and session replay
+- [x] Tool registry and schema contract: tools declare id, JSON Schema parameters, execute function, and context (active project, sandbox roots, session id, caller identity, cancellation context)
+- [x] Read-only file tools first: `file_read` and `file_list` are enabled by default; destructive tools are disabled by default and gated by M7 approvals
 - [x] Sandbox rooting: all file operations scoped to active project directories; paths outside those roots are rejected
 - [x] Step limit and doom-loop detection for repeated identical tool calls or response patterns
 - [x] Cancellation and abort propagation through the loop, current tool call, and in-flight model request
-- [ ] Visibility: UI logs/token breakdown show loop turn count, tool calls, tool results, and loop termination reason
-- [ ] Config: `loop_max_turns`, `loop_doom_threshold`, and per-tool enable/disable toggles
+- [x] Visibility: task stream/session history records loop turns, tool calls, tool results, approval events, and termination reason
+- [x] Config: `loop_max_turns`, `loop_doom_threshold`, and per-tool enable/disable toggles
 
-**Deferred to M7:** destructive tools (`file_write`, file edit, shell execution), approvals, richer permissions, web search, steering/follow-up queues, extension hooks, and sub-agents.
+**Still deferred beyond M4:** file edit/patch, web search, steering/follow-up queues, extension hooks, sub-agents, and richer long-term permissions UI.
 
 **Acceptance tests:**
 - [ ] Open the task UI, enter a prompt -> conversation appears in the chat surface, model response streams in
@@ -200,15 +203,20 @@ implemented when the permission + retrieval architecture matures (M7+).
 
 **Goal:** expand the native loop from read-only inspection to safe code-changing workflows.
 
-- [ ] Destructive tools: `file_write`, file edit/patch, and shell execution
-- [ ] Approval flow: once/always/reject decisions for destructive tools and external-directory access
-- [ ] Layered permissions: agent defaults -> user config -> session approvals, with last-match-wins evaluation
-- [ ] Shell safety: working directory scoping, command timeouts, output truncation, and explicit destructive-command classification
+Consolidation Phase 5 landed the approval-gated core. The broader M7 expansion remains open where noted below.
+
+- [x] Destructive tools: `file_write` and `shell_exec` registered in the tool registry, disabled by default in config
+- [ ] File edit/patch tool
+- [x] Approval flow: allow once, always allow, and reject decisions for destructive tools
+- [x] Layered permissions: builtin defaults -> user config -> session approvals, with later layers taking precedence
+- [x] Shell guardrails: sandbox working directory validation, command timeout, output truncation, and explicit destructive-command classification
+- [ ] Windows-native shell execution path; current `shell_exec` still assumes `sh` is available
 - [ ] Web search: opt-in tool with clear network-use disclosure and per-tool disable toggle
 - [ ] Steering/follow-up queues: user can redirect the active loop after the current tool or enqueue follow-up instructions after completion
 - [ ] Extension hooks: documented Go interfaces around loop start/end, tool start/end, and compaction boundaries
 - [ ] Optional sub-agent/task tool with recursion limits and inherited deny rules
-- [ ] UI: approval cards, tool history, retry failed tool call, and audit trail per session
+- [x] UI: approval cards and approval audit trail per session
+- [ ] UI: tool history and retry failed tool call
 
 **Acceptance tests:**
 - [ ] Model calls `file_write` within sandbox root -> file is written and visible on disk
@@ -220,6 +228,8 @@ implemented when the permission + retrieval architecture matures (M7+).
 - [ ] Disable `shell_exec` in config -> model receives a tool-not-available result, harness does not crash
 - [ ] Complete a multi-step code task (read file, edit, run tests) entirely inside the harness UI
 - [ ] Tool call exits non-zero -> error is injected into context and the model can recover
+
+**Unit coverage present:** `internal/approvals` and `internal/agentloop` cover layered evaluation, destructive shell classification, allow/reject/always decisions, disabled destructive toggles, and approval events. These are not a substitute for the browser-level acceptance tests above.
 
 ---
 
