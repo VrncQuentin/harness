@@ -62,7 +62,7 @@ re-litigate already-fixed problems or lose track of what remains.
 | 10 | Storage language mixed pre-M9 and post-M9 layouts | **Resolved in docs.** Architecture now frames current single-repo paths versus planned layout-v2 paths explicitly. |
 | 11 | Roadmap checkboxes were wrong in both directions | **Resolved in Phase 6.** Roadmap now separates implemented features from unchecked acceptance tests and marks descoped/deferred items explicitly. |
 | 12 | Promotion path looked wrong because docs used future layout-v2 path | **Resolved.** Current `global/facts.md` and future `projects/global/facts.md` language is aligned. |
-| 13 | `internal/agentloop` and `internal/embedder` had zero tests | **Partially resolved.** Agentloop approval tests landed in Phase 5. Embedder tests and regression coverage for Phases 2-4 remain Phase 7 work. |
+| 13 | `internal/agentloop` and `internal/embedder` had zero tests | **Resolved for consolidation.** Agentloop approval tests landed in Phase 5; Phase 7 adds embedder client tests plus Phase 2-4 runtime/UI regressions. |
 
 ---
 
@@ -118,11 +118,12 @@ Ordered by risk, then by dependency. Each phase is a separate PR.
 - Marked missing M2/M4/M5/M6/M7 metric families as aspirational until code exists.
 - Rewrote roadmap checkboxes to reflect true implementation state while keeping acceptance boxes unchecked unless observed.
 
-### Phase 7 — Test the new/risky packages — **next**
+### Phase 7 — Test the new/risky packages — **done in this PR**
 
-- Add tests for `internal/embedder`.
-- Add regression tests for the bugs fixed in Phases 2-4.
-- Broaden integration/acceptance coverage for M4-M7 browser flows.
+- Added `internal/embedder` HTTP client tests for request shape, response indexing, empty inputs, status errors, and health checks.
+- Added a Phase 2 runtime regression proving task execution goes through the Prompt Assembler and Queue rather than direct inference.
+- Added a Phase 4 UI regression proving dedup-blocked fact promotion redirects without writing or committing.
+- Existing Phase 3 prompt/index regressions cover blended retrieval ordering, exponential recency decay, and episode index rebuild. Browser-level acceptance tests remain tracked in the roadmap.
 
 ---
 

@@ -7,14 +7,20 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/vrnc/harness/internal/agent"
+	"github.com/vrnc/harness/internal/agentloop"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/index"
+	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/proc"
+	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/queue"
+	"github.com/vrnc/harness/internal/tools"
 	"github.com/vrnc/harness/internal/ui"
 )
 
@@ -159,6 +165,90 @@ func TestUIAgentRegistryAdapterListTreatsMissingFilesAsEmpty(t *testing.T) {
 	}
 }
 
+func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
+	root := t.TempDir()
+	for rel, body := range map[string]string{
+		"global/rules.md":                "phase2 global rules",
+		"global/user.md":                 "phase2 user profile",
+		"global/facts.md":                "phase2 fact",
+		"agents/coder/persona.md":        "phase2 coder persona",
+		"agents/coder/rules.md":          "phase2 coder rules",
+		"agents/coder/notes.md":          "phase2 coder notes",
+		"projects/global/rules.md":       "phase2 project rules",
+		"projects/global/sessions.jsonl": "",
+	} {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", abs, err)
+		}
+		if err := os.WriteFile(abs, []byte(body), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", abs, err)
+		}
+	}
+
+	cfg := config.Defaults()
+	cfg.Agent.Active = "coder"
+	cfg.Memory.RepoPath = root
+	cfg.Project.ActiveProjectSlug = "global"
+	mem := memory.NewDirReader(root)
+	active := "coder"
+	reg := agent.NewDiskRegistry(mem,
+		func() string { return active },
+		func(name string) error { active = name; return nil },
+	)
+
+	queued := &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
+	q := queue.New(1, "", queued)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := q.Start(ctx); err != nil {
+		t.Fatalf("queue Start: %v", err)
+	}
+	defer q.Stop()
+
+	rt := New(cfg, nil, LogRings{})
+	rt.memReader = mem
+	rt.agentReg = reg
+	rt.assembler = prompt.NewDiskAssembler(mem, reg, cfg.Prompt).WithProjectSlug("global")
+	rt.inferClient = failingInferenceClient{err: fmt.Errorf("direct inference path used")}
+
+	ad := &taskRunnerAdapter{
+		rt:       rt,
+		registry: tools.NewRegistry(),
+		asm:      &apiAssemblerAdapter{rt: rt},
+		q:        q,
+	}
+	_, evch, err := ad.RunTask(ctx, "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+
+	var text strings.Builder
+	for ev := range evch {
+		if ev.Type == agentloop.EvtText {
+			text.WriteString(ev.Content)
+		}
+		if ev.Type == agentloop.EvtError {
+			t.Fatalf("unexpected task error event: %s", ev.Content)
+		}
+	}
+	if text.String() != "ok" {
+		t.Fatalf("task text = %q, want ok", text.String())
+	}
+
+	queued.mu.Lock()
+	defer queued.mu.Unlock()
+	if queued.calls != 1 {
+		t.Fatalf("queued inference calls = %d, want 1", queued.calls)
+	}
+	joined := messagesText(queued.last.Messages)
+	for _, want := range []string{"phase2 global rules", "phase2 coder persona", "hello"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("assembled queued messages missing %q:\n%s", want, joined)
+		}
+	}
+}
+
 func TestIndexRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	root := t.TempDir()
 	episodePath := filepath.Join(root, "projects", "global", "episodes", "coder", "ep1.md")
@@ -214,6 +304,51 @@ func (s stubEmbedder) Embed(_ context.Context, chunks []string) ([][]float32, er
 }
 
 func (s stubEmbedder) Health(context.Context) error { return nil }
+
+type capturingInferenceClient struct {
+	mu     sync.Mutex
+	tokens []inference.Token
+	calls  int
+	last   inference.CompletionRequest
+}
+
+func (c *capturingInferenceClient) Complete(_ context.Context, req inference.CompletionRequest) (<-chan inference.Token, error) {
+	c.mu.Lock()
+	c.calls++
+	c.last = req
+	tokens := append([]inference.Token(nil), c.tokens...)
+	c.mu.Unlock()
+
+	ch := make(chan inference.Token, len(tokens))
+	for _, tok := range tokens {
+		ch <- tok
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (c *capturingInferenceClient) Health(context.Context) error { return nil }
+
+type failingInferenceClient struct {
+	err error
+}
+
+func (f failingInferenceClient) Complete(context.Context, inference.CompletionRequest) (<-chan inference.Token, error) {
+	return nil, f.err
+}
+
+func (f failingInferenceClient) Health(context.Context) error { return f.err }
+
+func messagesText(msgs []inference.Message) string {
+	var b strings.Builder
+	for _, msg := range msgs {
+		b.WriteString(msg.Role)
+		b.WriteByte(':')
+		b.WriteString(msg.Content)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
 
 // newMemoryRepo creates a temp directory populated with files (relative paths
 // using forward slashes) and returns a memory.DirReader rooted at it.
