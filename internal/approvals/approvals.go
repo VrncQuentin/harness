@@ -120,7 +120,7 @@ func (e *Evaluator) Evaluate(toolID, commandArg string) (Decision, string) {
 
 	// Evaluate layers in order (agent defaults → user config → session).
 	// Last layer with a matching rule wins.
-	best := Decision(Allowed)
+	best := Allowed
 	source := "default"
 	fromSession := false
 	for _, layer := range effectiveLayers {

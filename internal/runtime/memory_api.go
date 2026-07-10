@@ -13,8 +13,8 @@ import (
 	"sync"
 
 	"github.com/vrnc/harness/internal/agent"
-	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/api"
+	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/embedder"
 	gitw "github.com/vrnc/harness/internal/git"
@@ -570,7 +570,7 @@ func (rb *indexRebuilder) Rebuild(ctx context.Context) error {
 	allChunks := make([]string, 0)
 	chunkCounts := make([]int, len(work))
 	for i, w := range work {
-		chunks := chunkSummary(string(w.content))
+		chunks := chunkSummary(w.content)
 		allChunks = append(allChunks, chunks...)
 		chunkCounts[i] = len(chunks)
 	}

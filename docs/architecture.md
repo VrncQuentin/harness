@@ -2,7 +2,7 @@
 
 ## Overview
 
-A local AI inference harness with git-backed project memory, layered prompt assembly, a browser-based management UI, a planned first-party native agent loop, and a planned declarative pipeline runner. The harness owns chat, tool-call orchestration, tool execution, and `.hp` pipeline execution locally; external coding agents are references for design patterns, not runtime dependencies.
+A local AI inference harness with git-backed project memory, layered prompt assembly, a browser-based management UI, a first-party native agent loop, an approval-gated local tool layer, and a planned declarative pipeline runner. The harness owns chat, tool-call orchestration, tool execution, and planned `.hp` pipeline execution locally; external coding agents are references for design patterns, not runtime dependencies.
 
 The harness runs as a native desktop binary (Windows and Linux). It starts silently, opens the management UI in the default browser if not already open, and lives in the system tray until explicitly quit. The browser UI is the only user-facing surface — all errors (unconfigured on first run, missing model, llama-server failures, missing memory repo) are surfaced there, not in a terminal.
 
@@ -38,12 +38,12 @@ The binary targets llama-server as the inference backend and uses a separate emb
 │  ┌──────▼───────┐  ┌───────▼────────┐         ▼         │
 │  │ Pipeline     │  │ Tool Registry  │   ┌────────────┐  │
 │  │ Runner       │  │ + Sandbox      │   │ Git Backend│  │
-│  │ (planned)    │  │ (planned)      │   └──────┬─────┘  │
+│  │ (planned)    │  │ + Approvals    │   └──────┬─────┘  │
 │  └──────┬───────┘  └───────▲────────┘          │        │
 │         ▼                  │                   ▼        │
 │  ┌──────────────┐          │            ┌─────────────┐ │
 │  │ Agent Loop   │──────────┘            │  Embedder   │ │
-│  │ (planned)    │                       │  (nomic)   │ │
+│  │              │                       │  (nomic)   │ │
 │  └──────┬───────┘                       └─────────────┘ │
 │         │                                               │
 │         ▼                                               │
@@ -82,7 +82,7 @@ Pages:
 - **Chat / Tasks** — first-party conversation and agent-loop task surface; streams model output, tool calls, tool results, and cancellation state
 - **Pipelines** — planned `.hp` authoring, lint, dry-run preview, execution graph, surfacing, resume, and artifact browser
 - **Status** — llama-server health, queue depth, VRAM usage, restart controls; errors (missing config, missing model, failed starts) displayed prominently here
-- **Projects** — create, edit, hide, and switch active project once M3b lands
+- **Projects** — create, edit, hide, and switch active project
 - **Agents** — switch active agent, edit persona and notes inline, trigger hot-reload
 - **Memory** — browse episodes by agent/date, view retrieval scores, promote facts
 - **Logs** — live process manager events, prompt assembly debug, loop turns, and tool-call traces
@@ -97,30 +97,49 @@ Behavior:
 - **On Quit:** graceful shutdown — drain queue, flush WAL, terminate child processes, release lock
 
 ### Session Manager (`internal/session`)
-Owns conversation lifecycle for the browser chat/task surface, the optional OpenAI-compatible API server, and the planned native agent loop.
+Owns conversation lifecycle for the browser chat/task surface, the optional OpenAI-compatible API server, and the native agent loop.
 
 - **On start:** resolve active agent → trigger memory read → assemble initial context
 - **Per turn:** append to conversation history → call Prompt Assembler → send to Queue
 - **On end:** call summarizer (Qwen) → write episode file → trigger git commit
 - **Persistence:** append-only `sessions.jsonl` in the active project memory repo (defaults to `~/.harness/projects/global/` once layout-v2 lands)
 
-### Agent Loop (`internal/agentloop`) — planned M4
-Owns the first-party agentic turn loop. This package is planned separately from `internal/agent`, which remains the agent/persona registry.
+### Runtime (`internal/runtime`)
+Owns the mutable service graph behind the harness. `cmd/harness/main.go` creates the UI first, then asks `internal/runtime` to wire and retry the rest of the subsystems after the browser surface is already available.
+
+Responsibilities:
+- Hold the active config, config store, project store, process managers, queue, inference client, memory reader, prompt assembler, session manager, API server, tool registry, and log rings.
+- Implement the retry/config-save path that revalidates config, memory repo, projects, llama-server, embedder, API server, and session services without requiring a binary restart where possible.
+- Adapt package boundaries for the UI: chat/task runners, memory APIs, project health checks, approval routing, and session persistence.
+- Keep runtime state behind locks because UI handlers, process events, metrics, and retry callbacks run concurrently.
+
+### Agent Loop (`internal/agentloop`)
+Owns the first-party agentic turn loop. This package is separate from `internal/agent`, which remains the agent/persona registry.
 
 Responsibilities:
 - Maintain part-based messages (`text`, `tool_call`, `tool_result`) for UI display and session replay.
 - Call the Prompt Assembler, submit requests through Queue/Inference Client, parse tool calls, dispatch tools, inject results, and continue until stop/limit/cancel.
 - Enforce max turn count, doom-loop detection, cancellation propagation, and compaction triggers.
-- Emit loop events to the UI logs/SSE stream and metrics store.
+- Emit loop events to the UI task stream and logs.
+- Apply the optional approval evaluator before destructive tool dispatch. Ask decisions pause the loop until the UI applies an allow/reject/always decision.
 
-### Tool Registry + Sandbox (`internal/tools`) — planned M4/M7
+### Tool Registry + Sandbox (`internal/tools`)
 Defines the local tool surface available to the agent loop.
 
 Responsibilities:
 - Register tools by id, JSON Schema parameters, description, and execute function.
 - Pass a typed context to each tool: active project slug, sandbox roots, session id, caller identity, and cancellation context.
-- M4 starts read-only (`file_read`, `file_list`) and rejects paths outside active project directories.
-- M7 adds destructive tools, shell execution, web search, approvals, richer permissions, and extension hooks.
+- `file_read` and `file_list` are read-only tools and reject paths outside active project directories.
+- `file_write` and `shell_exec` are registered for M7, but disabled by default in config and approval-gated before execution.
+
+### Approvals (`internal/approvals`)
+Owns the M7 permission evaluator used by the agent loop.
+
+Responsibilities:
+- Evaluate layered rules in order: builtin defaults, user config, then session approvals.
+- Support allow, reject, and always-allow session decisions.
+- Classify destructive shell commands so broad rules cannot silently allow them; exact session approvals are required to bypass Ask for a destructive command.
+- Return audit-friendly decision sources for UI/session history.
 
 ### Pipeline Runner (`internal/pipeline`) — planned M10
 Owns parsing, validation, and execution of Harness Pipeline DSL specs (`.hp`). The language contract is documented in [DSL.md](DSL.md). Specs are declarative workflow files stored with the attached project git repos they operate on; the runner executes them through the same first-party agent loop, tool registry, queue, inference client, memory store, and UI event stream used by interactive tasks.
@@ -184,6 +203,9 @@ Mediates all reads and writes to git-backed project memory repos.
 
 **Cross-agent reads:** explicit only. An agent may request episodes from another agent's directory. Not automatic.
 
+### Project Store (`internal/project`)
+Defines project identity and validation rules. SQL persistence lives in `internal/db`, while this package owns typed project values, slugs, directory metadata, effective model overrides, and lifecycle status such as hidden or system projects.
+
 ### Git Backend (`internal/git`)
 Thin wrapper around `go-git` (pure Go — no git binary dependency).
 
@@ -199,6 +221,15 @@ Commit message format (machine-parseable):
 ```
 
 Index rebuild: walk all commits, re-embed any SHA missing from `index/manifest.json`. Idempotent, safe to run on a fresh clone.
+
+### Vector Index (`internal/index`)
+Manages flat vector indices stored as `vectors.bin` plus `manifest.json` pairs under a project's `index/` tree.
+
+Responsibilities:
+- Create and open index directories.
+- Append vectors idempotently by content SHA.
+- Perform cosine-similarity flat scans for top-K search.
+- Keep the on-disk format isolated from prompt and memory logic.
 
 ### Embedder (`internal/embedder`)
 Runs nomic-embed-text as a sidecar process. Same spawn/monitor pattern as llama-server — consistent failure handling, restart on crash.
@@ -238,18 +269,28 @@ Spawns and monitors llama-server and the Embedder sidecar as child processes.
 - Reads from config: binary path, model path, ctx size, GPU layers, n_parallel
 - Emits structured events to UI log stream via SSE
 
-### Metrics Store (`internal/metrics`)
-Collects and persists time-series metrics to the shared `harness.db` SQLite file. Layout-v2 places it under `~/.harness/`. Uses the same `*sql.DB` handle as the config store — opened once in `main`, shared by all subsystems. No external dependencies.
+### Database (`internal/db`)
+Owns all SQLite persistence for operational state. Domain packages define typed interfaces (`config.Store`, `metrics.Store`, project store surfaces); `internal/db` is the concrete SQL implementation and migration owner.
 
-Metrics collected grow with each milestone:
-- **M1:** llama-server health, uptime, queue depth, restart count
-- **M2:** requests per agent, token counts per prompt layer
-- **M3:** episodes written per agent, memory repo size, commit count
-- **M4:** session duration, tokens in/out per session, loop turn count, read-only tool call count
-- **M5:** retrieval latency, embedding latency, index size
-- **M7:** tool call count per type, tool error rate, approval decisions, shell execution outcomes
-- **M8:** TTFT, token throughput, VRAM usage
-- **M10:** pipeline run status, step attempts, reject counts, surface counts, verify/gate duration, artifact bytes
+Responsibilities:
+- Open and migrate `harness.db`.
+- Seed and update the single-row config table.
+- Store projects and attached project directories.
+- Store metrics samples and expose query APIs for UI/status pages.
+
+### Metrics Store (`internal/metrics`)
+Defines the typed metrics API and recorder helpers. Persistence lives in `internal/db` and uses the shared `harness.db` SQLite file. Layout-v2 places that database under `~/.harness/`; before M9 it lives next to the binary.
+
+Currently recorded metric names:
+- `uptime_seconds`
+- `queue_depth`
+- `process_health`
+- `restart_count`
+- `session_count`
+- `episode_count`
+- `git_commit_latency_ms`
+
+Planned metric families remain milestone-scoped in the roadmap: prompt layer token counts, hot-reload events, loop/tool counters, retrieval and embedding latency, approval decisions, shell outcomes, TTFT, token throughput, VRAM usage, and pipeline run metrics. Until those names exist as constants in `internal/metrics`, they are aspirational.
 
 Interface:
 ```go
@@ -269,21 +310,11 @@ Thin OpenAI-compatible HTTP server. Enables external clients to send chat comple
 - Memory and persona injection is transparent to the caller
 - Separate port from UI server, disabled by default, enabled via config
 
-### Metrics Store (`internal/metrics`)
-Time-series tables inside the shared `harness.db` under the harness home after layout-v2. Written to by all components, read by the UI server for the status and logs pages.
+### Log Buffer (`internal/logbuf`)
+Provides in-memory ring buffers for harness logs and child process output. The UI status/log surfaces read recent entries and subscribe to live batches over SSE. Log buffers are memory-only; durable log files are planned for layout-v2.
 
-Schema grows per milestone:
-- **M1:** `uptime`, `process_health` (llama-server, embedder), `queue_depth`, `restart_count`
-- **M2:** `prompt_layer_tokens` (per layer, per request), `hot_reload_events`
-- **M3:** `session_count`, `episode_count`, `git_commit_latency_ms`
-- **M4:** `active_sessions`, `agent_loop_turns`, `tool_calls_by_type`, `tool_failures`
-- **M5:** `embedding_latency_ms`, `index_size_chunks`, `retrieval_scores`, `ann_search_latency_ms`
-- **M6:** `promotions_count`, `dedup_blocks`, `cross_agent_reads`
-- **M7:** `approval_decisions`, `shell_exec_duration_ms`, `tool_output_truncations`
-- **M8:** `ttft_ms`, `token_throughput`, `vram_usage_mb`
-- **M10:** `pipeline_runs`, `pipeline_step_attempts`, `pipeline_rejects`, `pipeline_surfaces`, `pipeline_verify_duration_ms`, `pipeline_gate_duration_ms`, `pipeline_artifact_bytes`
-
-Retention: raw rows kept for 30 days, downsampled hourly aggregates kept indefinitely. UI shows both live values (SSE) and historical charts (htmx polling).
+### Request IDs (`internal/reqid`)
+Threads a per-request identifier through `context.Context` so API handlers, queue dispatch, prompt assembly, and logs can correlate one request without adding request-id fields to every package API.
 
 ---
 
@@ -337,15 +368,18 @@ Configuration lives in a single-row typed `config` table inside `harness.db`. Th
 The schema mirrors the Go `config.Config` struct: one column per field, snake-cased with a section prefix (`model_binary`, `embedder_port`, `prompt_memory_token_budget`, etc.). Column defaults in the DDL mirror `config.Defaults()` in Go so the two stay honest.
 
 Sections and fields:
-- **model:** `binary`, `model_path`, `ctx_size`, `gpu_layers`, `n_parallel`, `port`
-- **embedder:** `binary`, `model_path`, `port`
+- **model:** `binary`, `model_path`, `ctx_size`, `gpu_layers`, `n_parallel`, `port`, `verbose`, `cache_type_k`, `cache_type_v`
+- **embedder:** `binary`, `model_path`, `port`, `verbose`
 - **memory:** current single-repo path before M9; after layout-v2, harness home and per-project memory repo paths
+- **agent:** `active`
 - **ui:** `port`, `open_on_start`
 - **api:** `enabled`, `port`
 - **project:** `active_project_slug`, `llama_on_switch`
-- **prompt:** `ctx_size`, `memory_token_budget`, `conversation_reserve`
+- **prompt:** `ctx_size`, `memory_token_budget`, `conversation_reserve`, `recency_n`, `summarizer_prompt`, `semantic_weight`, `recency_weight`, `promotion_dedup_threshold`
 - **queue:** `max_depth`, `wal_path`
 - **metrics:** `retention_days`
+- **log:** `ring_max_entries`, `proc_max_lines`
+- **loop:** `max_turns`, `doom_threshold`, `file_read_enabled`, `file_list_enabled`, `file_write_enabled`, `shell_exec_enabled`
 
 First run: the row is seeded with defaults and `saved_at` is NULL. The status page shows a "Set up your harness" CTA until the user saves at least once. Changes to `ui.port`, model/embedder binaries, and ports take effect on the next harness restart; everything else is reloaded when the retry callback fires.
 
@@ -373,6 +407,8 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **Two HTTP servers, one binary.** UI server (port 3000) and API server (port 8080) are separate. UI is always on. API is opt-in for external OpenAI-compatible clients and is never required for the first-party browser workflow.
 
-**Native agent layer staged after Projects.** M4 introduces `internal/agentloop` and `internal/tools` as planned first-party components. `internal/agent` remains the registry/persona package. The MVP starts read-only and project-scoped; destructive tools and approvals are deferred to M7.
+**Native agent layer staged after Projects.** M4 introduced `internal/agentloop` and `internal/tools` as first-party components. `internal/agent` remains the registry/persona package. The MVP started read-only and project-scoped; M7 adds approval-gated destructive tools.
+
+**Approval-gated destructive tools.** M7 registers `file_write` and `shell_exec` but leaves both disabled by default. Enabling them still routes calls through the approvals evaluator, and destructive shell commands require an exact session approval before they can bypass Ask.
 
 **Pipeline DSL staged after layout-v2 and tool permissions.** `.hp` pipelines depend on project memory repos, attached source repos, the native agent loop, and the hardened tool/approval layer because model steps write declared outputs through harness tools and verify/gate commands run as trusted local processes. The DSL is deliberately not part of M4: interactive agent-loop execution comes first, safe write/shell permissions come second, storage layout stabilization comes third, declarative multi-step automation comes after those foundations.
