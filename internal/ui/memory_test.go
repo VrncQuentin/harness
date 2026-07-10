@@ -38,6 +38,21 @@ type stubRetrievalScorer struct {
 	scores map[string]RetrievalScore
 }
 
+type stubDedupChecker struct {
+	blocked      bool
+	similar      string
+	score        float64
+	err          error
+	gotText      string
+	gotThreshold float64
+}
+
+func (s *stubDedupChecker) CheckSimilar(_ context.Context, text string, threshold float64) (bool, string, float64, error) {
+	s.gotText = text
+	s.gotThreshold = threshold
+	return s.blocked, s.similar, s.score, s.err
+}
+
 type stubCommitter struct {
 	err      error
 	messages []string
@@ -259,6 +274,43 @@ func TestHandleMemory_RejectsPOST(t *testing.T) {
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
+func TestHandlePromoteFact_DedupBlockedSkipsWriteAndCommit(t *testing.T) {
+	s := NewServer(3000)
+	store := newStubMemoryStore(map[string]string{
+		"global/facts.md": "existing fact\n",
+	})
+	committer := &stubCommitter{}
+	checker := &stubDedupChecker{blocked: true, similar: "existing fact", score: 0.972}
+	s.SetMemoryStore(store)
+	s.SetCommitter(committer)
+	s.SetDedupChecker(checker)
+	s.SetPromotionDedupThreshold(0.95)
+
+	form := url.Values{}
+	form.Set("text", "existing fact with punctuation")
+	req := httptest.NewRequest(http.MethodPost, "/memory/promote", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handlePromoteFact(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "dedup=1") || !strings.Contains(loc, "similar=existing+fact") || !strings.Contains(loc, "score=0.97") {
+		t.Fatalf("unexpected redirect location %q", loc)
+	}
+	if checker.gotText != "existing fact with punctuation" || checker.gotThreshold != 0.95 {
+		t.Fatalf("dedup checker got text=%q threshold=%v", checker.gotText, checker.gotThreshold)
+	}
+	if store.lastWritePath != "" {
+		t.Fatalf("dedup-blocked promotion wrote %s", store.lastWritePath)
+	}
+	if len(committer.messages) != 0 {
+		t.Fatalf("dedup-blocked promotion committed: %#v", committer.messages)
 	}
 }
 
