@@ -283,7 +283,9 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	data.DedupBlocked = q.Get("dedup") == "1"
 	data.DedupSimilar = strings.TrimSpace(q.Get("similar"))
 	if s := strings.TrimSpace(q.Get("score")); s != "" {
-		fmt.Sscanf(s, "%f", &data.DedupScore)
+		if _, err := fmt.Sscanf(s, "%f", &data.DedupScore); err != nil {
+			data.DedupScore = 0
+		}
 	}
 	if reg := s.agentRegistry(); reg != nil {
 		if list, err := reg.List(); err == nil {
