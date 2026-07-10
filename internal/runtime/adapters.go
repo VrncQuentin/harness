@@ -531,9 +531,9 @@ type taskRunnerAdapter struct {
 	q        *queue.Queue
 	// evl is the M7 permission evaluator. When nil, no approval checks are
 	// performed and all enabled tools dispatch immediately.
-	evl        *approvals.Evaluator
-	enginesMu  sync.Mutex
-	engines    map[string]*agentloop.Engine // sessionID → engine
+	evl       *approvals.Evaluator
+	enginesMu sync.Mutex
+	engines   map[string]*agentloop.Engine // sessionID → engine
 }
 
 // queuedInferClient wraps a Queue so the agent loop routes through the

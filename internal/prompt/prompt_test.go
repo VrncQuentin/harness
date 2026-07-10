@@ -846,8 +846,8 @@ func (e errReader) ListDirs(rel string) ([]string, error) {
 // (regression test for consolidation plan bug #3).
 func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "r",
-		"agents/coder/persona.md": "p",
+		"global/rules.md":                      "r",
+		"agents/coder/persona.md":              "p",
 		"projects/global/episodes/coder/01.md": "EP1",
 		"projects/global/episodes/coder/02.md": "EP2",
 		"projects/global/episodes/coder/03.md": "EP3",
@@ -921,8 +921,8 @@ func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
 // blended path uses exponential recency decay, not linear rank.
 func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "r",
-		"agents/coder/persona.md": "p",
+		"global/rules.md":                      "r",
+		"agents/coder/persona.md":              "p",
 		"projects/global/episodes/coder/01.md": "EP1",
 		"projects/global/episodes/coder/02.md": "EP2",
 		"projects/global/episodes/coder/03.md": "EP3",
