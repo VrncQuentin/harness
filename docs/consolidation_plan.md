@@ -1,11 +1,12 @@
 # Consolidation Plan
 
-**Status:** active · **Opened:** 2026-06-21 · **Last reconciled:** 2026-07-10
+**Status:** complete · **Opened:** 2026-06-21 · **Completed:** 2026-07-11
 
 This document is the recovery plan after a fast, breadth-first development sprint.
 It acknowledges where we cut corners, records the consolidated findings from two
 independent reviews, and lays out an ordered plan to get back to a stable,
-verifiable state before any new milestone work resumes.
+verifiable state before any new milestone work resumes. The consolidation plan
+is now complete; remaining work has moved back to the normal roadmap.
 
 ---
 
@@ -15,10 +16,11 @@ We properly implemented **M1-M3** before the rushed breadth-first sprint. Their
 acceptance criteria were verified earlier in the project history and remain
 marked complete in the roadmap.
 
-The consolidation work has now landed through **Phase 5** and this reconciliation
-PR performs **Phase 6**. That means the dangerous M7 slice was first made safe,
-then reintroduced behind the approval layer. M4/M5/M6 implementation gaps called
-out by the audit were also addressed or explicitly descoped in the roadmap.
+The consolidation work has now landed through **Phase 7**. That means the
+dangerous M7 slice was first made safe, then reintroduced behind the approval
+layer, the docs were reconciled, and the riskiest consolidation-era packages now
+have regression coverage. M4/M5/M6 implementation gaps called out by the audit
+were also addressed or explicitly descoped in the roadmap.
 
 This does **not** mean every milestone after M3 is acceptance-complete. Feature
 checkboxes now track code that exists; acceptance-test boxes stay unchecked
@@ -37,7 +39,7 @@ acceptance tests pass.
 | M4 Agent Loop | **Implementation stabilized**; routed through assembler + queue, part/tool events persisted, per-tool toggles added; acceptance tests still open |
 | M5 Semantic | **Episode semantic retrieval implemented**; blended retrieval fixed, episode rebuild/status/scores added; attached-directory indexing deferred |
 | M6 Promotion | **Implementation complete for scoped M6**; cross-agent prompt injection intentionally descoped beyond M6 |
-| M7 Tools+Perms | **Approval-gated core landed**; `file_write`/`shell_exec`, layered approvals, destructive classification, UI approval cards, and audit trail exist; Windows-native shell execution and broader M7 items remain open |
+| M7 Tools+Perms | **Approval-gated core landed**; `file_write`/`shell_exec`, layered approvals, destructive classification, UI approval cards, and audit trail exist; Windows-native shell execution and web search remain in M7; file edit/patch, steering/follow-ups, extension hooks, sub-agents, and tool-history retry UI are deferred |
 | M8 Hardening | **Not started** |
 | M9 / M10 | **Frozen** (docs only) |
 
@@ -109,16 +111,17 @@ Ordered by risk, then by dependency. Each phase is a separate PR.
 - Wired layered permissions: builtin defaults -> user config -> session approvals.
 - Added destructive-command classification, sandbox working directory validation, timeouts, output truncation, UI approval cards, and session audit trail.
 - Windows-native shell execution remains open: the current `shell_exec` path still assumes `sh` is available.
-- Broader M7 expansion remains open in the roadmap: file edit/patch, web search, steering/follow-ups, extension hooks, sub-agents, tool history, and retry failed tool call.
+- Web search remains in M7 as an opt-in, clearly disclosed network tool with a per-tool disable toggle.
+- Broader M7-adjacent expansion is deferred beyond M7: file edit/patch, steering/follow-ups, extension hooks, sub-agents, tool history, and retry failed tool call.
 
-### Phase 6 — Docs + roadmap reconciliation — **done in this PR**
+### Phase 6 — Docs + roadmap reconciliation — **done**
 
 - Documented `internal/runtime`, `db`, `index`, `logbuf`, `project`, `reqid`, and `approvals`.
 - Fixed the config section list and current-vs-layout-v2 storage framing.
 - Marked missing M2/M4/M5/M6/M7 metric families as aspirational until code exists.
 - Rewrote roadmap checkboxes to reflect true implementation state while keeping acceptance boxes unchecked unless observed.
 
-### Phase 7 — Test the new/risky packages — **done in this PR**
+### Phase 7 — Test the new/risky packages — **done**
 
 - Added `internal/embedder` HTTP client tests for request shape, response indexing, empty inputs, status errors, and health checks.
 - Added a Phase 2 runtime regression proving task execution goes through the Prompt Assembler and Queue rather than direct inference.
@@ -127,9 +130,14 @@ Ordered by risk, then by dependency. Each phase is a separate PR.
 
 ---
 
-## 4. Frozen until the above is done
+## 4. What remains frozen
 
 - **M9 — Layout V2:** depends on a stable M3b/M5/M8 base. No work begins until
-  Phases 0-7 land and the M3b-M8 acceptance tests pass.
+  the M3b-M8 acceptance tests pass.
 - **M10 — Pipeline DSL:** depends on M7 (real permissions) and M9. Design docs may
   evolve; no `internal/dsl` / `internal/pipeline` code begins until M9 ships.
+
+## 5. Next roadmap step
+
+Resume normal milestone work at scoped **M7**: finish Windows-native shell
+execution, add opt-in web search, and run the M7 browser-level acceptance tests.

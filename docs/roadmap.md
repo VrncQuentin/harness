@@ -4,6 +4,8 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 
 Implementation checkboxes track code that has landed. Acceptance-test checkboxes stay unchecked unless the test was explicitly run and observed passing.
 
+Windows native and Linux are equal first-class targets. CI must run the Go test suite on both OSes for every PR, and platform-specific milestone acceptance tests must be verified on the OS they exercise.
+
 ---
 
 ## M1 — Inference Core
@@ -203,30 +205,37 @@ implemented when the permission + retrieval architecture matures (M7+).
 
 **Goal:** expand the native loop from read-only inspection to safe code-changing workflows.
 
-Consolidation Phase 5 landed the approval-gated core. The broader M7 expansion remains open where noted below.
+Consolidation Phase 5 landed the approval-gated core. The remaining M7 scope is
+Windows-native shell execution, opt-in web search, and browser-level acceptance
+verification for the approval-gated tool layer. File edit/patch, steering and
+follow-up queues, extension hooks, optional sub-agents, and tool-history retry UI
+are deferred beyond M7.
 
 - [x] Destructive tools: `file_write` and `shell_exec` registered in the tool registry, disabled by default in config
-- [ ] File edit/patch tool
 - [x] Approval flow: allow once, always allow, and reject decisions for destructive tools
 - [x] Layered permissions: builtin defaults -> user config -> session approvals, with later layers taking precedence
 - [x] Shell guardrails: sandbox working directory validation, command timeout, output truncation, and explicit destructive-command classification
 - [ ] Windows-native shell execution path; current `shell_exec` still assumes `sh` is available
 - [ ] Web search: opt-in tool with clear network-use disclosure and per-tool disable toggle
-- [ ] Steering/follow-up queues: user can redirect the active loop after the current tool or enqueue follow-up instructions after completion
-- [ ] Extension hooks: documented Go interfaces around loop start/end, tool start/end, and compaction boundaries
-- [ ] Optional sub-agent/task tool with recursion limits and inherited deny rules
 - [x] UI: approval cards and approval audit trail per session
-- [ ] UI: tool history and retry failed tool call
+
+**Deferred beyond M7:**
+- File edit/patch tool
+- Steering/follow-up queues: user can redirect the active loop after the current tool or enqueue follow-up instructions after completion
+- Extension hooks: documented Go interfaces around loop start/end, tool start/end, and compaction boundaries
+- Optional sub-agent/task tool with recursion limits and inherited deny rules
+- UI tool history and retry failed tool call
 
 **Acceptance tests:**
 - [ ] Model calls `file_write` within sandbox root -> file is written and visible on disk
-- [ ] Model calls file edit outside sandbox root -> rejected before touching disk
 - [ ] Model calls `shell_exec` with a safe command -> stdout/stderr returned to the model
 - [ ] Model calls `shell_exec` with a destructive command (`rm -rf`) -> approval required before execution
 - [ ] User selects reject in approval UI -> tool result is a denial, loop can recover
 - [ ] User selects always for a matching pattern -> next matching tool call proceeds without asking
 - [ ] Disable `shell_exec` in config -> model receives a tool-not-available result, harness does not crash
-- [ ] Complete a multi-step code task (read file, edit, run tests) entirely inside the harness UI
+- [ ] Enable web search -> model can call the web-search tool, the UI/audit trail clearly discloses network use, and results are injected into context
+- [ ] Disable web search in config -> model receives a tool-not-available result and the harness makes no network request
+- [ ] Complete a multi-step code task (read file, write a sandboxed file, run tests) entirely inside the harness UI
 - [ ] Tool call exits non-zero -> error is injected into context and the model can recover
 
 **Unit coverage present:** `internal/approvals` and `internal/agentloop` cover layered evaluation, destructive shell classification, allow/reject/always decisions, disabled destructive toggles, and approval events. These are not a substitute for the browser-level acceptance tests above.
