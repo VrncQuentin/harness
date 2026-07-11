@@ -4,7 +4,7 @@
 
 A local AI inference harness with git-backed project memory, layered prompt assembly, a browser-based management UI, a first-party native agent loop, an approval-gated local tool layer, and a planned declarative pipeline runner. The harness owns chat, tool-call orchestration, tool execution, and planned `.hp` pipeline execution locally; external coding agents are references for design patterns, not runtime dependencies.
 
-The harness runs as a native desktop binary (Windows and Linux). It starts silently, opens the management UI in the default browser if not already open, and lives in the system tray until explicitly quit. The browser UI is the only user-facing surface — all errors (unconfigured on first run, missing model, llama-server failures, missing memory repo) are surfaced there, not in a terminal.
+The harness runs as a native desktop binary (Windows and Linux). Windows and Linux are equal first-class targets; platform-specific behavior must be designed, tested, and documented for both rather than treating either OS as best-effort. It starts silently, opens the management UI in the default browser if not already open, and lives in the system tray until explicitly quit. The browser UI is the only user-facing surface — all errors (unconfigured on first run, missing model, llama-server failures, missing memory repo) are surfaced there, not in a terminal.
 
 The binary targets llama-server as the inference backend and uses a separate embedding sidecar for semantic memory.
 
@@ -131,6 +131,7 @@ Responsibilities:
 - Pass a typed context to each tool: active project slug, sandbox roots, session id, caller identity, and cancellation context.
 - `file_read` and `file_list` are read-only tools and reject paths outside active project directories.
 - `file_write` and `shell_exec` are registered for M7, but disabled by default in config and approval-gated before execution.
+- Web search remains M7 scope as an opt-in tool with explicit network-use disclosure; file edit/patch, steering queues, extension hooks, sub-agents, and tool-history retry UI are deferred beyond M7.
 
 ### Approvals (`internal/approvals`)
 Owns the M7 permission evaluator used by the agent loop.
@@ -409,6 +410,6 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **Native agent layer staged after Projects.** M4 introduced `internal/agentloop` and `internal/tools` as first-party components. `internal/agent` remains the registry/persona package. The MVP started read-only and project-scoped; M7 adds approval-gated destructive tools.
 
-**Approval-gated destructive tools.** M7 registers `file_write` and `shell_exec` but leaves both disabled by default. Enabling them still routes calls through the approvals evaluator, and destructive shell commands require an exact session approval before they can bypass Ask.
+**Approval-gated tools.** M7 registers `file_write` and `shell_exec` but leaves both disabled by default. Enabling them still routes calls through the approvals evaluator, and destructive shell commands require an exact session approval before they can bypass Ask. Web search also remains M7, but must be opt-in and clearly disclosed because it uses the network. File edit/patch, steering/follow-ups, extension hooks, sub-agents, and tool-history retry UI are deferred beyond M7.
 
 **Pipeline DSL staged after layout-v2 and tool permissions.** `.hp` pipelines depend on project memory repos, attached source repos, the native agent loop, and the hardened tool/approval layer because model steps write declared outputs through harness tools and verify/gate commands run as trusted local processes. The DSL is deliberately not part of M4: interactive agent-loop execution comes first, safe write/shell permissions come second, storage layout stabilization comes third, declarative multi-step automation comes after those foundations.
