@@ -4,6 +4,8 @@ Each milestone ends with a usable, stable state. Don't start the next until all 
 
 Implementation checkboxes track code that has landed. Acceptance-test checkboxes stay unchecked unless the test was explicitly run and observed passing.
 
+Windows native and Linux are equal first-class targets. CI must run the Go test suite on both OSes for every PR, and platform-specific milestone acceptance tests must be verified on the OS they exercise.
+
 ---
 
 ## M1 — Inference Core
