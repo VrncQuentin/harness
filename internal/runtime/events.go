@@ -3,6 +3,9 @@ package runtime
 import (
 	"context"
 	"log/slog"
+	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vrnc/harness/internal/metrics"
@@ -42,8 +45,45 @@ func recordMetrics(
 				_ = rec.ProcessHealth("embedder", st.Healthy)
 				_ = rec.ProcessRestartCount("embedder", st.RestartCount)
 			}
+			for _, sample := range pollVRAM(ctx) {
+				_ = rec.VRAMUsedMB(sample.gpu, sample.usedMB)
+			}
 		}
 	}
+}
+
+type vramSample struct {
+	gpu    string
+	usedMB float64
+}
+
+func pollVRAM(ctx context.Context) []vramSample {
+	cmdCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cmdCtx, "nvidia-smi", "--query-gpu=index,memory.used", "--format=csv,noheader,nounits")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	samples := make([]vramSample, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, ",")
+		if len(parts) != 2 {
+			continue
+		}
+		gpu := strings.TrimSpace(parts[0])
+		used, err := strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+		if err != nil {
+			continue
+		}
+		samples = append(samples, vramSample{gpu: gpu, usedMB: used})
+	}
+	return samples
 }
 
 // ForwardEvents reads process events, logs them, and updates the UI state.

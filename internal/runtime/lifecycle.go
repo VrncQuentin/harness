@@ -64,8 +64,16 @@ func (rt *Runtime) Stop() {
 	q := rt.reqQueue
 	apiSrv := rt.apiServer
 	hr := rt.hotReload
+	tasks := rt.taskRunner
 	rt.mu.Unlock()
 
+	if tasks != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := tasks.CancelAll(ctx); err != nil {
+			slog.Warn("task loop shutdown wait", "err", err)
+		}
+		cancel()
+	}
 	if mgr := rt.SessionManager(); mgr != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		if err := mgr.FlushAll(ctx); err != nil {
@@ -82,6 +90,22 @@ func (rt *Runtime) Stop() {
 	if hr != nil {
 		if err := hr.Close(); err != nil {
 			slog.Warn("prompt hot-reload close", "err", err)
+		}
+	}
+}
+
+// WaitManagers waits for process manager goroutines to exit after their context
+// has been cancelled. It is safe to call when either manager is nil.
+func (rt *Runtime) WaitManagers(ctx context.Context) {
+	llama, embed := rt.Managers()
+	if llama != nil {
+		if err := llama.Wait(ctx); err != nil {
+			slog.Warn("llama manager shutdown wait", "err", err)
+		}
+	}
+	if embed != nil {
+		if err := embed.Wait(ctx); err != nil {
+			slog.Warn("embedder manager shutdown wait", "err", err)
 		}
 	}
 }
@@ -143,6 +167,9 @@ func (rt *Runtime) startServices(
 	)
 	rt.inferClient = inferClient
 	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, cfg.Queue.WALPath, inferClient)
+	if metricsStore != nil {
+		rt.reqQueue.SetMetrics(metrics.NewRecorder(metricsStore))
+	}
 	if err := rt.reqQueue.Start(ctx); err != nil {
 		uiServer.AddStartupError(fmt.Errorf("queue WAL error: %w", err))
 	}

@@ -1,9 +1,13 @@
 package ui
 
 import (
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/vrnc/harness/internal/logbuf"
 	"github.com/vrnc/harness/internal/memory"
@@ -31,8 +35,15 @@ type statusPageData struct {
 	LlamaPanel      procStatusPanelData
 	EmbedPanel      procStatusPanelData
 	HarnessLog      logboxData
+	Metrics         []metricView
 	LlamaLog        logboxData
 	EmbedLog        logboxData
+}
+
+type metricView struct {
+	Name  string
+	Value string
+	Tags  string
 }
 
 type queueCardData struct {
@@ -113,6 +124,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		LlamaPanel:      llamaPanelFromSnapshot(snap),
 		EmbedPanel:      embedPanelFromSnapshot(snap),
 		HarnessLog:      logboxData{BodyID: "harness-log", EventName: "harness-log", Entries: recentEntries(s.getLogRing(), statusLogTail)},
+		Metrics:         s.latestMetricsView(),
 		LlamaLog:        logboxData{BodyID: "llama-log", EventName: "llama-log", Entries: recentEntries(s.getLlamaRing(), procLogTail)},
 		EmbedLog:        logboxData{BodyID: "embed-log", EventName: "embed-log", Entries: recentEntries(s.getEmbedRing(), procLogTail)},
 	}
@@ -120,6 +132,46 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if err := s.statusTmpl.ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+func (s *Server) latestMetricsView() []metricView {
+	store := s.getMetricsStore()
+	if store == nil {
+		return nil
+	}
+	points, err := store.Latest()
+	if err != nil {
+		slog.Warn("status metrics latest", "err", err)
+		return nil
+	}
+	if len(points) > 12 {
+		points = points[:12]
+	}
+	out := make([]metricView, 0, len(points))
+	for _, pt := range points {
+		out = append(out, metricView{
+			Name:  pt.Name,
+			Value: strconv.FormatFloat(pt.Value, 'f', -1, 64),
+			Tags:  formatMetricTags(pt.Tags),
+		})
+	}
+	return out
+}
+
+func formatMetricTags(tags map[string]string) string {
+	if len(tags) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(tags))
+	for k := range tags {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", k, tags[k]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // memoryLayoutView computes the template view of the missing canonical

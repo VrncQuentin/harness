@@ -12,11 +12,24 @@ const (
 	MetricSessionCount       = "session_count"
 	MetricEpisodeCount       = "episode_count"
 	MetricGitCommitLatencyMS = "git_commit_latency_ms"
+	MetricTTFTMS             = "ttft_ms"
+	MetricTokenThroughput    = "token_throughput_tokens_per_sec"
+	MetricVRAMUsedMB         = "vram_used_mb"
+	MetricLoopTurnCount      = "loop_turn_count"
+	MetricToolCallCount      = "tool_call_count"
+	MetricToolCallErrorCount = "tool_call_error_count"
+	MetricToolCallErrorRate  = "tool_call_error_rate"
 )
 
 // TagProcess is the tag key identifying which managed process a sample
 // belongs to (e.g. "llama-server", "embedder").
 const TagProcess = "process"
+
+// TagTool is the tag key identifying which agent-loop tool emitted a sample.
+const TagTool = "tool"
+
+// TagGPU is the tag key identifying the GPU index for hardware metrics.
+const TagGPU = "gpu"
 
 // Recorder wraps a Store with typed methods for the metrics harness records.
 // It centralises metric names and tag conventions so callers don't need to
@@ -76,4 +89,44 @@ func (r *Recorder) EpisodeCount(n int) error {
 func (r *Recorder) GitCommitLatencyMS(d time.Duration) error {
 	ms := float64(d) / float64(time.Millisecond)
 	return r.store.Record(MetricGitCommitLatencyMS, ms, nil)
+}
+
+// TimeToFirstTokenMS records model latency from dispatch to first streamed token.
+func (r *Recorder) TimeToFirstTokenMS(d time.Duration) error {
+	ms := float64(d) / float64(time.Millisecond)
+	return r.store.Record(MetricTTFTMS, ms, nil)
+}
+
+// TokenThroughput records streamed text-token throughput for one request.
+func (r *Recorder) TokenThroughput(tokensPerSecond float64) error {
+	return r.store.Record(MetricTokenThroughput, tokensPerSecond, nil)
+}
+
+// VRAMUsedMB records used GPU memory in MiB as reported by nvidia-smi.
+func (r *Recorder) VRAMUsedMB(gpu string, mb float64) error {
+	return r.store.Record(MetricVRAMUsedMB, mb, map[string]string{TagGPU: gpu})
+}
+
+// LoopTurn records one completed agent-loop turn.
+func (r *Recorder) LoopTurn() error {
+	return r.store.Record(MetricLoopTurnCount, 1, nil)
+}
+
+// ToolCall records one tool call attempt.
+func (r *Recorder) ToolCall(tool string) error {
+	return r.store.Record(MetricToolCallCount, 1, map[string]string{TagTool: tool})
+}
+
+// ToolCallError records one failed tool call.
+func (r *Recorder) ToolCallError(tool string) error {
+	return r.store.Record(MetricToolCallErrorCount, 1, map[string]string{TagTool: tool})
+}
+
+// ToolCallErrorRate records whether a tool call failed: 1 for error, 0 for success.
+func (r *Recorder) ToolCallErrorRate(tool string, failed bool) error {
+	v := 0.0
+	if failed {
+		v = 1.0
+	}
+	return r.store.Record(MetricToolCallErrorRate, v, map[string]string{TagTool: tool})
 }

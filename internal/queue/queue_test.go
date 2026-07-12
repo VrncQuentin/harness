@@ -526,3 +526,119 @@ func (c *failingReplayClient) Complete(_ context.Context, _ inference.Completion
 }
 
 func (c *failingReplayClient) Health(_ context.Context) error { return nil }
+
+type fakeQueueMetrics struct {
+	ttft       []time.Duration
+	throughput []float64
+}
+
+func (f *fakeQueueMetrics) TimeToFirstTokenMS(d time.Duration) error {
+	f.ttft = append(f.ttft, d)
+	return nil
+}
+
+func (f *fakeQueueMetrics) TokenThroughput(v float64) error {
+	f.throughput = append(f.throughput, v)
+	return nil
+}
+
+func TestDispatch_RecordsLatencyAndThroughputMetrics(t *testing.T) {
+	q := New(4, "", &delayedMetricClient{})
+	metrics := &fakeQueueMetrics{}
+	q.SetMetrics(metrics)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := q.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer q.Stop()
+
+	resp := make(chan inference.Token, 8)
+	if err := q.Enqueue(Request{
+		ID:       "metrics-test",
+		Messages: []inference.Message{{Role: "user", Content: "hi"}},
+		Response: resp,
+		Ctx:      context.Background(),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	for range resp {
+	}
+
+	if len(metrics.ttft) != 1 {
+		t.Fatalf("TTFT samples = %d, want 1", len(metrics.ttft))
+	}
+	if len(metrics.throughput) != 1 {
+		t.Fatalf("throughput samples = %d, want 1", len(metrics.throughput))
+	}
+	if metrics.throughput[0] <= 0 {
+		t.Fatalf("throughput = %v, want > 0", metrics.throughput[0])
+	}
+}
+
+type delayedMetricClient struct{}
+
+func (d *delayedMetricClient) Complete(ctx context.Context, _ inference.CompletionRequest) (<-chan inference.Token, error) {
+	ch := make(chan inference.Token, 3)
+	go func() {
+		defer close(ch)
+		for _, tok := range []inference.Token{{Content: "one"}, {Content: "two"}, {Done: true}} {
+			select {
+			case ch <- tok:
+			case <-ctx.Done():
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	return ch, nil
+}
+
+func (d *delayedMetricClient) Health(context.Context) error { return nil }
+
+func TestDispatch_DoesNotRecordTTFTForEmptyOrErrorOnlyStreams(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		token inference.Token
+	}{
+		{name: "empty done", token: inference.Token{Done: true}},
+		{name: "stream error", token: inference.Token{Err: errors.New("stream failed")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := New(4, "", &singleTokenClient{token: tc.token})
+			metrics := &fakeQueueMetrics{}
+			q.SetMetrics(metrics)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := q.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			defer q.Stop()
+
+			resp := make(chan inference.Token, 4)
+			if err := q.Enqueue(Request{ID: "empty-metrics", Response: resp, Ctx: context.Background()}); err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			for range resp {
+			}
+			if len(metrics.ttft) != 0 {
+				t.Fatalf("TTFT samples = %d, want 0", len(metrics.ttft))
+			}
+		})
+	}
+}
+
+type singleTokenClient struct {
+	token inference.Token
+}
+
+func (c *singleTokenClient) Complete(context.Context, inference.CompletionRequest) (<-chan inference.Token, error) {
+	ch := make(chan inference.Token, 1)
+	ch <- c.token
+	close(ch)
+	return ch, nil
+}
+
+func (c *singleTokenClient) Health(context.Context) error { return nil }

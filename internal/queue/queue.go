@@ -65,6 +65,12 @@ type walRecord struct {
 	Done      bool        `json:"done,omitempty"`
 }
 
+// MetricsRecorder is the narrow metrics surface used by Queue.
+type MetricsRecorder interface {
+	TimeToFirstTokenMS(time.Duration) error
+	TokenThroughput(float64) error
+}
+
 // Queue is a bounded request queue with WAL backing.
 type Queue struct {
 	maxDepth int
@@ -80,7 +86,10 @@ type Queue struct {
 
 	clientMu sync.RWMutex
 	client   inference.Client
-	wg       sync.WaitGroup
+
+	metricsMu sync.RWMutex
+	metrics   MetricsRecorder
+	wg        sync.WaitGroup
 }
 
 // New creates a new Queue. walPath may be empty to disable WAL.
@@ -195,6 +204,13 @@ func (q *Queue) SetClient(c inference.Client) {
 	q.clientMu.Unlock()
 }
 
+// SetMetrics installs the recorder used for request latency and throughput samples.
+func (q *Queue) SetMetrics(rec MetricsRecorder) {
+	q.metricsMu.Lock()
+	q.metrics = rec
+	q.metricsMu.Unlock()
+}
+
 // dispatch sends the request to the inference client and streams tokens back.
 // It returns true when the request reached a terminal state and may be marked
 // done in the WAL. Replayed requests keep their WAL entry on backend errors so
@@ -211,6 +227,7 @@ func (q *Queue) dispatch(req Request) bool {
 		return !req.replayed
 	}
 
+	started := time.Now()
 	tokenCh, err := client.Complete(req.Ctx, inference.CompletionRequest{
 		Model:       req.Model,
 		Messages:    req.Messages,
@@ -226,7 +243,22 @@ func (q *Queue) dispatch(req Request) bool {
 		return !req.replayed
 	}
 
+	var firstTokenAt time.Time
+	var lastTokenAt time.Time
+	textTokenEvents := 0
 	for tok := range tokenCh {
+		if tok.Content != "" || tok.ToolCallDelta != nil {
+			now := time.Now()
+			if firstTokenAt.IsZero() {
+				firstTokenAt = now
+				q.recordTTFT(firstTokenAt.Sub(started))
+			}
+			lastTokenAt = now
+		}
+		if tok.Content != "" {
+			textTokenEvents++
+		}
+
 		select {
 		case <-req.Ctx.Done():
 			q.trySend(req.Response, inference.Token{Err: req.Ctx.Err()})
@@ -234,10 +266,37 @@ func (q *Queue) dispatch(req Request) bool {
 		case req.Response <- tok:
 		}
 		if tok.Done || tok.Err != nil {
+			q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
 			return tok.Done || !req.replayed
 		}
 	}
+	q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
 	return !req.replayed
+}
+
+func (q *Queue) recordTTFT(d time.Duration) {
+	q.metricsMu.RLock()
+	rec := q.metrics
+	q.metricsMu.RUnlock()
+	if rec != nil {
+		_ = rec.TimeToFirstTokenMS(d)
+	}
+}
+
+func (q *Queue) recordThroughput(firstTokenAt, lastTokenAt time.Time, tokenEvents int) {
+	if firstTokenAt.IsZero() || lastTokenAt.IsZero() || tokenEvents < 2 {
+		return
+	}
+	elapsed := lastTokenAt.Sub(firstTokenAt).Seconds()
+	if elapsed <= 0 {
+		return
+	}
+	q.metricsMu.RLock()
+	rec := q.metrics
+	q.metricsMu.RUnlock()
+	if rec != nil {
+		_ = rec.TokenThroughput(float64(tokenEvents-1) / elapsed)
+	}
 }
 
 func (q *Queue) send(ctx context.Context, resp chan<- inference.Token, tok inference.Token) {

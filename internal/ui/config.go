@@ -187,6 +187,7 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.Loop.WebSearchEnabled = r.FormValue("loop_web_search_enabled") == "on"
 
 	cfg.Metrics.RetentionDays = atoiOr(r.FormValue("metrics_retention_days"), cfg.Metrics.RetentionDays)
+	cfg.Metrics.PrometheusEnabled = r.FormValue("metrics_prometheus_enabled") == "on"
 
 	cfg.Log.RingMaxEntries = atoiOr(r.FormValue("log_ring_max_entries"), cfg.Log.RingMaxEntries)
 	cfg.Log.ProcMaxLines = atoiOr(r.FormValue("log_proc_max_lines"), cfg.Log.ProcMaxLines)

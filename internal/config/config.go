@@ -157,7 +157,8 @@ type QueueConfig struct {
 // MetricsConfig holds metrics retention configuration. The database file
 // itself is the shared harness.db next to the binary, not configurable here.
 type MetricsConfig struct {
-	RetentionDays int
+	RetentionDays     int
+	PrometheusEnabled bool
 }
 
 // LogConfig holds in-memory log buffer sizes. Both buffers are allocated
@@ -242,7 +243,8 @@ func Defaults() Config {
 			MaxDepth: 8,
 		},
 		Metrics: MetricsConfig{
-			RetentionDays: 30,
+			RetentionDays:     30,
+			PrometheusEnabled: false,
 		},
 		Log: LogConfig{
 			RingMaxEntries: 500,

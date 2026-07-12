@@ -144,6 +144,16 @@
   </div>
 
   {{template "queue_card" .}}
+
+  <div class="card">
+    <header class="card-head">
+      <h3>Metrics</h3>
+      <span class="logs-meta">latest</span>
+    </header>
+    <dl class="stats">
+      {{range .Metrics}}<div><dt>{{.Name}}{{if .Tags}} <span class="card-meta">{{.Tags}}</span>{{end}}</dt><dd>{{.Value}}</dd></div>{{else}}<div><dt>Samples</dt><dd>None yet</dd></div>{{end}}
+    </dl>
+  </div>
 </section>
 
 <div class="card logs-card">
