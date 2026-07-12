@@ -46,7 +46,8 @@ func (s *ConfigStore) seed() error {
 			active_project_slug, project_llama_on_switch,
 			loop_max_turns, loop_doom_threshold,
 			loop_file_read_enabled, loop_file_list_enabled,
-			loop_file_write_enabled, loop_shell_exec_enabled
+			loop_file_write_enabled, loop_shell_exec_enabled,
+			loop_web_search_enabled
 	) VALUES (
 		1,
 		?, ?, ?, ?,
@@ -66,7 +67,7 @@ func (s *ConfigStore) seed() error {
 		?, ?,
 		?, ?,
 		?, ?,
-		?, ?, ?, ?
+		?, ?, ?, ?, ?
 	)`,
 		d.Model.Binary, d.Model.ModelPath, d.Model.CtxSize, d.Model.GPULayers,
 		d.Model.NParallel, d.Model.Port, boolInt(d.Model.Verbose),
@@ -87,6 +88,7 @@ func (s *ConfigStore) seed() error {
 		d.Loop.MaxTurns, d.Loop.DoomThreshold,
 		boolInt(d.Loop.FileReadEnabled), boolInt(d.Loop.FileListEnabled),
 		boolInt(d.Loop.FileWriteEnabled), boolInt(d.Loop.ShellExecEnabled),
+		boolInt(d.Loop.WebSearchEnabled),
 	)
 	if err != nil {
 		return fmt.Errorf("db: seed config: %w", err)
@@ -118,6 +120,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 			loop_max_turns, loop_doom_threshold,
 			loop_file_read_enabled, loop_file_list_enabled,
 			loop_file_write_enabled, loop_shell_exec_enabled,
+			loop_web_search_enabled,
 			saved_at
 		FROM config WHERE id = 1`)
 
@@ -132,6 +135,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		fileList        int
 		fileWrite       int
 		shellExec       int
+		webSearch       int
 	)
 	err := row.Scan(
 		&cfg.Model.Binary, &cfg.Model.ModelPath, &cfg.Model.CtxSize, &cfg.Model.GPULayers,
@@ -152,7 +156,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		&cfg.Project.ActiveProjectSlug, &cfg.Project.LlamaOnSwitch,
 		&cfg.Loop.MaxTurns, &cfg.Loop.DoomThreshold,
 		&fileRead, &fileList,
-		&fileWrite, &shellExec,
+		&fileWrite, &shellExec, &webSearch,
 		&savedAt,
 	)
 	if err != nil {
@@ -166,6 +170,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	cfg.Loop.FileListEnabled = fileList != 0
 	cfg.Loop.FileWriteEnabled = fileWrite != 0
 	cfg.Loop.ShellExecEnabled = shellExec != 0
+	cfg.Loop.WebSearchEnabled = webSearch != 0
 	return &cfg, savedAt.Valid, nil
 }
 
@@ -195,6 +200,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			loop_max_turns = ?, loop_doom_threshold = ?,
 			loop_file_read_enabled = ?, loop_file_list_enabled = ?,
 			loop_file_write_enabled = ?, loop_shell_exec_enabled = ?,
+			loop_web_search_enabled = ?,
 			saved_at = ?
 		WHERE id = 1`,
 		cfg.Model.Binary, cfg.Model.ModelPath, cfg.Model.CtxSize, cfg.Model.GPULayers,
@@ -216,6 +222,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 		cfg.Loop.MaxTurns, cfg.Loop.DoomThreshold,
 		boolInt(cfg.Loop.FileReadEnabled), boolInt(cfg.Loop.FileListEnabled),
 		boolInt(cfg.Loop.FileWriteEnabled), boolInt(cfg.Loop.ShellExecEnabled),
+		boolInt(cfg.Loop.WebSearchEnabled),
 		time.Now().Unix(),
 	)
 	if err != nil {

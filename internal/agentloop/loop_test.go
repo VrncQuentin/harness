@@ -289,6 +289,12 @@ func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 	if engine.isToolEnabled("shell_exec") {
 		t.Error("shell_exec should be disabled")
 	}
+	if engine.isToolEnabled("web_search") {
+		t.Error("web_search should be disabled")
+	}
+	if engine.isToolEnabled("unknown_tool") {
+		t.Error("unknown_tool should be disabled")
+	}
 	if !engine.isToolEnabled("file_read") {
 		t.Error("file_read should be enabled")
 	}

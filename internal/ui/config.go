@@ -184,6 +184,7 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.Loop.FileListEnabled = r.FormValue("loop_file_list_enabled") == "on"
 	cfg.Loop.FileWriteEnabled = r.FormValue("loop_file_write_enabled") == "on"
 	cfg.Loop.ShellExecEnabled = r.FormValue("loop_shell_exec_enabled") == "on"
+	cfg.Loop.WebSearchEnabled = r.FormValue("loop_web_search_enabled") == "on"
 
 	cfg.Metrics.RetentionDays = atoiOr(r.FormValue("metrics_retention_days"), cfg.Metrics.RetentionDays)
 
