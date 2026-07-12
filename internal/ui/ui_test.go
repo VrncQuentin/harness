@@ -189,6 +189,7 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	form.Set("loop_file_read_enabled", "on")
 	form.Set("loop_web_search_enabled", "on")
 	form.Set("metrics_retention_days", "30")
+	form.Set("metrics_prometheus_enabled", "on")
 
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

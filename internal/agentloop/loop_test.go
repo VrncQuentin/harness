@@ -399,3 +399,65 @@ func TestApprovalDeniedInjectsError(t *testing.T) {
 		t.Error("expected tool result with denial error")
 	}
 }
+
+type fakeLoopMetrics struct {
+	turns      int
+	calls      map[string]int
+	errors     map[string]int
+	errorRates map[string][]bool
+}
+
+func (f *fakeLoopMetrics) LoopTurn() error {
+	f.turns++
+	return nil
+}
+
+func (f *fakeLoopMetrics) ToolCall(tool string) error {
+	if f.calls == nil {
+		f.calls = make(map[string]int)
+	}
+	f.calls[tool]++
+	return nil
+}
+
+func (f *fakeLoopMetrics) ToolCallError(tool string) error {
+	if f.errors == nil {
+		f.errors = make(map[string]int)
+	}
+	f.errors[tool]++
+	return nil
+}
+
+func (f *fakeLoopMetrics) ToolCallErrorRate(tool string, failed bool) error {
+	if f.errorRates == nil {
+		f.errorRates = make(map[string][]bool)
+	}
+	f.errorRates[tool] = append(f.errorRates[tool], failed)
+	return nil
+}
+
+func TestEngineRecordsLoopAndToolMetrics(t *testing.T) {
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3}
+	engine := newTestEngine(cfg)
+	engine.infer = &mockInferClient{tokens: toolCallTokens("file_list", `{"path":"."}`)}
+	metrics := &fakeLoopMetrics{}
+	engine.WithMetrics(metrics)
+
+	evch := make(chan Event, 64)
+	_ = engine.Run(context.Background(), []inference.Message{{Role: "user", Content: "list"}}, evch)
+	for range evch {
+	}
+
+	if metrics.turns != 2 {
+		t.Fatalf("loop turns = %d, want 2", metrics.turns)
+	}
+	if metrics.calls["file_list"] != 1 {
+		t.Fatalf("file_list calls = %d, want 1", metrics.calls["file_list"])
+	}
+	if metrics.errors["file_list"] != 1 {
+		t.Fatalf("file_list errors = %d, want 1", metrics.errors["file_list"])
+	}
+	if got := metrics.errorRates["file_list"]; len(got) != 1 || !got[0] {
+		t.Fatalf("file_list error-rate samples = %v, want [true]", got)
+	}
+}

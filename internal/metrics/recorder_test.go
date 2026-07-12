@@ -27,6 +27,10 @@ func (f *fakeStore) Query(string, time.Time, time.Time) ([]DataPoint, error) {
 	return nil, nil
 }
 
+func (f *fakeStore) Latest() ([]DataPoint, error) {
+	return nil, nil
+}
+
 func TestRecorder_Uptime(t *testing.T) {
 	fs := &fakeStore{}
 	r := NewRecorder(fs)

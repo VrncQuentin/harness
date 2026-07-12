@@ -284,6 +284,13 @@
         <input type="number" id="metrics_retention_days" name="metrics_retention_days" value="{{.Config.Metrics.RetentionDays}}" min="1">
         <p class="fg-hint">Metrics are stored in <code>harness.db</code> next to the binary.</p>
       </div>
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="metrics_prometheus_enabled" name="metrics_prometheus_enabled" {{if .Config.Metrics.PrometheusEnabled}}checked{{end}}>
+          <span>Enable Prometheus endpoint</span>
+        </label>
+        <p class="fg-hint"><code>/metrics</code> exposes latest SQLite-backed samples in Prometheus text format.</p>
+      </div>
     </div>
   </fieldset>
 

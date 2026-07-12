@@ -41,7 +41,7 @@ func (s *ConfigStore) seed() error {
 			prompt_semantic_weight, prompt_recency_weight,
 			prompt_promotion_dedup_threshold,
 			queue_max_depth, queue_wal_path,
-			metrics_retention_days,
+			metrics_retention_days, metrics_prometheus_enabled,
 			log_ring_max_entries, log_proc_max_lines,
 			active_project_slug, project_llama_on_switch,
 			loop_max_turns, loop_doom_threshold,
@@ -63,7 +63,7 @@ func (s *ConfigStore) seed() error {
 		?, ?,
 		?,
 		?, ?,
-		?,
+		?, ?,
 		?, ?,
 		?, ?,
 		?, ?,
@@ -82,7 +82,7 @@ func (s *ConfigStore) seed() error {
 		d.Prompt.SemanticWeight, d.Prompt.RecencyWeight,
 		d.Prompt.PromotionDedupThreshold,
 		d.Queue.MaxDepth, d.Queue.WALPath,
-		d.Metrics.RetentionDays,
+		d.Metrics.RetentionDays, boolInt(d.Metrics.PrometheusEnabled),
 		d.Log.RingMaxEntries, d.Log.ProcMaxLines,
 		d.Project.ActiveProjectSlug, d.Project.LlamaOnSwitch,
 		d.Loop.MaxTurns, d.Loop.DoomThreshold,
@@ -114,7 +114,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 			prompt_semantic_weight, prompt_recency_weight,
 			prompt_promotion_dedup_threshold,
 			queue_max_depth, queue_wal_path,
-			metrics_retention_days,
+			metrics_retention_days, metrics_prometheus_enabled,
 			log_ring_max_entries, log_proc_max_lines,
 			active_project_slug, project_llama_on_switch,
 			loop_max_turns, loop_doom_threshold,
@@ -125,17 +125,18 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		FROM config WHERE id = 1`)
 
 	var (
-		cfg             config.Config
-		modelVerbose    int
-		embedderVerbose int
-		openOnStart     int
-		apiEnabled      int
-		savedAt         sql.NullInt64
-		fileRead        int
-		fileList        int
-		fileWrite       int
-		shellExec       int
-		webSearch       int
+		cfg               config.Config
+		modelVerbose      int
+		embedderVerbose   int
+		openOnStart       int
+		apiEnabled        int
+		savedAt           sql.NullInt64
+		fileRead          int
+		fileList          int
+		fileWrite         int
+		shellExec         int
+		webSearch         int
+		prometheusEnabled int
 	)
 	err := row.Scan(
 		&cfg.Model.Binary, &cfg.Model.ModelPath, &cfg.Model.CtxSize, &cfg.Model.GPULayers,
@@ -151,7 +152,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		&cfg.Prompt.SemanticWeight, &cfg.Prompt.RecencyWeight,
 		&cfg.Prompt.PromotionDedupThreshold,
 		&cfg.Queue.MaxDepth, &cfg.Queue.WALPath,
-		&cfg.Metrics.RetentionDays,
+		&cfg.Metrics.RetentionDays, &prometheusEnabled,
 		&cfg.Log.RingMaxEntries, &cfg.Log.ProcMaxLines,
 		&cfg.Project.ActiveProjectSlug, &cfg.Project.LlamaOnSwitch,
 		&cfg.Loop.MaxTurns, &cfg.Loop.DoomThreshold,
@@ -171,6 +172,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	cfg.Loop.FileWriteEnabled = fileWrite != 0
 	cfg.Loop.ShellExecEnabled = shellExec != 0
 	cfg.Loop.WebSearchEnabled = webSearch != 0
+	cfg.Metrics.PrometheusEnabled = prometheusEnabled != 0
 	return &cfg, savedAt.Valid, nil
 }
 
@@ -194,7 +196,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			prompt_semantic_weight = ?, prompt_recency_weight = ?,
 			prompt_promotion_dedup_threshold = ?,
 			queue_max_depth = ?, queue_wal_path = ?,
-			metrics_retention_days = ?,
+			metrics_retention_days = ?, metrics_prometheus_enabled = ?,
 			log_ring_max_entries = ?, log_proc_max_lines = ?,
 			active_project_slug = ?, project_llama_on_switch = ?,
 			loop_max_turns = ?, loop_doom_threshold = ?,
@@ -216,7 +218,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 		cfg.Prompt.SemanticWeight, cfg.Prompt.RecencyWeight,
 		cfg.Prompt.PromotionDedupThreshold,
 		cfg.Queue.MaxDepth, cfg.Queue.WALPath,
-		cfg.Metrics.RetentionDays,
+		cfg.Metrics.RetentionDays, boolInt(cfg.Metrics.PrometheusEnabled),
 		cfg.Log.RingMaxEntries, cfg.Log.ProcMaxLines,
 		cfg.Project.ActiveProjectSlug, cfg.Project.LlamaOnSwitch,
 		cfg.Loop.MaxTurns, cfg.Loop.DoomThreshold,

@@ -42,7 +42,9 @@ func (rt *Runtime) ApplyConfig(
 		uiServer.AddStartupError(verr)
 		return ui.ApplyResult{}
 	}
-	ValidatePaths(uiServer, loaded)
+	if !ValidatePaths(uiServer, loaded) {
+		return ui.ApplyResult{}
+	}
 
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
