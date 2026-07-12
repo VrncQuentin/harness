@@ -187,6 +187,7 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	form.Set("loop_max_turns", "12")
 	form.Set("loop_doom_threshold", "4")
 	form.Set("loop_file_read_enabled", "on")
+	form.Set("loop_web_search_enabled", "on")
 	form.Set("metrics_retention_days", "30")
 
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
@@ -237,6 +238,9 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	}
 	if loaded.Loop.FileListEnabled {
 		t.Error("expected Loop.FileListEnabled=false after POST without loop_file_list_enabled")
+	}
+	if !loaded.Loop.WebSearchEnabled {
+		t.Error("expected Loop.WebSearchEnabled=true after POST with loop_web_search_enabled=on")
 	}
 
 	if atomic.LoadInt32(&retryCalls) != 1 {
@@ -427,6 +431,21 @@ func TestHandleConfig_POSTPersistsLogBufferFields(t *testing.T) {
 	}
 	if loaded.Log.ProcMaxLines != 200 {
 		t.Errorf("ProcMaxLines: got %d, want 200", loaded.Log.ProcMaxLines)
+	}
+}
+
+func TestHandleConfig_GETRendersWebSearchToggle(t *testing.T) {
+	s, _ := newServerWithStore(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/config", nil)
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{`name="loop_web_search_enabled"`, `Enable <code>web_search</code>`, `sends the query over the network`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected config form to include %q", want)
+		}
 	}
 }
 

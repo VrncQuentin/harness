@@ -120,8 +120,8 @@ func (e *Evaluator) Evaluate(toolID, commandArg string) (Decision, string) {
 
 	// Evaluate layers in order (agent defaults → user config → session).
 	// Last layer with a matching rule wins.
-	best := Allowed
-	source := "default"
+	best := Ask
+	source := "default: no matching permission rule"
 	fromSession := false
 	for _, layer := range effectiveLayers {
 		for _, rule := range layer.Rules {
@@ -139,23 +139,27 @@ func (e *Evaluator) Evaluate(toolID, commandArg string) (Decision, string) {
 	// only an exact-match session rule (stored as the full command string)
 	// can auto-allow it. Broad/default rules always require Ask.
 	if toolID == "shell_exec" && commandArg != "" && ClassifyShellCmd(commandArg) {
+		if best == Denied {
+			return Denied, source
+		}
 		if fromSession && commandArg != "" {
 			// Check that the session rule is an exact command match,
 			// not just a broad prefix pattern.
-			exactMatch := false
+			exactDecision, exactMatch := Ask, false
 			e.mu.Lock()
 			for _, r := range e.session.Rules {
-				if r.ToolID == toolID && r.CommandPattern == commandArg && r.Decision == Allowed {
+				if r.ToolID == toolID && r.CommandPattern == commandArg {
+					exactDecision = r.Decision
 					exactMatch = true
 					break
 				}
 			}
 			e.mu.Unlock()
 			if exactMatch {
-				return Allowed, source
+				return exactDecision, source
 			}
 		}
-		// Destructive command with no exact session match → Ask.
+		// Destructive command with no exact session match -> Ask.
 		return Ask, "requires approval: destructive command"
 	}
 
@@ -186,13 +190,15 @@ func ClassifyShellCmd(command string) bool {
 
 	// Destructive patterns that should always require approval.
 	destructive := []string{
-		"rm ", "rm -", "rmdir",
+		"rm ", "rm -", "rmdir", "rmdir /s", "rd /s", "del ", "erase ",
+		"remove-item", "ri ", "remove-item ", "move-item ", "copy-item -recurse",
 		"mv ", "cp -r", "cp -R",
 		"chmod ", "chown ",
 		"sudo ", "su ",
 		"> /", ">> /", "> ~/",
 		"dd if=",
-		"mkfs", "mkswap",
+		"mkfs", "mkswap", "format ", "format.com",
+		"reg delete", "regedit /s",
 		"kill ", "killall", "pkill",
 		"shutdown", "reboot", "halt", "poweroff",
 		"init 0", "init 6",
@@ -202,7 +208,7 @@ func ClassifyShellCmd(command string) bool {
 		"nc ", "ncat ",
 		"ssh ", "scp ",
 		"git push", "git pull",
-		"bash ", "sh ",
+		"bash ", "sh ", "powershell ", "pwsh ", "cmd /c",
 	}
 	for _, pattern := range destructive {
 		if strings.HasPrefix(cmdLower, pattern) {
@@ -233,6 +239,7 @@ func DefaultLayer() Layer {
 			{ToolID: "file_list", Decision: Allowed, Source: "builtin: read-only tools allowed"},
 			{ToolID: "file_write", Decision: Ask, Source: "builtin: writes require approval"},
 			{ToolID: "shell_exec", Decision: Ask, Source: "builtin: shell commands require approval"},
+			{ToolID: "web_search", Decision: Ask, Source: "builtin: web search uses the network"},
 		},
 	}
 }
