@@ -25,6 +25,9 @@ func TestDefaultLayer(t *testing.T) {
 	if seen["shell_exec"] != 1 {
 		t.Errorf("expected shell_exec rule")
 	}
+	if seen["web_search"] != 1 {
+		t.Errorf("expected web_search rule")
+	}
 }
 
 func TestEvaluator_AllowedByDefault(t *testing.T) {
@@ -47,6 +50,10 @@ func TestEvaluator_DestructiveAsks(t *testing.T) {
 	dec, _ = eval.Evaluate("shell_exec", "ls")
 	if dec != Ask {
 		t.Errorf("shell_exec should ask, got %s", dec)
+	}
+	dec, _ = eval.Evaluate("web_search", "")
+	if dec != Ask {
+		t.Errorf("web_search should ask, got %s", dec)
 	}
 }
 
@@ -129,14 +136,19 @@ func TestEvaluator_CommandPatternMatch(t *testing.T) {
 func TestEvaluator_UnknownTool(t *testing.T) {
 	eval := NewEvaluator(DefaultLayer())
 	dec, _ := eval.Evaluate("unknown_tool", "")
-	if dec != Allowed {
-		t.Errorf("unknown tools should be allowed by default, got %s", dec)
+	if dec != Ask {
+		t.Errorf("unknown tools should ask by default, got %s", dec)
 	}
 }
 
 func TestClassifyShellCmd_Destructive(t *testing.T) {
 	destructive := []string{
 		"rm -rf /tmp/test",
+		"del C:\\tmp\\file.txt",
+		"rd /s C:\\tmp\\old",
+		"Remove-Item -Recurse C:\\tmp\\old",
+		"reg delete HKCU\\Software\\Test /f",
+		"format C:",
 		"rm file.txt",
 		"mv /etc/passwd /tmp",
 		"chmod 777 /tmp",
@@ -316,5 +328,22 @@ func TestApprovalResponse(t *testing.T) {
 	}
 	if r3.Remember {
 		t.Error("reject should not remember")
+	}
+}
+
+func TestEvaluator_DestructiveCmdDeniedRuleWins(t *testing.T) {
+	userLayer := Layer{
+		Name: "user-config",
+		Rules: []Rule{
+			{ToolID: "shell_exec", CommandPattern: "rm -rf /tmp/test", Decision: Denied, Source: "user: denied exact command"},
+		},
+	}
+	eval := NewEvaluator(DefaultLayer(), userLayer)
+	dec, src := eval.Evaluate("shell_exec", "rm -rf /tmp/test")
+	if dec != Denied {
+		t.Errorf("destructive denied rule should deny, got %s", dec)
+	}
+	if src != "user: denied exact command" {
+		t.Errorf("unexpected source: %s", src)
 	}
 }

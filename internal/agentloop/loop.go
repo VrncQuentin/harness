@@ -444,8 +444,10 @@ func (e *Engine) isToolEnabled(id string) bool {
 		return e.loopCfg.FileWriteEnabled
 	case "shell_exec":
 		return e.loopCfg.ShellExecEnabled
+	case "web_search":
+		return e.loopCfg.WebSearchEnabled
 	default:
-		return true
+		return false
 	}
 }
 
