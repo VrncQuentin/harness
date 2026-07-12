@@ -5,7 +5,7 @@
 **Scope:** entire repo at `main` (7041856) — architecture docs, roadmap, and all non-test Go code (~15,200 lines production, ~13,800 lines tests).
 **Out of scope:** security. Nothing in this document is a security assessment; findings that touch the sandbox or permission layers are evaluated strictly for functional correctness and design adherence.
 
-**Method:** read `docs/architecture.md`, `docs/roadmap.md`, `docs/M3b.md` context, then every production `.go` file package by package, cross-checking behavior against the docs and the roadmap checkboxes. `go build ./...`, `go vet ./...`, and `go test ./... -count=1` all pass cleanly (23 packages, 0 failures).
+**Method:** read `docs/architecture.md` and `docs/roadmap.md`, then every production `.go` file package by package, cross-checking behavior against the docs and the roadmap checkboxes. `go build ./...`, `go vet ./...`, and `go test ./... -count=1` all pass cleanly (23 packages, 0 failures).
 
 ---
 
