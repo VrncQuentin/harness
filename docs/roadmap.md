@@ -240,8 +240,8 @@ are deferred beyond M7.
 - [x] Approval flow: allow once, always allow, and reject decisions for destructive tools
 - [x] Layered permissions: builtin defaults -> user config -> session approvals, with later layers taking precedence
 - [x] Shell guardrails: sandbox working directory validation, command timeout, output truncation, and explicit destructive-command classification
-- [ ] Windows-native shell execution path; current `shell_exec` still assumes `sh` is available
-- [ ] Web search: opt-in tool with clear network-use disclosure and per-tool disable toggle
+- [x] Windows-native shell execution path; `shell_exec` uses `cmd.exe` on Windows and `sh` on Unix
+- [x] Web search: opt-in tool with clear network-use disclosure and per-tool disable toggle
 - [x] UI: approval cards and approval audit trail per session
 
 **Deferred beyond M7:**
@@ -263,7 +263,7 @@ are deferred beyond M7.
 - [ ] Complete a multi-step code task (read file, write a sandboxed file, run tests) entirely inside the harness UI
 - [ ] Tool call exits non-zero -> error is injected into context and the model can recover
 
-**Unit coverage present:** `internal/approvals` and `internal/agentloop` cover layered evaluation, destructive shell classification, allow/reject/always decisions, disabled destructive toggles, and approval events. These are not a substitute for the browser-level acceptance tests above.
+**Unit coverage present:** `internal/approvals`, `internal/agentloop`, `internal/tools`, and `internal/ui` cover layered evaluation, Windows and Unix destructive shell classification, allow/reject/always decisions, disabled destructive/network toggles, web-search parsing/disclosure, native shell dispatch, and approval events. These are not a substitute for the browser-level acceptance tests above.
 
 ---
 

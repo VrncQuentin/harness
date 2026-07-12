@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,10 +86,10 @@ func TestRegistry_ListAndGet(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltins(r)
 	all := r.List()
-	if len(all) != 4 {
-		t.Fatalf("expected 4 tools, got %d", len(all))
+	if len(all) != 5 {
+		t.Fatalf("expected 5 tools, got %d", len(all))
 	}
-	for _, id := range []string{"file_read", "file_list", "file_write", "shell_exec"} {
+	for _, id := range []string{"file_read", "file_list", "file_write", "shell_exec", "web_search"} {
 		if r.Get(id) == nil {
 			t.Errorf("%s not found", id)
 		}
@@ -106,11 +108,11 @@ func TestDestructiveToolsRegisteredButDisabledByDefault(t *testing.T) {
 	}
 	// Schemas includes destructive tools.
 	schemas := r.Schemas()
-	if len(schemas) != 4 {
-		t.Fatalf("expected 4 schemas, got %d", len(schemas))
+	if len(schemas) != 5 {
+		t.Fatalf("expected 5 schemas, got %d", len(schemas))
 	}
 	// Tool IDs are in insertion order: file_read, file_list, file_write, shell_exec.
-	expectedIDs := []string{"file_read", "file_list", "file_write", "shell_exec"}
+	expectedIDs := []string{"file_read", "file_list", "file_write", "shell_exec", "web_search"}
 	for i, id := range expectedIDs {
 		if schemas[i]["function"].(map[string]any)["name"] != id {
 			t.Errorf("schema %d: expected %s, got %v", i, id, schemas[i]["function"].(map[string]any)["name"])
@@ -152,5 +154,63 @@ func TestShellExec_DirValidatedLikeFileTools(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "hello") {
 		t.Errorf("expected 'hello' in output, got %q", res.Content)
+	}
+}
+
+func TestParseDuckDuckGoResults(t *testing.T) {
+	body := []byte(`{
+		"Heading":"Harness",
+		"AbstractText":"A local inference harness.",
+		"AbstractURL":"https://example.com/harness",
+		"RelatedTopics":[
+			{"Text":"Harness project - source code","FirstURL":"https://example.com/source"},
+			{"Topics":[{"Text":"Nested result - details","FirstURL":"https://example.com/nested"}]}
+		]
+	}`)
+	results, err := parseDuckDuckGoResults(body, 2)
+	if err != nil {
+		t.Fatalf("parseDuckDuckGoResults: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if results[0].Title != "Harness" || results[0].URL != "https://example.com/harness" {
+		t.Fatalf("unexpected first result: %+v", results[0])
+	}
+	if results[1].Title != "Harness project" {
+		t.Fatalf("unexpected second title: %+v", results[1])
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestWebSearch_ExecuteDisclosesNetworkUse(t *testing.T) {
+	tool := &webSearchTool{}
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Query().Get("q") != "local harness" {
+			t.Fatalf("unexpected query: %s", req.URL.RawQuery)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{
+				"Heading":"Harness",
+				"AbstractText":"A local inference harness.",
+				"AbstractURL":"https://example.com/harness"
+			}`)),
+			Header: make(http.Header),
+		}, nil
+	})}
+	res := tool.Execute(context.TODO(), Context{HTTPClient: client}, map[string]any{"query": "local harness"})
+	if res.Error != "" {
+		t.Fatalf("unexpected error: %s", res.Error)
+	}
+	for _, want := range []string{"Network request used", "local harness", "Harness", "https://example.com/harness"} {
+		if !strings.Contains(res.Content, want) {
+			t.Errorf("expected content to include %q, got %q", want, res.Content)
+		}
 	}
 }

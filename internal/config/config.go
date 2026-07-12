@@ -191,6 +191,9 @@ type LoopConfig struct {
 	// ShellExecEnabled toggles the shell_exec tool. Off by default; requires
 	// the M7 approval layer before it can be enabled safely.
 	ShellExecEnabled bool
+	// WebSearchEnabled toggles the web_search tool. Off by default because it
+	// sends the user's query over the network.
+	WebSearchEnabled bool
 }
 
 // Store persists and retrieves Config. The concrete implementation lives in
@@ -252,6 +255,7 @@ func Defaults() Config {
 			FileListEnabled:  true,
 			FileWriteEnabled: false,
 			ShellExecEnabled: false,
+			WebSearchEnabled: false,
 		},
 		Project: ProjectConfig{
 			ActiveProjectSlug: "global",
