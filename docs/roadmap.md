@@ -85,25 +85,50 @@ M3 stages the project-scoped layout that M3b later formalizes: sessions, episode
 
 ## M3b — Projects
 
-**Goal:** introduce project-scoped rules, agents, sessions, directories, and optional model overrides. The previous "no project" baseline is implemented as the always-present `global` project. Full design in [M3b.md](M3b.md).
+**Goal:** introduce project-scoped rules, agents, sessions, directories, and optional model overrides. The previous "no project" baseline is implemented as the always-present `global` project.
 
-Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, git backend). Indexing of project directories is staged here (layout + activation check); vector refresh lands in M5.
+Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, git backend). M3b records attached directories and validates them on activation; attached-directory indexing is deferred until directory-level semantic search becomes user-facing.
+
+**Scoped contract:**
+
+- A project is identified by an immutable lowercase-dashed `slug` and editable display name. Filesystem paths and DB keys always use the slug.
+- The `global` project is seeded on first run, is always active by default, and cannot be hidden, deleted, or renamed by slug.
+- Project memory lives under the current single memory repo: `projects/<slug>/{rules.md, agents/, sessions.jsonl, queue.wal, episodes/<agent-name>/, index/}`.
+- Top-level `global/` rules/user/facts and top-level `agents/<name>/` remain the cross-project base library until layout-v2.
+- Prompt assembly inserts `projects/<slug>/rules.md` between global rules and resolved agent persona. Agent files resolve per file from `projects/<slug>/agents/<name>/<file>.md`, falling back to top-level `agents/<name>/<file>.md`.
+- Sessions are bound immutably to their project, append to `projects/<slug>/sessions.jsonl`, and write episodes to `projects/<slug>/episodes/<agent-name>/`.
+- `project_llama_on_switch = reload` drains the queue and restarts llama-server with the destination project's effective model unless the effective config is unchanged. `keep` leaves llama-server running and surfaces any running/preferred model mismatch.
+- Project directories are absolute paths to git repos. Activation warns and continues when a directory is missing or invalid; attached-directory semantic indexes are deferred.
+- Per-project model overrides cover `model_binary`, `model_path`, `model_ctx_size`, `model_gpu_layers`, and `model_n_parallel`; null values inherit from global config.
 
 - [x] `projects` and `project_directories` tables; system `global` row seeded on first run (cannot be hidden, deleted, or renamed)
 - [x] `config` additions: `active_project_slug` (NOT NULL, default `'global'`) and `project_llama_on_switch` (`'keep' | 'reload'`, default `'reload'`)
-- [x] Memory repo layout: top-level `runtime/` and `index/` fold into `projects/global/`; episodes move out of `agents/<name>/episodes/` into `projects/<slug>/episodes/<agent-name>/` (agent dirs become definition-only); user projects live at `projects/<slug>/{rules.md, agents/, sessions.jsonl, queue.wal, episodes/<agent-name>/, index/<dir-slug>/}`
+- [x] Memory repo layout: top-level `runtime/` and `index/` fold into `projects/global/`; episodes move out of `agents/<name>/episodes/` into `projects/<slug>/episodes/<agent-name>/` (agent dirs become definition-only)
 - [x] Prompt assembler: new `projects/<slug>/rules.md` layer between global rules and agent persona
 - [x] Agent resolution: per-file override of the global agents library by `projects/<slug>/agents/<name>/`
 - [x] Activation: eager git-repo check on configured directories (warn-and-continue), fresh session, conditional llama-server swap based on `llama_on_switch`
 - [x] UI: `/projects` page (CRUD + hide), topbar switcher with `Global` always present, project-aware `/agents`, mismatch indicator on status page when `keep` causes a model/preference divergence
 
-**Acceptance tests:** see [M3b.md](M3b.md#acceptance-tests). Highlights:
+**Acceptance tests:**
 
 - [x] First run seeds the `global` project; `global` cannot be hidden, deleted, or renamed
-- [ ] Switching projects with `llama_on_switch = reload` drains the queue and reloads the llama-server with the destination's effective model; identical effective configs are a no-op regardless of mode
+- [ ] Create a project via UI -> row appears in `projects` table, directory is available at `memory/projects/<slug>/`, slug is auto-generated from display name and editable on create
+- [ ] Edit a project -> display name and overrides change, slug is read-only
+- [ ] Activate a project -> `active_project_slug` updates, a fresh session opens at `projects/<slug>/sessions.jsonl`, and the session record includes `project: <slug>`
+- [ ] Switching projects with `llama_on_switch = reload` drains the queue and reloads llama-server with the destination's effective model; identical effective configs are a no-op regardless of mode
+- [ ] Switch with `llama_on_switch = keep` -> llama-server keeps running and the status page shows model mismatch when applicable
+- [ ] Switch to the global project from a user project -> subsequent sessions write to `projects/global/sessions.jsonl` with `project: global`, and only the global agents library is visible
 - [x] Project agent overrides resolve per-file (project `persona.md` + global `rules.md` works)
 - [x] Activating a project with a missing directory succeeds and surfaces a "directory missing" badge
-- [ ] Indexable trees produce manifest entries under `projects/<slug>/index/<dir-slug>/`; vector refresh deferred to M5
+- [ ] Project-only agent in `projects/<slug>/agents/<name>/` is visible only inside that project
+- [ ] Project rules file present -> `projects/<slug>/rules.md` is injected between global rules and agent persona, verifiable in prompt layer logs
+- [ ] Complete a session in a user project -> episode file appears at `projects/<slug>/episodes/<agent>/<timestamp>.md`, not under `agents/<agent>/episodes/`
+- [ ] Complete a session in the global project -> episode file appears at `projects/global/episodes/<agent>/<timestamp>.md`
+- [ ] Hide a non-global project -> it disappears from the topbar switcher and default `/projects` list, while data remains on disk
+- [ ] Unhide a project -> it reappears in pickers with data intact
+- [ ] Restart harness -> `active_project_slug` is honored on startup, activation runs, eager directory checks execute, and the status page reflects the active project
+
+Attached-directory index manifests are not part of scoped M3b; they remain deferred with attached-directory semantic indexing.
 
 ---
 
