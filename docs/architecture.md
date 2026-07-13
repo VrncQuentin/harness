@@ -171,10 +171,10 @@ Builds the final context sent to the model. Layers assembled in order:
 9. conversation turns                 — current session history
 ```
 
-> **Current vs. layout-v2:** The paths above reflect the pre-M9 single-repo
-> layout. After layout-v2, global paths move under `projects/global/`
-> (e.g. `projects/global/rules.md`). The code and this doc will be updated
-> together when M9 lands.
+> **Layout-v2:** The paths above are logical prompt layers. Physically,
+> global files live in `~/.harness/projects/global/`, while active project
+> files live in that project's own memory repo. The runtime maps the logical
+> paths to the correct project repo before reading or writing.
 
 Responsibilities:
 - **Total memory cap:** sum of layers 6–8 must not exceed `memory_token_budget` (default 6144). Episodes are trimmed oldest-first to fit. Layers 1–5 are never trimmed — keep them small by convention.
@@ -321,14 +321,10 @@ Threads a per-request identifier through `context.Context` so API handlers, queu
 
 ## Harness Home And Memory Repo Layout
 
-> **Planned layout-v2 (not yet current).** The tree below describes the target
-> directory layout after M9. The current pre-M9 single-repo layout is simpler:
-> `global/rules.md`, `global/user.md`, `global/facts.md`, `agents/<n>/`, and
-> `projects/global/` all live under a single user-configured `memory.repo_path`.
-> See the Prompt Assembler section for the current runtime paths.
+> **Current layout-v2.** The tree below is the runtime storage layout.
 
 ```
-~/.harness/                    ← planned harness home (M9)
+~/.harness/                    ← harness home
   harness.db                   ← config, metrics, and runtime control state
   projects/
     global/                    ← git repo: global project and fallback agent library
@@ -356,9 +352,9 @@ Threads a per-request identifier through `context.Context` so API handlers, queu
 
 Each directory under `~/.harness/projects/` is its own git repo. `harness.db`, logs, and cache files are machine-local and are never committed.
 
-M3 stages the single-repo `projects/global/` paths within the configured `memory.repo_path`; M3b introduces the `projects` table, the `active_project_slug` config, and user-created project rows on top of that layout. M9 layout-v2 splits those project subdirectories into separate project memory repos under `~/.harness/projects/`, with `global` as a first-class project repo. M10 adds `artifacts/` as project-owned run evidence so prompts and outputs travel with the active project memory repo while operational run state remains in SQLite. Pipeline source specs do not live in memory repos by default; they live in the attached project git repos they operate on, and runs record the source repo commit plus spec hash.
+M9 layout-v2 stores each project as a separate memory repo under `~/.harness/projects/` by default, with `global` as a first-class project repo. There were no pre-M9 installs to migrate, so legacy single-repo migration code has been removed. `artifacts/` is project-owned run evidence so prompts and outputs travel with the active project memory repo while operational run state remains in SQLite. Pipeline source specs do not live in memory repos by default; they live in the attached project git repos they operate on, and runs record the source repo commit plus spec hash.
 
-The shared `harness.db` SQLite file (config + metrics + runtime control state) lives next to the binary pre-M9, and under `~/.harness/` after M9 — it is machine-local operational data, not user data.
+The shared `harness.db` SQLite file (config + metrics + runtime control state) lives under `~/.harness/` and is machine-local operational data, not user data.
 
 ---
 
@@ -371,7 +367,7 @@ The schema mirrors the Go `config.Config` struct: one column per field, snake-ca
 Sections and fields:
 - **model:** `binary`, `model_path`, `ctx_size`, `gpu_layers`, `n_parallel`, `port`, `verbose`, `cache_type_k`, `cache_type_v`
 - **embedder:** `binary`, `model_path`, `port`, `verbose`
-- **memory:** current single-repo path before M9; after layout-v2, harness home and per-project memory repo paths
+- **memory:** legacy single-repo path retained for migration compatibility; active storage is per-project memory repo paths in the projects table
 - **agent:** `active`
 - **ui:** `port`, `open_on_start`
 - **api:** `enabled`, `port`
@@ -400,7 +396,7 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **Single SQLite file for operational state.** Config (single-row typed table), metrics (time-series tables), project identity, and runtime control state share `harness.db` under the harness home after layout-v2. One `*sql.DB` handle is opened in `main` and passed to subsystems — no per-package database connection, no lock contention. The UI reads metrics directly — no separate metrics server. Each milestone adds its own table(s). On restart, history is preserved. Prometheus export (M8) reads from the same database.
 
-**Project memory repos are explicit git repos.** Before M9, a missing `memory.repo_path` is a setup error. Layout-v2 replaces that with a harness home and explicit project creation flow: provided git directories are used as-is, provided non-git directories are initialized with `go-git`, and omitted directories create `~/.harness/projects/<id>/` with `go-git`. No cwd inference and no terminal-only setup path.
+**Project memory repos are explicit git repos.** Layout-v2 uses a harness home and explicit project creation flow: provided git directories are used as-is, provided non-git directories are initialized with `go-git`, and omitted directories create `~/.harness/projects/<id>/` with `go-git`. No cwd inference and no terminal-only setup path.
 
 **Append-only sessions.jsonl.** Never mutate, only append. Trivial crash recovery, full audit log.
 

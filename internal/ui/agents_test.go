@@ -243,7 +243,7 @@ func TestHandleAgents_GETWithoutRegistryShowsSetupCTA(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "Memory repo not configured") {
+	if !strings.Contains(body, "Memory repo not ready") {
 		t.Errorf("expected not-configured message, got:\n%s", body)
 	}
 }
