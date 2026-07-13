@@ -1,6 +1,7 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$OutDir = "dist",
+    [string]$Arch = "",
     [switch]$Test
 )
 
@@ -18,7 +19,11 @@ if ($Test) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-Write-Host "==> Building harness ($Version @ $Commit)..." -ForegroundColor Cyan
+if ([string]::IsNullOrWhiteSpace($Arch)) {
+    $Arch = (go env GOARCH).Trim()
+}
+
+Write-Host "==> Building harness ($Version @ $Commit, windows/$Arch)..." -ForegroundColor Cyan
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
@@ -28,7 +33,7 @@ $LdFlags = "-s -w -H windowsgui " +
            "-X main.builtAt=$Built"
 
 $Env:GOOS        = "windows"
-$Env:GOARCH      = "amd64"
+$Env:GOARCH      = $Arch
 $Env:CGO_ENABLED = "0"
 
 go build -trimpath -ldflags $LdFlags -o "$OutDir\harness.exe" .\cmd\harness

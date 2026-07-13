@@ -107,6 +107,7 @@ type Manager struct {
 	// slice stays tiny.
 	failures []time.Time
 	failed   bool
+	done     chan struct{}
 }
 
 // ManagerConfig holds the configuration for a Manager.
@@ -161,6 +162,17 @@ func NewManager(cfg ManagerConfig) *Manager {
 		reloadCh:         make(chan struct{}, 1),
 		failureThreshold: threshold,
 		failureWindow:    window,
+		done:             make(chan struct{}),
+	}
+}
+
+// Wait blocks until the manager Run loop has exited or ctx is cancelled.
+func (m *Manager) Wait(ctx context.Context) error {
+	select {
+	case <-m.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -242,6 +254,7 @@ func (m *Manager) isFailed() bool {
 // It blocks until ctx is cancelled. Callers are responsible for launching it
 // as a goroutine: go mgr.Run(ctx).
 func (m *Manager) Run(ctx context.Context) {
+	defer close(m.done)
 	backoff := time.Second
 	maxBackoff := 30 * time.Second
 

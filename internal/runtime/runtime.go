@@ -60,6 +60,7 @@ type Runtime struct {
 	sessionMu    sync.RWMutex
 	sessionMg    *session.Manager
 	loopRegistry *tools.Registry
+	taskRunner   *taskRunnerAdapter
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

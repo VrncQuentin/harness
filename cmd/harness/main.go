@@ -71,6 +71,7 @@ func run() error {
 		slog.Info("harness.db opened", "path", dbPath)
 	}
 	uiServer.SetConfigStore(cfgStore)
+	uiServer.SetMetricsStore(metricsStore)
 	if harnessDB != nil {
 		uiServer.SetProjectStore(harnessDB.Projects())
 	}
@@ -88,8 +89,11 @@ func run() error {
 	}
 
 	if configured {
-		harnessruntime.ValidatePaths(uiServer, &cfg)
-		rt.Start(rootCtx, uiServer, events, metricsStore)
+		if err := config.Validate(&cfg); err != nil {
+			uiServer.AddStartupError(err)
+		} else if harnessruntime.ValidatePaths(uiServer, &cfg) {
+			rt.Start(rootCtx, uiServer, events, metricsStore)
+		}
 	}
 
 	go harnessruntime.ForwardEvents(rootCtx, events, uiServer, rt.Managers)
@@ -111,6 +115,9 @@ func run() error {
 		slog.Info("harness shutting down")
 		rt.Stop()
 		rootCancel()
+		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		rt.WaitManagers(waitCtx)
+		cancel()
 		if harnessDB != nil {
 			_ = harnessDB.Close()
 		}
