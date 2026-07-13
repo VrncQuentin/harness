@@ -171,8 +171,8 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 	}
 
 	// Episode .md is committed; sidecar .json is on disk only.
-	mdPath := filepath.Join(dir, "projects", "global", "episodes", "coder", s.ID+".md")
-	jsonPath := filepath.Join(dir, "projects", "global", "episodes", "coder", s.ID+".json")
+	mdPath := filepath.Join(dir, "episodes", "coder", s.ID+".md")
+	jsonPath := filepath.Join(dir, "episodes", "coder", s.ID+".json")
 	if _, err := os.Stat(mdPath); err != nil {
 		t.Fatalf("expected .md to exist: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 	}
 
 	// Sessions log has one entry.
-	logPath := filepath.Join(dir, "projects", "global", "sessions.jsonl")
+	logPath := filepath.Join(dir, "sessions.jsonl")
 	records, err := ReadAll(logPath)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
@@ -191,7 +191,7 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 	}
 
 	// Sidecar round-trips back to the same conversation.
-	body, err := reader.Read("projects/global/episodes/coder/" + s.ID + ".json")
+	body, err := reader.Read("episodes/coder/" + s.ID + ".json")
 	if err != nil {
 		t.Fatalf("Read sidecar: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 	}
 
 	// Sessions log has two records (append-only).
-	logPath := filepath.Join(dir, "projects", "global", "sessions.jsonl")
+	logPath := filepath.Join(dir, "sessions.jsonl")
 	records, err := ReadAll(logPath)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
@@ -263,7 +263,7 @@ func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 	}
 
 	// Episode markdown was overwritten with the latest summary.
-	body, err := reader.Read("projects/global/episodes/reviewer/" + s.ID + ".md")
+	body, err := reader.Read("episodes/reviewer/" + s.ID + ".md")
 	if err != nil {
 		t.Fatalf("Read episode: %v", err)
 	}
@@ -321,12 +321,12 @@ func TestManager_ResumeMissingSidecarErrConversationLost(t *testing.T) {
 	mgr.End(s.ID)
 
 	// Simulate a fresh clone: delete the sidecar but keep the .md and the log.
-	sidecar := filepath.Join(dir, "projects", "global", "episodes", "coder", s.ID+".json")
+	sidecar := filepath.Join(dir, "episodes", "coder", s.ID+".json")
 	if err := os.Remove(sidecar); err != nil {
 		t.Fatalf("remove sidecar: %v", err)
 	}
 	// Sanity: the .md is still there.
-	if !reader.Exists("projects/global/episodes/coder/" + s.ID + ".md") {
+	if !reader.Exists("episodes/coder/" + s.ID + ".md") {
 		t.Fatalf("expected episode .md to survive")
 	}
 
@@ -367,7 +367,7 @@ func TestManager_FlushAllSavesEveryLiveSession(t *testing.T) {
 		t.Fatalf("FlushAll: %v", err)
 	}
 
-	logPath := filepath.Join(dir, "projects", "global", "sessions.jsonl")
+	logPath := filepath.Join(dir, "sessions.jsonl")
 	records, err := ReadAll(logPath)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)

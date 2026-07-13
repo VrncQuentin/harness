@@ -14,13 +14,12 @@ import (
 
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
+	"github.com/vrnc/harness/internal/home"
 	"github.com/vrnc/harness/internal/logbuf"
 	harnessruntime "github.com/vrnc/harness/internal/runtime"
 	"github.com/vrnc/harness/internal/tray"
 	"github.com/vrnc/harness/internal/ui"
 )
-
-const dbFilename = "harness.db"
 
 func main() {
 	if err := run(); err != nil {
@@ -48,11 +47,19 @@ func run() error {
 	os.Stdout = os.Stderr
 	logRing, llamaRing, embedRing := configureLogging()
 
-	slog.Info("harness starting", "binDir", binDir)
+	harnessHome, err := home.Default()
+	if err != nil {
+		return err
+	}
+	if err := home.Ensure(harnessHome); err != nil {
+		return err
+	}
+
+	slog.Info("harness starting", "binDir", binDir, "home", harnessHome)
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 
-	dbPath := filepath.Join(binDir, dbFilename)
+	dbPath := home.DBPath(harnessHome)
 	uiPort := db.PeekUIPort(dbPath, config.Defaults().UI.Port)
 	uiURL := fmt.Sprintf("http://localhost:%d", uiPort)
 	uiServer := ui.NewServer(uiPort)
@@ -74,6 +81,7 @@ func run() error {
 	uiServer.SetMetricsStore(metricsStore)
 	if harnessDB != nil {
 		uiServer.SetProjectStore(harnessDB.Projects())
+		harnessruntime.EnsureProjectMemoryRepo(uiServer, harnessDB.Projects(), "global")
 	}
 
 	cfg, configured := loadInitialConfig(uiServer, cfgStore)

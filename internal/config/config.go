@@ -39,7 +39,6 @@ Write 3-8 short paragraphs in plain markdown. Do not include the conversation ve
 type Config struct {
 	Model    ModelConfig
 	Embedder EmbedderConfig
-	Memory   MemoryConfig
 	Agent    AgentConfig
 	Project  ProjectConfig
 	UI       UIConfig
@@ -91,11 +90,6 @@ type EmbedderConfig struct {
 	// Verbose toggles the embedder sidecar's --verbose flag. Same rationale
 	// as ModelConfig.Verbose.
 	Verbose bool
-}
-
-// MemoryConfig holds memory repo configuration.
-type MemoryConfig struct {
-	RepoPath string
 }
 
 // AgentConfig tracks the currently active agent. An empty Active means

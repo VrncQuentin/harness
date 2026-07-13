@@ -51,16 +51,17 @@ type Runtime struct {
 	reqQueue *queue.Queue
 	started  bool
 
-	memReader    *memory.DirReader
-	agentReg     *agent.DiskRegistry
-	assembler    *prompt.DiskAssembler
-	hotReload    *prompt.HotReload
-	apiServer    *api.Server
-	gitRepo      *gitw.Repo
-	sessionMu    sync.RWMutex
-	sessionMg    *session.Manager
-	loopRegistry *tools.Registry
-	taskRunner   *taskRunnerAdapter
+	memReader     memory.Reader
+	agentReg      *agent.DiskRegistry
+	assembler     *prompt.DiskAssembler
+	hotReload     *prompt.HotReload
+	apiServer     *api.Server
+	gitRepo       *gitw.Repo
+	globalGitRepo *gitw.Repo
+	sessionMu     sync.RWMutex
+	sessionMg     *session.Manager
+	loopRegistry  *tools.Registry
+	taskRunner    *taskRunnerAdapter
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

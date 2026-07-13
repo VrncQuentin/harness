@@ -9,7 +9,6 @@ CREATE TABLE IF NOT EXISTS config (
     embedder_binary              TEXT    NOT NULL,
     embedder_model_path          TEXT    NOT NULL,
     embedder_port                INTEGER NOT NULL,
-    memory_repo_path             TEXT    NOT NULL,
     ui_port                      INTEGER NOT NULL,
     ui_open_on_start             INTEGER NOT NULL,
     api_enabled                  INTEGER NOT NULL,

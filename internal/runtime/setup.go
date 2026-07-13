@@ -4,12 +4,16 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
+	"path"
 
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
+	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/metrics"
+	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/ui"
 )
 
@@ -24,6 +28,48 @@ func OpenDB(uiServer *ui.Server, path string) (*db.DB, config.Store, metrics.Sto
 	}
 	uiServer.SetConfigStore(d.Config())
 	return d, d.Config(), d.Metrics()
+}
+
+// EnsureProjectMemoryRepo initializes and scaffolds one layout-v2 project
+// memory repo. Existing git directories are opened as-is; non-git directories
+// are initialized through go-git.
+func EnsureProjectMemoryRepo(uiServer *ui.Server, store project.Store, slug string) bool {
+	if store == nil {
+		uiServer.AddStartupError(errors.New("project store unavailable"))
+		return false
+	}
+	proj, err := store.Get(slug)
+	if err != nil {
+		uiServer.AddStartupError(fmt.Errorf("project %s: %w", slug, err))
+		return false
+	}
+	repo, err := gitw.Init(proj.MemoryRepoPath)
+	if err != nil {
+		uiServer.AddStartupError(fmt.Errorf("project memory repo %s: %w", slug, err))
+		return false
+	}
+	global := slug == project.GlobalSlug
+	if err := memory.CreateMissingProjectRepo(proj.MemoryRepoPath, global); err != nil {
+		uiServer.AddStartupError(fmt.Errorf("project memory repo layout %s: %w", slug, err))
+		return false
+	}
+	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), projectRepoScaffoldFiles(global)); err != nil {
+		slog.Warn("project memory repo scaffold commit", "project", slug, "err", err)
+	}
+	return true
+}
+
+func projectRepoScaffoldFiles(global bool) []string {
+	items := memory.ExpectedProjectRepoLayout(global)
+	files := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Dir {
+			files = append(files, path.Join(item.Path, ".gitkeep"))
+			continue
+		}
+		files = append(files, item.Path)
+	}
+	return files
 }
 
 // ValidatePaths checks startup-critical paths referenced by cfg and surfaces
@@ -45,12 +91,6 @@ func ValidatePaths(uiServer *ui.Server, cfg *config.Config) bool {
 		}
 		if err := validateFilePath(c.label, c.path); err != nil {
 			uiServer.AddStartupError(err)
-			ok = false
-		}
-	}
-	if cfg.Memory.RepoPath != "" {
-		if err := memory.ValidateRepo(cfg.Memory.RepoPath); err != nil {
-			uiServer.AddStartupError(fmt.Errorf("memory repo: %w", err))
 			ok = false
 		}
 	}
