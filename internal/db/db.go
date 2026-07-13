@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -46,10 +47,11 @@ func Open(path string) (*DB, error) {
 		return nil, err
 	}
 
+	harnessHome := filepath.Dir(path)
 	d := &DB{sqldb: sqldb}
 	d.cfg = &ConfigStore{db: sqldb}
 	d.metrics = &MetricsStore{db: sqldb}
-	d.projects = &ProjectStore{db: sqldb}
+	d.projects = &ProjectStore{db: sqldb, harnessHome: harnessHome}
 
 	if err := d.seedGlobalProject(); err != nil {
 		_ = sqldb.Close()
@@ -113,11 +115,15 @@ func (d *DB) Projects() *ProjectStore { return d.projects }
 
 func (d *DB) seedGlobalProject() error {
 	_, err := d.sqldb.Exec(
-		`INSERT OR IGNORE INTO projects (slug, display_name, hidden, created_at) VALUES (?, ?, ?, ?)`,
-		"global", "Global", 0, time.Now().Unix(),
+		`INSERT OR IGNORE INTO projects (slug, display_name, memory_repo_path, hidden, created_at) VALUES (?, ?, ?, ?, ?)`,
+		"global", "Global", d.projects.defaultMemoryRepoPath("global"), 0, time.Now().Unix(),
 	)
 	if err != nil {
 		return fmt.Errorf("db: seed global project: %w", err)
+	}
+	_, err = d.sqldb.Exec(`UPDATE projects SET memory_repo_path = ? WHERE slug = ? AND (memory_repo_path IS NULL OR memory_repo_path = '')`, d.projects.defaultMemoryRepoPath("global"), "global")
+	if err != nil {
+		return fmt.Errorf("db: update global project memory repo: %w", err)
 	}
 	return nil
 }

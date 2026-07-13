@@ -9,8 +9,10 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"time"
 
@@ -54,6 +56,26 @@ func Open(path string) (*Repo, error) {
 	r, err := gogit.PlainOpen(path)
 	if err != nil {
 		return nil, fmt.Errorf("git: open %s: %w", path, err)
+	}
+	return &Repo{repo: r, path: path}, nil
+}
+
+// Init opens an existing plain git repository at path, or initializes a new
+// one there when none exists yet. The directory is created if missing.
+func Init(path string) (*Repo, error) {
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return nil, fmt.Errorf("git: create repo dir %s: %w", path, err)
+	}
+	r, err := gogit.PlainOpen(path)
+	if err == nil {
+		return &Repo{repo: r, path: path}, nil
+	}
+	if !errors.Is(err, gogit.ErrRepositoryNotExists) {
+		return nil, fmt.Errorf("git: open %s: %w", path, err)
+	}
+	r, err = gogit.PlainInit(path, false)
+	if err != nil {
+		return nil, fmt.Errorf("git: init %s: %w", path, err)
 	}
 	return &Repo{repo: r, path: path}, nil
 }
