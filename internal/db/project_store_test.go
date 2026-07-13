@@ -69,7 +69,9 @@ func TestProjectStore_CreateValidatesAndRoundTrips(t *testing.T) {
 	if created.SavedAt == nil {
 		t.Fatal("SavedAt must be set on create")
 	}
-
+	if created.MemoryRepoPath == "" {
+		t.Fatal("MemoryRepoPath must be set on create")
+	}
 	dirs, err := store.ListDirectories("dt-project")
 	if err != nil {
 		t.Fatalf("ListDirectories: %v", err)
@@ -139,6 +141,18 @@ func TestProjectStore_UpdateMutableFields(t *testing.T) {
 	}
 	if updated.ModelGPULayers == nil || *updated.ModelGPULayers != gpuLayers {
 		t.Fatalf("ModelGPULayers = %v, want %d", updated.ModelGPULayers, gpuLayers)
+	}
+	newRepo := filepath.Join(t.TempDir(), "memory")
+	updated, err = store.Update(project.UpdateInput{
+		Slug:           "dt",
+		DisplayName:    "DT Updated",
+		MemoryRepoPath: newRepo,
+	})
+	if err != nil {
+		t.Fatalf("Update memory repo: %v", err)
+	}
+	if updated.MemoryRepoPath != newRepo {
+		t.Fatalf("MemoryRepoPath = %q, want %q", updated.MemoryRepoPath, newRepo)
 	}
 }
 

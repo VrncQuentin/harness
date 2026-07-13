@@ -8,18 +8,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vrnc/harness/internal/home"
 	"github.com/vrnc/harness/internal/project"
 )
 
 // ProjectStore persists M3b project metadata and attached directories.
 type ProjectStore struct {
-	db *sql.DB
+	db          *sql.DB
+	harnessHome string
 }
 
 var _ project.Store = (*ProjectStore)(nil)
 
 func (s *ProjectStore) List(includeHidden bool) ([]project.Project, error) {
-	query := `SELECT slug, display_name, model_binary, model_path, model_ctx_size,
+	query := `SELECT slug, display_name, memory_repo_path, model_binary, model_path, model_ctx_size,
 		model_gpu_layers, model_n_parallel, hidden, created_at, saved_at
 		FROM projects`
 	args := []any{}
@@ -42,7 +44,7 @@ func (s *ProjectStore) List(includeHidden bool) ([]project.Project, error) {
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		out = append(out, s.withDefaultMemoryRepoPath(p))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("db: list projects rows: %w", err)
@@ -54,7 +56,7 @@ func (s *ProjectStore) Get(slug string) (project.Project, error) {
 	if err := project.ValidateSlug(slug); err != nil {
 		return project.Project{}, err
 	}
-	row := s.db.QueryRow(`SELECT slug, display_name, model_binary, model_path, model_ctx_size,
+	row := s.db.QueryRow(`SELECT slug, display_name, memory_repo_path, model_binary, model_path, model_ctx_size,
 		model_gpu_layers, model_n_parallel, hidden, created_at, saved_at
 		FROM projects WHERE slug = ?`, slug)
 	p, err := scanProject(row)
@@ -64,7 +66,7 @@ func (s *ProjectStore) Get(slug string) (project.Project, error) {
 		}
 		return project.Project{}, err
 	}
-	return p, nil
+	return s.withDefaultMemoryRepoPath(p), nil
 }
 
 func (s *ProjectStore) Create(input project.CreateInput) (project.Project, error) {
@@ -76,12 +78,18 @@ func (s *ProjectStore) Create(input project.CreateInput) (project.Project, error
 	if err := project.ValidateDisplayName(input.DisplayName); err != nil {
 		return project.Project{}, err
 	}
+	input.MemoryRepoPath = strings.TrimSpace(input.MemoryRepoPath)
+	if input.MemoryRepoPath == "" {
+		input.MemoryRepoPath = s.defaultMemoryRepoPath(input.Slug)
+	}
+	if err := validateMemoryRepoPath(input.MemoryRepoPath); err != nil {
+		return project.Project{}, err
+	}
 	for _, dir := range input.Directories {
 		if err := validateDirectoryPath(dir); err != nil {
 			return project.Project{}, err
 		}
 	}
-
 	now := time.Now().Unix()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -90,10 +98,10 @@ func (s *ProjectStore) Create(input project.CreateInput) (project.Project, error
 	defer func() { _ = tx.Rollback() }()
 
 	_, err = tx.Exec(`INSERT INTO projects (
-		slug, display_name, model_binary, model_path, model_ctx_size,
+		slug, display_name, memory_repo_path, model_binary, model_path, model_ctx_size,
 		model_gpu_layers, model_n_parallel, hidden, created_at, saved_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-		input.Slug, input.DisplayName, input.ModelBinary, input.ModelPath, input.ModelCtxSize,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+		input.Slug, input.DisplayName, input.MemoryRepoPath, input.ModelBinary, input.ModelPath, input.ModelCtxSize,
 		input.ModelGPULayers, input.ModelNParallel, now, now,
 	)
 	if err != nil {
@@ -122,12 +130,18 @@ func (s *ProjectStore) Update(input project.UpdateInput) (project.Project, error
 	if err := project.ValidateDisplayName(input.DisplayName); err != nil {
 		return project.Project{}, err
 	}
-
+	input.MemoryRepoPath = strings.TrimSpace(input.MemoryRepoPath)
+	if input.MemoryRepoPath == "" {
+		input.MemoryRepoPath = s.defaultMemoryRepoPath(input.Slug)
+	}
+	if err := validateMemoryRepoPath(input.MemoryRepoPath); err != nil {
+		return project.Project{}, err
+	}
 	res, err := s.db.Exec(`UPDATE projects SET
-		display_name = ?, model_binary = ?, model_path = ?, model_ctx_size = ?,
+		display_name = ?, memory_repo_path = ?, model_binary = ?, model_path = ?, model_ctx_size = ?,
 		model_gpu_layers = ?, model_n_parallel = ?, saved_at = ?
 		WHERE slug = ?`,
-		input.DisplayName, input.ModelBinary, input.ModelPath, input.ModelCtxSize,
+		input.DisplayName, input.MemoryRepoPath, input.ModelBinary, input.ModelPath, input.ModelCtxSize,
 		input.ModelGPULayers, input.ModelNParallel, time.Now().Unix(), input.Slug,
 	)
 	if err != nil {
@@ -242,6 +256,7 @@ type projectScanner interface {
 func scanProject(row projectScanner) (project.Project, error) {
 	var (
 		p              project.Project
+		memoryRepoPath sql.NullString
 		modelBinary    sql.NullString
 		modelPath      sql.NullString
 		modelCtxSize   sql.NullInt64
@@ -252,10 +267,13 @@ func scanProject(row projectScanner) (project.Project, error) {
 		savedAt        sql.NullInt64
 	)
 	if err := row.Scan(
-		&p.Slug, &p.DisplayName, &modelBinary, &modelPath, &modelCtxSize,
+		&p.Slug, &p.DisplayName, &memoryRepoPath, &modelBinary, &modelPath, &modelCtxSize,
 		&modelGPULayers, &modelNParallel, &hidden, &createdAt, &savedAt,
 	); err != nil {
 		return project.Project{}, fmt.Errorf("db: scan project: %w", err)
+	}
+	if memoryRepoPath.Valid {
+		p.MemoryRepoPath = strings.TrimSpace(memoryRepoPath.String)
 	}
 	p.ModelBinary = stringPtr(modelBinary)
 	p.ModelPath = stringPtr(modelPath)
@@ -268,9 +286,35 @@ func scanProject(row projectScanner) (project.Project, error) {
 	return p, nil
 }
 
+func (s *ProjectStore) withDefaultMemoryRepoPath(p project.Project) project.Project {
+	if strings.TrimSpace(p.MemoryRepoPath) == "" {
+		p.MemoryRepoPath = s.defaultMemoryRepoPath(p.Slug)
+	}
+	return p
+}
+
+func (s *ProjectStore) defaultMemoryRepoPath(slug string) string {
+	root := s.harnessHome
+	if root == "" {
+		root = "."
+	}
+	repoPath, err := home.ProjectRepoPath(root, slug)
+	if err != nil {
+		return filepath.Join(root, "projects", slug)
+	}
+	return repoPath
+}
+
 func validateDirectoryPath(path string) error {
 	if !isAbsPath(path) {
 		return project.ErrInvalidPath
+	}
+	return nil
+}
+
+func validateMemoryRepoPath(path string) error {
+	if !isAbsPath(path) {
+		return project.ErrMemoryRepo
 	}
 	return nil
 }
