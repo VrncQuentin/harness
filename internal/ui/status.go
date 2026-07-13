@@ -265,7 +265,7 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMemoryScaffold is POST /memory/scaffold - creates each missing
-// canonical item under the configured memory.repo_path. The redirect
+// canonical item under the active project memory repo. The redirect
 // always lands back on the status page; a non-empty scaffold_err query
 // param causes the prompt to render an error banner above the (now
 // possibly shorter) missing-items list.

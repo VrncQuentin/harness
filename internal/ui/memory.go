@@ -95,7 +95,7 @@ func editableDesc(p string) (string, bool) {
 }
 
 // SetMemoryStore wires the store used by the /memory page. Pass nil to
-// detach (e.g. when memory.repo_path is cleared in /config); the page
+// detach (e.g. when the active memory repo becomes unavailable); the page
 // then renders the not-configured CTA instead of a blank tree.
 func (s *Server) SetMemoryStore(store MemoryStore) {
 	s.memStoreMu.Lock()

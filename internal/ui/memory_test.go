@@ -145,7 +145,7 @@ func TestHandleMemory_NoStoreShowsCTA(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Memory repo not configured") {
+	if !strings.Contains(rec.Body.String(), "Memory repo not ready") {
 		t.Errorf("expected setup CTA, got:\n%s", rec.Body.String())
 	}
 }

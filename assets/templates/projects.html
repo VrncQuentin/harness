@@ -34,7 +34,11 @@
         <input type="text" name="slug" pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="auto-generated from name">
       </label>
       <label class="field">
-        <span>Directories (one absolute path per line)</span>
+        <span>Memory repo directory (optional)</span>
+        <input type="text" name="memory_repo_path" placeholder="Default: ~/.harness/projects/&lt;slug&gt;">
+      </label>
+      <label class="field">
+        <span>Attached code directories (one absolute path per line)</span>
         <textarea name="directories" rows="3" placeholder="/path/to/project/repo"></textarea>
       </label>
       <div class="modal-actions">
@@ -50,6 +54,7 @@
         <th>Display name</th>
         <th>Slug</th>
         <th>Model override</th>
+        <th>Memory repo</th>
         <th>Directories</th>
         <th></th>
       </tr>
@@ -70,12 +75,16 @@
           <span class="muted">inherited from config</span>
           {{end}}
         </td>
+        <td><code>{{.MemoryRepoPath}}</code></td>
         <td>{{.DirectoryCount}}</td>
         <td class="actions">
           <a href="/projects?activate={{.Slug}}" class="btn btn-sm"
              {{if .IsActive}}disabled{{end}}>
             {{if .IsActive}}Active{{else}}Activate{{end}}
           </a>
+          <form method="post" action="/projects/backup?slug={{.Slug}}" class="inline-form">
+            <button type="submit" class="btn btn-sm btn-ghost">Back up</button>
+          </form>
           {{if not .IsGlobal}}
           <a href="/projects?edit={{.Slug}}" class="btn btn-sm btn-ghost">Edit</a>
           {{if .Hidden}}
@@ -102,6 +111,15 @@
       <span>Display name</span>
       <input type="text" name="display_name" value="{{.DisplayName}}" required>
     </label>
+    <label class="field">
+      <span>Memory repo directory</span>
+      <input type="text" name="memory_repo_path" value="{{.MemoryRepoPath}}" required>
+    </label>
+    <div class="field">
+      <span>When changing this directory</span>
+      <label class="checkbox"><input type="radio" name="memory_repo_mode" value="move" checked> Move existing memory data</label>
+      <label class="checkbox"><input type="radio" name="memory_repo_mode" value="fresh"> Start fresh at the new path</label>
+    </div>
     <label class="field">
       <span>Model binary (optional)</span>
       <input type="text" name="model_binary" value="{{.ModelBinary}}" placeholder="Inherit from config">
