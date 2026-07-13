@@ -532,8 +532,11 @@ type taskRunnerAdapter struct {
 	// evl is the M7 permission evaluator. When nil, no approval checks are
 	// performed and all enabled tools dispatch immediately.
 	evl       *approvals.Evaluator
+	metrics   agentloop.MetricsRecorder
 	enginesMu sync.Mutex
 	engines   map[string]*agentloop.Engine // sessionID → engine
+	cancels   map[string]context.CancelFunc
+	dones     map[string]chan struct{}
 }
 
 // queuedInferClient wraps a Queue so the agent loop routes through the
@@ -655,38 +658,45 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		}
 	}
 
+	loopCtx, cancelLoop := context.WithCancel(ctx)
+
 	toolCtx := tools.Context{
 		ProjectSlug:    slug,
 		SandboxRoots:   sandboxRoots,
 		SessionID:      id,
 		CallerIdentity: "agent:" + agentName,
-		Ctx:            ctx,
+		Ctx:            loopCtx,
 	}
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
+	if ad.metrics != nil {
+		engine.WithMetrics(ad.metrics)
+	}
 	if ad.evl != nil {
 		engine.WithApprovals(ad.evl)
 	}
 
 	// Register engine so approval decisions can be routed back.
-	ad.registerEngine(id, engine)
+	done := make(chan struct{})
+	ad.registerEngine(id, engine, cancelLoop, done)
 
 	rawEvch := make(chan agentloop.Event, 64)
 	evch := make(chan agentloop.Event, 64)
 	go func() {
-		if err := engine.Run(ctx, assembled, rawEvch); err != nil {
+		if err := engine.Run(loopCtx, assembled, rawEvch); err != nil {
 			slog.Warn("task engine", "err", err)
 		}
 	}()
 	go func() {
 		defer close(evch)
-		defer ad.unregisterEngine(id)
+		defer close(done)
+		defer ad.unregisterEngine(id, done)
 		var events []agentloop.Event
 		for ev := range rawEvch {
 			events = append(events, ev)
 			select {
 			case evch <- ev:
-			case <-ctx.Done():
+			case <-loopCtx.Done():
 				return
 			}
 		}
@@ -698,19 +708,78 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	return id, evch, nil
 }
 
-func (ad *taskRunnerAdapter) registerEngine(sessionID string, engine *agentloop.Engine) {
+func (ad *taskRunnerAdapter) registerEngine(sessionID string, engine *agentloop.Engine, cancel context.CancelFunc, done chan struct{}) {
+	var previousCancel context.CancelFunc
+	var previousDone chan struct{}
+
 	ad.enginesMu.Lock()
 	if ad.engines == nil {
 		ad.engines = make(map[string]*agentloop.Engine)
 	}
+	if ad.cancels == nil {
+		ad.cancels = make(map[string]context.CancelFunc)
+	}
+	if ad.dones == nil {
+		ad.dones = make(map[string]chan struct{})
+	}
+	previousCancel = ad.cancels[sessionID]
+	previousDone = ad.dones[sessionID]
 	ad.engines[sessionID] = engine
+	ad.cancels[sessionID] = cancel
+	ad.dones[sessionID] = done
 	ad.enginesMu.Unlock()
+
+	if previousCancel != nil {
+		previousCancel()
+	}
+	if previousDone != nil {
+		select {
+		case <-previousDone:
+		case <-time.After(2 * time.Second):
+			slog.Warn("task: previous engine did not stop before replacement", "session", sessionID)
+		}
+	}
 }
 
-func (ad *taskRunnerAdapter) unregisterEngine(sessionID string) {
+func (ad *taskRunnerAdapter) unregisterEngine(sessionID string, done chan struct{}) {
 	ad.enginesMu.Lock()
+	if ad.dones[sessionID] != done {
+		ad.enginesMu.Unlock()
+		return
+	}
+	cancel := ad.cancels[sessionID]
 	delete(ad.engines, sessionID)
+	delete(ad.cancels, sessionID)
+	delete(ad.dones, sessionID)
 	ad.enginesMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (ad *taskRunnerAdapter) CancelAll(ctx context.Context) error {
+	ad.enginesMu.Lock()
+	cancels := make([]context.CancelFunc, 0, len(ad.cancels))
+	dones := make([]chan struct{}, 0, len(ad.dones))
+	for id, cancel := range ad.cancels {
+		cancels = append(cancels, cancel)
+		if done := ad.dones[id]; done != nil {
+			dones = append(dones, done)
+		}
+	}
+	ad.enginesMu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	for _, done := range dones {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 // ApplyApproval routes a user decision to the correct running engine.

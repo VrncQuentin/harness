@@ -271,19 +271,19 @@ are deferred beyond M7.
 
 **Goal:** daily-driver reliability, observability, and native packaging.
 
-- [ ] Add remaining metrics: TTFT, token throughput, VRAM usage (nvidia-smi polling), loop turn count, tool call count/error rate
-- [ ] Optional Prometheus endpoint exposing all SQLite-backed metrics
-- [ ] Full test suite: inference mock, memory read/write, retrieval scoring, prompt assembly, agent loop, tool sandbox, approvals
-- [ ] Single binary packaging: harness + embedded UI assets
-- [ ] Embedder binary: self-contained, no Python dependency
-- [ ] Graceful shutdown: drain queue, flush WAL, cancel active loops, commit any pending session, clean process teardown
-- [ ] Startup validation: config checks, model file exists, memory repo accessible, active project references valid directories
+- [x] Add remaining metrics: TTFT, token throughput, VRAM usage (nvidia-smi polling), loop turn count, tool call count/error rate
+- [x] Optional Prometheus endpoint exposing all SQLite-backed metrics
+- [x] Full test suite: inference mock, memory read/write, retrieval scoring, prompt assembly, agent loop, tool sandbox, approvals
+- [x] Single binary packaging: harness + embedded UI assets
+- [x] Embedder binary: self-contained, no Python dependency
+- [x] Graceful shutdown: drain queue, flush WAL, cancel active loops, commit any pending session, clean process teardown
+- [x] Startup validation: config checks, model file exists, memory repo accessible, active project references valid directories
 
 **Acceptance tests:**
-- [ ] Run full test suite -> all pass, no flaky tests
+- [x] Run full test suite -> all pass, no flaky tests
 - [ ] Build single binary -> runs correctly
 - [ ] Start harness, send 50 sequential requests -> TTFT, throughput, VRAM, loop, and tool metrics visible in UI
-- [ ] Send SIGTERM -> harness drains in-flight requests, cancels active loops safely, commits any pending session, exits cleanly
+- [ ] Send SIGTERM (Linux/headless) -> harness drains in-flight requests, cancels active loops safely, commits any pending session, exits cleanly
 - [ ] Send SIGKILL -> on next start, WAL is replayed, no data lost
 - [ ] Start with a corrupted `harness.db` -> clear error on the status page, no crash
 - [ ] Start with valid config but wrong model path -> clear error at startup, not at first request

@@ -61,12 +61,21 @@ const (
 // approval decision within the allowed window.
 var ErrApprovalTimeout = errors.New("agentloop: approval timeout")
 
+// MetricsRecorder is the narrow metric surface used by Engine.
+type MetricsRecorder interface {
+	LoopTurn() error
+	ToolCall(string) error
+	ToolCallError(string) error
+	ToolCallErrorRate(string, bool) error
+}
+
 // Engine orchestrates the agent loop.
 type Engine struct {
 	infer    inference.Client
 	registry *tools.Registry
 	loopCfg  config.LoopConfig
 	toolCtx  tools.Context
+	metrics  MetricsRecorder
 
 	// evl is the optional M7 permission evaluator. When nil, no
 	// approval checks are performed (all tools dispatch immediately).
@@ -102,6 +111,12 @@ func NewEngine(
 // default), no approval checks are performed. Call before Run().
 func (e *Engine) WithApprovals(evl *approvals.Evaluator) *Engine {
 	e.evl = evl
+	return e
+}
+
+// WithMetrics installs optional loop/tool metrics recording. Call before Run().
+func (e *Engine) WithMetrics(rec MetricsRecorder) *Engine {
+	e.metrics = rec
 	return e
 }
 
@@ -210,6 +225,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 		}
 
 		turns++
+		e.recordLoopTurn()
 
 		// If no tool calls, the model responded with plain text.
 		if len(toolCallSlots) == 0 {
@@ -303,6 +319,8 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 					)
 				}
 			}
+
+			e.recordToolCall(tc.Function.Name, res.Error != "")
 
 			e.emit(evch, Event{
 				Turn:       turns,
@@ -488,4 +506,21 @@ func allEqualFP(items [][]byte) bool {
 		}
 	}
 	return true
+}
+
+func (e *Engine) recordLoopTurn() {
+	if e.metrics != nil {
+		_ = e.metrics.LoopTurn()
+	}
+}
+
+func (e *Engine) recordToolCall(tool string, failed bool) {
+	if e.metrics == nil {
+		return
+	}
+	_ = e.metrics.ToolCall(tool)
+	_ = e.metrics.ToolCallErrorRate(tool, failed)
+	if failed {
+		_ = e.metrics.ToolCallError(tool)
+	}
 }

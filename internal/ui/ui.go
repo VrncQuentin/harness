@@ -14,6 +14,7 @@ import (
 	"github.com/vrnc/harness/assets"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/logbuf"
+	"github.com/vrnc/harness/internal/metrics"
 )
 
 // RetryFunc is called when the user clicks Retry on the status page or saves
@@ -126,6 +127,9 @@ type Server struct {
 
 	storeMu sync.RWMutex
 	store   config.Store
+
+	metricsStoreMu sync.RWMutex
+	metricsStore   metrics.Store
 
 	agentRegMu sync.RWMutex
 	agentReg   AgentRegistry
@@ -305,6 +309,19 @@ func (s *Server) configStore() config.Store {
 	s.storeMu.RLock()
 	defer s.storeMu.RUnlock()
 	return s.store
+}
+
+// SetMetricsStore installs the metrics store used by the Prometheus endpoint.
+func (s *Server) SetMetricsStore(store metrics.Store) {
+	s.metricsStoreMu.Lock()
+	s.metricsStore = store
+	s.metricsStoreMu.Unlock()
+}
+
+func (s *Server) getMetricsStore() metrics.Store {
+	s.metricsStoreMu.RLock()
+	defer s.metricsStoreMu.RUnlock()
+	return s.metricsStore
 }
 
 func (s *Server) SetProjectStore(store ProjectStore) {
@@ -500,6 +517,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/task/send", s.handleTaskSend)
 	mux.HandleFunc("/task/approval", s.handleTaskApproval)
 	mux.HandleFunc("/retry", s.handleRetry)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
 	mux.HandleFunc("/memory/rebuild-index", s.handleMemoryRebuildIndex)
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))

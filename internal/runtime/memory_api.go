@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/vrnc/harness/internal/agent"
+	"github.com/vrnc/harness/internal/agentloop"
 	"github.com/vrnc/harness/internal/api"
 	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/config"
@@ -170,13 +171,19 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			ToolID: "web_search", Decision: approvals.Denied, Source: "user: web_search disabled in config",
 		})
 	}
+	var loopMetrics agentloop.MetricsRecorder
+	if metricsStore != nil {
+		loopMetrics = metrics.NewRecorder(metricsStore)
+	}
 	taskAdapter := &taskRunnerAdapter{
 		rt:       rt,
 		registry: registry,
 		asm:      asmAdapter,
 		q:        rt.reqQueue,
 		evl:      approvals.NewEvaluator(approvals.DefaultLayer(), userLayer),
+		metrics:  loopMetrics,
 	}
+	rt.taskRunner = taskAdapter
 	uiServer.SetTaskRunner(taskAdapter)
 }
 
@@ -368,6 +375,7 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	uiServer.SetChatRunner(nil)
 	uiServer.SetSessionStore(nil)
 	uiServer.SetTaskRunner(nil)
+	rt.taskRunner = nil
 	uiServer.SetRetrievalScorer(nil)
 	uiServer.SetIndexRebuilder(nil)
 	rt.loopRegistry = nil

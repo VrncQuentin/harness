@@ -8,6 +8,7 @@ import (
 
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
+	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/ui"
 )
@@ -25,11 +26,13 @@ func OpenDB(uiServer *ui.Server, path string) (*db.DB, config.Store, metrics.Sto
 	return d, d.Config(), d.Metrics()
 }
 
-// ValidatePaths checks that the binaries and model files referenced by cfg
-// exist on disk and surfaces any missing ones as startup errors.
-func ValidatePaths(uiServer *ui.Server, cfg *config.Config) {
+// ValidatePaths checks startup-critical paths referenced by cfg and surfaces
+// invalid entries as startup errors. It returns true when all checks passed.
+func ValidatePaths(uiServer *ui.Server, cfg *config.Config) bool {
+	ok := true
 	checks := []struct {
-		label, path string
+		label string
+		path  string
 	}{
 		{"model file", cfg.Model.ModelPath},
 		{"llama-server binary", cfg.Model.Binary},
@@ -40,8 +43,30 @@ func ValidatePaths(uiServer *ui.Server, cfg *config.Config) {
 		if c.path == "" {
 			continue
 		}
-		if _, err := os.Stat(c.path); errors.Is(err, fs.ErrNotExist) {
-			uiServer.AddStartupError(fmt.Errorf("%s not found: %s", c.label, c.path))
+		if err := validateFilePath(c.label, c.path); err != nil {
+			uiServer.AddStartupError(err)
+			ok = false
 		}
 	}
+	if cfg.Memory.RepoPath != "" {
+		if err := memory.ValidateRepo(cfg.Memory.RepoPath); err != nil {
+			uiServer.AddStartupError(fmt.Errorf("memory repo: %w", err))
+			ok = false
+		}
+	}
+	return ok
+}
+
+func validateFilePath(label, path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%s not found: %s", label, path)
+		}
+		return fmt.Errorf("%s cannot be accessed: %s: %w", label, path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s points to a directory, expected a file: %s", label, path)
+	}
+	return nil
 }
