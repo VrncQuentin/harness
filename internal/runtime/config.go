@@ -97,8 +97,7 @@ func (rt *Runtime) ApplyConfig(
 			))
 		}
 
-		if old.Memory != loaded.Memory ||
-			old.Prompt != loaded.Prompt ||
+		if old.Prompt != loaded.Prompt ||
 			old.API != loaded.API ||
 			old.Loop != loaded.Loop ||
 			old.Agent.Active != loaded.Agent.Active ||

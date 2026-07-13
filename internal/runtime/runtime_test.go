@@ -53,7 +53,6 @@ func TestRestartCallbacksTolerateMissingManagers(t *testing.T) {
 func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	port := freeTCPPort(t)
 	cfg := config.Defaults()
-	cfg.Memory.RepoPath = t.TempDir()
 	cfg.API.Enabled = true
 	cfg.API.Port = port
 
@@ -188,7 +187,6 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 
 	cfg := config.Defaults()
 	cfg.Agent.Active = "coder"
-	cfg.Memory.RepoPath = root
 	cfg.Project.ActiveProjectSlug = "global"
 	mem := memory.NewDirReader(root)
 	active := "coder"

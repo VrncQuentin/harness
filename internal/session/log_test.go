@@ -22,7 +22,7 @@ func TestReadAll_MissingFileReturnsEmpty(t *testing.T) {
 
 func TestAppendRecordAndReadAll(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "projects", "global", "sessions.jsonl")
+	path := filepath.Join(dir, "sessions.jsonl")
 
 	rec := Record{
 		ID:          "2026-04-26T22-15-03Z",
@@ -31,7 +31,7 @@ func TestAppendRecordAndReadAll(t *testing.T) {
 		StartedAt:   time.Date(2026, 4, 26, 22, 14, 0, 0, time.UTC),
 		SavedAt:     time.Date(2026, 4, 26, 22, 15, 3, 0, time.UTC),
 		SaveSeq:     1,
-		EpisodePath: "projects/global/episodes/coder/2026-04-26T22-15-03Z.md",
+		EpisodePath: "episodes/coder/2026-04-26T22-15-03Z.md",
 	}
 	if err := AppendRecord(path, rec); err != nil {
 		t.Fatalf("AppendRecord: %v", err)

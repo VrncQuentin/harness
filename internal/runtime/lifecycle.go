@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	"github.com/vrnc/harness/internal/inference"
@@ -166,7 +167,15 @@ func (rt *Runtime) startServices(
 		httpclient.NewStreaming(),
 	)
 	rt.inferClient = inferClient
-	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, cfg.Queue.WALPath, inferClient)
+	walPath := cfg.Queue.WALPath
+	if walPath == "" {
+		if roots, err := rt.resolveProjectRepoRootsForSlug(cfg.Project.ActiveProjectSlug); err == nil {
+			walPath = filepath.Join(roots.activeRoot, "queue.wal")
+		} else {
+			uiServer.AddStartupError(fmt.Errorf("queue WAL path: %w", err))
+		}
+	}
+	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, walPath, inferClient)
 	if metricsStore != nil {
 		rt.reqQueue.SetMetrics(metrics.NewRecorder(metricsStore))
 	}
