@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"path"
 
 	gogit "github.com/go-git/go-git/v5"
 	"github.com/vrnc/harness/internal/config"
@@ -54,23 +53,10 @@ func EnsureProjectMemoryRepo(uiServer *ui.Server, store project.Store, slug stri
 		uiServer.AddStartupError(fmt.Errorf("project memory repo layout %s: %w", slug, err))
 		return false
 	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), projectRepoScaffoldFiles(global)); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
+	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(global)); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
 		slog.Warn("project memory repo scaffold commit", "project", slug, "err", err)
 	}
 	return true
-}
-
-func projectRepoScaffoldFiles(global bool) []string {
-	items := memory.ExpectedProjectRepoLayout(global)
-	files := make([]string, 0, len(items))
-	for _, item := range items {
-		if item.Dir {
-			files = append(files, path.Join(item.Path, ".gitkeep"))
-			continue
-		}
-		files = append(files, item.Path)
-	}
-	return files
 }
 
 // ValidatePaths checks startup-critical paths referenced by cfg and surfaces
