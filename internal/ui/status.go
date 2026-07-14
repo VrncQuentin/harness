@@ -11,6 +11,7 @@ import (
 
 	"github.com/vrnc/harness/internal/logbuf"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/project"
 )
 
 // statusLogTail is the number of recent log entries shown server-rendered on
@@ -175,8 +176,9 @@ func formatMetricTags(tags map[string]string) string {
 }
 
 // memoryLayoutView computes the template view of the missing canonical
-// items in the configured memory repo. The prompt is only shown when:
-//   - a memory repo path is configured,
+// items in the active layout-v2 project memory repo. The prompt is only
+// shown when:
+//   - a project memory repo path is configured,
 //   - the path resolves to an existing directory, AND
 //   - one or more canonical items are missing.
 //
@@ -189,7 +191,7 @@ func (s *Server) memoryLayoutView() memoryLayoutView {
 	if path == "" {
 		return memoryLayoutView{}
 	}
-	missing, err := memory.MissingItems(path)
+	missing, err := memory.MissingProjectRepoItems(path, s.activeProjectIsGlobal())
 	if err != nil || len(missing) == 0 {
 		return memoryLayoutView{}
 	}
@@ -202,6 +204,19 @@ func (s *Server) memoryLayoutView() memoryLayoutView {
 		items = append(items, memoryLayoutItemView{Path: m.Path, Kind: kind, Desc: m.Desc})
 	}
 	return memoryLayoutView{Show: true, RepoPath: path, Items: items}
+}
+
+func (s *Server) activeProjectIsGlobal() bool {
+	slug := project.GlobalSlug
+	if snapSlug := strings.TrimSpace(s.state.snapshot().ProjectSlug); snapSlug != "" {
+		slug = snapSlug
+	}
+	if store := s.configStore(); store != nil {
+		if cfg, _, err := store.Load(); err == nil && strings.TrimSpace(cfg.Project.ActiveProjectSlug) != "" {
+			slug = cfg.Project.ActiveProjectSlug
+		}
+	}
+	return slug == project.GlobalSlug
 }
 
 func queuePct(depth, capacity int) int {
@@ -265,7 +280,7 @@ func (s *Server) handleRetry(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMemoryScaffold is POST /memory/scaffold - creates each missing
-// canonical item under the active project memory repo. The redirect
+// canonical item under the active layout-v2 project memory repo. The redirect
 // always lands back on the status page; a non-empty scaffold_err query
 // param causes the prompt to render an error banner above the (now
 // possibly shorter) missing-items list.
@@ -283,7 +298,7 @@ func (s *Server) handleMemoryScaffold(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?scaffold_err="+url.QueryEscape("memory repo path is not configured"), http.StatusSeeOther)
 		return
 	}
-	missing, err := memory.MissingItems(path)
+	missing, err := memory.MissingProjectRepoItems(path, s.activeProjectIsGlobal())
 	if err != nil {
 		http.Redirect(w, r, "/?scaffold_err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
