@@ -259,16 +259,17 @@ func (a *DiskAssembler) loggerFor(ctx context.Context) *slog.Logger {
 
 // rawLayers is the intermediate form - strings with their token counts -
 // used between loading and rendering. The per-episode split lets the
-// trimmer drop oldest-first without re-reading the files.
+// trimmer drop the lowest-priority episode without re-reading the files.
 type rawLayers struct {
-	rules        string
-	user         string
-	projectRules string
-	persona      string
-	agentRules   string
-	facts        string
-	notes        string
-	episodes     []episode
+	rules             string
+	user              string
+	projectRules      string
+	persona           string
+	agentRules        string
+	facts             string
+	notes             string
+	episodes          []episode
+	episodesBestFirst bool
 }
 
 type episode struct {
@@ -347,11 +348,12 @@ func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query 
 		}
 		lay.notes = notes
 
-		eps, err := a.loadEpisodes(ctx, agentName, query)
+		eps, bestFirst, err := a.loadEpisodes(ctx, agentName, query)
 		if err != nil {
 			return rawLayers{}, err
 		}
 		lay.episodes = eps
+		lay.episodesBestFirst = bestFirst
 	}
 
 	facts, err := a.readOptional(factsPath)
@@ -370,7 +372,7 @@ func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query 
 // When PromptConfig.RecencyN > 0 only the last N entries (the newest)
 // are returned, so the budget-driven trim further down sees a slice
 // already capped to recency. RecencyN <= 0 means unlimited.
-func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, query string) ([]episode, error) {
+func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, query string) ([]episode, bool, error) {
 	slug := a.projectSlug
 	if slug == "" {
 		slug = project.GlobalSlug
@@ -378,7 +380,7 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 	pattern := fmt.Sprintf(episodesGlobPattern, slug, agentName)
 	paths, err := a.mem.Glob(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("prompt: glob episodes: %w", err)
+		return nil, false, fmt.Errorf("prompt: glob episodes: %w", err)
 	}
 	// path.Match returns sorted paths via our Reader, but be explicit
 	// in case a future Reader drops the guarantee.
@@ -387,7 +389,7 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 	for _, p := range paths {
 		content, err := a.readOptional(p)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if content == "" {
 			continue
@@ -408,7 +410,9 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 			if err == nil && len(results) > 0 {
 				scores := make(map[string]float64, len(results))
 				for _, r := range results {
-					scores[r.SHA] = float64(r.Score)
+					if existing, ok := scores[r.SHA]; !ok || float64(r.Score) > existing {
+						scores[r.SHA] = float64(r.Score)
+					}
 				}
 				n := float64(len(out))
 				for i := range out {
@@ -435,7 +439,7 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 			out = out[len(out)-n:]
 		}
 	}
-	return out, nil
+	return out, blended, nil
 }
 
 // readRequired returns the contents of p or an error wrapping
@@ -519,8 +523,7 @@ func (a *DiskAssembler) trim(logger *slog.Logger, lay *rawLayers, convoTokens in
 	memBudget := a.cfg.MemoryTokenBudget
 	if memBudget > 0 {
 		for stats.Facts+stats.Notes+stats.Episodes > memBudget && len(lay.episodes) > 0 {
-			dropped := lay.episodes[0]
-			lay.episodes = lay.episodes[1:]
+			dropped := trimEpisode(lay)
 			logger.Debug("prompt: trimming episode for memory budget",
 				"path", dropped.path,
 				"tokens", dropped.tokens,
@@ -537,8 +540,7 @@ func (a *DiskAssembler) trim(logger *slog.Logger, lay *rawLayers, convoTokens in
 		// CtxSize - ConversationReserve.
 		limit := max(a.cfg.CtxSize-a.cfg.ConversationReserve, 0)
 		for a.totalFixed(&stats)+convoTokens > limit && len(lay.episodes) > 0 {
-			dropped := lay.episodes[0]
-			lay.episodes = lay.episodes[1:]
+			dropped := trimEpisode(lay)
 			logger.Debug("prompt: trimming episode for ctx limit",
 				"path", dropped.path,
 				"tokens", dropped.tokens,
@@ -561,6 +563,18 @@ func (a *DiskAssembler) trim(logger *slog.Logger, lay *rawLayers, convoTokens in
 	}
 
 	return stats
+}
+
+func trimEpisode(lay *rawLayers) episode {
+	if lay.episodesBestFirst {
+		last := len(lay.episodes) - 1
+		dropped := lay.episodes[last]
+		lay.episodes = lay.episodes[:last]
+		return dropped
+	}
+	dropped := lay.episodes[0]
+	lay.episodes = lay.episodes[1:]
+	return dropped
 }
 
 // totalFixed returns the sum of all layer tokens except conversation,
