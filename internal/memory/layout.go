@@ -302,7 +302,7 @@ func createGitkeep(absDir, relPath string) error {
 // an error here because the API cannot assemble prompts without them.
 func ValidateRepo(root string) error {
 	if root == "" {
-		return errors.New("memory: memory.repo_path is required")
+		return errors.New("memory: repo path is required")
 	}
 	if err := validateRootDir(root); err != nil {
 		return err

@@ -297,15 +297,15 @@ are deferred beyond M7.
 
 Depends on M3b (projects table, active project slug, attached directories), M5 (project-scoped indexes), and M8 (startup validation and reliable packaging).
 
-- [ ] Harness home: default `~/.harness/` with `harness.db`, `projects/`, `logs/`, and `cache/`
-- [ ] Global project repo: initialize `~/.harness/projects/global` as a first-class git repo containing global rules, user facts, facts, agents, sessions, episodes, index, queue WAL, and artifacts
-- [ ] Project memory repos: one git repo per project, defaulting to `~/.harness/projects/<id>/`, with optional user-provided directories
-- [ ] Create-project flow: use existing git directory as-is, initialize non-git directory with `go-git`, or create the default directory and initialize it with `go-git`
-- [ ] Optional GitHub backup flow: opt-in only, shelling to logged-in `gh`, isolated from core local project creation
-- [ ] Path resolution: memory, session, queue, index, and artifact paths resolve relative to the active project memory repo instead of a shared memory repo root
-- [ ] Prompt layering: global rules/user/facts and fallback agents resolve from `projects/global`; active project rules and per-file agent overrides resolve from the active project repo
-- [ ] Migration: split existing single-memory-repo layout into `~/.harness/projects/global` and one project repo per existing project, preserving data and leaving the old repo untouched on failure
-- [ ] UI: create/edit project forms expose memory repo directory choice and backup action without adding cwd-driven activation
+- [x] Harness home: default `~/.harness/` with `harness.db`, `projects/`, `logs/`, and `cache/`
+- [x] Global project repo: initialize `~/.harness/projects/global` as a first-class git repo containing global rules, user facts, facts, agents, sessions, episodes, index, queue WAL, and artifacts
+- [x] Project memory repos: one git repo per project, defaulting to `~/.harness/projects/<id>/`, with optional user-provided directories
+- [x] Create-project flow: use existing git directory as-is, initialize non-git directory with `go-git`, or create the default directory and initialize it with `go-git`
+- [x] Optional GitHub backup flow: opt-in only, shelling to logged-in `gh`, isolated from core local project creation
+- [x] Path resolution: memory, session, queue, index, and artifact paths resolve relative to the active project memory repo instead of a shared memory repo root
+- [x] Prompt layering: global rules/user/facts and fallback agents resolve from `projects/global`; active project rules and per-file agent overrides resolve from the active project repo
+- [x] Legacy migration removed: there were no pre-M9 installs to migrate, so M9 starts directly with layout-v2 project repos
+- [x] UI: create/edit project forms expose memory repo directory choice and backup action without adding cwd-driven activation
 
 **Acceptance tests:** see [layout-v2.md](layout-v2.md#acceptance-tests). Highlights:
 
