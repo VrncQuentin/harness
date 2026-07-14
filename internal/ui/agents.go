@@ -73,7 +73,7 @@ type agentsView struct {
 	Active string
 	Error  string
 	// Configured is false when no registry has been wired up yet (typically
-	// because memory.repo_path is unset or invalid). The template then
+	// because the active memory repo is unavailable). The template then
 	// swaps the normal cards for a setup CTA.
 	Configured bool
 	// CreatedName is set after a successful create, surfaced to the user
