@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 
+	gogit "github.com/go-git/go-git/v5"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
 	gitw "github.com/vrnc/harness/internal/git"
@@ -53,7 +54,7 @@ func EnsureProjectMemoryRepo(uiServer *ui.Server, store project.Store, slug stri
 		uiServer.AddStartupError(fmt.Errorf("project memory repo layout %s: %w", slug, err))
 		return false
 	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), projectRepoScaffoldFiles(global)); err != nil {
+	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), projectRepoScaffoldFiles(global)); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
 		slog.Warn("project memory repo scaffold commit", "project", slug, "err", err)
 	}
 	return true

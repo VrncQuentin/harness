@@ -290,15 +290,11 @@ func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.
 		httpclient.NewStreaming(),
 	)
 
-	writer, ok := rt.memReader.(memory.FileWriter)
-	if !ok {
-		uiServer.AddStartupError(errors.New("session manager: memory writer unavailable"))
-		return nil, nil
-	}
+	sessionStore := memory.NewDirReader(repoPath)
 	mgr := session.NewManager(session.ManagerDeps{
 		Repo:               repo,
-		Writer:             writer,
-		Reader:             rt.memReader,
+		Writer:             sessionStore,
+		Reader:             sessionStore,
 		Inference:          infClient,
 		Metrics:            rec,
 		SummarizerPrompt:   rt.summarizerPromptFn(),
