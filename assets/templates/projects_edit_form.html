@@ -1,0 +1,44 @@
+{{define "projects.edit_form"}}
+<section class="card project-edit-panel">
+  <form method="post" action="/projects/edit?slug={{.Slug}}" class="modal-form project-edit-form">
+    <h3 class="modal-title">Edit {{.DisplayName}}</h3>
+    <label class="field">
+      <span>Display name</span>
+      <input type="text" name="display_name" value="{{.DisplayName}}" required>
+    </label>
+    <label class="field">
+      <span>Memory repo directory</span>
+      <input type="text" name="memory_repo_path" value="{{.MemoryRepoPath}}" required>
+    </label>
+    <div class="field">
+      <span>When changing this directory</span>
+      <label class="checkbox"><input type="radio" name="memory_repo_mode" value="move" checked> Move existing memory data</label>
+      <label class="checkbox"><input type="radio" name="memory_repo_mode" value="fresh"> Start fresh at the new path</label>
+    </div>
+    <label class="field">
+      <span>Model binary (optional)</span>
+      <input type="text" name="model_binary" value="{{.ModelBinary}}" placeholder="Inherit from config">
+    </label>
+    <label class="field">
+      <span>Model path (optional)</span>
+      <input type="text" name="model_path" value="{{.ModelPath}}" placeholder="Inherit from config">
+    </label>
+    <label class="field">
+      <span>Context size (optional)</span>
+      <input type="number" name="model_ctx_size" value="{{.ModelCtxSize}}" placeholder="Inherit from config">
+    </label>
+    <label class="field">
+      <span>GPU layers (optional)</span>
+      <input type="number" name="model_gpu_layers" value="{{.ModelGPULayers}}" placeholder="Inherit from config">
+    </label>
+    <label class="field">
+      <span>N parallel (optional)</span>
+      <input type="number" name="model_n_parallel" value="{{.ModelNParallel}}" placeholder="Inherit from config">
+    </label>
+    <div class="modal-actions">
+      <a href="/projects" class="btn btn-ghost">Cancel</a>
+      <button type="submit" class="btn btn-primary">Save</button>
+    </div>
+  </form>
+</section>
+{{end}}

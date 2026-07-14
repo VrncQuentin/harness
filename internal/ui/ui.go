@@ -237,6 +237,9 @@ func NewServer(port int) *Server {
 		assets.TemplateFS,
 		"templates/layout.html",
 		"templates/projects.html",
+		"templates/projects_create_form.html",
+		"templates/projects_edit_form.html",
+		"templates/projects_table.html",
 	))
 	s.taskTmpl = template.Must(template.ParseFS(
 		assets.TemplateFS,
