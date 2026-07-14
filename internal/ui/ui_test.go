@@ -18,6 +18,7 @@ import (
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
 	"github.com/vrnc/harness/internal/logbuf"
+	"github.com/vrnc/harness/internal/memory"
 )
 
 // newServerWithStore returns a Server wired to a fresh temp SQLite config store.
@@ -135,6 +136,9 @@ func TestHandleConfig_GETRendersFormWithDefaults(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `name="model_binary"`) {
 		t.Error("expected form field for model binary")
+	}
+	if strings.Contains(body, "`r`n") {
+		t.Error("config page must not render a literal escaped newline")
 	}
 	if !strings.Contains(body, "First run") {
 		t.Error("expected first-run banner when config has never been saved")
@@ -1035,23 +1039,8 @@ func TestHandleStatus_LayoutPromptHiddenWhenNoRepoConfigured(t *testing.T) {
 func TestHandleStatus_LayoutPromptHiddenWhenLayoutComplete(t *testing.T) {
 	s := NewServer(3000)
 	root := t.TempDir()
-	for _, item := range []string{
-		"global",
-		"agents",
-		"projects",
-		"projects/global",
-		"projects/global/episodes",
-		"projects/global/index",
-		"projects/global/index/_episodes",
-	} {
-		if err := os.MkdirAll(filepath.Join(root, item), 0o755); err != nil {
-			t.Fatalf("MkdirAll %s: %v", item, err)
-		}
-	}
-	for _, f := range []string{"global/rules.md", "global/user.md", "global/facts.md"} {
-		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(f)), nil, 0o644); err != nil {
-			t.Fatalf("WriteFile %s: %v", f, err)
-		}
+	if err := memory.CreateMissingProjectRepo(root, true); err != nil {
+		t.Fatalf("CreateMissingProjectRepo: %v", err)
 	}
 	s.SetMemoryRepoPath(root)
 
@@ -1080,14 +1069,15 @@ func TestHandleStatus_LayoutPromptShowsMissingItems(t *testing.T) {
 	}
 	// Each canonical item should appear in the listed missing entries.
 	for _, want := range []string{
-		"global", "global/rules.md", "global/user.md", "global/facts.md",
-		"agents",
-		"projects", "projects/global", "projects/global/episodes",
-		"projects/global/index", "projects/global/index/_episodes",
+		"rules.md", "user.md", "facts.md", "agents",
+		"sessions.jsonl", "episodes", "index", "index/_episodes", "artifacts",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected missing item %q in rendered body", want)
 		}
+	}
+	if strings.Contains(body, "projects/global") || strings.Contains(body, "global/rules.md") {
+		t.Errorf("layout-v2 project repo prompt must not render legacy paths, body:\n%s", body)
 	}
 	// The Create button must POST to /memory/scaffold.
 	if !strings.Contains(body, `action="/memory/scaffold"`) {
@@ -1175,10 +1165,8 @@ func TestHandleMemoryScaffold_CreatesMissingItems(t *testing.T) {
 
 	// Re-check: every canonical item now exists on disk.
 	for _, item := range []string{
-		"global", "agents",
-		"projects", "projects/global", "projects/global/episodes",
-		"projects/global/index", "projects/global/index/_episodes",
-		"global/rules.md", "global/user.md", "global/facts.md",
+		"rules.md", "user.md", "facts.md", "agents",
+		"sessions.jsonl", "episodes", "index", "index/_episodes", "artifacts",
 	} {
 		abs := filepath.Join(root, filepath.FromSlash(item))
 		if _, err := os.Stat(abs); err != nil {
@@ -1190,15 +1178,8 @@ func TestHandleMemoryScaffold_CreatesMissingItems(t *testing.T) {
 func TestHandleMemoryScaffold_NoMissingItemsRedirectsCleanly(t *testing.T) {
 	s := NewServer(3000)
 	root := t.TempDir()
-	for _, item := range []string{
-		"global", "agents",
-		"projects", "projects/global", "projects/global/episodes",
-		"projects/global/index", "projects/global/index/_episodes",
-	} {
-		_ = os.MkdirAll(filepath.Join(root, item), 0o755)
-	}
-	for _, f := range []string{"global/rules.md", "global/user.md", "global/facts.md"} {
-		_ = os.WriteFile(filepath.Join(root, filepath.FromSlash(f)), nil, 0o644)
+	if err := memory.CreateMissingProjectRepo(root, true); err != nil {
+		t.Fatalf("CreateMissingProjectRepo: %v", err)
 	}
 	s.SetMemoryRepoPath(root)
 
