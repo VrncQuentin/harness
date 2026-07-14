@@ -49,6 +49,85 @@ func ExpectedLayout() []LayoutItem {
 	}
 }
 
+// ExpectedProjectRepoLayout returns the canonical layout for one layout-v2
+// project memory repository. Global repos carry the base prompt files and
+// fallback agent library; user repos carry project-owned rules and optional
+// agent overrides. Runtime files such as queue.wal are still created lazily.
+func ExpectedProjectRepoLayout(global bool) []LayoutItem {
+	items := []LayoutItem{
+		{Path: "sessions.jsonl", Dir: false, Desc: "Project session history"},
+		{Path: "episodes", Dir: true, Desc: "Session episode files"},
+		{Path: "index", Dir: true, Desc: "Semantic search indexes"},
+		{Path: "index/_episodes", Dir: true, Desc: "Episode embeddings"},
+		{Path: "artifacts", Dir: true, Desc: "Project artifacts"},
+	}
+	if global {
+		return append([]LayoutItem{
+			{Path: "rules.md", Dir: false, Desc: "Always-on base prompt"},
+			{Path: "user.md", Dir: false, Desc: "Hand-authored facts about the user"},
+			{Path: "facts.md", Dir: false, Desc: "Promoted cross-agent facts"},
+			{Path: "agents", Dir: true, Desc: "Global agents library"},
+		}, items...)
+	}
+	return append([]LayoutItem{
+		{Path: "rules.md", Dir: false, Desc: "Project-specific rules"},
+		{Path: "agents", Dir: true, Desc: "Project agent overrides"},
+	}, items...)
+}
+
+// MissingProjectRepoItems returns absent layout-v2 entries under root.
+func MissingProjectRepoItems(root string, global bool) ([]LayoutItem, error) {
+	if root == "" {
+		return nil, errors.New("memory: repo path is empty")
+	}
+	if err := validateRootDir(root); err != nil {
+		return nil, err
+	}
+	expected := ExpectedProjectRepoLayout(global)
+	var missing []LayoutItem
+	for _, item := range expected {
+		abs := filepath.Join(root, filepath.FromSlash(item.Path))
+		st, err := os.Stat(abs)
+		if isMissingLayoutPath(err) {
+			missing = append(missing, item)
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("memory: stat %s: %w", item.Path, err)
+		}
+		if st.IsDir() != item.Dir {
+			missing = append(missing, item)
+		}
+	}
+	return missing, nil
+}
+
+// CreateMissingProjectRepo creates missing layout-v2 entries under root.
+func CreateMissingProjectRepo(root string, global bool) error {
+	return CreateMissing(root, ExpectedProjectRepoLayout(global))
+}
+
+// ValidateProjectRepo verifies a single layout-v2 project memory repo.
+func ValidateProjectRepo(root string, global bool) error {
+	if root == "" {
+		return errors.New("memory: project memory repo path is required")
+	}
+	if err := validateRootDir(root); err != nil {
+		return err
+	}
+	if err := validateGitDir(root); err != nil {
+		return err
+	}
+	missing, err := MissingProjectRepoItems(root, global)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("memory: project repo layout incomplete: missing %s", layoutPaths(missing))
+	}
+	return nil
+}
+
 // ProjectLayout returns the canonical layout items for a single project
 // identified by slug. For the reserved "global" slug it returns the
 // system-project scaffold with sessions.jsonl but without optional
@@ -143,8 +222,14 @@ func CreateMissing(root string, items []LayoutItem) error {
 		abs := filepath.Join(root, filepath.FromSlash(item.Path))
 
 		// Skip anything already present so a wrong-kind conflict on
-		// disk never gets clobbered by the scaffolder.
-		if _, err := os.Stat(abs); err == nil {
+		// disk never gets clobbered by the scaffolder. Existing directories
+		// still get a .gitkeep so backups preserve empty layout directories.
+		if st, err := os.Stat(abs); err == nil {
+			if item.Dir && st.IsDir() {
+				if err := createGitkeep(abs, item.Path); err != nil {
+					return err
+				}
+			}
 			continue
 		} else if !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("memory: stat %s: %w", item.Path, err)
@@ -153,6 +238,9 @@ func CreateMissing(root string, items []LayoutItem) error {
 		if item.Dir {
 			if err := os.MkdirAll(abs, 0o755); err != nil {
 				return fmt.Errorf("memory: create dir %s: %w", item.Path, err)
+			}
+			if err := createGitkeep(abs, item.Path); err != nil {
+				return err
 			}
 			continue
 		}
@@ -173,6 +261,21 @@ func CreateMissing(root string, items []LayoutItem) error {
 		if cerr := f.Close(); cerr != nil {
 			return fmt.Errorf("memory: close %s: %w", item.Path, cerr)
 		}
+	}
+	return nil
+}
+
+func createGitkeep(absDir, relPath string) error {
+	keepPath := filepath.Join(absDir, ".gitkeep")
+	f, err := os.OpenFile(keepPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return nil
+		}
+		return fmt.Errorf("memory: create gitkeep for %s: %w", relPath, err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("memory: close gitkeep for %s: %w", relPath, err)
 	}
 	return nil
 }

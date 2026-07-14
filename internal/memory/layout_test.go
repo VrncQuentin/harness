@@ -384,3 +384,15 @@ func TestCreateMissing_NonexistentRoot(t *testing.T) {
 		t.Error("CreateMissing on missing root: expected error, got nil")
 	}
 }
+
+func TestCreateMissingProjectRepoWritesGitkeep(t *testing.T) {
+	root := t.TempDir()
+	if err := CreateMissingProjectRepo(root, true); err != nil {
+		t.Fatalf("CreateMissingProjectRepo: %v", err)
+	}
+	for _, rel := range []string{"agents/.gitkeep", "episodes/.gitkeep", "index/.gitkeep", "index/_episodes/.gitkeep", "artifacts/.gitkeep"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("missing %s: %v", rel, err)
+		}
+	}
+}
