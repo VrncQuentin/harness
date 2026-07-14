@@ -1,9 +1,12 @@
 {{define "title"}}Projects{{end}}
 
 {{define "content"}}
-<section>
-  <div class="section-head">
-    <h1>Projects</h1>
+<section class="projects-page">
+  <div class="section-head projects-head">
+    <div>
+      <h1 class="page-title">Projects</h1>
+      <p class="section-sub">Manage project memory repos, attached code directories, and per-project model overrides.</p>
+    </div>
     <div class="section-actions">
       {{if .ShowHidden}}
       <a href="/projects" class="btn btn-ghost">Hide hidden</a>
@@ -21,8 +24,8 @@
   <div class="alert alert-ok"><p>{{.Flash}}</p></div>
   {{end}}
 
-  <details class="card project-create-panel">
-    <summary class="btn">New project</summary>
+  <details class="project-create-panel">
+    <summary class="btn btn-primary">New project</summary>
     <form method="post" action="/projects" class="modal-form project-create-form">
       <h3 class="modal-title">New project</h3>
       <label class="field">
@@ -42,62 +45,67 @@
         <textarea name="directories" rows="3" placeholder="/path/to/project/repo"></textarea>
       </label>
       <div class="modal-actions">
-        <button type="submit" class="btn">Create</button>
+        <button type="submit" class="btn btn-primary">Create</button>
       </div>
     </form>
   </details>
 
   {{if .Projects}}
-  <table class="table">
-    <thead>
-      <tr>
-        <th>Display name</th>
-        <th>Slug</th>
-        <th>Model override</th>
-        <th>Memory repo</th>
-        <th>Directories</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
-    {{range .Projects}}
-      <tr>
-        <td>
-          <strong>{{.DisplayName}}</strong>
-          {{if .Hidden}}<span class="tag">hidden</span>{{end}}
-          {{if .IsGlobal}}<span class="tag">system</span>{{end}}
-        </td>
-        <td><code>{{.Slug}}</code></td>
-        <td>
-          {{if .ModelPath}}
-          <code>{{.ModelPath}}</code>
-          {{else}}
-          <span class="muted">inherited from config</span>
-          {{end}}
-        </td>
-        <td><code>{{.MemoryRepoPath}}</code></td>
-        <td>{{.DirectoryCount}}</td>
-        <td class="actions">
-          <a href="/projects?activate={{.Slug}}" class="btn btn-sm"
-             {{if .IsActive}}disabled{{end}}>
-            {{if .IsActive}}Active{{else}}Activate{{end}}
-          </a>
-          <form method="post" action="/projects/backup?slug={{.Slug}}" class="inline-form">
-            <button type="submit" class="btn btn-sm btn-ghost">Back up</button>
-          </form>
-          {{if not .IsGlobal}}
-          <a href="/projects?edit={{.Slug}}" class="btn btn-sm btn-ghost">Edit</a>
-          {{if .Hidden}}
-          <a href="/projects?unhide={{.Slug}}" class="btn btn-sm btn-ghost">Unhide</a>
-          {{else}}
-          <a href="/projects?hide={{.Slug}}" class="btn btn-sm btn-ghost">Hide</a>
-          {{end}}
-          {{end}}
-        </td>
-      </tr>
-    {{end}}
-    </tbody>
-  </table>
+  <div class="table-wrap projects-table-wrap">
+    <table class="table projects-table">
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th>Model</th>
+          <th>Memory repo</th>
+          <th>Dirs</th>
+          <th class="actions-col">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .Projects}}
+        <tr>
+          <td class="project-name-cell">
+            <div class="project-title-line">
+              <strong>{{.DisplayName}}</strong>
+              {{if .IsActive}}<span class="badge badge-ok project-badge">Active</span>{{end}}
+              {{if .Hidden}}<span class="tag">Hidden</span>{{end}}
+              {{if .IsGlobal}}<span class="tag">System</span>{{end}}
+            </div>
+            <code class="project-slug">{{.Slug}}</code>
+          </td>
+          <td class="project-model-cell">
+            {{if .ModelPath}}
+            <code class="path-code">{{.ModelPath}}</code>
+            {{else}}
+            <span class="muted">Inherited from config</span>
+            {{end}}
+          </td>
+          <td><code class="path-code">{{.MemoryRepoPath}}</code></td>
+          <td class="count-cell">{{.DirectoryCount}}</td>
+          <td class="actions">
+            {{if .IsActive}}
+            <span class="btn btn-sm btn-disabled" aria-disabled="true">Active</span>
+            {{else}}
+            <a href="/projects?activate={{.Slug}}" class="btn btn-sm">Activate</a>
+            {{end}}
+            <form method="post" action="/projects/backup?slug={{.Slug}}" class="inline-form">
+              <button type="submit" class="btn btn-sm btn-ghost">Back up</button>
+            </form>
+            {{if not .IsGlobal}}
+            <a href="/projects?edit={{.Slug}}" class="btn btn-sm btn-ghost">Edit</a>
+            {{if .Hidden}}
+            <a href="/projects?unhide={{.Slug}}" class="btn btn-sm btn-ghost">Unhide</a>
+            {{else}}
+            <a href="/projects?hide={{.Slug}}" class="btn btn-sm btn-ghost">Hide</a>
+            {{end}}
+            {{end}}
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
   {{else}}
   <p class="empty">No projects. Create one to get started.</p>
   {{end}}
@@ -142,7 +150,7 @@
     </label>
     <div class="modal-actions">
       <a href="/projects" class="btn btn-ghost">Cancel</a>
-      <button type="submit" class="btn">Save</button>
+      <button type="submit" class="btn btn-primary">Save</button>
     </div>
   </form>
 </section>
