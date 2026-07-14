@@ -165,3 +165,88 @@ The chunk entry is appended to the in-memory manifest *before* `appendVectors` w
 5. **Sweep the small correctness fixes**: C6 (`sseData` on chat tokens), A5 (queue depth card), A8 (evaluator rebuild on Loop change), C7/C8 (evaluator defaults), C10/A6 (API session lifecycle).
 6. **Then go back and run the M3b/M4/M5 acceptance checklists honestly** before writing another M7 line — the unchecked boxes predicted two of the three worst bugs in this review.
 7. Housekeeping: deduplicate the Metrics Store section in `architecture.md`, reconcile roadmap checkboxes with reality, delete or wire the dead code from O1–O4.
+
+---
+
+# Addendum — Follow-up Review
+
+**Date:** 2026-07-15
+**Reviewer:** Claude (Fable 5)
+**Scope:** delta since the review above (`7041856` → `fda394d`, ~20 commits: M8 observability hardening and M9 layout-v2), plus a simplification/refactoring-focused pass over the whole codebase (~17,000 lines production Go). Prior findings were re-verified against today's code rather than repeated; this addendum records their status and adds new findings, labelled **S** (simplification) and **N** (new code-level items).
+
+---
+
+## 6. Status of the original findings
+
+**Fixed since 2026-07-07:**
+
+- **C4 / D2 (Windows shell + classifier):** `shell_exec` now uses `cmd.exe /d /s /c` on Windows ([tools.go:330-335](../internal/tools/tools.go)), and `ClassifyShellCmd` covers `del`, `erase`, `rd /s`, `rmdir /s` alongside the Unix set ([approvals.go:193](../internal/approvals/approvals.go)).
+- Roadmap/doc reconciliation landed for the M7 scope docs, and consolidation phases 6–7 addressed several checklist items.
+
+**Still open (re-verified at `fda394d`):**
+
+- **C1 — project switch still kills the queue.** `handleProjectSwitch` still calls `Stop()` then `Start()` on the same one-shot `Queue` ([project_switch.go:76-97](../internal/runtime/project_switch.go)); `stopOnce`/`stopped`/`close(ch)` are never reset ([queue.go:138-151](../internal/queue/queue.go)). First switch under the default `llama_on_switch=reload` still bricks all inference until restart.
+- **C2 — trim still evicts the best episodes.** `trim` drops `lay.episodes[0]` while blended retrieval sorts best-first ([prompt.go:521-527](../internal/prompt/prompt.go)).
+- **C3 — assembler still ranks an episode by its worst chunk** ([prompt.go:409-412](../internal/prompt/prompt.go)) while the UI scorer keeps the max — the browser still shows scores the assembler doesn't use.
+- **C6 — chat SSE framing still breaks on multi-line tokens.** `tok.Content` is still written raw, without `sseData()`, in both `streamChatTokens` and `writeChatSSEContent` ([chat.go:264, 391](../internal/ui/chat.go)).
+- **A5 — `SetQueueDepth` still has no production caller**; the queue card still renders 0/0.
+- **O1 — the queue WAL got worse, not better:** M9 now defaults the WAL path to `<active repo>/queue.wal` ([lifecycle.go:170-177](../internal/runtime/lifecycle.go)), so the fsync-per-enqueue machinery whose replayed output is discarded is now **on by default**.
+- **O2 — the fsnotify hot-reload watcher** was rewritten for layout-v2 ([hotreload.go](../internal/prompt/hotreload.go), 250 lines) instead of deleted; its only effect is still a log line.
+- **O3/A4 — `Repo.Log`/`BlobByRef`** still have no production caller.
+- **O4 — `/chat/stream`** is still a complete second chat stack referenced by no template.
+- **O5 — `ui.Server`'s mutex-per-dependency design** is still present and grew two more fields (`memRepo`, `promotionDedupThreshold`) since the original review.
+
+The pattern flagged as D7 (milestone discipline) repeated: the top-priority fixes from section 5 were left open while M8 and M9 shipped on top of the affected files.
+
+---
+
+## 7. New architecture-level findings (simplification)
+
+**S1. The logical-path translation layer (`LayoutV2Reader`) preserves a layout that no longer exists — delete it.**
+M9 moved to one git repo per project, but instead of updating callers, [layout_v2.go](../internal/memory/layout_v2.go) (~300 lines) rewrites logical pre-M9 paths (`global/rules.md`, `projects/<slug>/episodes/...`) onto two physical repos via `mapPath`, plus `LayoutV2Committer` for commits and `globalLogicalPath` to un-map walks. Meanwhile the session manager already works the simple way — repo root + plain relative paths ([session.go:160-186](../internal/session/session.go)). The codebase therefore runs **two path conventions simultaneously**: prompt assembly, the agent registry, the memory UI, and the dedup checker speak "logical"; sessions, the episode index, and the WAL speak "physical". Every future feature must pick a dialect, and `mapPath`'s special cases (`projects/global` aliasing to the global repo, `agents/` at the global root) are where edge cases will accumulate. Recommendation: give consumers two plain `DirReader`s (`global`, `active`) and make each caller say which repo it means; delete `mapPath`, `LayoutV2Committer`, `globalLogicalPath`, `joinLogical`, `walkAll`, and the slug-prefixed path formatting in [prompt.go](../internal/prompt/prompt.go) and [ui/memory.go](../internal/ui/memory.go). This is the single largest simplification available, and it is cheapest now — before M10 pipelines build on the logical dialect.
+
+**S2. `internal/runtime` has become a god package — move domain logic out, leave wiring.**
+[adapters.go](../internal/runtime/adapters.go) (885 lines) + [memory_api.go](../internal/runtime/memory_api.go) (802) + lifecycle/config/switch ≈ 2,700 lines. The architecture doc scopes runtime to "the mutable service graph" — wiring — but it also *implements* the semantic-memory domain: `indexRebuilder`, `indexScorer`, `afterSaveEmbed`, `dedupChecker`, `cosineSimilarity`, `chunkSummary`, `retrievalDecay`. Move these next to [internal/index](../internal/index/index.go) (or a new `internal/retrieval`); runtime shrinks to what its doc claims and S3 becomes impossible to sustain.
+
+**S3. Blended retrieval is implemented twice, divergently — unify it.**
+`DiskAssembler.loadEpisodes` ([prompt.go:373-439](../internal/prompt/prompt.go)) and `indexScorer.ScoreEpisodes` ([memory_api.go:498-547](../internal/runtime/memory_api.go)) both do embed-query → ANN search → blend with exponential recency decay, with duplicated helpers (`expDecay`/`retrievalDecay`, `extractID`/`episodeID`). They disagree on chunk aggregation (max vs. last-wins — that divergence *is* C3). One shared `BlendScores` function fixes the duplication and the bug in the same diff.
+
+**S4. `internal/ui/projects_page.go` violates a core design decision and hosts misplaced plumbing.**
+- `handleProjectBackup` ([projects_page.go:293-347](../internal/ui/projects_page.go)) shells out to `git` and `gh` binaries — directly contradicting the "go-git over git binary" decision and the no-terminal philosophy (it errors with "requires the GitHub CLI to be installed and logged in"). Do it through go-git push + a token flow, or cut the feature; it is currently the only PATH-dependent code in the binary.
+- ~130 lines of repo-lifecycle plumbing (`copyTreeWithoutGit`, `copyFile`, `listRepoFiles`, `copyProjectMemoryRepo`) live in the HTTP handler package; they belong in `internal/memory` next to `CreateMissingProjectRepo`, where `prepareProjectMemoryRepo` — currently duplicated between this file and [runtime/setup.go:36-60](../internal/runtime/setup.go) — can live once.
+- `/projects?activate=`, `?hide=`, `?unhide=` are **state-changing GETs** ([projects_page.go:81-107](../internal/ui/projects_page.go)); `activate` triggers a full config re-apply and llama-server reload from a link a browser may prefetch, and unlike hide/unhide it does not redirect, so refresh re-activates. Make them POSTs.
+
+**S5. `ui.Server` internals (extends O5).**
+One `atomic.Pointer[uiDeps]` snapshot, swapped whole, would replace the ~17 mutex/setter/getter triples ([ui.go:118-186](../internal/ui/ui.go)), delete ~250 lines, and fix the torn-swap window where a request mid-rebuild observes a mix of old and new adapters. The eleven near-identical `template.ParseFS` blocks ([ui.go:196-249](../internal/ui/ui.go)) should be a loop over page names into a map.
+
+**S6. `internal/memory`'s capability-interface lattice (extends O6).**
+`Reader` + five optional interfaces, discovered by type assertion at call sites ([adapters.go:47](../internal/runtime/adapters.go), the anonymous `interface{ Reader; Walker }` at [memory_api.go:130](../internal/runtime/memory_api.go)), for two production implementations that both implement everything. A single `memory.Repo` interface also deletes downstream contortions like the 30-line glob-based `countEpisodeFiles` fallback ([session.go:556-590](../internal/session/session.go)) that exists only for stub readers in tests.
+
+---
+
+## 8. New code-level findings
+
+- **N1.** `taskRunnerAdapter.RunTask` special-cases `len(msgs) == 1` with an unconditional `Append` ([adapters.go:613-620](../internal/runtime/adapters.go)); `appendUserSide` already handles that case, and the special branch can double-append the user turn onto a resumed session. Delete the branch.
+- **N2.** Hand-rolled bubble sort in `sortChildren` ([ui/memory.go:801-816](../internal/ui/memory.go)) with a comment arguing `sort.Slice` is overkill — the justification is longer than the `sort.SliceStable` call it avoids, in a file that already uses `sort.Slice` three times.
+- **N3.** Client construction duplicated: `embedder.NewClient(...)` built twice per rebuild ([memory_api.go:71, 288](../internal/runtime/memory_api.go)); `inference.NewClient(...)` in three places across lifecycle/memory_api/config. Build once per apply, pass down.
+- **N4.** `tools.Registry.Schemas()` ([tools.go:101-115](../internal/tools/tools.go)) has no production caller — the loop engine rebuilds its own schema slice **every turn** ([loop.go:171-184](../internal/agentloop/loop.go)). Delete `Schemas` or use it, and hoist the per-turn rebuild out of the loop.
+- **N5.** `web_search` dead type-assertion: tool args come from `json.Unmarshal` into `map[string]any`, so `max_results` is always `float64`; the `int` branch ([tools.go:372](../internal/tools/tools.go)) is dead, and the clamps collapse to `min(max(n,1),5)`.
+- **N6.** `newBasePage` performs a projects `List()` plus a full config `Load()` (two SQLite round-trips) on **every page render** just for the nav header ([ui.go:574-607](../internal/ui/ui.go)); the state snapshot already carries `ProjectSlug`, and the names list changes only on project CRUD.
+- **N7.** `os.Stdout = os.Stderr` in [main.go:47](../cmd/harness/main.go) is an uncommented global mutation — future readers will assume it's a bug. Comment the intent or route the offending writer properly.
+- **N8.** `slugFromName`'s `invariant` variable ([projects_page.go:563-582](../internal/ui/projects_page.go)) means "last rune was alphanumeric" but reads as a maths term; rename (`lastWasDash`) or reuse a shared kebab-case helper.
+- **N9.** `queue.Enqueue` holds the exclusive `enqMu` across a WAL fsync ([queue.go:154-169](../internal/queue/queue.go)); `RLock` suffices (as `enqueueReplay` already demonstrates) since `walMu` serializes the file. Moot if O1's WAL is removed.
+- **N10.** Session-manager path helpers ([session.go:160-186](../internal/session/session.go)) are `fmt.Sprintf` wrappers that no longer vary post-M9 (`sessionsLogRelPath` returns the literal `"sessions.jsonl"`); fold into constants. The M3-era `session.Project` compatibility constant ([session.go:39](../internal/session/session.go)) is likely deletable.
+- **N11.** `proc.Manager.Reconfigure` duplicates `Restart`'s body ([proc.go:183-213](../internal/proc/proc.go)); implement as "store new args, then `Restart()`".
+- **N12.** `LayoutV2Reader.listRootDirs` sorts an already-sorted literal ([layout_v2.go:147-151](../internal/memory/layout_v2.go)). Moot under S1.
+
+---
+
+## 9. Revised order of work
+
+1. **Clear the standing bugs first — C1, C2+C3, C6, A5.** Three of them live in exactly the files the refactors below touch; refactoring around a known bug bakes it in. (C1 in particular sits on every refactoring path through `runtime` and `queue`.)
+2. **Dead-code deletion pass** (~800 lines, no behavior change): `/chat/stream` stack (O4), `Repo.Log`/`BlobByRef` (O3), `Registry.Schemas` (N4), the hot-reload watcher (O2), and — after an honest decision on D1 — the WAL/replay machinery (O1, now on by default).
+3. **`ui.Server` deps snapshot + template loop** (S5) — mechanical, test-covered, fixes the torn-swap window as a side effect.
+4. **Extract `internal/retrieval`** (S2 + S3) — unifying the two blend implementations fixes C3 by construction.
+5. **Retire the logical-path layer** (S1) — the biggest item; do it before M10 pipelines are built on the logical dialect.
+6. **Projects-page hygiene** (S4): POST-ify mutating actions, move repo copy/scaffold code into `internal/memory`, decide the fate of the `gh`-CLI backup feature.
+7. Fold in the N-series items opportunistically as their files are touched.
