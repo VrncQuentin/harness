@@ -94,8 +94,32 @@ a:hover { text-decoration: underline; }
   gap: 0.4rem;
 }
 
-.project-create-panel {
+.projects-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
   margin-bottom: 1rem;
+}
+.projects-head .page-title { margin-bottom: 0.25rem; }
+.section-sub {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+.projects-head .section-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.projects-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.project-create-panel {
+  align-self: flex-start;
 }
 .project-create-panel > summary {
   display: inline-flex;
@@ -105,14 +129,166 @@ a:hover { text-decoration: underline; }
 .project-create-panel > summary::-webkit-details-marker {
   display: none;
 }
-.project-create-form {
-  margin-top: 1rem;
+.project-create-form,
+.project-edit-panel {
+  width: min(42rem, 100%);
+  margin-top: 0.75rem;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
 }
 .project-edit-panel {
-  margin-top: 1rem;
+  margin-top: 0;
 }
 .project-edit-form {
   padding: 0;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.75rem;
+  min-width: 0;
+}
+.field > span {
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+.field input[type="text"],
+.field input[type="number"],
+.field textarea {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.825rem;
+  line-height: 1.4;
+}
+.field textarea {
+  resize: vertical;
+  min-height: 5rem;
+}
+.field input:focus,
+.field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.field input::placeholder,
+.field textarea::placeholder { color: #9ca3af; }
+.field .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.table th,
+.table td {
+  padding: 0.75rem 0.85rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--border);
+}
+.table th {
+  color: var(--muted);
+  background: #f9fafb;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+.table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.table tbody tr:hover {
+  background: #fcfcfd;
+}
+.projects-table {
+  table-layout: fixed;
+  min-width: 56rem;
+}
+.projects-table th:nth-child(1) { width: 22%; }
+.projects-table th:nth-child(2) { width: 20%; }
+.projects-table th:nth-child(3) { width: 34%; }
+.projects-table th:nth-child(4) { width: 5rem; }
+.projects-table th:nth-child(5) { width: 18rem; }
+.project-title-line {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.project-slug {
+  display: inline-block;
+  margin-top: 0.2rem;
+  color: var(--muted);
+}
+.project-badge {
+  padding: 0.15rem 0.45rem;
+  font-size: 0.68rem;
+}
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.42rem;
+  border-radius: 999px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.muted { color: var(--muted); }
+.path-code {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.count-cell {
+  font-variant-numeric: tabular-nums;
+}
+.projects-table .actions-col {
+  text-align: right;
+}
+.projects-table .actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.btn-disabled,
+.btn-disabled:hover {
+  color: var(--muted);
+  background: var(--bg);
+  border-color: var(--border);
+  cursor: default;
 }
 
 .inline-confirm-panel {
