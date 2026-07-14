@@ -306,7 +306,7 @@ func initRuntimeProjectRepo(t *testing.T, global bool) string {
 	if err := memory.CreateMissingProjectRepo(root, global); err != nil {
 		t.Fatalf("scaffold project repo: %v", err)
 	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), projectRepoScaffoldFiles(global)); err != nil {
+	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(global)); err != nil {
 		t.Fatalf("commit scaffold: %v", err)
 	}
 	return root

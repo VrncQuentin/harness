@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -105,6 +106,22 @@ func MissingProjectRepoItems(root string, global bool) ([]LayoutItem, error) {
 // CreateMissingProjectRepo creates missing layout-v2 entries under root.
 func CreateMissingProjectRepo(root string, global bool) error {
 	return CreateMissing(root, ExpectedProjectRepoLayout(global))
+}
+
+// ProjectRepoScaffoldFiles returns every file created by CreateMissingProjectRepo,
+// including .gitkeep files for scaffolded directories. Callers use this list
+// for the initial scaffold commit so fresh repos can be backed up and recloned.
+func ProjectRepoScaffoldFiles(global bool) []string {
+	items := ExpectedProjectRepoLayout(global)
+	files := make([]string, 0, len(items))
+	for _, item := range items {
+		if item.Dir {
+			files = append(files, path.Join(item.Path, ".gitkeep"))
+			continue
+		}
+		files = append(files, item.Path)
+	}
+	return files
 }
 
 // ValidateProjectRepo verifies a single layout-v2 project memory repo.
