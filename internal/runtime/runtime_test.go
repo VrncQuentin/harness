@@ -4,16 +4,19 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/agentloop"
 	"github.com/vrnc/harness/internal/config"
+	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/index"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
@@ -247,6 +250,89 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	}
 }
 
+func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
+	modelPort, shutdownModel := startFakeModelServer(t, "runtime summary")
+	defer shutdownModel()
+
+	root := initRuntimeProjectRepo(t, true)
+	cfg := config.Defaults()
+	cfg.Project.ActiveProjectSlug = "global"
+	cfg.Model.Port = modelPort
+	cfg.Embedder.Port = freeTCPPort(t)
+
+	rt := New(cfg, nil, LogRings{})
+	rt.memReader = memory.NewLayoutV2Reader(root, "global", root)
+
+	mgr, adapter := rt.buildSessionManager(nil, ui.NewServer(0), projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: "global",
+	})
+	if mgr == nil || adapter == nil {
+		t.Fatal("buildSessionManager returned nil manager")
+	}
+
+	s := mgr.Start("coder")
+	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "save through runtime wiring"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	res, err := mgr.Save(ctx, s.ID)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if res.EpisodePath != "episodes/coder/"+s.ID+".md" {
+		t.Fatalf("EpisodePath = %q", res.EpisodePath)
+	}
+	for _, rel := range []string{
+		"episodes/coder/" + s.ID + ".md",
+		"episodes/coder/" + s.ID + ".json",
+		"sessions.jsonl",
+	} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("expected %s to exist: %v", rel, err)
+		}
+	}
+}
+
+func initRuntimeProjectRepo(t *testing.T, global bool) string {
+	t.Helper()
+	root := t.TempDir()
+	repo, err := gitw.Init(root)
+	if err != nil {
+		t.Fatalf("git init: %v", err)
+	}
+	if err := memory.CreateMissingProjectRepo(root, global); err != nil {
+		t.Fatalf("scaffold project repo: %v", err)
+	}
+	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(global)); err != nil {
+		t.Fatalf("commit scaffold: %v", err)
+	}
+	return root
+}
+
+func startFakeModelServer(t *testing.T, summary string) (int, func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen fake model: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q},\"finish_reason\":null}]}\n", summary)
+		_, _ = fmt.Fprintln(w, "data: [DONE]")
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	port := ln.Addr().(*net.TCPAddr).Port
+	return port, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}
+}
 func TestIndexRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	root := t.TempDir()
 	episodePath := filepath.Join(root, "projects", "global", "episodes", "coder", "ep1.md")
