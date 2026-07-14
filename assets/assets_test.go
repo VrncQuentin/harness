@@ -43,7 +43,7 @@ func TestTemplatesParse(t *testing.T) {
 // TestStaticAssetsPresent guards against an //go:embed pattern that silently
 // stops matching the files the UI serves at /static/*.
 func TestStaticAssetsPresent(t *testing.T) {
-	want := []string{"static/app.css", "static/htmx.min.js", "static/htmx-ext-sse.js"}
+	want := []string{"static/app.css", "static/status.css", "static/chat.css", "static/task.css", "static/agents.css", "static/memory.css", "static/projects.css", "static/config.css", "static/htmx.min.js", "static/htmx-ext-sse.js"}
 	for _, name := range want {
 		if _, err := fs.Stat(StaticFS, name); err != nil {
 			t.Errorf("missing static asset %s: %v", name, err)
