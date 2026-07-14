@@ -209,6 +209,43 @@ func TestStop_DrainsAcceptedRequests(t *testing.T) {
 	}
 }
 
+func TestRestart_AllowsRequestsAfterStop(t *testing.T) {
+	client := &fakeClient{tokens: []string{"restarted"}}
+	q := New(4, "", client)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := q.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	q.Stop()
+	if err := q.Restart(ctx); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	defer q.Stop()
+
+	resp := make(chan inference.Token, 4)
+	if err := q.Enqueue(Request{
+		ID:       "after-restart",
+		Messages: []inference.Message{{Role: "user", Content: "hi"}},
+		Response: resp,
+		Ctx:      context.Background(),
+	}); err != nil {
+		t.Fatalf("enqueue after Restart: %v", err)
+	}
+
+	var got string
+	for tok := range resp {
+		if tok.Err != nil {
+			t.Fatalf("token error: %v", tok.Err)
+		}
+		got += tok.Content
+	}
+	if got != "restarted" {
+		t.Fatalf("response after Restart = %q, want restarted", got)
+	}
+}
 func TestDispatch_CancelledFullResponseDoesNotWedgeWorker(t *testing.T) {
 	stream := make(chan inference.Token, 2)
 	client := &streamClient{tokens: stream, started: make(chan struct{})}
