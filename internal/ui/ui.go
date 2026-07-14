@@ -137,9 +137,9 @@ type Server struct {
 	binDirMu sync.RWMutex
 	binDir   string
 
-	// memRepo is the configured memory repo path. Empty means the user
-	// has not set one yet, in which case the status page suppresses the
-	// layout-scaffolding prompt entirely.
+	// memRepo is the active layout-v2 project memory repo path. Empty means
+	// project memory is not available yet, in which case the status page
+	// suppresses the layout-scaffolding prompt entirely.
 	memRepoMu sync.RWMutex
 	memRepo   string
 
@@ -351,10 +351,9 @@ func (s *Server) getBinDir() string {
 	return s.binDir
 }
 
-// SetMemoryRepoPath records the configured memory repo path. The status
-// page uses it to detect a missing canonical layout (global/, agents/,
-// etc.) and surface a prompt to scaffold what is missing. Pass "" to
-// clear (e.g. when the user removes the path from /config).
+// SetMemoryRepoPath records the active layout-v2 project memory repo path.
+// The status page uses it to detect missing canonical project-repo entries
+// and surface a prompt to scaffold what is missing. Pass "" to clear it.
 func (s *Server) SetMemoryRepoPath(path string) {
 	s.memRepoMu.Lock()
 	s.memRepo = path
