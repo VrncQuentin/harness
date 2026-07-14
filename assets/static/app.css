@@ -277,7 +277,10 @@ a:hover { text-decoration: underline; }
   text-align: right;
 }
 .projects-table .actions {
-  display: flex;
+  text-align: right;
+}
+.project-actions {
+  display: inline-flex;
   justify-content: flex-end;
   align-items: center;
   gap: 0.4rem;
