@@ -1,0 +1,27 @@
+{{define "projects.create_form"}}
+<details class="project-create-panel">
+  <summary class="btn btn-primary">New project</summary>
+  <form method="post" action="/projects" class="modal-form project-create-form">
+    <h3 class="modal-title">New project</h3>
+    <label class="field">
+      <span>Display name</span>
+      <input type="text" name="display_name" required>
+    </label>
+    <label class="field">
+      <span>Slug</span>
+      <input type="text" name="slug" pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="auto-generated from name">
+    </label>
+    <label class="field">
+      <span>Memory repo directory (optional)</span>
+      <input type="text" name="memory_repo_path" placeholder="Default: ~/.harness/projects/&lt;slug&gt;">
+    </label>
+    <label class="field">
+      <span>Attached code directories (one absolute path per line)</span>
+      <textarea name="directories" rows="3" placeholder="/path/to/project/repo"></textarea>
+    </label>
+    <div class="modal-actions">
+      <button type="submit" class="btn btn-primary">Create</button>
+    </div>
+  </form>
+</details>
+{{end}}
