@@ -1,0 +1,63 @@
+{{define "projects.table"}}
+<div class="table-wrap projects-table-wrap">
+  <table class="table projects-table">
+    <thead>
+      <tr>
+        <th>Project</th>
+        <th>Model</th>
+        <th>Memory repo</th>
+        <th>Dirs</th>
+        <th class="actions-col">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .}}
+      {{template "projects.row" .}}
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{define "projects.row"}}
+<tr>
+  <td class="project-name-cell">
+    <div class="project-title-line">
+      <strong>{{.DisplayName}}</strong>
+      {{if .IsActive}}<span class="badge badge-ok project-badge">Active</span>{{end}}
+      {{if .Hidden}}<span class="tag">Hidden</span>{{end}}
+      {{if .IsGlobal}}<span class="tag">System</span>{{end}}
+    </div>
+    <code class="project-slug">{{.Slug}}</code>
+  </td>
+  <td class="project-model-cell">
+    {{if .ModelPath}}
+    <code class="path-code">{{.ModelPath}}</code>
+    {{else}}
+    <span class="muted">Inherited from config</span>
+    {{end}}
+  </td>
+  <td><code class="path-code">{{.MemoryRepoPath}}</code></td>
+  <td class="count-cell">{{.DirectoryCount}}</td>
+  <td class="actions">
+    <div class="project-actions">
+      {{if .IsActive}}
+      <span class="btn btn-sm btn-disabled" aria-disabled="true">Active</span>
+      {{else}}
+      <a href="/projects?activate={{.Slug}}" class="btn btn-sm">Activate</a>
+      {{end}}
+      <form method="post" action="/projects/backup?slug={{.Slug}}" class="inline-form">
+        <button type="submit" class="btn btn-sm btn-ghost">Back up</button>
+      </form>
+      {{if not .IsGlobal}}
+      <a href="/projects?edit={{.Slug}}" class="btn btn-sm btn-ghost">Edit</a>
+      {{if .Hidden}}
+      <a href="/projects?unhide={{.Slug}}" class="btn btn-sm btn-ghost">Unhide</a>
+      {{else}}
+      <a href="/projects?hide={{.Slug}}" class="btn btn-sm btn-ghost">Hide</a>
+      {{end}}
+      {{end}}
+    </div>
+  </td>
+</tr>
+{{end}}

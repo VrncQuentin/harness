@@ -24,138 +24,17 @@
   <div class="alert alert-ok"><p>{{.Flash}}</p></div>
   {{end}}
 
-  <details class="project-create-panel">
-    <summary class="btn btn-primary">New project</summary>
-    <form method="post" action="/projects" class="modal-form project-create-form">
-      <h3 class="modal-title">New project</h3>
-      <label class="field">
-        <span>Display name</span>
-        <input type="text" name="display_name" required>
-      </label>
-      <label class="field">
-        <span>Slug</span>
-        <input type="text" name="slug" pattern="[a-z0-9]+(-[a-z0-9]+)*" placeholder="auto-generated from name">
-      </label>
-      <label class="field">
-        <span>Memory repo directory (optional)</span>
-        <input type="text" name="memory_repo_path" placeholder="Default: ~/.harness/projects/&lt;slug&gt;">
-      </label>
-      <label class="field">
-        <span>Attached code directories (one absolute path per line)</span>
-        <textarea name="directories" rows="3" placeholder="/path/to/project/repo"></textarea>
-      </label>
-      <div class="modal-actions">
-        <button type="submit" class="btn btn-primary">Create</button>
-      </div>
-    </form>
-  </details>
+  {{template "projects.create_form" .}}
 
   {{if .Projects}}
-  <div class="table-wrap projects-table-wrap">
-    <table class="table projects-table">
-      <thead>
-        <tr>
-          <th>Project</th>
-          <th>Model</th>
-          <th>Memory repo</th>
-          <th>Dirs</th>
-          <th class="actions-col">Actions</th>
-        </tr>
-      </thead>
-      <tbody>
-      {{range .Projects}}
-        <tr>
-          <td class="project-name-cell">
-            <div class="project-title-line">
-              <strong>{{.DisplayName}}</strong>
-              {{if .IsActive}}<span class="badge badge-ok project-badge">Active</span>{{end}}
-              {{if .Hidden}}<span class="tag">Hidden</span>{{end}}
-              {{if .IsGlobal}}<span class="tag">System</span>{{end}}
-            </div>
-            <code class="project-slug">{{.Slug}}</code>
-          </td>
-          <td class="project-model-cell">
-            {{if .ModelPath}}
-            <code class="path-code">{{.ModelPath}}</code>
-            {{else}}
-            <span class="muted">Inherited from config</span>
-            {{end}}
-          </td>
-          <td><code class="path-code">{{.MemoryRepoPath}}</code></td>
-          <td class="count-cell">{{.DirectoryCount}}</td>
-          <td class="actions">
-            <div class="project-actions">
-              {{if .IsActive}}
-              <span class="btn btn-sm btn-disabled" aria-disabled="true">Active</span>
-              {{else}}
-              <a href="/projects?activate={{.Slug}}" class="btn btn-sm">Activate</a>
-              {{end}}
-              <form method="post" action="/projects/backup?slug={{.Slug}}" class="inline-form">
-                <button type="submit" class="btn btn-sm btn-ghost">Back up</button>
-              </form>
-              {{if not .IsGlobal}}
-              <a href="/projects?edit={{.Slug}}" class="btn btn-sm btn-ghost">Edit</a>
-              {{if .Hidden}}
-              <a href="/projects?unhide={{.Slug}}" class="btn btn-sm btn-ghost">Unhide</a>
-              {{else}}
-              <a href="/projects?hide={{.Slug}}" class="btn btn-sm btn-ghost">Hide</a>
-              {{end}}
-              {{end}}
-            </div>
-          </td>
-        </tr>
-      {{end}}
-      </tbody>
-    </table>
-  </div>
+  {{template "projects.table" .Projects}}
   {{else}}
   <p class="empty">No projects. Create one to get started.</p>
   {{end}}
 </section>
 
 {{with .EditProject}}
-<section class="card project-edit-panel">
-  <form method="post" action="/projects/edit?slug={{.Slug}}" class="modal-form project-edit-form">
-    <h3 class="modal-title">Edit {{.DisplayName}}</h3>
-    <label class="field">
-      <span>Display name</span>
-      <input type="text" name="display_name" value="{{.DisplayName}}" required>
-    </label>
-    <label class="field">
-      <span>Memory repo directory</span>
-      <input type="text" name="memory_repo_path" value="{{.MemoryRepoPath}}" required>
-    </label>
-    <div class="field">
-      <span>When changing this directory</span>
-      <label class="checkbox"><input type="radio" name="memory_repo_mode" value="move" checked> Move existing memory data</label>
-      <label class="checkbox"><input type="radio" name="memory_repo_mode" value="fresh"> Start fresh at the new path</label>
-    </div>
-    <label class="field">
-      <span>Model binary (optional)</span>
-      <input type="text" name="model_binary" value="{{.ModelBinary}}" placeholder="Inherit from config">
-    </label>
-    <label class="field">
-      <span>Model path (optional)</span>
-      <input type="text" name="model_path" value="{{.ModelPath}}" placeholder="Inherit from config">
-    </label>
-    <label class="field">
-      <span>Context size (optional)</span>
-      <input type="number" name="model_ctx_size" value="{{.ModelCtxSize}}" placeholder="Inherit from config">
-    </label>
-    <label class="field">
-      <span>GPU layers (optional)</span>
-      <input type="number" name="model_gpu_layers" value="{{.ModelGPULayers}}" placeholder="Inherit from config">
-    </label>
-    <label class="field">
-      <span>N parallel (optional)</span>
-      <input type="number" name="model_n_parallel" value="{{.ModelNParallel}}" placeholder="Inherit from config">
-    </label>
-    <div class="modal-actions">
-      <a href="/projects" class="btn btn-ghost">Cancel</a>
-      <button type="submit" class="btn btn-primary">Save</button>
-    </div>
-  </form>
-</section>
+{{template "projects.edit_form" .}}
 {{end}}
 
 {{end}}
