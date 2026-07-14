@@ -156,9 +156,6 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.Embedder.ModelPath = strings.TrimSpace(r.FormValue("embed_path"))
 	cfg.Embedder.Port = atoiOr(r.FormValue("embed_port"), cfg.Embedder.Port)
 	cfg.Embedder.Verbose = r.FormValue("embed_verbose") == "on"
-
-	cfg.Memory.RepoPath = strings.TrimSpace(r.FormValue("memory_repo"))
-
 	cfg.UI.Port = atoiOr(r.FormValue("ui_port"), cfg.UI.Port)
 	cfg.UI.OpenOnStart = r.FormValue("ui_open_on_start") == "on"
 

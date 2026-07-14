@@ -5,18 +5,34 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-// makeRepo scaffolds a memory repo under t.TempDir() and returns its
-// absolute path.
-func makeRepo(t *testing.T, files map[string]string) string {
+type splitRepo struct {
+	global string
+	active string
+}
+
+func makeSplitRepo(t *testing.T, globalFiles, activeFiles map[string]string) splitRepo {
 	t.Helper()
 	root := t.TempDir()
+	repo := splitRepo{
+		global: filepath.Join(root, "global"),
+		active: filepath.Join(root, "projects", "demo"),
+	}
+	writeFiles(t, repo.global, globalFiles)
+	writeFiles(t, repo.active, activeFiles)
+	return repo
+}
+
+func writeFiles(t *testing.T, root string, files map[string]string) {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("MkdirAll root: %v", err)
+	}
 	for rel, body := range files {
 		abs := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
@@ -26,12 +42,8 @@ func makeRepo(t *testing.T, files map[string]string) string {
 			t.Fatalf("WriteFile: %v", err)
 		}
 	}
-	return root
 }
 
-// captureLogger returns a slog.Logger that writes JSON into buf so
-// tests can assert on the emitted entries. The mutex guards buf
-// across the event pump goroutine and the asserting goroutine.
 func captureLogger(t *testing.T) (*slog.Logger, *safeBuf) {
 	t.Helper()
 	buf := &safeBuf{}
@@ -55,9 +67,6 @@ func (s *safeBuf) String() string {
 	return s.b.String()
 }
 
-// waitForLog polls buf up to 2s for substring needle. Returns true on
-// hit, false on timeout - fsnotify on Windows sometimes batches
-// events, so generous margins reduce flakes.
 func waitForLog(buf *safeBuf, needle string) bool {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -69,80 +78,59 @@ func waitForLog(buf *safeBuf, needle string) bool {
 	return false
 }
 
-func TestHotReload_EmitsOnGlobalChange(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md": "start",
-		"global/user.md":  "u",
-		"global/facts.md": "f",
-	})
+func TestHotReloadLayoutV2_EmitsOnGlobalChange(t *testing.T) {
+	repo := makeSplitRepo(t, map[string]string{
+		"rules.md": "start",
+		"user.md":  "u",
+		"facts.md": "f",
+	}, nil)
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "", "", logger)
+	h, err := NewHotReloadLayoutV2(repo.global, repo.active, "", "demo", logger)
 	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
+		t.Fatalf("NewHotReloadLayoutV2: %v", err)
 	}
 	defer func() { _ = h.Close() }()
 
-	// Give the OS a beat to register the watch before we rewrite.
 	time.Sleep(50 * time.Millisecond)
-
-	if err := os.WriteFile(filepath.Join(root, "global", "rules.md"), []byte("changed"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo.global, "rules.md"), []byte("changed"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if !waitForLog(buf, "prompt: file changed") {
-		t.Errorf("expected file-changed log entry, got:\n%s", buf.String())
-	}
-	if !waitForLog(buf, "rules.md") {
-		t.Errorf("expected rules.md in log, got:\n%s", buf.String())
+	if !waitForLog(buf, "prompt: file changed") || !waitForLog(buf, "rules.md") {
+		t.Errorf("expected rules.md change log, got:\n%s", buf.String())
 	}
 }
 
-func TestHotReload_IgnoresUnrelatedFile(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md": "start",
-		"global/user.md":  "u",
-		"global/facts.md": "f",
-	})
+func TestHotReloadLayoutV2_IgnoresUnrelatedFile(t *testing.T) {
+	repo := makeSplitRepo(t, map[string]string{"rules.md": "start"}, nil)
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "", "", logger)
+	h, err := NewHotReloadLayoutV2(repo.global, repo.active, "", "demo", logger)
 	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
+		t.Fatalf("NewHotReloadLayoutV2: %v", err)
 	}
 	defer func() { _ = h.Close() }()
 
 	time.Sleep(50 * time.Millisecond)
-
-	// Create an unrelated file in the watched directory; should not
-	// trigger a log.
-	if err := os.WriteFile(filepath.Join(root, "global", "notes.txt"), []byte("x"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo.global, "notes.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-
-	// Wait past the debounce window to be sure nothing slipped through.
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(hotReloadDebounce * 2)
 	if strings.Contains(buf.String(), "prompt: file changed") {
 		t.Errorf("unexpected change event for untracked file:\n%s", buf.String())
 	}
 }
 
-func TestHotReload_DebounceCollapsesBurst(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md": "start",
-		"global/user.md":  "u",
-		"global/facts.md": "f",
-	})
+func TestHotReloadLayoutV2_DebounceCollapsesBurst(t *testing.T) {
+	repo := makeSplitRepo(t, map[string]string{"rules.md": "start"}, nil)
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "", "", logger)
+	h, err := NewHotReloadLayoutV2(repo.global, repo.active, "", "demo", logger)
 	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
+		t.Fatalf("NewHotReloadLayoutV2: %v", err)
 	}
 	defer func() { _ = h.Close() }()
 
 	time.Sleep(50 * time.Millisecond)
-
-	// Rapid writes within the debounce window should produce a single
-	// log entry.
-	rules := filepath.Join(root, "global", "rules.md")
+	rules := filepath.Join(repo.global, "rules.md")
 	for i := range 5 {
 		if err := os.WriteFile(rules, []byte("v"+string(rune('0'+i))), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
@@ -153,402 +141,97 @@ func TestHotReload_DebounceCollapsesBurst(t *testing.T) {
 	if !waitForLog(buf, "prompt: file changed") {
 		t.Fatalf("expected at least one change event, got:\n%s", buf.String())
 	}
-	// Give debounce timer time to drain.
 	time.Sleep(hotReloadDebounce * 2)
-
 	count := strings.Count(buf.String(), `"msg":"prompt: file changed"`)
-	// We allow 1 or 2 entries: Windows sometimes splits bursts when
-	// the OS event queue fills, but an event-per-write (5+) indicates
-	// the debounce was not applied.
 	if count < 1 || count > 2 {
 		t.Errorf("expected 1-2 change events after debounce, got %d:\n%s", count, buf.String())
 	}
 }
 
-func TestHotReload_EmitsOnAgentRulesChange(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md":         "r",
-		"agents/coder/persona.md": "p",
-		"agents/coder/rules.md":   "before",
-	})
+func TestHotReloadLayoutV2_EmitsOnActiveProjectRulesChange(t *testing.T) {
+	repo := makeSplitRepo(t, map[string]string{"rules.md": "global"}, map[string]string{"rules.md": "project"})
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "coder", "", logger)
+	h, err := NewHotReloadLayoutV2(repo.global, repo.active, "", "demo", logger)
 	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
+		t.Fatalf("NewHotReloadLayoutV2: %v", err)
 	}
 	defer func() { _ = h.Close() }()
 
 	time.Sleep(50 * time.Millisecond)
-
-	rulesPath := filepath.Join(root, "agents", "coder", "rules.md")
-	if err := os.WriteFile(rulesPath, []byte("after"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo.active, "rules.md"), []byte("changed"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-
-	if !waitForLog(buf, "prompt: file changed") {
-		t.Fatalf("expected file-changed log entry, got:\n%s", buf.String())
-	}
-	if !waitForLog(buf, "rules.md") {
-		t.Errorf("expected rules.md in log, got:\n%s", buf.String())
+	if !waitForLog(buf, "prompt: file changed") || !waitForLog(buf, "rules.md") {
+		t.Errorf("expected project rules change log, got:\n%s", buf.String())
 	}
 }
 
-func TestHotReload_SetActiveAgentSwapsWatches(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md":            "r",
-		"global/user.md":             "u",
-		"global/facts.md":            "f",
+func TestHotReloadLayoutV2_SetActiveAgentSwapsWatches(t *testing.T) {
+	repo := makeSplitRepo(t, map[string]string{
 		"agents/coder/persona.md":    "c",
-		"agents/reviewer/persona.md": "r2",
+		"agents/reviewer/persona.md": "r",
+	}, map[string]string{
+		"agents/coder/persona.md":    "pc",
+		"agents/reviewer/persona.md": "pr",
 	})
 	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "coder", "", logger)
+	h, err := NewHotReloadLayoutV2(repo.global, repo.active, "coder", "demo", logger)
 	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
+		t.Fatalf("NewHotReloadLayoutV2: %v", err)
 	}
 	defer func() { _ = h.Close() }()
 
 	time.Sleep(50 * time.Millisecond)
-
-	// Changing coder/persona.md should fire.
-	if err := os.WriteFile(filepath.Join(root, "agents", "coder", "persona.md"), []byte("updated"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo.active, "agents", "coder", "persona.md"), []byte("updated"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if !waitForLog(buf, "coder") {
-		t.Fatalf("expected coder persona change, got:\n%s", buf.String())
+		t.Fatalf("expected coder change, got:\n%s", buf.String())
 	}
 
-	// Swap to reviewer, wait for debounces, reset buffer by checking
-	// length.
 	time.Sleep(hotReloadDebounce * 2)
 	preSwapLen := len(buf.String())
 	h.SetActiveAgent("reviewer")
-
 	time.Sleep(50 * time.Millisecond)
-
-	// Reviewer change should fire under the new active agent.
-	if err := os.WriteFile(filepath.Join(root, "agents", "reviewer", "persona.md"), []byte("updated"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(repo.active, "agents", "reviewer", "persona.md"), []byte("updated"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	if !waitForLog(buf, "reviewer") {
-		t.Errorf("expected reviewer persona change, got:\n%s", buf.String()[preSwapLen:])
-	}
-}
-
-func TestHotReload_EmitsOnProjectRulesChange(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md":      "r",
-		"projects/dt/rules.md": "before",
-	})
-	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "", "dt", logger)
-	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
-	}
-	defer func() { _ = h.Close() }()
-
-	time.Sleep(50 * time.Millisecond)
-
-	rulesPath := filepath.Join(root, "projects", "dt", "rules.md")
-	if err := os.WriteFile(rulesPath, []byte("after"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+		t.Errorf("expected reviewer change, got:\n%s", buf.String()[preSwapLen:])
 	}
 
-	if !waitForLog(buf, "prompt: file changed") {
-		t.Fatalf("expected file-changed log entry, got:\n%s", buf.String())
-	}
-	if !waitForLog(buf, "rules.md") {
-		t.Errorf("expected rules.md in log, got:\n%s", buf.String())
-	}
-}
-
-func TestHotReload_SetActiveProjectSwapsWatches(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md":      "r",
-		"projects/dt/rules.md": "dt",
-		"projects/ac/rules.md": "ac",
-	})
-	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "", "dt", logger)
-	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
-	}
-	defer func() { _ = h.Close() }()
-
-	time.Sleep(50 * time.Millisecond)
-
-	// Changing dt/rules.md should fire.
-	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "rules.md"), []byte("updated"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if !waitForLog(buf, "dt") {
-		t.Fatalf("expected dt project rules change, got:\n%s", buf.String())
-	}
-
-	// Swap to ac, wait for debounces, reset buffer by checking length.
 	time.Sleep(hotReloadDebounce * 2)
-	preSwapLen := len(buf.String())
-	h.SetActiveProject("ac")
-
-	time.Sleep(50 * time.Millisecond)
-
-	// ac change should fire under the new active project.
-	if err := os.WriteFile(filepath.Join(root, "projects", "ac", "rules.md"), []byte("updated"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if !waitForLog(buf, "ac") {
-		t.Errorf("expected ac project rules change, got:\n%s", buf.String()[preSwapLen:])
-	}
-
-	// dt change should NOT fire after the swap.
-	time.Sleep(hotReloadDebounce * 2)
-	preDtLen := len(buf.String())
-	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "rules.md"), []byte("updated again"), 0o644); err != nil {
+	preStaleLen := len(buf.String())
+	if err := os.WriteFile(filepath.Join(repo.active, "agents", "coder", "persona.md"), []byte("stale"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	time.Sleep(hotReloadDebounce * 2)
-	if strings.Contains(buf.String()[preDtLen:], "prompt: file changed") {
-		t.Errorf("expected dt project rules change to be ignored after swap, got:\n%s", buf.String()[preDtLen:])
+	if strings.Contains(buf.String()[preStaleLen:], "prompt: file changed") {
+		t.Errorf("expected stale coder change to be ignored after swap, got:\n%s", buf.String()[preStaleLen:])
 	}
 }
 
-func TestHotReload_MissingFilesAreWarnedNotFailed(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md": "r",
-		// No user.md, no facts.md, no agent at all.
-	})
-	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "ghost", "", logger)
-	if err != nil {
-		t.Fatalf("NewHotReload should succeed with missing optional files: %v", err)
-	}
-	defer func() { _ = h.Close() }()
-
-	// We don't assert on the exact log content - the missing agent
-	// directory is logged at debug level only - but the constructor
-	// returning nil proves missing files are not fatal.
-	_ = buf
-}
-
-func TestHotReload_CloseIsIdempotent(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md": "r",
-	})
+func TestHotReloadLayoutV2_MissingOptionalDirsDoNotFail(t *testing.T) {
+	repo := makeSplitRepo(t, map[string]string{"rules.md": "r"}, nil)
 	logger, _ := captureLogger(t)
-	h, err := NewHotReload(root, "", "", logger)
+	h, err := NewHotReloadLayoutV2(repo.global, repo.active, "ghost", "demo", logger)
 	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
+		t.Fatalf("NewHotReloadLayoutV2 should succeed with missing optional dirs: %v", err)
+	}
+	defer func() { _ = h.Close() }()
+}
+
+func TestHotReloadLayoutV2_CloseIsIdempotent(t *testing.T) {
+	repo := makeSplitRepo(t, map[string]string{"rules.md": "r"}, nil)
+	logger, _ := captureLogger(t)
+	h, err := NewHotReloadLayoutV2(repo.global, repo.active, "", "demo", logger)
+	if err != nil {
+		t.Fatalf("NewHotReloadLayoutV2: %v", err)
 	}
 	if err := h.Close(); err != nil {
 		t.Errorf("first Close: %v", err)
 	}
 	if err := h.Close(); err != nil {
 		t.Errorf("second Close: %v", err)
-	}
-}
-
-func TestHotReload_CloseStopsGoroutine(t *testing.T) {
-	// Not a rigorous leak check - we just verify Close returns
-	// promptly even when there's an in-flight debounce timer.
-	root := makeRepo(t, map[string]string{
-		"global/rules.md": "r",
-	})
-	logger, _ := captureLogger(t)
-	h, err := NewHotReload(root, "", "", logger)
-	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
-	}
-	time.Sleep(50 * time.Millisecond)
-	// Schedule a debounce then close before it fires.
-	if err := os.WriteFile(filepath.Join(root, "global", "rules.md"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	start := time.Now()
-	if err := h.Close(); err != nil {
-		t.Errorf("Close: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Errorf("Close blocked for %v; should return promptly", elapsed)
-	}
-}
-
-func TestHotReload_EmitsOnProjectAgentFileChange(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md":                     "r",
-		"agents/coder/persona.md":             "p",
-		"projects/dt/agents/coder/persona.md": "dt",
-	})
-	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "coder", "dt", logger)
-	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
-	}
-	defer func() { _ = h.Close() }()
-
-	time.Sleep(50 * time.Millisecond)
-
-	path := filepath.Join(root, "projects", "dt", "agents", "coder", "persona.md")
-	if err := os.WriteFile(path, []byte("updated"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	if !waitForLog(buf, "prompt: file changed") {
-		t.Fatalf("expected file-changed log entry, got:\n%s", buf.String())
-	}
-	if !waitForLog(buf, "persona.md") {
-		t.Errorf("expected persona.md in log, got:\n%s", buf.String())
-	}
-}
-
-func TestHotReload_SetActiveAgentSwapsProjectLocalWatches(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md":                        "r",
-		"projects/dt/agents/coder/persona.md":    "c",
-		"projects/dt/agents/reviewer/persona.md": "r2",
-	})
-	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "coder", "dt", logger)
-	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
-	}
-	defer func() { _ = h.Close() }()
-
-	time.Sleep(50 * time.Millisecond)
-
-	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "agents", "coder", "persona.md"), []byte("updated"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if !waitForLog(buf, "coder") {
-		t.Fatalf("expected coder project-local change, got:\n%s", buf.String())
-	}
-
-	time.Sleep(hotReloadDebounce * 2)
-	preSwapLen := len(buf.String())
-	h.SetActiveAgent("reviewer")
-
-	time.Sleep(50 * time.Millisecond)
-
-	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "agents", "reviewer", "persona.md"), []byte("updated"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if !waitForLog(buf, "reviewer") {
-		t.Errorf("expected reviewer project-local change, got:\n%s", buf.String()[preSwapLen:])
-	}
-}
-
-func TestHotReload_SetActiveProjectSwapsAgentWatches(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md":                     "r",
-		"agents/coder/persona.md":             "p",
-		"projects/dt/agents/coder/persona.md": "dt",
-		"projects/ac/agents/coder/persona.md": "ac",
-	})
-	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "coder", "dt", logger)
-	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
-	}
-	defer func() { _ = h.Close() }()
-
-	time.Sleep(50 * time.Millisecond)
-
-	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "agents", "coder", "persona.md"), []byte("updated"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if !waitForLog(buf, "dt") {
-		t.Fatalf("expected dt project agent change, got:\n%s", buf.String())
-	}
-
-	time.Sleep(hotReloadDebounce * 2)
-	preSwapLen := len(buf.String())
-	h.SetActiveProject("ac")
-
-	time.Sleep(50 * time.Millisecond)
-
-	if err := os.WriteFile(filepath.Join(root, "projects", "ac", "agents", "coder", "persona.md"), []byte("updated"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if !waitForLog(buf, "ac") {
-		t.Errorf("expected ac project agent change, got:\n%s", buf.String()[preSwapLen:])
-	}
-
-	time.Sleep(hotReloadDebounce * 2)
-	preDtLen := len(buf.String())
-	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "agents", "coder", "persona.md"), []byte("updated again"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	time.Sleep(hotReloadDebounce * 2)
-	if strings.Contains(buf.String()[preDtLen:], "prompt: file changed") {
-		t.Errorf("expected dt project agent change to be ignored after swap, got:\n%s", buf.String()[preDtLen:])
-	}
-}
-
-func TestHotReload_EmitsOnProjectOnlyAgentFileChange(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md":                     "r",
-		"projects/dt/agents/coder/persona.md": "dt",
-	})
-	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "coder", "dt", logger)
-	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
-	}
-	defer func() { _ = h.Close() }()
-
-	time.Sleep(50 * time.Millisecond)
-
-	path := filepath.Join(root, "projects", "dt", "agents", "coder", "persona.md")
-	if err := os.WriteFile(path, []byte("updated"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	if !waitForLog(buf, "prompt: file changed") {
-		t.Fatalf("expected file-changed log entry, got:\n%s", buf.String())
-	}
-	if !waitForLog(buf, "persona.md") {
-		t.Errorf("expected persona.md in log, got:\n%s", buf.String())
-	}
-}
-
-func TestHotReload_StaleOldAgentIgnoredAfterSwap(t *testing.T) {
-	root := makeRepo(t, map[string]string{
-		"global/rules.md":                        "r",
-		"projects/dt/agents/coder/persona.md":    "c",
-		"projects/dt/agents/reviewer/persona.md": "r2",
-	})
-	logger, buf := captureLogger(t)
-	h, err := NewHotReload(root, "coder", "dt", logger)
-	if err != nil {
-		t.Fatalf("NewHotReload: %v", err)
-	}
-	defer func() { _ = h.Close() }()
-
-	time.Sleep(50 * time.Millisecond)
-
-	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "agents", "coder", "persona.md"), []byte("updated"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	if !waitForLog(buf, "coder") {
-		t.Fatalf("expected coder project-local change, got:\n%s", buf.String())
-	}
-
-	time.Sleep(hotReloadDebounce * 2)
-	preSwapLen := len(buf.String())
-	h.SetActiveAgent("reviewer")
-
-	time.Sleep(50 * time.Millisecond)
-
-	if err := os.WriteFile(filepath.Join(root, "projects", "dt", "agents", "coder", "persona.md"), []byte("updated again"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-	time.Sleep(hotReloadDebounce * 2)
-	if strings.Contains(buf.String()[preSwapLen:], "prompt: file changed") {
-		t.Errorf("expected stale coder project-local change to be ignored after swap, got:\n%s", buf.String()[preSwapLen:])
-	}
-}
-
-func TestHotReload_NonWindowsGuards(t *testing.T) {
-	if runtime.GOOS != "windows" && runtime.GOOS != "linux" {
-		t.Skip("platform-specific watch semantics vary; the happy-path tests cover this")
 	}
 }

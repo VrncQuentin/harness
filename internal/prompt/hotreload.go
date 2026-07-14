@@ -23,14 +23,14 @@ const hotReloadDebounce = 200 * time.Millisecond
 // operator the visibility the roadmap's "edit on disk and next
 // request reflects the change" acceptance test calls for.
 type HotReload struct {
-	repoPath string
-	logger   *slog.Logger
+	globalRepoPath string
+	activeRepoPath string
+	logger         *slog.Logger
 
-	mu                sync.Mutex
-	watcher           *fsnotify.Watcher
-	activeAgent       string
-	activeProjectSlug string
-	watched           map[string]struct{}
+	mu          sync.Mutex
+	watcher     *fsnotify.Watcher
+	activeAgent string
+	watched     map[string]struct{}
 
 	// debounceMu guards the per-path timers. Separate from mu so the
 	// event pump doesn't hold the big lock while scheduling timers.
@@ -41,11 +41,8 @@ type HotReload struct {
 	done   chan struct{}
 }
 
-// NewHotReload builds a HotReload watching the global files, the
-// active project rules, and the files for activeAgent (may be empty).
-// Missing files are logged as warnings; construction only fails if
-// fsnotify itself cannot be initialised.
-func NewHotReload(repoPath string, agentName string, projectSlug string, logger *slog.Logger) (*HotReload, error) {
+// NewHotReloadLayoutV2 watches prompt files in split layout-v2 project repos.
+func NewHotReloadLayoutV2(globalRepoPath, activeRepoPath string, agentName string, _ string, logger *slog.Logger) (*HotReload, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -54,15 +51,15 @@ func NewHotReload(repoPath string, agentName string, projectSlug string, logger 
 		return nil, fmt.Errorf("prompt: hotreload watcher: %w", err)
 	}
 	h := &HotReload{
-		repoPath:          repoPath,
-		logger:            logger,
-		watcher:           w,
-		activeAgent:       agentName,
-		activeProjectSlug: projectSlug,
-		watched:           make(map[string]struct{}),
-		debounce:          make(map[string]*time.Timer),
-		closed:            make(chan struct{}),
-		done:              make(chan struct{}),
+		globalRepoPath: globalRepoPath,
+		activeRepoPath: activeRepoPath,
+		logger:         logger,
+		watcher:        w,
+		activeAgent:    agentName,
+		watched:        make(map[string]struct{}),
+		debounce:       make(map[string]*time.Timer),
+		closed:         make(chan struct{}),
+		done:           make(chan struct{}),
 	}
 	h.refreshWatches()
 	go h.run()
@@ -78,18 +75,6 @@ func (h *HotReload) SetActiveAgent(name string) {
 		return
 	}
 	h.activeAgent = name
-	h.refreshWatches()
-}
-
-// SetActiveProject rewires the project rules watch when the operator
-// switches projects. The global and agent files remain watched.
-func (h *HotReload) SetActiveProject(slug string) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.activeProjectSlug == slug {
-		return
-	}
-	h.activeProjectSlug = slug
 	h.refreshWatches()
 }
 
@@ -169,43 +154,36 @@ func (h *HotReload) refreshWatches() {
 
 func (h *HotReload) wantedDirs() map[string]struct{} {
 	out := map[string]struct{}{
-		filepath.Join(h.repoPath, "global"): {},
+		h.globalRepoPath: {},
+		h.activeRepoPath: {},
 	}
-	slug := h.activeProjectSlug
-	if slug == "" {
-		slug = "global"
-	}
-	out[filepath.Join(h.repoPath, "projects", slug)] = struct{}{}
 	if h.activeAgent != "" {
-		out[filepath.Join(h.repoPath, "agents", h.activeAgent)] = struct{}{}
-		out[filepath.Join(h.repoPath, "projects", slug, "agents", h.activeAgent)] = struct{}{}
+		out[filepath.Join(h.globalRepoPath, "agents", h.activeAgent)] = struct{}{}
+		out[filepath.Join(h.activeRepoPath, "agents", h.activeAgent)] = struct{}{}
 	}
 	return out
 }
 
 func (h *HotReload) watchedFiles() map[string]struct{} {
-	out := map[string]struct{}{
-		filepath.Join(h.repoPath, "global", "rules.md"): {},
-		filepath.Join(h.repoPath, "global", "user.md"):  {},
-		filepath.Join(h.repoPath, "global", "facts.md"): {},
-	}
 	h.mu.Lock()
-	slug := h.activeProjectSlug
 	ag := h.activeAgent
 	h.mu.Unlock()
-	if slug == "" {
-		slug = "global"
+
+	out := map[string]struct{}{
+		filepath.Join(h.globalRepoPath, "rules.md"): {},
+		filepath.Join(h.globalRepoPath, "user.md"):  {},
+		filepath.Join(h.globalRepoPath, "facts.md"): {},
+		filepath.Join(h.activeRepoPath, "rules.md"): {},
 	}
-	out[filepath.Join(h.repoPath, "projects", slug, "rules.md")] = struct{}{}
 	if ag != "" {
-		base := filepath.Join(h.repoPath, "agents", ag)
-		out[filepath.Join(base, "persona.md")] = struct{}{}
-		out[filepath.Join(base, "rules.md")] = struct{}{}
-		out[filepath.Join(base, "notes.md")] = struct{}{}
-		projBase := filepath.Join(h.repoPath, "projects", slug, "agents", ag)
-		out[filepath.Join(projBase, "persona.md")] = struct{}{}
-		out[filepath.Join(projBase, "rules.md")] = struct{}{}
-		out[filepath.Join(projBase, "notes.md")] = struct{}{}
+		globalBase := filepath.Join(h.globalRepoPath, "agents", ag)
+		out[filepath.Join(globalBase, "persona.md")] = struct{}{}
+		out[filepath.Join(globalBase, "rules.md")] = struct{}{}
+		out[filepath.Join(globalBase, "notes.md")] = struct{}{}
+		activeBase := filepath.Join(h.activeRepoPath, "agents", ag)
+		out[filepath.Join(activeBase, "persona.md")] = struct{}{}
+		out[filepath.Join(activeBase, "rules.md")] = struct{}{}
+		out[filepath.Join(activeBase, "notes.md")] = struct{}{}
 	}
 	return out
 }
