@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// Record is one line in projects/global/sessions.jsonl. The schema is
+// Record is one line in sessions.jsonl. The schema is
 // stable - existing records must keep parsing as the design grows, so
 // new fields land with omitempty defaults rather than replacing old
 // columns.
@@ -93,7 +93,7 @@ func ReadAll(path string) ([]Record, error) {
 
 // AppendRecord appends rec to the log at path. The parent directory is
 // created on first call so the caller does not need to scaffold the
-// projects/global tree separately. Each record is fsynced so a power
+// project repo tree separately. Each record is fsynced so a power
 // loss between saves keeps the previous records intact.
 func AppendRecord(path string, rec Record) error {
 	if rec.ID == "" {

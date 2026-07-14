@@ -650,11 +650,8 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		}
 	}
 	if len(sandboxRoots) == 0 {
-		ad.rt.mu.Lock()
-		repoPath := ad.rt.cfg.Memory.RepoPath
-		ad.rt.mu.Unlock()
-		if repoPath != "" {
-			sandboxRoots = append(sandboxRoots, repoPath)
+		if roots, err := ad.rt.resolveProjectRepoRootsForSlug(slug); err == nil && roots.activeRoot != "" {
+			sandboxRoots = append(sandboxRoots, roots.activeRoot)
 		}
 	}
 

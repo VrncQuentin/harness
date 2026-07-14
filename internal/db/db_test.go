@@ -189,7 +189,6 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	cfg.Embedder.Binary = "C:\\embed.exe"
 	cfg.Embedder.ModelPath = "C:\\e.gguf"
 	cfg.Embedder.Verbose = true
-	cfg.Memory.RepoPath = "C:\\memory"
 	cfg.Agent.Active = "coder"
 	cfg.UI.OpenOnStart = false
 	cfg.API.Enabled = true
@@ -235,9 +234,6 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	}
 	if loaded.API.Port != 9090 {
 		t.Errorf("API.Port roundtrip: got %d, want 9090", loaded.API.Port)
-	}
-	if loaded.Memory.RepoPath != cfg.Memory.RepoPath {
-		t.Errorf("Memory.RepoPath roundtrip: got %q, want %q", loaded.Memory.RepoPath, cfg.Memory.RepoPath)
 	}
 	if loaded.Agent.Active != "coder" {
 		t.Errorf("Agent.Active roundtrip: got %q, want %q", loaded.Agent.Active, "coder")

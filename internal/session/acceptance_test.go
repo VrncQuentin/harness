@@ -31,9 +31,9 @@ func scaffoldMemoryRepo(t *testing.T, agentName string) (string, *git.Repo) {
 		t.Fatalf("plain init: %v", err)
 	}
 	files := map[string]string{
-		"global/rules.md": "RULES",
-		"global/user.md":  "USER",
-		"global/facts.md": "FACTS",
+		"rules.md": "RULES",
+		"user.md":  "USER",
+		"facts.md": "FACTS",
 		fmt.Sprintf("agents/%s/persona.md", agentName): "PERSONA",
 		fmt.Sprintf("agents/%s/rules.md", agentName):   "AGENTRULES",
 		fmt.Sprintf("agents/%s/notes.md", agentName):   "NOTES",
@@ -47,10 +47,10 @@ func scaffoldMemoryRepo(t *testing.T, agentName string) (string, *git.Repo) {
 			t.Fatalf("write %s: %v", rel, err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(root, "projects", "global", "episodes"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "episodes"), 0o755); err != nil {
 		t.Fatalf("mkdir projects: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(root, "projects", "global", "index", "_episodes"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "index", "_episodes"), 0o755); err != nil {
 		t.Fatalf("mkdir projects/index: %v", err)
 	}
 	repo, err := git.Open(root)
@@ -78,7 +78,7 @@ func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 // TestM3Acceptance_1_EpisodeFileAndCommit covers:
 //
 //	"Complete a session → episode file appears at
-//	 projects/global/episodes/<agent>/<timestamp>.md, committed to git"
+//	 episodes/<agent>/<timestamp>.md, committed to git"
 func TestM3Acceptance_1_EpisodeFileAndCommit(t *testing.T) {
 	fi := newFakeInference(summaryTokens("first sessions summary"))
 	mgr, root := newAcceptanceManager(t, fi)
@@ -90,7 +90,7 @@ func TestM3Acceptance_1_EpisodeFileAndCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	mdPath := filepath.Join(root, "projects", "global", "episodes", "coder", s.ID+".md")
+	mdPath := filepath.Join(root, "episodes", "coder", s.ID+".md")
 	if _, err := os.Stat(mdPath); err != nil {
 		t.Fatalf("expected %s to exist: %v", mdPath, err)
 	}
@@ -170,9 +170,9 @@ func TestM3Acceptance_3_RecencyWiring(t *testing.T) {
 	}
 
 	// Fresh assembler from the same memory repo. The recency layer
-	// reads projects/global/episodes/<agent>/*.md, which is exactly
+	// reads episodes/<agent>/*.md, which is exactly
 	// what the session writer produces.
-	reader := memory.NewDirReader(root)
+	reader := memory.NewLayoutV2Reader(root, "global", root)
 	active := "coder"
 	reg := agent.NewDiskRegistry(reader, func() string { return active }, func(name string) error { active = name; return nil })
 	cfg := config.PromptConfig{RecencyN: 5}
@@ -200,7 +200,7 @@ func TestM3Acceptance_3_RecencyWiring(t *testing.T) {
 // TestM3Acceptance_4_TenSessions covers:
 //
 //	"Complete 10 sessions → all 10 episode files present in git log,
-//	 projects/global/sessions.jsonl has 10 entries"
+//	 sessions.jsonl has 10 entries"
 func TestM3Acceptance_4_TenSessions(t *testing.T) {
 	scripts := make([][]inference.Token, 0, 10)
 	for i := range 10 {
@@ -220,7 +220,7 @@ func TestM3Acceptance_4_TenSessions(t *testing.T) {
 	}
 
 	// 10 .md files on disk under the agent dir.
-	dir := filepath.Join(root, "projects", "global", "episodes", "coder")
+	dir := filepath.Join(root, "episodes", "coder")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
@@ -249,7 +249,7 @@ func TestM3Acceptance_4_TenSessions(t *testing.T) {
 	}
 
 	// 10 records in sessions.jsonl.
-	logPath := filepath.Join(root, "projects", "global", "sessions.jsonl")
+	logPath := filepath.Join(root, "sessions.jsonl")
 	records, err := ReadAll(logPath)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
@@ -261,7 +261,7 @@ func TestM3Acceptance_4_TenSessions(t *testing.T) {
 
 // TestM3Acceptance_5_GarbledLogTolerated covers:
 //
-//	"Corrupt projects/global/sessions.jsonl by appending garbage →
+//	"Corrupt sessions.jsonl by appending garbage →
 //	 harness starts without crashing, logs a warning"
 func TestM3Acceptance_5_GarbledLogTolerated(t *testing.T) {
 	fi := newFakeInference(summaryTokens("clean record"))
@@ -272,7 +272,7 @@ func TestM3Acceptance_5_GarbledLogTolerated(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	logPath := filepath.Join(root, "projects", "global", "sessions.jsonl")
+	logPath := filepath.Join(root, "sessions.jsonl")
 	f, err := os.OpenFile(logPath, os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		t.Fatalf("open append: %v", err)
@@ -307,12 +307,12 @@ func TestM3Acceptance_6_UIEpisodeListIntegration(t *testing.T) {
 	}
 
 	reader := memory.NewDirReader(root)
-	entries, err := reader.Walk("projects/global/episodes")
+	entries, err := reader.Walk("episodes")
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
 	var foundMD bool
-	expected := "projects/global/episodes/coder/" + s.ID + ".md"
+	expected := "episodes/coder/" + s.ID + ".md"
 	for _, e := range entries {
 		if e.Path == expected {
 			foundMD = true
@@ -375,7 +375,7 @@ func TestM3SidecarMissingResumeError(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	mgr.End(s.ID)
-	sidecar := filepath.Join(root, "projects", "global", "episodes", "coder", s.ID+".json")
+	sidecar := filepath.Join(root, "episodes", "coder", s.ID+".json")
 	if err := os.Remove(sidecar); err != nil {
 		t.Fatalf("remove sidecar: %v", err)
 	}

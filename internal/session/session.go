@@ -6,11 +6,11 @@
 // valid Windows filename and the episode filename stem.
 //
 // Saves are append-only and last-wins-by-ID:
-//   - the summary is regenerated and written to projects/<slug>/episodes/
+//   - the summary is regenerated and written to episodes/
 //     <agent>/<id>.md (committed to git, single file per commit)
-//   - the raw conversation is written to projects/<slug>/episodes/
+//   - the raw conversation is written to episodes/
 //     <agent>/<id>.json (working-tree-only, intentionally uncommitted)
-//   - one record per save is appended to projects/<slug>/sessions.jsonl
+//   - one record per save is appended to sessions.jsonl
 //
 // The project slug is set via ManagerDeps.ProjectSlug at construction
 // time; paths are computed from the manager's stored value.
@@ -158,31 +158,31 @@ type Manager struct {
 // episodesDir returns the repo-relative path for the episode directory
 // of a given agent under this manager's project.
 func (m *Manager) episodesDir(agent string) string {
-	return fmt.Sprintf("projects/%s/episodes/%s", m.projectSlug, agent)
+	return fmt.Sprintf("episodes/%s", agent)
 }
 
 // episodeMarkdownPath returns the repo-relative path to an episode .md
 // file for the given agent and session id.
 func (m *Manager) episodeMarkdownPath(agent, id string) string {
-	return fmt.Sprintf("projects/%s/episodes/%s/%s.md", m.projectSlug, agent, id)
+	return fmt.Sprintf("episodes/%s/%s.md", agent, id)
 }
 
 // episodeSidecarPath returns the repo-relative path to an episode .json
 // sidecar for the given agent and session id.
 func (m *Manager) episodeSidecarPath(agent, id string) string {
-	return fmt.Sprintf("projects/%s/episodes/%s/%s.json", m.projectSlug, agent, id)
+	return fmt.Sprintf("episodes/%s/%s.json", agent, id)
 }
 
 // sessionsLogRelPath returns the repo-relative path for this project's
 // sessions.jsonl.
 func (m *Manager) sessionsLogRelPath() string {
-	return fmt.Sprintf("projects/%s/sessions.jsonl", m.projectSlug)
+	return "sessions.jsonl"
 }
 
 // episodesRootRelPath returns the repo-relative episodes root directory
 // for this project.
 func (m *Manager) episodesRootRelPath() string {
-	return fmt.Sprintf("projects/%s/episodes", m.projectSlug)
+	return "episodes"
 }
 
 // NewManager constructs a Manager from deps. The caller is expected to

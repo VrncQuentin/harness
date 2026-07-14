@@ -23,6 +23,7 @@ import (
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/metrics"
+	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/session"
 	"github.com/vrnc/harness/internal/tools"
@@ -37,25 +38,36 @@ import (
 // metricsStore may be nil; the session manager simply skips metric
 // emission in that case.
 func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store) {
-	uiServer.SetMemoryRepoPath(rt.cfg.Memory.RepoPath)
-	if err := memory.ValidateRepo(rt.cfg.Memory.RepoPath); err != nil {
+	roots, err := rt.resolveProjectRepoRootsForSlug(rt.cfg.Project.ActiveProjectSlug)
+	if err != nil {
 		uiServer.SetAgentRegistry(nil)
 		uiServer.SetMemoryStore(nil)
 		uiServer.SetSessionStore(nil)
-		uiServer.AddStartupError(fmt.Errorf("memory repo: %w", err))
+		uiServer.AddStartupError(fmt.Errorf("project memory repos: %w", err))
 		if rt.cfg.API.Enabled {
-			uiServer.AddStartupError(errors.New("api server disabled: memory repo is not valid"))
+			uiServer.AddStartupError(errors.New("api server disabled: project memory repos are not valid"))
 		}
 		return
 	}
+	uiServer.SetMemoryRepoPath(roots.activeRoot)
+	if err := memory.ValidateProjectRepo(roots.globalRoot, true); err != nil {
+		uiServer.AddStartupError(fmt.Errorf("global memory repo: %w", err))
+		return
+	}
+	if roots.activeSlug != project.GlobalSlug {
+		if err := memory.ValidateProjectRepo(roots.activeRoot, false); err != nil {
+			uiServer.AddStartupError(fmt.Errorf("active memory repo: %w", err))
+			return
+		}
+	}
 
-	rt.memReader = memory.NewDirReader(rt.cfg.Memory.RepoPath)
+	rt.memReader = memory.NewLayoutV2Reader(roots.globalRoot, roots.activeSlug, roots.activeRoot)
 	rt.agentReg = agent.NewDiskRegistry(rt.memReader, rt.getActiveAgent, rt.setActiveAgent)
 	rt.assembler = prompt.NewDiskAssembler(rt.memReader, rt.agentReg, rt.cfg.Prompt).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
 
 	// Open the episode index for blended retrieval. The UI rebuilder is wired even
 	// when the index is missing so a fresh clone can reconstruct it in-place.
-	indexDir := filepath.Join(rt.cfg.Memory.RepoPath, "projects", rt.cfg.Project.ActiveProjectSlug, "index", "_episodes")
+	indexDir := filepath.Join(roots.activeRoot, "index", "_episodes")
 	embedClient := embedder.NewClient(
 		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
 		httpclient.NewStreaming(),
@@ -72,9 +84,13 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		cfg:      rt.cfg.Prompt,
 		idx:      epIdx,
 	})
-	uiServer.SetMemoryStore(rt.memReader)
+	if memStore, ok := rt.memReader.(ui.MemoryStore); ok {
+		uiServer.SetMemoryStore(memStore)
+	} else {
+		uiServer.SetMemoryStore(nil)
+	}
 
-	hr, err := prompt.NewHotReload(rt.cfg.Memory.RepoPath, rt.cfg.Agent.Active, rt.cfg.Project.ActiveProjectSlug, slog.Default())
+	hr, err := prompt.NewHotReloadLayoutV2(roots.globalRoot, roots.activeRoot, rt.cfg.Agent.Active, rt.cfg.Project.ActiveProjectSlug, slog.Default())
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("prompt hot-reload: %w", err))
 	} else {
@@ -87,7 +103,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	// A failure to open the git repo surfaces as a startup error and
 	// silently disables save/resume so the rest of the harness stays
 	// usable.
-	sessionMgr, sessionAdapter := rt.buildSessionManager(metricsStore, uiServer)
+	sessionMgr, sessionAdapter := rt.buildSessionManager(metricsStore, uiServer, roots)
 	rt.setSessionManager(sessionMgr)
 	if sessionAdapter != nil {
 		uiServer.SetSessionStore(sessionAdapter)
@@ -97,7 +113,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 	// Wire committer for M6 memory promotion.
 	if rt.gitRepo != nil {
-		uiServer.SetCommitter(rt.gitRepo)
+		if lv2, ok := rt.memReader.(*memory.LayoutV2Reader); ok {
+			uiServer.SetCommitter(&memory.LayoutV2Committer{Reader: lv2, Global: rt.globalGitRepo, Active: rt.gitRepo})
+		} else {
+			uiServer.SetCommitter(rt.gitRepo)
+		}
 	}
 	// Wire dedup checker for M6 fact deduplication.
 	uiServer.SetDedupChecker(&dedupChecker{
@@ -107,22 +127,29 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	uiServer.SetPromotionDedupThreshold(rt.cfg.Prompt.PromotionDedupThreshold)
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
-	uiServer.SetIndexRebuilder(&indexRebuilder{
-		mem:      rt.memReader,
-		emb:      embedClient,
-		idx:      epIdx,
-		indexDir: indexDir,
-		repoPath: rt.cfg.Memory.RepoPath,
-		slug:     rt.cfg.Project.ActiveProjectSlug,
-		gitRepo:  rt.gitRepo,
-		onRebuilt: func(idx *index.Index) {
-			rt.mu.Lock()
-			if rt.assembler != nil {
-				rt.assembler = rt.assembler.WithBlendedRetrieval(idx, embedClient)
-			}
-			rt.mu.Unlock()
-		},
-	})
+	if walkMem, ok := rt.memReader.(interface {
+		memory.Reader
+		memory.Walker
+	}); ok {
+		uiServer.SetIndexRebuilder(&indexRebuilder{
+			mem:      walkMem,
+			emb:      embedClient,
+			idx:      epIdx,
+			indexDir: indexDir,
+			repoPath: roots.activeRoot,
+			slug:     rt.cfg.Project.ActiveProjectSlug,
+			gitRepo:  rt.gitRepo,
+			onRebuilt: func(idx *index.Index) {
+				rt.mu.Lock()
+				if rt.assembler != nil {
+					rt.assembler = rt.assembler.WithBlendedRetrieval(idx, embedClient)
+				}
+				rt.mu.Unlock()
+			},
+		})
+	} else {
+		uiServer.SetIndexRebuilder(nil)
+	}
 	if rt.reqQueue != nil {
 		uiServer.SetChatRunner(&chatRunnerAdapter{
 			asm: asmAdapter,
@@ -187,18 +214,66 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	uiServer.SetTaskRunner(taskAdapter)
 }
 
+type projectRepoRoots struct {
+	globalRoot string
+	activeRoot string
+	activeSlug string
+}
+
+func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots, error) {
+	store, ok := rt.projectStore.(project.Store)
+	if !ok || store == nil {
+		return projectRepoRoots{}, errors.New("project store not available")
+	}
+	globalProj, err := store.Get(project.GlobalSlug)
+	if err != nil {
+		return projectRepoRoots{}, fmt.Errorf("global project: %w", err)
+	}
+	if slug == "" {
+		slug = project.GlobalSlug
+	}
+	activeProj := globalProj
+	if slug != project.GlobalSlug {
+		activeProj, err = store.Get(slug)
+		if err != nil {
+			return projectRepoRoots{}, fmt.Errorf("active project %q: %w", slug, err)
+		}
+	}
+	if strings.TrimSpace(globalProj.MemoryRepoPath) == "" {
+		return projectRepoRoots{}, errors.New("global project memory repo path is empty")
+	}
+	if strings.TrimSpace(activeProj.MemoryRepoPath) == "" {
+		return projectRepoRoots{}, fmt.Errorf("active project %q memory repo path is empty", slug)
+	}
+	return projectRepoRoots{
+		globalRoot: globalProj.MemoryRepoPath,
+		activeRoot: activeProj.MemoryRepoPath,
+		activeSlug: slug,
+	}, nil
+}
+
 // buildSessionManager opens the git repo and constructs a session
 // manager pointed at the validated memory paths. Returns nil for both
 // values when something fails so the caller silently disables save +
 // resume rather than crashing the harness on /chat load.
-func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.Server) (*session.Manager, *uiSessionStoreAdapter) {
-	repoPath := rt.cfg.Memory.RepoPath
+func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots) (*session.Manager, *uiSessionStoreAdapter) {
+	repoPath := roots.activeRoot
 	repo, err := gitw.Open(repoPath)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
 		return nil, nil
 	}
 	rt.gitRepo = repo
+	if roots.globalRoot == roots.activeRoot {
+		rt.globalGitRepo = repo
+	} else {
+		globalRepo, gerr := gitw.Open(roots.globalRoot)
+		if gerr != nil {
+			uiServer.AddStartupError(fmt.Errorf("global memory repo: %w", gerr))
+			return nil, nil
+		}
+		rt.globalGitRepo = globalRepo
+	}
 
 	infClient := inference.NewClient(
 		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Model.Port),
@@ -215,10 +290,11 @@ func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.
 		httpclient.NewStreaming(),
 	)
 
+	sessionStore := memory.NewDirReader(repoPath)
 	mgr := session.NewManager(session.ManagerDeps{
 		Repo:               repo,
-		Writer:             rt.memReader,
-		Reader:             rt.memReader,
+		Writer:             sessionStore,
+		Reader:             sessionStore,
 		Inference:          infClient,
 		Metrics:            rec,
 		SummarizerPrompt:   rt.summarizerPromptFn(),
@@ -260,11 +336,7 @@ func (rt *Runtime) afterSaveEmbed(embedClient embedder.Client, repoPath string) 
 		if len(vectors) == 0 || len(vectors[0]) == 0 {
 			return nil
 		}
-
-		// Determine index directory from the episode path.
-		// EpisodePath is e.g. "projects/<slug>/episodes/<agent>/<id>.md"
-		// Index goes at projects/<slug>/index/_episodes/
-		indexDir := episodeIndexDir(repoPath, result.EpisodePath)
+		indexDir := filepath.Join(repoPath, "index", "_episodes")
 		dim := len(vectors[0])
 
 		idx, err := index.Open(indexDir)
@@ -289,34 +361,14 @@ func (rt *Runtime) afterSaveEmbed(embedClient embedder.Client, repoPath string) 
 				map[string]string{"type": "index", "episode_id": result.ID},
 				"update episode index",
 			)
-			relVectors := relIndexPath(result.EpisodePath, "vectors.bin")
-			relManifest := relIndexPath(result.EpisodePath, "manifest.json")
+			relVectors := path.Join("index", "_episodes", "vectors.bin")
+			relManifest := path.Join("index", "_episodes", "manifest.json")
 			if _, err := rt.gitRepo.Commit(msg, []string{relVectors, relManifest}); err != nil {
 				slog.Warn("commit index", "err", err)
 			}
 		}
 		return nil
 	}
-}
-
-// episodeIndexDir resolves the _episodes index directory from an episode path.
-func episodeIndexDir(repoRoot, episodePath string) string {
-	// EpisodePath: "projects/<slug>/episodes/<agent>/<id>.md"
-	// Index dir:    projects/<slug>/index/_episodes/
-	dir := filepath.Dir(filepath.Dir(episodePath)) // strip <agent>/<id>.md
-	parts := strings.SplitN(dir, string(filepath.Separator), 3)
-	if len(parts) >= 2 && parts[0] == "projects" {
-		return filepath.Join(repoRoot, parts[0], parts[1], "index", "_episodes")
-	}
-	return filepath.Join(repoRoot, dir, "index", "_episodes")
-}
-
-func relIndexPath(episodePath, file string) string {
-	// Use path (forward slashes) for repo-relative paths as go-git requires.
-	// EpisodePath: "projects/<slug>/episodes/<agent>/<id>.md"
-	// Index path:  "projects/<slug>/index/_episodes/<file>"
-	dir := path.Dir(path.Dir(episodePath))            // "projects/<slug>/episodes" → "projects/<slug>"
-	return path.Join(dir, "index", "_episodes", file) // "projects/<slug>/index/_episodes/<file>"
 }
 
 func chunkSummary(summary string) []string {
@@ -369,6 +421,7 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	rt.agentReg = nil
 	rt.assembler = nil
 	rt.gitRepo = nil
+	rt.globalGitRepo = nil
 	rt.setSessionManager(nil)
 	uiServer.SetAgentRegistry(nil)
 	uiServer.SetMemoryStore(nil)
@@ -512,7 +565,10 @@ func (s *indexScorer) open() (*index.Index, error) {
 // updated manifest and vectors. The operation is idempotent: already-
 // indexed episodes are skipped.
 type indexRebuilder struct {
-	mem       *memory.DirReader
+	mem interface {
+		memory.Reader
+		memory.Walker
+	}
 	emb       embedder.Client
 	idx       *index.Index
 	indexDir  string
@@ -631,8 +687,8 @@ func (rb *indexRebuilder) Rebuild(ctx context.Context) error {
 
 	// Commit the updated index files.
 	if rb.gitRepo != nil {
-		relVectors := path.Join("projects", rb.slug, "index", "_episodes", "vectors.bin")
-		relManifest := path.Join("projects", rb.slug, "index", "_episodes", "manifest.json")
+		relVectors := path.Join("index", "_episodes", "vectors.bin")
+		relManifest := path.Join("index", "_episodes", "manifest.json")
 		msg := gitw.BuildMessage(
 			map[string]string{"type": "index-rebuild"},
 			fmt.Sprintf("rebuild episode index: %d new episodes", len(work)),
@@ -660,7 +716,7 @@ func retrievalDecay(distanceFromNewest int, n float64) float64 {
 // dedupChecker implements ui.DedupChecker by embedding the candidate text and
 // existing facts, then comparing cosine similarity.
 type dedupChecker struct {
-	mem *memory.DirReader
+	mem memory.Reader
 	emb embedder.Client
 }
 
