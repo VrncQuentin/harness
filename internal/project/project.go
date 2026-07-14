@@ -18,6 +18,7 @@ var (
 	ErrReservedSlug  = errors.New("project: slug is reserved")
 	ErrDisplayName   = errors.New("project: display_name is required")
 	ErrInvalidPath   = errors.New("project: directory path must be absolute")
+	ErrMemoryRepo    = errors.New("project: memory repo path must be absolute")
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
@@ -26,6 +27,7 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 type Project struct {
 	Slug           string
 	DisplayName    string
+	MemoryRepoPath string
 	ModelBinary    *string
 	ModelPath      *string
 	ModelCtxSize   *int
@@ -47,6 +49,7 @@ type Directory struct {
 type CreateInput struct {
 	Slug           string
 	DisplayName    string
+	MemoryRepoPath string
 	ModelBinary    *string
 	ModelPath      *string
 	ModelCtxSize   *int
@@ -59,6 +62,7 @@ type CreateInput struct {
 type UpdateInput struct {
 	Slug           string
 	DisplayName    string
+	MemoryRepoPath string
 	ModelBinary    *string
 	ModelPath      *string
 	ModelCtxSize   *int
