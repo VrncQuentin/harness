@@ -84,22 +84,24 @@
           <td><code class="path-code">{{.MemoryRepoPath}}</code></td>
           <td class="count-cell">{{.DirectoryCount}}</td>
           <td class="actions">
-            {{if .IsActive}}
-            <span class="btn btn-sm btn-disabled" aria-disabled="true">Active</span>
-            {{else}}
-            <a href="/projects?activate={{.Slug}}" class="btn btn-sm">Activate</a>
-            {{end}}
-            <form method="post" action="/projects/backup?slug={{.Slug}}" class="inline-form">
-              <button type="submit" class="btn btn-sm btn-ghost">Back up</button>
-            </form>
-            {{if not .IsGlobal}}
-            <a href="/projects?edit={{.Slug}}" class="btn btn-sm btn-ghost">Edit</a>
-            {{if .Hidden}}
-            <a href="/projects?unhide={{.Slug}}" class="btn btn-sm btn-ghost">Unhide</a>
-            {{else}}
-            <a href="/projects?hide={{.Slug}}" class="btn btn-sm btn-ghost">Hide</a>
-            {{end}}
-            {{end}}
+            <div class="project-actions">
+              {{if .IsActive}}
+              <span class="btn btn-sm btn-disabled" aria-disabled="true">Active</span>
+              {{else}}
+              <a href="/projects?activate={{.Slug}}" class="btn btn-sm">Activate</a>
+              {{end}}
+              <form method="post" action="/projects/backup?slug={{.Slug}}" class="inline-form">
+                <button type="submit" class="btn btn-sm btn-ghost">Back up</button>
+              </form>
+              {{if not .IsGlobal}}
+              <a href="/projects?edit={{.Slug}}" class="btn btn-sm btn-ghost">Edit</a>
+              {{if .Hidden}}
+              <a href="/projects?unhide={{.Slug}}" class="btn btn-sm btn-ghost">Unhide</a>
+              {{else}}
+              <a href="/projects?hide={{.Slug}}" class="btn btn-sm btn-ghost">Hide</a>
+              {{end}}
+              {{end}}
+            </div>
           </td>
         </tr>
       {{end}}
