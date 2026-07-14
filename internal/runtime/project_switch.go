@@ -74,7 +74,9 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 	)
 
 	if rt.reqQueue != nil {
-		rt.reqQueue.Stop()
+		if err := rt.reqQueue.Restart(ctx); err != nil {
+			slog.Error("project switch: queue restart failed", "err", err)
+		}
 	}
 	if rt.llamaMgr != nil {
 		rt.llamaMgr.Reconfigure(func() (string, []string) {
@@ -91,11 +93,7 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 			)
 		}, fmt.Sprintf("http://127.0.0.1:%d/health", dstModel.Port))
 	}
-	if rt.reqQueue != nil {
-		if err := rt.reqQueue.Start(ctx); err != nil {
-			slog.Error("project switch: queue restart failed", "err", err)
-		}
-	}
+
 	uiServer.SetModelMismatch(false, "", "")
 }
 
