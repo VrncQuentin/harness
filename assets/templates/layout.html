@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Harness - {{template "title" .}}</title>
 <link rel="stylesheet" href="/static/app.css">
+{{if eq .Page "task"}}
+<link rel="stylesheet" href="/static/chat.css">
+<link rel="stylesheet" href="/static/task.css">
+{{else}}
+<link rel="stylesheet" href="/static/{{.Page}}.css">
+{{end}}
 </head>
 <body>
 <header class="topbar">
