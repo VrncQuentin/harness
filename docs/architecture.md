@@ -367,7 +367,6 @@ The schema mirrors the Go `config.Config` struct: one column per field, snake-ca
 Sections and fields:
 - **model:** `binary`, `model_path`, `ctx_size`, `gpu_layers`, `n_parallel`, `port`, `verbose`, `cache_type_k`, `cache_type_v`
 - **embedder:** `binary`, `model_path`, `port`, `verbose`
-- **memory:** legacy single-repo path retained for migration compatibility; active storage is per-project memory repo paths in the projects table
 - **agent:** `active`
 - **ui:** `port`, `open_on_start`
 - **api:** `enabled`, `port`

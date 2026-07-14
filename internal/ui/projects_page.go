@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -10,12 +11,12 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	gogit "github.com/go-git/go-git/v5"
 	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/project"
@@ -253,6 +254,10 @@ func (s *Server) handleProjectEdit(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/projects?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
+	if input.MemoryRepoPath == "" {
+		http.Redirect(w, r, "/projects?error="+url.QueryEscape("memory repo path is required"), http.StatusSeeOther)
+		return
+	}
 
 	current, err := store.Get(slug)
 	if err != nil {
@@ -369,7 +374,7 @@ func prepareProjectMemoryRepo(repoPath string, global bool) error {
 	if err := memory.CreateMissingProjectRepo(repoPath, global); err != nil {
 		return err
 	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), projectRepoScaffoldFiles(global)); err != nil {
+	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(global)); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
 		slog.Warn("project memory repo scaffold commit", "repo", repoPath, "err", err)
 	}
 	return nil
@@ -396,23 +401,10 @@ func copyProjectMemoryRepo(src, dst string, global bool) error {
 	if len(files) == 0 {
 		return nil
 	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "migration"}, "move project memory repo"), files); err != nil {
+	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "migration"}, "move project memory repo"), files); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
 		slog.Warn("project memory repo move commit", "repo", dst, "err", err)
 	}
 	return nil
-}
-
-func projectRepoScaffoldFiles(global bool) []string {
-	items := memory.ExpectedProjectRepoLayout(global)
-	files := make([]string, 0, len(items))
-	for _, item := range items {
-		if item.Dir {
-			files = append(files, path.Join(item.Path, ".gitkeep"))
-			continue
-		}
-		files = append(files, item.Path)
-	}
-	return files
 }
 
 func copyTreeWithoutGit(src, dst string) error {
