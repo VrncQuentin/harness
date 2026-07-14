@@ -150,6 +150,22 @@ func (q *Queue) Stop() {
 	})
 }
 
+// Restart drains the current worker, recreates the intake channel, and starts a
+// fresh worker. It is intended for runtime reconfiguration paths such as model
+// reloads; ordinary shutdown should call Stop.
+func (q *Queue) Restart(ctx context.Context) error {
+	q.Stop()
+
+	q.enqMu.Lock()
+	q.ch = make(chan Request, q.maxDepth)
+	q.depth.Store(0)
+	q.stopped.Store(false)
+	q.stopOnce = sync.Once{}
+	q.enqMu.Unlock()
+
+	return q.Start(ctx)
+}
+
 // Enqueue adds a request to the queue. Returns ErrQueueFull if at capacity.
 func (q *Queue) Enqueue(req Request) error {
 	q.enqMu.Lock()
