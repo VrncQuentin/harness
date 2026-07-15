@@ -37,6 +37,18 @@ func (rt *Runtime) Managers() (*proc.Manager, *proc.Manager) {
 	return rt.llamaMgr, rt.embedMgr
 }
 
+// QueueStats returns the live request queue depth and capacity. A zero capacity
+// means the queue has not been configured yet.
+func (rt *Runtime) QueueStats() (int, int) {
+	rt.mu.Lock()
+	q := rt.reqQueue
+	rt.mu.Unlock()
+	if q == nil {
+		return 0, 0
+	}
+	return q.Depth(), q.MaxDepth()
+}
+
 // RestartLlama restarts the current llama-server manager when one exists.
 func (rt *Runtime) RestartLlama() {
 	if m, _ := rt.Managers(); m != nil {

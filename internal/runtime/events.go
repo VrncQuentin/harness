@@ -92,6 +92,7 @@ func ForwardEvents(
 	events <-chan proc.Event,
 	uiSrv *ui.Server,
 	getMgrs func() (*proc.Manager, *proc.Manager),
+	getQueueStats func() (int, int),
 ) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -108,10 +109,12 @@ func ForwardEvents(
 			l, e := getMgrs()
 			pushStatus(l, "llama-server", uiSrv.SetLlamaStatus)
 			pushStatus(e, "embedder", uiSrv.SetEmbedderStatus)
+			pushQueueDepth(uiSrv, getQueueStats)
 		case <-ticker.C:
 			l, e := getMgrs()
 			pushStatus(l, "llama-server", uiSrv.SetLlamaStatus)
 			pushStatus(e, "embedder", uiSrv.SetEmbedderStatus)
+			pushQueueDepth(uiSrv, getQueueStats)
 		}
 	}
 }
@@ -130,6 +133,13 @@ func logProcEvent(ev proc.Event) {
 	}
 }
 
+func pushQueueDepth(uiSrv *ui.Server, getQueueStats func() (int, int)) {
+	if uiSrv == nil || getQueueStats == nil {
+		return
+	}
+	depth, capacity := getQueueStats()
+	uiSrv.SetQueueDepth(depth, capacity)
+}
 func pushStatus(mgr *proc.Manager, name string, set func(ui.ProcessStatus)) {
 	if mgr == nil {
 		return
