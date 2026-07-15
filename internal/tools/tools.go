@@ -105,23 +105,6 @@ func (r *Registry) List() []Tool {
 	return out
 }
 
-// Schemas returns the inference.Tool definitions for all registered tools.
-func (r *Registry) Schemas() []map[string]any {
-	out := make([]map[string]any, 0, len(r.order))
-	for _, id := range r.order {
-		t := r.tools[id]
-		out = append(out, map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name":        id,
-				"description": t.Description(),
-				"parameters":  t.Schema(),
-			},
-		})
-	}
-	return out
-}
-
 // validatePath checks that path (after symlink resolution) is within at
 // least one sandbox root. If sandbox roots are empty, all paths are rejected.
 func validatePath(path string, roots []string) (string, error) {

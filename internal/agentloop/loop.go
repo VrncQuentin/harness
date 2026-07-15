@@ -73,11 +73,12 @@ type MetricsRecorder interface {
 
 // Engine orchestrates the agent loop.
 type Engine struct {
-	infer    inference.Client
-	registry *tools.Registry
-	loopCfg  config.LoopConfig
-	toolCtx  tools.Context
-	metrics  MetricsRecorder
+	infer       inference.Client
+	registry    *tools.Registry
+	toolSchemas []registeredToolSchema
+	loopCfg     config.LoopConfig
+	toolCtx     tools.Context
+	metrics     MetricsRecorder
 
 	approvalTimeout time.Duration
 
@@ -106,10 +107,38 @@ func NewEngine(
 	return &Engine{
 		infer:           infer,
 		registry:        registry,
+		toolSchemas:     buildToolSchemas(registry),
 		loopCfg:         loopCfg,
 		toolCtx:         toolCtx,
 		approvalTimeout: defaultApprovalTimeout,
 	}
+}
+
+type registeredToolSchema struct {
+	id   string
+	tool inference.Tool
+}
+
+func buildToolSchemas(registry *tools.Registry) []registeredToolSchema {
+	if registry == nil {
+		return nil
+	}
+	registered := registry.List()
+	schemas := make([]registeredToolSchema, 0, len(registered))
+	for _, t := range registered {
+		schemas = append(schemas, registeredToolSchema{
+			id: t.ID(),
+			tool: inference.Tool{
+				Type: "function",
+				Function: inference.ToolDefinition{
+					Name:        t.ID(),
+					Description: t.Description(),
+					Parameters:  t.Schema(),
+				},
+			},
+		})
+	}
+	return schemas
 }
 
 // WithApprovals installs an M7 permission evaluator. When nil (the
@@ -182,20 +211,13 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 			return ErrCancelled
 		}
 
-		// Assemble tool schemas for this turn, respecting enable toggles.
+		// Select cached tool schemas for this request, respecting enable toggles.
 		var reqTools []inference.Tool
-		for _, t := range e.registry.List() {
-			if !e.isToolEnabled(t.ID()) {
+		for _, schema := range e.toolSchemas {
+			if !e.isToolEnabled(schema.id) {
 				continue
 			}
-			reqTools = append(reqTools, inference.Tool{
-				Type: "function",
-				Function: inference.ToolDefinition{
-					Name:        t.ID(),
-					Description: t.Description(),
-					Parameters:  t.Schema(),
-				},
-			})
+			reqTools = append(reqTools, schema.tool)
 		}
 
 		req := inference.CompletionRequest{
