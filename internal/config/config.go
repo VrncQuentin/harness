@@ -24,10 +24,10 @@ var (
 // ValidLlamaOnSwitch values for ProjectConfig.LlamaOnSwitch.
 var ValidLlamaOnSwitch = []string{"keep", "reload"}
 
-// defaultSummarizerPrompt is the system prompt the M3 session summarizer
-// (Track C) feeds to the model when writing an episode. The user can
-// override it via the /config page; an empty value tells the summarizer
-// to fall back to this string.
+// defaultSummarizerPrompt is the system prompt the session summarizer
+// feeds to the model when writing an episode. The user can override it
+// via the /config page; an empty value tells the summarizer to fall back
+// to this string.
 const defaultSummarizerPrompt = `You are summarizing a conversation between a user and an AI agent. Produce a concise third-person summary capturing:
 - the user's goal or question
 - key decisions, code paths, or facts established
@@ -145,8 +145,6 @@ type PromptConfig struct {
 // QueueConfig holds queue configuration.
 type QueueConfig struct {
 	MaxDepth int
-	// WALPath is a legacy no-op column kept for config schema compatibility.
-	WALPath string
 }
 
 // MetricsConfig holds metrics retention configuration. The database file
@@ -182,10 +180,10 @@ type LoopConfig struct {
 	// FileListEnabled toggles the file_list tool.
 	FileListEnabled bool
 	// FileWriteEnabled toggles the file_write tool. Off by default; requires
-	// the M7 approval layer before it can be enabled safely.
+	// the approval layer before it can be enabled safely.
 	FileWriteEnabled bool
 	// ShellExecEnabled toggles the shell_exec tool. Off by default; requires
-	// the M7 approval layer before it can be enabled safely.
+	// the approval layer before it can be enabled safely.
 	ShellExecEnabled bool
 	// WebSearchEnabled toggles the web_search tool. Off by default because it
 	// sends the user's query over the network.

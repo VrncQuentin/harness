@@ -21,6 +21,8 @@ import (
 	"github.com/vrnc/harness/migrations"
 )
 
+const expectedMigrationVersion uint = 1
+
 // DB owns the shared harness SQLite handle and exposes typed stores for each
 // subsystem. Callers open it once in main and pass the sub-stores around.
 type DB struct {
@@ -142,6 +144,16 @@ func runMigrations(sqldb *sql.DB) error {
 	m, err := migrate.NewWithInstance("iofs", src, "sqlite", driver)
 	if err != nil {
 		return fmt.Errorf("db: migrate instance: %w", err)
+	}
+	version, dirty, err := m.Version()
+	if err != nil && !errors.Is(err, migrate.ErrNilVersion) {
+		return fmt.Errorf("db: read migration version: %w", err)
+	}
+	if dirty {
+		return fmt.Errorf("db: migration version %d is dirty; delete harness.db and restart", version)
+	}
+	if err == nil && version != expectedMigrationVersion {
+		return fmt.Errorf("db: migration version %d does not match bundled schema version %d; delete harness.db and restart", version, expectedMigrationVersion)
 	}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("db: migrate up: %w", err)

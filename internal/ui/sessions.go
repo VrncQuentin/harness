@@ -42,9 +42,9 @@ type SessionSaveResult struct {
 	SaveSeq     int       `json:"save_seq"`
 }
 
-// SessionRecord is one saved-session entry rendered by the resume
-// picker. Mirrors session.Record verbatim minus the project field
-// (hardcoded to "global" in M3).
+// SessionRecord is one saved-session entry rendered by the resume picker.
+// It mirrors the session package record shape minus fields the UI does not
+// display.
 type SessionRecord struct {
 	ID          string    `json:"id"`
 	Agent       string    `json:"agent"`
@@ -52,13 +52,6 @@ type SessionRecord struct {
 	SavedAt     time.Time `json:"saved_at"`
 	SaveSeq     int       `json:"save_seq"`
 	EpisodePath string    `json:"episode_path"`
-}
-
-// SetSessionStore installs the store used by /chat/save and friends.
-// Pass nil to detach (e.g. when the memory repo is invalidated); the
-// handlers then return 503 until a valid store is wired back in.
-func (s *Server) SetSessionStore(store SessionStore) {
-	s.updateDeps(func(d *uiDeps) { d.sessionStore = store })
 }
 
 func (s *Server) getSessionStore() SessionStore {

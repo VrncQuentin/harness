@@ -36,12 +36,10 @@ type Enqueuer interface {
 	Enqueue(req queue.Request) error
 }
 
-// SessionRecorder is the optional surface the API server uses to mint
-// a fresh session per /v1/chat/completions call and append the user's
-// last message + the assistant's response. M3 keeps this minimal: one
-// session per API request gives each external client a per-call episode
-// without coupling to the client's own session lifecycle. M4 will refine
-// the model so a client session maps onto one harness session.
+// SessionRecorder is the optional surface the API server uses to record
+// one harness session per /v1/chat/completions request. The request
+// messages and assistant response are appended so API traffic can produce
+// the same episode records as browser chat.
 type SessionRecorder interface {
 	Start(agent string) Session
 	Append(id string, role, content string) error
@@ -174,7 +172,7 @@ type chunkDelta struct {
 	Content string `json:"content,omitempty"`
 }
 
-// handleChatCompletions is POST /v1/chat/completions. Streaming only in M2.
+// handleChatCompletions is POST /v1/chat/completions. Streaming is required.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSONError(w, http.StatusMethodNotAllowed, apiErrorBody{
@@ -193,10 +191,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// M2 limit: non-streaming responses are deferred to a later milestone.
+	// Non-streaming responses are not supported by this API surface.
 	if !req.Stream {
 		writeJSONError(w, http.StatusBadRequest, apiErrorBody{
-			Message: "non-streaming not supported in M2",
+			Message: "non-streaming not supported",
 			Type:    "invalid_request_error",
 		})
 		return
@@ -291,10 +289,8 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	// M3-minimal session recording: mint one session per call so each
-	// API request lands an episode in git. External clients do not pin
-	// a session id today; M4 will refine so a single client session
-	// maps onto one harness session.
+	// Mint one session per call so each API request can land an episode in git.
+	// External clients do not currently pin an API session id across requests.
 	var sess Session
 	if s.rec != nil {
 		sess = s.rec.Start(agent)
@@ -394,8 +390,8 @@ type modelInfo struct {
 	OwnedBy string `json:"owned_by"`
 }
 
-// handleModels is GET /v1/models. Stub for OpenAI-compatible model discovery;
-// real model metadata arrives in a later milestone.
+// handleModels is GET /v1/models. It returns the harness model alias used
+// by OpenAI-compatible clients for discovery.
 func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSONError(w, http.StatusMethodNotAllowed, apiErrorBody{

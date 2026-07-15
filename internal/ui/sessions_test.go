@@ -107,7 +107,7 @@ func TestHandleChatSave_HappyPath(t *testing.T) {
 		},
 	}
 	srv := NewServer(0)
-	srv.SetSessionStore(store)
+	setSessionStoreForTest(srv, store)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(`{"session_id":"abc"}`))
 	srv.handleChatSave(rec, req)
@@ -128,7 +128,7 @@ func TestHandleChatSave_HappyPath(t *testing.T) {
 
 func TestHandleChatSave_EmptyBodyReturns400(t *testing.T) {
 	srv := NewServer(0)
-	srv.SetSessionStore(&stubSessionStore{})
+	setSessionStoreForTest(srv, &stubSessionStore{})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(`{}`))
 	srv.handleChatSave(rec, req)
@@ -144,7 +144,7 @@ func TestHandleChatSessionResume_Happy(t *testing.T) {
 	}
 	store := &stubSessionStore{convResult: want}
 	srv := NewServer(0)
-	srv.SetSessionStore(store)
+	setSessionStoreForTest(srv, store)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/chat/session?agent=coder&id=abc", nil)
 	srv.handleChatSessionResume(rec, req)
@@ -166,7 +166,7 @@ func TestHandleChatSessionResume_Happy(t *testing.T) {
 func TestHandleChatSessionResume_ConversationLost404(t *testing.T) {
 	store := &stubSessionStore{convErr: ErrSessionConversationLost}
 	srv := NewServer(0)
-	srv.SetSessionStore(store)
+	setSessionStoreForTest(srv, store)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/chat/session?agent=coder&id=abc", nil)
 	srv.handleChatSessionResume(rec, req)
@@ -177,7 +177,7 @@ func TestHandleChatSessionResume_ConversationLost404(t *testing.T) {
 
 func TestHandleChatSessionResume_MissingArgs400(t *testing.T) {
 	srv := NewServer(0)
-	srv.SetSessionStore(&stubSessionStore{})
+	setSessionStoreForTest(srv, &stubSessionStore{})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/chat/session?id=abc", nil)
 	srv.handleChatSessionResume(rec, req)
@@ -189,7 +189,7 @@ func TestHandleChatSessionResume_MissingArgs400(t *testing.T) {
 func TestHandleChatSave_StoreErrorIs500(t *testing.T) {
 	store := &stubSessionStore{saveErr: errors.New("boom")}
 	srv := NewServer(0)
-	srv.SetSessionStore(store)
+	setSessionStoreForTest(srv, store)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(`{"session_id":"x"}`))
 	srv.handleChatSave(rec, req)
@@ -210,7 +210,7 @@ func TestHandleChatSessionResume_HXRequestReturnsHTMLFragment(t *testing.T) {
 	}
 	store := &stubSessionStore{convResult: want}
 	srv := NewServer(0)
-	srv.SetSessionStore(store)
+	setSessionStoreForTest(srv, store)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/chat/session?agent=coder&id=abc", nil)
@@ -285,7 +285,7 @@ func TestHandleChatSessionResume_HXRequestReturnsHTMLFragment(t *testing.T) {
 func TestHandleChatSessionResume_HXRequestEmptyConversation(t *testing.T) {
 	store := &stubSessionStore{convResult: nil}
 	srv := NewServer(0)
-	srv.SetSessionStore(store)
+	setSessionStoreForTest(srv, store)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/chat/session?agent=coder&id=abc", nil)
@@ -309,7 +309,7 @@ func TestHandleChatSessionResume_JSONBackwardCompat(t *testing.T) {
 	}
 	store := &stubSessionStore{convResult: want}
 	srv := NewServer(0)
-	srv.SetSessionStore(store)
+	setSessionStoreForTest(srv, store)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/chat/session?agent=coder&id=abc", nil)
@@ -336,7 +336,7 @@ func TestHandleChatSessionResume_JSONBackwardCompat(t *testing.T) {
 func TestHandleChatSessionResume_HXRequestConversationLost(t *testing.T) {
 	store := &stubSessionStore{convErr: ErrSessionConversationLost}
 	srv := NewServer(0)
-	srv.SetSessionStore(store)
+	setSessionStoreForTest(srv, store)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/chat/session?agent=coder&id=abc", nil)
@@ -358,7 +358,7 @@ func TestHandleChatSave_HXRequestReturnsHTML(t *testing.T) {
 		},
 	}
 	srv := NewServer(0)
-	srv.SetSessionStore(store)
+	setSessionStoreForTest(srv, store)
 
 	form := url.Values{"session_id": {"abc"}}
 	rec := httptest.NewRecorder()
@@ -383,7 +383,7 @@ func TestHandleChatSave_HXRequestReturnsHTML(t *testing.T) {
 // when the form lacks session_id.
 func TestHandleChatSave_HXRequestMissingIDReturns400(t *testing.T) {
 	srv := NewServer(0)
-	srv.SetSessionStore(&stubSessionStore{})
+	setSessionStoreForTest(srv, &stubSessionStore{})
 
 	form := url.Values{"session_id": {""}}
 	rec := httptest.NewRecorder()

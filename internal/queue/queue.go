@@ -61,10 +61,8 @@ type Queue struct {
 	wg        sync.WaitGroup
 }
 
-// New creates a new Queue. walPath is accepted for config compatibility but
-// ignored: interactive queued requests are not crash-replayed.
-func New(maxDepth int, walPath string, client inference.Client) *Queue {
-	_ = walPath
+// New creates a new Queue. Interactive queued requests are not crash-replayed.
+func New(maxDepth int, client inference.Client) *Queue {
 	return &Queue{
 		maxDepth: maxDepth,
 		// Channel capacity is the queue's contract: the channel itself is the

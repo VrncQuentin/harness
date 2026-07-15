@@ -18,7 +18,7 @@ import (
 )
 
 // defaultAuthorName and defaultAuthorEmail are used when the repo's git
-// config does not provide user.name / user.email. Track C commits run on
+// config does not provide user.name / user.email. Harness commits run on
 // behalf of the harness itself, so a stable fallback identity keeps the
 // log consistent without forcing the user to configure git first.
 const (

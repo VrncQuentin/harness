@@ -430,13 +430,6 @@ func (s *Server) getBinDir() string {
 	return s.depsSnapshot().binDir
 }
 
-// SetMemoryRepoPath records the active layout-v2 project memory repo path.
-// The status page uses it to detect missing canonical project-repo entries
-// and surface a prompt to scaffold what is missing. Pass "" to clear it.
-func (s *Server) SetMemoryRepoPath(path string) {
-	s.updateDeps(func(d *uiDeps) { d.memRepo = path })
-}
-
 func (s *Server) getMemoryRepoPath() string {
 	return s.depsSnapshot().memRepo
 }

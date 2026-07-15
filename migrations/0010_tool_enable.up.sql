@@ -1,2 +1,0 @@
-ALTER TABLE config ADD COLUMN loop_file_read_enabled INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE config ADD COLUMN loop_file_list_enabled INTEGER NOT NULL DEFAULT 1;

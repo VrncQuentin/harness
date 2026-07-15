@@ -1,1 +1,0 @@
--- SQLite cannot drop a column without rebuilding the table. Older binaries ignore unknown columns.

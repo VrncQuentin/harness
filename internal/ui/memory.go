@@ -35,7 +35,10 @@ const agentsDirName = "agents"
 // episodeFileSuffix is the on-disk extension for an episode file.
 // Anything else under the agent directory is ignored by the browser
 // because only markdown is committed by the session writer.
-const episodeFileSuffix = ".md"
+const (
+	episodesRoot      = "episodes"
+	episodeFileSuffix = ".md"
+)
 
 // RetrievalScore is the memory browser's retrieval metadata for one episode.
 type RetrievalScore struct {
@@ -94,31 +97,12 @@ func editableDesc(p string) (string, bool) {
 	return "", false
 }
 
-// SetMemoryStore wires the store used by the /memory page. Pass nil to
-// detach (e.g. when the active memory repo becomes unavailable); the page
-// then renders the not-configured CTA instead of a blank tree.
-func (s *Server) SetMemoryStore(store MemoryStore) {
-	s.updateDeps(func(d *uiDeps) { d.memStore = store })
-}
-
 func (s *Server) memoryStore() MemoryStore {
 	return s.depsSnapshot().memStore
 }
 
-// SetRetrievalScorer wires the scorer used by the memory episode view.
-// Pass nil to detach; the page then hides the score column.
-func (s *Server) SetRetrievalScorer(scorer RetrievalScorer) {
-	s.updateDeps(func(d *uiDeps) { d.scorer = scorer })
-}
-
 func (s *Server) retrievalScorer() RetrievalScorer {
 	return s.depsSnapshot().scorer
-}
-
-// SetIndexRebuilder wires the index rebuild handler. Pass nil to
-// detach; the memory page hides the rebuild button.
-func (s *Server) SetIndexRebuilder(rb IndexRebuilder) {
-	s.updateDeps(func(d *uiDeps) { d.rebuilder = rb })
 }
 
 func (s *Server) indexRebuilder() IndexRebuilder {
@@ -252,7 +236,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		data.Tree = tree
 		data.TotalTokens = total
 
-		counts, err := countEpisodesByAgent(store, s.activeProjectSlug())
+		counts, err := countEpisodesByAgent(store)
 		if err != nil {
 			data.EpisodesLoadErr = err.Error()
 		}
@@ -358,7 +342,6 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "path must not contain ..", http.StatusBadRequest)
 		return
 	}
-	episodesRoot := episodesRootForSlug(s.activeProjectSlug())
 	if !strings.HasPrefix(p, episodesRoot+"/") {
 		http.Error(w, "path must be under "+episodesRoot+"/", http.StatusBadRequest)
 		return
@@ -431,8 +414,8 @@ func validAgentName(name string) bool {
 // chronological order without parsing every filename. A missing agent
 // directory yields an empty slice and no error so the page can render
 // an empty-state hint rather than a 404.
-func listAgentEpisodes(ctx context.Context, store MemoryStore, slug, agent, query string, scorer RetrievalScorer) ([]episodeRow, error) {
-	dir := episodesRootForSlug(slug) + "/" + agent
+func listAgentEpisodes(ctx context.Context, store MemoryStore, projectSlug, agent, query string, scorer RetrievalScorer) ([]episodeRow, error) {
+	dir := episodesRoot + "/" + agent
 	entries, err := store.Walk(dir)
 	if err != nil {
 		return nil, err
@@ -467,7 +450,7 @@ func listAgentEpisodes(ctx context.Context, store MemoryStore, slug, agent, quer
 		paths = append(paths, e.Path)
 	}
 	if scorer != nil && len(paths) > 0 {
-		if scores, serr := scorer.ScoreEpisodes(ctx, slug, agent, query, paths); serr == nil {
+		if scores, serr := scorer.ScoreEpisodes(ctx, projectSlug, agent, query, paths); serr == nil {
 			for i := range rows {
 				if score, ok := scores[rows[i].Path]; ok {
 					rows[i].Indexed = score.Indexed
@@ -488,8 +471,7 @@ func listAgentEpisodes(ctx context.Context, store MemoryStore, slug, agent, quer
 // row per agent directory containing at least one .md file. The
 // resulting slice is sorted by agent name so the /memory page renders
 // stably across reloads.
-func countEpisodesByAgent(store MemoryStore, slug string) ([]agentEpisodeCount, error) {
-	episodesRoot := episodesRootForSlug(slug)
+func countEpisodesByAgent(store MemoryStore) ([]agentEpisodeCount, error) {
 	entries, err := store.Walk(episodesRoot)
 	if err != nil {
 		return nil, err
@@ -527,10 +509,6 @@ func countEpisodesByAgent(store MemoryStore, slug string) ([]agentEpisodeCount, 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
-}
-
-func episodesRootForSlug(slug string) string {
-	return "episodes"
 }
 
 // handleMemoryEdit renders the textarea form for one editable file.

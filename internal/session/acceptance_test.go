@@ -280,10 +280,10 @@ func TestM3Acceptance_5_GarbledLogTolerated(t *testing.T) {
 }
 
 // TestM3Acceptance_6_UIEpisodeListIntegration is a smoke check that
-// the Track D /memory/episodes handler still finds the episodes the
+// the /memory/episodes handler still finds the episodes the
 // session writer commits. We don't import the ui package directly to
 // keep the dependency graph one-way; instead we exercise the code
-// path through the same paths Track D uses (memory.Walker etc) and
+// path through the same paths the UI uses (memory.Walker etc) and
 // verify the file lands where the handler expects.
 func TestM3Acceptance_6_UIEpisodeListIntegration(t *testing.T) {
 	fi := newFakeInference(summaryTokens("UI test summary"))

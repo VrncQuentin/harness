@@ -682,7 +682,7 @@ func TestAssemble_CtxSizeTrimsEpisodesWithProjectRules(t *testing.T) {
 
 // errReader wraps a memory.Reader and returns a synthetic error for
 // reads of failOn (which is not fs.ErrNotExist), simulating a disk
-// fault. It also forwards DirLister when available so the agent
+// fault. It also forwards directory operations so the agent
 // registry keeps working for unrelated tests.
 type errReader struct {
 	memory.Repo
