@@ -179,7 +179,7 @@ Builds the final context sent to the model. Layers assembled in order:
 Responsibilities:
 - **Total memory cap:** sum of layers 6–8 must not exceed `memory_token_budget` (default 6144). Episodes are trimmed oldest-first to fit. Layers 1–5 are never trimmed — keep them small by convention.
 - **Conversation reserve:** always guarantee `conversation_reserve` tokens (default 8192) for live turns. If memory + conversation would exceed ctx_size, reduce episode count further.
-- Apply Qwen3 prompt template formatting
+- Return OpenAI-style chat messages; llama-server applies the model-specific chat template
 - Hot-reload rule and persona files by re-reading prompt inputs on each request
 - Expose layer debug output to UI logs page (shows token count per layer)
 
