@@ -107,6 +107,57 @@ func (s *stubEnqueuer) Enqueue(req queue.Request) error {
 	return nil
 }
 
+type sessionAppendRecord struct {
+	ID      string
+	Role    string
+	Content string
+}
+
+type stubSessionRecorder struct {
+	mu      sync.Mutex
+	nextID  int
+	starts  []Session
+	appends []sessionAppendRecord
+	saves   []string
+	ends    []string
+	saveErr error
+}
+
+func (r *stubSessionRecorder) Start(agent string) Session {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nextID++
+	s := Session{ID: fmt.Sprintf("sess-%d", r.nextID), Agent: agent}
+	r.starts = append(r.starts, s)
+	return s
+}
+
+func (r *stubSessionRecorder) Append(id, role, content string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.appends = append(r.appends, sessionAppendRecord{ID: id, Role: role, Content: content})
+	return nil
+}
+
+func (r *stubSessionRecorder) Save(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.saves = append(r.saves, id)
+	return r.saveErr
+}
+
+func (r *stubSessionRecorder) End(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.ends = append(r.ends, id)
+}
+
+func (r *stubSessionRecorder) snapshot() ([]Session, []sessionAppendRecord, []string, []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Session(nil), r.starts...), append([]sessionAppendRecord(nil), r.appends...), append([]string(nil), r.saves...), append([]string(nil), r.ends...)
+}
+
 // captureRequest returns the request submitted to Enqueue, waiting up to 1s.
 func (s *stubEnqueuer) captureRequest(t *testing.T) queue.Request {
 	t.Helper()
@@ -237,6 +288,79 @@ func TestChatCompletions_StreamingHappyPath(t *testing.T) {
 	}
 }
 
+func TestChatCompletions_SavesAndEndsAPISessionOnCompletion(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer([]inference.Token{
+		{Content: "hello"},
+		{Content: " world"},
+		{Done: true},
+	})
+	rec := &stubSessionRecorder{}
+	srv := NewServer(0, asm, enq, rec)
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	body := bytes.NewBufferString("{\"stream\":true,\"agent\":\"coder\",\"messages\":[{\"role\":\"system\",\"content\":\"sys\"},{\"role\":\"user\",\"content\":\"hi\"}]}")
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	starts, appends, saves, ends := rec.snapshot()
+	if len(starts) != 1 || starts[0].ID != "sess-1" || starts[0].Agent != "coder" {
+		t.Fatalf("starts = %+v, want sess-1/coder", starts)
+	}
+	if len(appends) != 3 {
+		t.Fatalf("appends = %+v, want system/user/assistant", appends)
+	}
+	if appends[0].Role != "system" || appends[1].Role != "user" || appends[2].Role != "assistant" {
+		t.Fatalf("append roles = %+v", appends)
+	}
+	if appends[2].Content != "hello world" {
+		t.Fatalf("assistant append = %q, want hello world", appends[2].Content)
+	}
+	if len(saves) != 1 || saves[0] != "sess-1" {
+		t.Fatalf("saves = %+v, want [sess-1]", saves)
+	}
+	if len(ends) != 1 || ends[0] != "sess-1" {
+		t.Fatalf("ends = %+v, want [sess-1]", ends)
+	}
+}
+
+func TestChatCompletions_EndsAPISessionOnTokenErrorWithoutSave(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer([]inference.Token{
+		{Content: "partial"},
+		{Err: errors.New("boom")},
+	})
+	rec := &stubSessionRecorder{}
+	srv := NewServer(0, asm, enq, rec)
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	body := bytes.NewBufferString("{\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	_, appends, saves, ends := rec.snapshot()
+	if len(saves) != 0 {
+		t.Fatalf("saves = %+v, want none on token error", saves)
+	}
+	if len(ends) != 1 || ends[0] != "sess-1" {
+		t.Fatalf("ends = %+v, want [sess-1]", ends)
+	}
+	for _, append := range appends {
+		if append.Role == "assistant" {
+			t.Fatalf("assistant append on token error: %+v", appends)
+		}
+	}
+}
 func TestChatCompletions_QueueFull(t *testing.T) {
 	asm := &stubAssembler{}
 	enq := newStubEnqueuer(nil)
