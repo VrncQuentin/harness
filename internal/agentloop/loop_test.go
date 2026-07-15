@@ -3,6 +3,7 @@ package agentloop
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +107,29 @@ func TestEngineCachesToolSchemasAcrossTurns(t *testing.T) {
 	}
 	if tool.schemaCalls != 1 {
 		t.Fatalf("Schema() calls after multi-turn run = %d, want cached 1", tool.schemaCalls)
+	}
+}
+
+func TestRunRejectsOutOfRangeToolCallIndex(t *testing.T) {
+	engine := newTestEngine(t, config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileReadEnabled: true})
+	engine.infer = &mockInferClient{tokens: []inference.Token{
+		{ToolCallDelta: &inference.ToolCallDelta{Index: 1_000_000, ID: "call_bad", Name: "file_read"}},
+		{Done: true},
+	}}
+
+	evch := make(chan Event, 4)
+	err := engine.Run(context.Background(), []inference.Message{{Role: "user", Content: "read"}}, evch)
+	if err == nil || !strings.Contains(err.Error(), "outside allowed range") {
+		t.Fatalf("Run error = %v, want range error", err)
+	}
+	var gotErrorEvent bool
+	for ev := range evch {
+		if ev.Type == EvtError && strings.Contains(ev.Content, "outside allowed range") {
+			gotErrorEvent = true
+		}
+	}
+	if !gotErrorEvent {
+		t.Fatal("expected error event for out-of-range tool call index")
 	}
 }
 
