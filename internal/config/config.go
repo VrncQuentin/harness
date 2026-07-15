@@ -145,7 +145,8 @@ type PromptConfig struct {
 // QueueConfig holds queue configuration.
 type QueueConfig struct {
 	MaxDepth int
-	WALPath  string
+	// WALPath is a legacy no-op column kept for config schema compatibility.
+	WALPath string
 }
 
 // MetricsConfig holds metrics retention configuration. The database file

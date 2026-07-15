@@ -15,7 +15,7 @@ M10 also depends on these earlier foundations:
 - M4 native agent loop: part-based messages, cancellation, tool-call dispatch, loop limits, and UI-visible run events.
 - M5 semantic memory: project-scoped indexes and episode retrieval for long-running pipeline steps.
 - M7 permissions: destructive tools, shell execution, approvals, sandbox roots, audit trail, and tool toggles.
-- M8 hardening: full test suite, graceful shutdown, WAL recovery, observability, and reliable packaging.
+- M8 hardening: full test suite, graceful shutdown, observability, and reliable packaging.
 - M9 layout-v2: one project memory repo per project, global project repo fallback, and attached source repo semantics.
 
 ## Non-Goals
