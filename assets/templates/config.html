@@ -208,10 +208,7 @@
         <label for="queue_max_depth">Max depth</label>
         <input type="number" id="queue_max_depth" name="queue_max_depth" value="{{.Config.Queue.MaxDepth}}" min="1">
       </div>
-      <div class="fg">
-        <label for="queue_wal_path">WAL path</label>
-        <input type="text" id="queue_wal_path" name="queue_wal_path" value="{{.Config.Queue.WALPath}}" placeholder="queue.wal">
-      </div>
+
     </div>
   </fieldset>
 
@@ -304,6 +301,6 @@
     <button type="submit" class="btn btn-primary">Save config</button>
     <a href="/" class="btn btn-ghost">Cancel</a>
   </div>
-  <p class="cfg-note">Required fields are marked <span class="req">*</span>. Model, embedder, and log buffer changes are applied live. UI port, queue depth, and queue WAL path still require a harness restart.</p>
+  <p class="cfg-note">Required fields are marked <span class="req">*</span>. Model, embedder, and log buffer changes are applied live. UI port and queue depth still require a harness restart.</p>
 </form>
 {{end}}

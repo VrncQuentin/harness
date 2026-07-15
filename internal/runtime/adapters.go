@@ -554,8 +554,8 @@ type taskRunnerAdapter struct {
 }
 
 // queuedInferClient wraps a Queue so the agent loop routes through the
-// bounded channel with backpressure + WAL instead of calling the
-// llama-server inference client directly.
+// bounded in-process channel instead of calling the llama-server inference
+// client directly.
 type queuedInferClient struct {
 	q   *queue.Queue
 	raw inference.Client // fallback for Health()
@@ -640,7 +640,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		return "", nil, fmt.Errorf("inference client not ready")
 	}
 
-	// When a Queue is wired, route through it for backpressure + WAL.
+	// When a Queue is wired, route through it for bounded backpressure.
 	// Otherwise fall back to direct inference (useful for testing).
 	var loopClient inference.Client
 	if ad.q != nil {

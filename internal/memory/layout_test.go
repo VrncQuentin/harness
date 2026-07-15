@@ -37,7 +37,7 @@ func TestProjectLayout_ValidUserProject(t *testing.T) {
 	}
 
 	if gotPaths["projects/my-project/queue.wal"] {
-		t.Error("ProjectLayout must not include queue.wal")
+		t.Error("ProjectLayout must not include legacy queue.wal")
 	}
 }
 
@@ -80,7 +80,7 @@ func TestExpectedLayout_StableContent(t *testing.T) {
 	got := ExpectedLayout()
 	// Mirror the canonical layout from docs/architecture.md so a future
 	// edit there forces a deliberate update here too. Project-scoped
-	// runtime artifacts (sessions.jsonl, queue.wal, vectors.bin,
+	// runtime artifacts (sessions.jsonl, vectors.bin,
 	// manifest.json) are intentionally absent: they are owned by other
 	// subsystems and live under projects/global/.
 	want := []LayoutItem{

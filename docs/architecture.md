@@ -94,7 +94,7 @@ Behavior:
 - **On start:** check if another instance is already running (via Windows mutex on Windows, file lock on Linux); if so, do nothing and exit
 - **If first instance:** start all services, open browser to UI if not already open, show tray icon
 - **Tray icon menu:** Open UI, Quit
-- **On Quit:** graceful shutdown — drain queue, flush WAL, terminate child processes, release lock
+- **On Quit:** graceful shutdown — drain queue, terminate child processes, release lock
 
 ### Session Manager (`internal/session`)
 Owns conversation lifecycle for the browser chat/task surface, the optional OpenAI-compatible API server, and the native agent loop.
@@ -249,7 +249,7 @@ ANN index: flat scan for small corpora (<10k chunks). Upgrade to usearch or hnsw
 Single-model request queue. Simple bounded channel in Go.
 
 - **Backpressure:** reject with clear error when full, UI shows live queue depth
-- **WAL:** append-only file (`queue.wal` in the active project memory repo, defaulting to `~/.harness/projects/global/queue.wal` after layout-v2) for crash recovery — cleared on clean shutdown
+- **Crash behavior:** queued interactive requests are in-process only and are not replayed after a crash; durable session and memory recording is owned by `internal/session` and git commits
 - **Cancellation:** supports context cancellation per request (client disconnect cancels generation)
 
 ### Inference Client (`internal/inference`)
@@ -331,7 +331,6 @@ Threads a per-request identifier through `context.Context` so API handlers, queu
       facts.md                 ← promoted cross-agent facts, kept lean
       agents/<n>/{persona.md, rules.md, notes.md}
       sessions.jsonl
-      queue.wal
       episodes/<n>/<timestamp>.md
       index/_episodes/{vectors.bin, manifest.json}
       artifacts/<run>/...
@@ -339,7 +338,6 @@ Threads a per-request identifier through `context.Context` so API handlers, queu
       rules.md                 ← project-specific rules
       agents/<n>/{persona.md, rules.md, notes.md}   ← optional project agent overrides/additions
       sessions.jsonl
-      queue.wal
       episodes/<n>/<timestamp>.md
       index/_episodes/{vectors.bin, manifest.json}
       index/<dir-slug>/{vectors.bin, manifest.json}
@@ -370,7 +368,7 @@ Sections and fields:
 - **api:** `enabled`, `port`
 - **project:** `active_project_slug`, `llama_on_switch`
 - **prompt:** `ctx_size`, `memory_token_budget`, `conversation_reserve`, `recency_n`, `summarizer_prompt`, `semantic_weight`, `recency_weight`, `promotion_dedup_threshold`
-- **queue:** `max_depth`, `wal_path`
+- **queue:** `max_depth` (`wal_path` remains a legacy no-op config column)
 - **metrics:** `retention_days`
 - **log:** `ring_max_entries`, `proc_max_lines`
 - **loop:** `max_turns`, `doom_threshold`, `file_read_enabled`, `file_list_enabled`, `file_write_enabled`, `shell_exec_enabled`, `web_search_enabled`

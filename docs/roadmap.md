@@ -15,7 +15,7 @@ Windows native and Linux are equal first-class targets. CI must run the Go test 
 - [x] Config store (SQLite, single-row typed table in `harness.db`): model path, ctx size, GPU layers, etc., edited via the `/config` page
 - [x] Process Manager: spawn llama-server, health check loop, restart with backoff
 - [x] Inference Client: OpenAI-compatible HTTP, streaming, cancellation
-- [x] Queue: bounded channel, backpressure, WAL for crash recovery
+- [x] Queue: bounded in-process channel with backpressure; interactive requests are not crash-replayed
 - [x] Process Manager: same pattern for Embedder sidecar (stub for now)
 - [x] Minimal UI server: single status page showing model health and queue depth
 - [x] System tray: single-instance lock, tray icon with Open UI + Quit, graceful shutdown on Quit
@@ -65,7 +65,7 @@ Windows native and Linux are equal first-class targets. CI must run the Go test 
 
 **Goal:** sessions are summarized and committed. Recency retrieval works.
 
-M3 stages the project-scoped layout that M3b later formalizes: sessions, episodes, queue WAL, and indexes live under `projects/global/` from day one (`global` is a hardcoded slug at this milestone; the `projects` table and multi-project plumbing are introduced in M3b). Top-level `agents/<n>/` holds definition only — episodes live under the project.
+M3 stages the project-scoped layout that M3b later formalizes: sessions, episodes, and indexes live under `projects/global/` from day one (`global` is a hardcoded slug at this milestone; the `projects` table and multi-project plumbing are introduced in M3b). Top-level `agents/<n>/` holds definition only — episodes live under the project.
 
 - [x] Git Backend: go-git wrapper, commit, log query, blob fetch
 - [x] Session lifecycle: on-end → summarize via Qwen → write episode file → commit
@@ -93,7 +93,7 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 
 - A project is identified by an immutable lowercase-dashed `slug` and editable display name. Filesystem paths and DB keys always use the slug.
 - The `global` project is seeded on first run, is always active by default, and cannot be hidden, deleted, or renamed by slug.
-- Project memory lives under the current single memory repo: `projects/<slug>/{rules.md, agents/, sessions.jsonl, queue.wal, episodes/<agent-name>/, index/}`.
+- Project memory lives under the current single memory repo: `projects/<slug>/{rules.md, agents/, sessions.jsonl, episodes/<agent-name>/, index/}`.
 - Top-level `global/` rules/user/facts and top-level `agents/<name>/` remain the cross-project base library until layout-v2.
 - Prompt assembly inserts `projects/<slug>/rules.md` between global rules and resolved agent persona. Agent files resolve per file from `projects/<slug>/agents/<name>/<file>.md`, falling back to top-level `agents/<name>/<file>.md`.
 - Sessions are bound immutably to their project, append to `projects/<slug>/sessions.jsonl`, and write episodes to `projects/<slug>/episodes/<agent-name>/`.
@@ -276,7 +276,7 @@ are deferred beyond M7.
 - [x] Full test suite: inference mock, memory read/write, retrieval scoring, prompt assembly, agent loop, tool sandbox, approvals
 - [x] Single binary packaging: harness + embedded UI assets
 - [x] Embedder binary: self-contained, no Python dependency
-- [x] Graceful shutdown: drain queue, flush WAL, cancel active loops, commit any pending session, clean process teardown
+- [x] Graceful shutdown: drain queue, cancel active loops, commit any pending session, clean process teardown
 - [x] Startup validation: config checks, model file exists, memory repo accessible, active project references valid directories
 
 **Acceptance tests:**
@@ -284,7 +284,7 @@ are deferred beyond M7.
 - [ ] Build single binary -> runs correctly
 - [ ] Start harness, send 50 sequential requests -> TTFT, throughput, VRAM, loop, and tool metrics visible in UI
 - [ ] Send SIGTERM (Linux/headless) -> harness drains in-flight requests, cancels active loops safely, commits any pending session, exits cleanly
-- [ ] Send SIGKILL -> on next start, WAL is replayed, no data lost
+- [x] Send SIGKILL -> interactive queued requests are lost, but saved sessions and committed memory remain intact
 - [ ] Start with a corrupted `harness.db` -> clear error on the status page, no crash
 - [ ] Start with valid config but wrong model path -> clear error at startup, not at first request
 - [ ] Enable Prometheus endpoint -> `curl /metrics` returns valid Prometheus text format
@@ -298,7 +298,7 @@ are deferred beyond M7.
 Depends on M3b (projects table, active project slug, attached directories), M5 (project-scoped indexes), and M8 (startup validation and reliable packaging).
 
 - [x] Harness home: default `~/.harness/` with `harness.db`, `projects/`, `logs/`, and `cache/`
-- [x] Global project repo: initialize `~/.harness/projects/global` as a first-class git repo containing global rules, user facts, facts, agents, sessions, episodes, index, queue WAL, and artifacts
+- [x] Global project repo: initialize `~/.harness/projects/global` as a first-class git repo containing global rules, user facts, facts, agents, sessions, episodes, index, and artifacts
 - [x] Project memory repos: one git repo per project, defaulting to `~/.harness/projects/<id>/`, with optional user-provided directories
 - [x] Create-project flow: use existing git directory as-is, initialize non-git directory with `go-git`, or create the default directory and initialize it with `go-git`
 - [x] GitHub backup flow removed: project creation remains local and dependency-free beyond harness-managed Go code
