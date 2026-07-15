@@ -28,6 +28,7 @@ type LayoutV2Reader struct {
 
 var (
 	_ Reader     = (*LayoutV2Reader)(nil)
+	_ Repo       = (*LayoutV2Reader)(nil)
 	_ DirLister  = (*LayoutV2Reader)(nil)
 	_ DirCreator = (*LayoutV2Reader)(nil)
 	_ FileWriter = (*LayoutV2Reader)(nil)
