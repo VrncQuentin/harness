@@ -389,6 +389,91 @@ func TestMetricsStore_RecordAndQuery(t *testing.T) {
 	}
 }
 
+func TestMetricsStore_ApplyRetentionDownsamplesAndPrunes(t *testing.T) {
+	d := newTestDB(t)
+	store := d.Metrics()
+
+	now := time.Now()
+	oldHour := now.Add(-31 * 24 * time.Hour).Truncate(time.Hour)
+	recent := now.Add(-time.Hour)
+	_, err := d.sqldb.Exec(
+		`INSERT INTO metrics(name, value, tags, ts) VALUES
+			(?, ?, ?, ?),
+			(?, ?, ?, ?),
+			(?, ?, ?, ?)`,
+		"queue_depth", 10.0, "", oldHour.Add(5*time.Minute).Unix(),
+		"queue_depth", 20.0, "", oldHour.Add(20*time.Minute).Unix(),
+		"queue_depth", 5.0, "", recent.Unix(),
+	)
+	if err != nil {
+		t.Fatalf("insert metrics: %v", err)
+	}
+
+	if err := store.ApplyRetention(30); err != nil {
+		t.Fatalf("ApplyRetention: %v", err)
+	}
+
+	var rawOld int
+	if err := d.sqldb.QueryRow(`SELECT COUNT(*) FROM metrics WHERE ts < ?`, now.Add(-30*24*time.Hour).Unix()).Scan(&rawOld); err != nil {
+		t.Fatalf("count old raw: %v", err)
+	}
+	if rawOld != 0 {
+		t.Fatalf("old raw metric rows = %d, want 0", rawOld)
+	}
+
+	var count int
+	var minValue, maxValue, avgValue, lastValue float64
+	if err := d.sqldb.QueryRow(
+		`SELECT count, min_value, max_value, avg_value, last_value FROM metrics_hourly WHERE name = ? AND hour_ts = ?`,
+		"queue_depth", oldHour.Unix(),
+	).Scan(&count, &minValue, &maxValue, &avgValue, &lastValue); err != nil {
+		t.Fatalf("query hourly aggregate: %v", err)
+	}
+	if count != 2 || minValue != 10 || maxValue != 20 || avgValue != 15 || lastValue != 20 {
+		t.Fatalf("hourly aggregate = count %d min %v max %v avg %v last %v", count, minValue, maxValue, avgValue, lastValue)
+	}
+
+	pts, err := store.Query("queue_depth", oldHour.Add(-time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(pts) != 2 {
+		t.Fatalf("points = %d, want hourly + recent raw", len(pts))
+	}
+	if pts[0].Time.Unix() != oldHour.Unix() || pts[0].Value != 15 {
+		t.Fatalf("old point = %+v, want hourly average at %v", pts[0], oldHour)
+	}
+	if pts[1].Value != 5 {
+		t.Fatalf("recent raw value = %v, want 5", pts[1].Value)
+	}
+}
+
+func TestMetricsStore_LatestUsesHourlyWhenRawWasPruned(t *testing.T) {
+	d := newTestDB(t)
+	store := d.Metrics()
+
+	oldHour := time.Now().Add(-31 * 24 * time.Hour).Truncate(time.Hour)
+	if _, err := d.sqldb.Exec(
+		`INSERT INTO metrics(name, value, tags, ts) VALUES (?, ?, ?, ?)`,
+		"episode_count", 7.0, "", oldHour.Add(10*time.Minute).Unix(),
+	); err != nil {
+		t.Fatalf("insert metric: %v", err)
+	}
+	if err := store.ApplyRetention(30); err != nil {
+		t.Fatalf("ApplyRetention: %v", err)
+	}
+
+	pts, err := store.Latest()
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if len(pts) != 1 {
+		t.Fatalf("latest points = %d, want 1", len(pts))
+	}
+	if pts[0].Name != "episode_count" || pts[0].Value != 7 || pts[0].Time.Unix() != oldHour.Unix() {
+		t.Fatalf("latest point = %+v", pts[0])
+	}
+}
 func TestMetricsStore_QueryEmpty(t *testing.T) {
 	d := newTestDB(t)
 	pts, err := d.Metrics().Query("nonexistent", time.Now().Add(-time.Hour), time.Now())
