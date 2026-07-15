@@ -80,12 +80,12 @@ func TestBroadcastTaskSSEReliableFramesWaitForSubscriber(t *testing.T) {
 	s := NewServer(3000)
 	ch := make(chan string, 1)
 	ch <- "existing"
-	s.taskSSEClients.Store(ch, struct{}{})
+	s.taskSSEClients.Store(ch, "task-a")
 	defer s.taskSSEClients.Delete(ch)
 
 	done := make(chan struct{})
 	go func() {
-		s.broadcastTaskSSE("event: task-event\ndata: final\n\n", true)
+		s.broadcastTaskSSE("task-a", "event: task-event\ndata: final\n\n", true)
 		close(done)
 	}()
 
@@ -119,10 +119,10 @@ func TestBroadcastTaskSSEDropsTextFramesForSlowSubscriber(t *testing.T) {
 	s := NewServer(3000)
 	ch := make(chan string, 1)
 	ch <- "existing"
-	s.taskSSEClients.Store(ch, struct{}{})
+	s.taskSSEClients.Store(ch, "task-a")
 	defer s.taskSSEClients.Delete(ch)
 
-	s.broadcastTaskSSE("event: task-text\ndata: token\n\n", false)
+	s.broadcastTaskSSE("task-a", "event: task-text\ndata: token\n\n", false)
 
 	select {
 	case got := <-ch:
@@ -135,6 +135,31 @@ func TestBroadcastTaskSSEDropsTextFramesForSlowSubscriber(t *testing.T) {
 	select {
 	case got := <-ch:
 		t.Fatalf("text frame should have been dropped, got %q", got)
+	default:
+	}
+}
+func TestBroadcastTaskSSERoutesByStreamID(t *testing.T) {
+	s := NewServer(3000)
+	wantCh := make(chan string, 1)
+	otherCh := make(chan string, 1)
+	s.taskSSEClients.Store(wantCh, "task-a")
+	s.taskSSEClients.Store(otherCh, "task-b")
+	defer s.taskSSEClients.Delete(wantCh)
+	defer s.taskSSEClients.Delete(otherCh)
+
+	s.broadcastTaskSSE("task-a", "event: task-event\ndata: final\n\n", true)
+
+	select {
+	case got := <-wantCh:
+		if !strings.Contains(got, "final") {
+			t.Fatalf("routed frame = %q, want final", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for routed task frame")
+	}
+	select {
+	case got := <-otherCh:
+		t.Fatalf("other stream received frame %q", got)
 	default:
 	}
 }

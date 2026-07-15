@@ -89,9 +89,9 @@ type Server struct {
 	// sseClients maps chan string → struct{} for active SSE subscribers.
 	sseClients sync.Map
 
-	// chatSSEClients maps chan string → struct{} for chat token subscribers.
+	// chatSSEClients maps chan string → stream id for chat token subscribers.
 	chatSSEClients sync.Map
-	// taskSSEClients maps chan string → struct{} for task event subscribers.
+	// taskSSEClients maps chan string → stream id for task event subscribers.
 	taskSSEClients sync.Map
 
 	serverCtxMu sync.RWMutex
