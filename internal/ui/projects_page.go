@@ -564,16 +564,16 @@ func slugFromName(name string) string {
 	s := strings.ToLower(name)
 	s = strings.ReplaceAll(s, " ", "-")
 	cleaned := strings.Builder{}
-	invariant := false
+	lastWasAlnum := false
 	for _, r := range s {
 		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
 			if r == '-' {
-				if !invariant || cleaned.Len() == 0 {
+				if !lastWasAlnum || cleaned.Len() == 0 {
 					continue
 				}
-				invariant = false
+				lastWasAlnum = false
 			} else {
-				invariant = true
+				lastWasAlnum = true
 			}
 			cleaned.WriteRune(r)
 		}
