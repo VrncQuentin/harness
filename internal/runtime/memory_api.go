@@ -176,7 +176,10 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 	// Wire the M4 task runner (loop engine) with assembler + queue.
 	registry := tools.NewRegistry()
-	tools.RegisterBuiltins(registry)
+	if err := tools.RegisterBuiltins(registry); err != nil {
+		uiServer.AddStartupError(fmt.Errorf("task tools: %w", err))
+		return
+	}
 	rt.loopRegistry = registry
 
 	// Build the M7 permission evaluator with layered rules:
@@ -291,7 +294,7 @@ func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.
 	)
 
 	sessionStore := memory.NewDirReader(repoPath)
-	mgr := session.NewManager(session.ManagerDeps{
+	mgr, err := session.NewManager(session.ManagerDeps{
 		Repo:               repo,
 		Writer:             sessionStore,
 		Reader:             sessionStore,
@@ -301,6 +304,10 @@ func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.
 		ResolveAbsRepoPath: repoPath,
 		AfterSave:          rt.afterSaveEmbed(embedClient, repoPath),
 	}, rt.cfg.Project.ActiveProjectSlug)
+	if err != nil {
+		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
+		return nil, nil
+	}
 	adapter := &uiSessionStoreAdapter{mgr: mgr, getActive: rt.getActiveAgent}
 	return mgr, adapter
 }

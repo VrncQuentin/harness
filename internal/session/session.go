@@ -178,20 +178,19 @@ func episodeSidecarPath(agent, id string) string {
 
 // NewManager constructs a Manager from deps. The caller is expected to
 // have already validated the memory repo (memory.ValidateRepo) so the
-// FileWriter/Reader/Committer/Inference references are non-nil; passing
-// nil here is a programming error and panics.
-func NewManager(deps ManagerDeps, projectSlug string) *Manager {
+// FileWriter/Reader/Committer/Inference references are non-nil.
+func NewManager(deps ManagerDeps, projectSlug string) (*Manager, error) {
 	if deps.Repo == nil {
-		panic("session: ManagerDeps.Repo is required")
+		return nil, errors.New("session: ManagerDeps.Repo is required")
 	}
 	if deps.Writer == nil {
-		panic("session: ManagerDeps.Writer is required")
+		return nil, errors.New("session: ManagerDeps.Writer is required")
 	}
 	if deps.Reader == nil {
-		panic("session: ManagerDeps.Reader is required")
+		return nil, errors.New("session: ManagerDeps.Reader is required")
 	}
 	if deps.Inference == nil {
-		panic("session: ManagerDeps.Inference is required")
+		return nil, errors.New("session: ManagerDeps.Inference is required")
 	}
 	if deps.SummarizerPrompt == nil {
 		deps.SummarizerPrompt = func() string { return "" }
@@ -211,7 +210,7 @@ func NewManager(deps ManagerDeps, projectSlug string) *Manager {
 		deps:        deps,
 		summarizer:  NewSummarizer(deps.Inference, deps.SummarizerPrompt, deps.SummarizerTimeout),
 		projectSlug: projectSlug,
-	}
+	}, nil
 }
 
 // Start mints a new session bound to agent and registers it as live.

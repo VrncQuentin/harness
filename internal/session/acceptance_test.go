@@ -65,7 +65,7 @@ func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 	t.Helper()
 	root, repo := scaffoldMemoryRepo(t, "coder")
 	reader := memory.NewDirReader(root)
-	mgr := NewManager(ManagerDeps{
+	mgr, err := NewManager(ManagerDeps{
 		Repo:               repo,
 		Writer:             reader,
 		Reader:             reader,
@@ -73,6 +73,9 @@ func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 		SummarizerPrompt:   func() string { return "test" },
 		ResolveAbsRepoPath: root,
 	}, project.GlobalSlug)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
 	return mgr, root
 }
 
