@@ -55,15 +55,11 @@ type AgentRegistry interface {
 // leave unset; the page then renders a "memory repo not configured" card
 // instead of a registry error.
 func (s *Server) SetAgentRegistry(reg AgentRegistry) {
-	s.agentRegMu.Lock()
-	s.agentReg = reg
-	s.agentRegMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.agentReg = reg })
 }
 
 func (s *Server) agentRegistry() AgentRegistry {
-	s.agentRegMu.RLock()
-	defer s.agentRegMu.RUnlock()
-	return s.agentReg
+	return s.depsSnapshot().agentReg
 }
 
 // agentsView is the template context for the /agents page.

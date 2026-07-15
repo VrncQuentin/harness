@@ -40,22 +40,23 @@ import (
 func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store) {
 	roots, err := rt.resolveProjectRepoRootsForSlug(rt.cfg.Project.ActiveProjectSlug)
 	if err != nil {
-		uiServer.SetAgentRegistry(nil)
-		uiServer.SetMemoryStore(nil)
-		uiServer.SetSessionStore(nil)
+		uiServer.SetServiceDeps(ui.ServiceDeps{})
 		uiServer.AddStartupError(fmt.Errorf("project memory repos: %w", err))
 		if rt.cfg.API.Enabled {
 			uiServer.AddStartupError(errors.New("api server disabled: project memory repos are not valid"))
 		}
 		return
 	}
-	uiServer.SetMemoryRepoPath(roots.activeRoot)
+
+	svcDeps := ui.ServiceDeps{MemoryRepoPath: roots.activeRoot}
 	if err := memory.ValidateProjectRepo(roots.globalRoot, true); err != nil {
+		uiServer.SetServiceDeps(svcDeps)
 		uiServer.AddStartupError(fmt.Errorf("global memory repo: %w", err))
 		return
 	}
 	if roots.activeSlug != project.GlobalSlug {
 		if err := memory.ValidateProjectRepo(roots.activeRoot, false); err != nil {
+			uiServer.SetServiceDeps(svcDeps)
 			uiServer.AddStartupError(fmt.Errorf("active memory repo: %w", err))
 			return
 		}
@@ -75,19 +76,16 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	} else {
 		rt.assembler = rt.assembler.WithBlendedRetrieval(epIdx, embedClient)
 	}
-	uiServer.SetRetrievalScorer(&indexScorer{
+	svcDeps.RetrievalScorer = &indexScorer{
 		indexDir: indexDir,
 		emb:      embedClient,
 		cfg:      rt.cfg.Prompt,
 		idx:      epIdx,
-	})
-	if memStore, ok := rt.memReader.(ui.MemoryStore); ok {
-		uiServer.SetMemoryStore(memStore)
-	} else {
-		uiServer.SetMemoryStore(nil)
 	}
-
-	uiServer.SetAgentRegistry(&uiAgentRegistryAdapter{reg: rt.agentReg, mem: rt.memReader, getProjectSlug: rt.getActiveProjectSlug})
+	if memStore, ok := rt.memReader.(ui.MemoryStore); ok {
+		svcDeps.MemoryStore = memStore
+	}
+	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: rt.agentReg, mem: rt.memReader, getProjectSlug: rt.getActiveProjectSlug}
 
 	// Session manager is layered on top of the validated memory repo.
 	// A failure to open the git repo surfaces as a startup error and
@@ -96,28 +94,26 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient)
 	rt.setSessionManager(sessionMgr)
 	if sessionAdapter != nil {
-		uiServer.SetSessionStore(sessionAdapter)
-	} else {
-		uiServer.SetSessionStore(nil)
+		svcDeps.SessionStore = sessionAdapter
 	}
 
 	// Wire committer for M6 memory promotion.
 	if rt.gitRepo != nil {
 		if lv2, ok := rt.memReader.(*memory.LayoutV2Reader); ok {
-			uiServer.SetCommitter(&memory.LayoutV2Committer{Reader: lv2, Global: rt.globalGitRepo, Active: rt.gitRepo})
+			svcDeps.Committer = &memory.LayoutV2Committer{Reader: lv2, Global: rt.globalGitRepo, Active: rt.gitRepo}
 		} else {
-			uiServer.SetCommitter(rt.gitRepo)
+			svcDeps.Committer = rt.gitRepo
 		}
 	}
 	// Wire dedup checker for M6 fact deduplication.
-	uiServer.SetDedupChecker(&dedupChecker{
+	svcDeps.Dedup = &dedupChecker{
 		mem: rt.memReader,
 		emb: embedClient,
-	})
-	uiServer.SetPromotionDedupThreshold(rt.cfg.Prompt.PromotionDedupThreshold)
+	}
+	svcDeps.PromotionDedupThreshold = rt.cfg.Prompt.PromotionDedupThreshold
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
-	uiServer.SetIndexRebuilder(&indexRebuilder{
+	svcDeps.IndexRebuilder = &indexRebuilder{
 		mem:      rt.memReader,
 		emb:      embedClient,
 		idx:      epIdx,
@@ -132,15 +128,13 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			}
 			rt.mu.Unlock()
 		},
-	})
+	}
 	if rt.reqQueue != nil {
-		uiServer.SetChatRunner(&chatRunnerAdapter{
+		svcDeps.ChatRunner = &chatRunnerAdapter{
 			asm: asmAdapter,
 			q:   rt.reqQueue,
 			mgr: sessionMgr,
-		})
-	} else {
-		uiServer.SetChatRunner(nil)
+		}
 	}
 
 	if rt.cfg.API.Enabled && rt.reqQueue != nil {
@@ -160,6 +154,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	// Wire the M4 task runner (loop engine) with assembler + queue.
 	registry := tools.NewRegistry()
 	if err := tools.RegisterBuiltins(registry); err != nil {
+		uiServer.SetServiceDeps(svcDeps)
 		uiServer.AddStartupError(fmt.Errorf("task tools: %w", err))
 		return
 	}
@@ -199,7 +194,8 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		metrics:        loopMetrics,
 	}
 	rt.taskRunner = taskAdapter
-	uiServer.SetTaskRunner(taskAdapter)
+	svcDeps.TaskRunner = taskAdapter
+	uiServer.SetServiceDeps(svcDeps)
 }
 
 type projectRepoRoots struct {
@@ -403,14 +399,8 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	rt.gitRepo = nil
 	rt.globalGitRepo = nil
 	rt.setSessionManager(nil)
-	uiServer.SetAgentRegistry(nil)
-	uiServer.SetMemoryStore(nil)
-	uiServer.SetChatRunner(nil)
-	uiServer.SetSessionStore(nil)
-	uiServer.SetTaskRunner(nil)
+	uiServer.SetServiceDeps(ui.ServiceDeps{})
 	rt.taskRunner = nil
-	uiServer.SetRetrievalScorer(nil)
-	uiServer.SetIndexRebuilder(nil)
 	rt.loopRegistry = nil
 }
 

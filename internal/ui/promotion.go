@@ -23,39 +23,27 @@ type DedupChecker interface {
 }
 
 func (s *Server) SetCommitter(c Committer) {
-	s.committerMu.Lock()
-	s.committerData = c
-	s.committerMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.committer = c })
 }
 
 func (s *Server) getCommitter() Committer {
-	s.committerMu.RLock()
-	defer s.committerMu.RUnlock()
-	return s.committerData
+	return s.depsSnapshot().committer
 }
 
 func (s *Server) SetDedupChecker(dc DedupChecker) {
-	s.dedupMu.Lock()
-	s.dedupData = dc
-	s.dedupMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.dedup = dc })
 }
 
 func (s *Server) getDedupChecker() DedupChecker {
-	s.dedupMu.RLock()
-	defer s.dedupMu.RUnlock()
-	return s.dedupData
+	return s.depsSnapshot().dedup
 }
 
 func (s *Server) SetPromotionDedupThreshold(t float64) {
-	s.promotionDedupThresholdMu.Lock()
-	s.promotionDedupThreshold = t
-	s.promotionDedupThresholdMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.promotionDedupThreshold = t })
 }
 
 func (s *Server) getPromotionDedupThreshold() float64 {
-	s.promotionDedupThresholdMu.RLock()
-	defer s.promotionDedupThresholdMu.RUnlock()
-	return s.promotionDedupThreshold
+	return s.depsSnapshot().promotionDedupThreshold
 }
 
 // handlePromoteFact appends text to global/facts.md and commits it.

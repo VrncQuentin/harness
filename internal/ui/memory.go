@@ -98,43 +98,31 @@ func editableDesc(p string) (string, bool) {
 // detach (e.g. when the active memory repo becomes unavailable); the page
 // then renders the not-configured CTA instead of a blank tree.
 func (s *Server) SetMemoryStore(store MemoryStore) {
-	s.memStoreMu.Lock()
-	s.memStore = store
-	s.memStoreMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.memStore = store })
 }
 
 func (s *Server) memoryStore() MemoryStore {
-	s.memStoreMu.RLock()
-	defer s.memStoreMu.RUnlock()
-	return s.memStore
+	return s.depsSnapshot().memStore
 }
 
 // SetRetrievalScorer wires the scorer used by the memory episode view.
 // Pass nil to detach; the page then hides the score column.
 func (s *Server) SetRetrievalScorer(scorer RetrievalScorer) {
-	s.scorerMu.Lock()
-	s.scorerData = scorer
-	s.scorerMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.scorer = scorer })
 }
 
 func (s *Server) retrievalScorer() RetrievalScorer {
-	s.scorerMu.RLock()
-	defer s.scorerMu.RUnlock()
-	return s.scorerData
+	return s.depsSnapshot().scorer
 }
 
 // SetIndexRebuilder wires the index rebuild handler. Pass nil to
 // detach; the memory page hides the rebuild button.
 func (s *Server) SetIndexRebuilder(rb IndexRebuilder) {
-	s.rebuilderMu.Lock()
-	s.rebuilderData = rb
-	s.rebuilderMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.rebuilder = rb })
 }
 
 func (s *Server) indexRebuilder() IndexRebuilder {
-	s.rebuilderMu.RLock()
-	defer s.rebuilderMu.RUnlock()
-	return s.rebuilderData
+	return s.depsSnapshot().rebuilder
 }
 
 // memoryView is the template context for /memory.
