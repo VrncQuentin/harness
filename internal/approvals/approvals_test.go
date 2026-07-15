@@ -160,6 +160,7 @@ func TestClassifyShellCmd_Destructive(t *testing.T) {
 		"Get-ChildItem | Remove-Item -Recurse",
 		"Write-Host ok; Clear-Disk -Number 2",
 		"Get-Item . && SeT-ExEcUtIoNpOlIcY RemoteSigned",
+		"echo hi & del C:\\tmp\\old.txt",
 		"reg delete HKCU\\Software\\Test /f",
 		"format C:",
 		"rm file.txt",
