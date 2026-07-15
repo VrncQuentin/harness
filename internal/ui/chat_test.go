@@ -301,6 +301,38 @@ func TestHandleChatStream_StreamsTokens(t *testing.T) {
 	}
 }
 
+func TestHandleChatStream_EscapesMultilineTokens(t *testing.T) {
+	s := NewServer(3000)
+	runner := &stubChatRunner{
+		tokens: []ChatToken{
+			{Content: "hello\n<world>&"},
+			{Done: true},
+		},
+	}
+	s.SetChatRunner(runner)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/stream", strings.NewReader(
+		`{"messages":[{"role":"user","content":"hi"}]}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	s.handleChatStream(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		"data: hello\n",
+		"data: &lt;world&gt;&amp;\n",
+		"event: chat-done",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("stream missing escaped frame %q, full body:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "data: hello\n<world>") {
+		t.Errorf("stream contains raw multiline payload: %q", body)
+	}
+}
+
 // TestHandleChatStream_TokenErrorEmitsErrorFrame: a mid-stream error
 // from the runner should land as an SSE error frame, not crash.
 func TestHandleChatStream_TokenErrorEmitsErrorFrame(t *testing.T) {
@@ -471,6 +503,41 @@ func TestHandleChatSend_UsesRequestIndependentStreamContext(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("runner was not called")
+	}
+}
+
+func TestStreamChatTokens_EscapesBroadcastTokenFrames(t *testing.T) {
+	s := NewServer(3000)
+	runner := &stubChatRunner{
+		tokens: []ChatToken{
+			{Content: "first\n<second>&"},
+			{Done: true},
+		},
+	}
+
+	ch := make(chan string, 4)
+	s.chatSSEClients.Store(ch, struct{}{})
+	defer s.chatSSEClients.Delete(ch)
+
+	s.streamChatTokens(context.Background(), runner, "coder", "", []ChatMessage{{Role: "user", Content: "hi"}})
+
+	var tokenFrame string
+	select {
+	case tokenFrame = <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for chat token frame")
+	}
+	for _, want := range []string{
+		"event: chat-token\n",
+		"data: first\n",
+		"data: &lt;second&gt;&amp;\n",
+	} {
+		if !strings.Contains(tokenFrame, want) {
+			t.Errorf("token frame missing %q, frame:\n%s", want, tokenFrame)
+		}
+	}
+	if strings.Contains(tokenFrame, "\n<second>") {
+		t.Errorf("token frame contains raw multiline payload: %q", tokenFrame)
 	}
 }
 
