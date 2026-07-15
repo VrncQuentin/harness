@@ -77,38 +77,6 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Handle actions from query params before rendering list.
-	slug := r.URL.Query().Get("activate")
-	if slug != "" {
-		if err := s.activateProject(slug); err != nil {
-			data.Error = err.Error()
-		} else {
-			s.refreshProjectNav()
-			data.Flash = fmt.Sprintf("Activated project %q. The harness is reloading.", slug)
-		}
-	}
-	if slug := r.URL.Query().Get("hide"); slug != "" {
-		if err := store.SetHidden(slug, true); err != nil {
-			data.Error = fmt.Sprintf("hide: %v", err)
-		} else {
-			s.refreshProjectNav()
-			data.Flash = fmt.Sprintf("Project %q hidden.", slug)
-			// Redirect to avoid re-trigger on refresh.
-			http.Redirect(w, r, "/projects", http.StatusSeeOther)
-			return
-		}
-	}
-	if slug := r.URL.Query().Get("unhide"); slug != "" {
-		if err := store.SetHidden(slug, false); err != nil {
-			data.Error = fmt.Sprintf("unhide: %v", err)
-		} else {
-			s.refreshProjectNav()
-			data.Flash = fmt.Sprintf("Project %q unhidden.", slug)
-			http.Redirect(w, r, "/projects", http.StatusSeeOther)
-			return
-		}
-	}
-
 	// Respect ?flash/?error from redirect-after-action.
 	if f := r.URL.Query().Get("flash"); f != "" {
 		data.Flash = f
@@ -164,6 +132,78 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 	s.renderProjects(w, data)
 }
 
+func (s *Server) handleProjectActivate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOrigin(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/projects?error="+url.QueryEscape("parse form: "+err.Error()), http.StatusSeeOther)
+		return
+	}
+	slug := strings.TrimSpace(r.FormValue("slug"))
+	if slug == "" {
+		http.Redirect(w, r, "/projects?error="+url.QueryEscape("slug is required"), http.StatusSeeOther)
+		return
+	}
+	if err := s.activateProject(slug); err != nil {
+		http.Redirect(w, r, "/projects?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+		return
+	}
+	s.refreshProjectNav()
+	http.Redirect(w, r, "/projects?flash="+url.QueryEscape(fmt.Sprintf("Activated project %q. The harness is reloading.", slug)), http.StatusSeeOther)
+}
+
+func (s *Server) handleProjectHide(w http.ResponseWriter, r *http.Request) {
+	s.handleProjectHidden(w, r, true)
+}
+
+func (s *Server) handleProjectUnhide(w http.ResponseWriter, r *http.Request) {
+	s.handleProjectHidden(w, r, false)
+}
+
+func (s *Server) handleProjectHidden(w http.ResponseWriter, r *http.Request, hidden bool) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOrigin(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	store := s.getProjectStore()
+	if store == nil {
+		http.Error(w, "project store not available", http.StatusServiceUnavailable)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/projects?error="+url.QueryEscape("parse form: "+err.Error()), http.StatusSeeOther)
+		return
+	}
+	slug := strings.TrimSpace(r.FormValue("slug"))
+	if slug == "" {
+		http.Redirect(w, r, "/projects?error="+url.QueryEscape("slug is required"), http.StatusSeeOther)
+		return
+	}
+	if err := store.SetHidden(slug, hidden); err != nil {
+		action := "hide"
+		if !hidden {
+			action = "unhide"
+		}
+		http.Redirect(w, r, "/projects?error="+url.QueryEscape(fmt.Sprintf("%s: %v", action, err)), http.StatusSeeOther)
+		return
+	}
+	s.refreshProjectNav()
+	message := fmt.Sprintf("Project %q hidden.", slug)
+	if !hidden {
+		message = fmt.Sprintf("Project %q unhidden.", slug)
+	}
+	http.Redirect(w, r, "/projects?flash="+url.QueryEscape(message), http.StatusSeeOther)
+}
 func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 	store := s.getProjectStore()
 	if store == nil {

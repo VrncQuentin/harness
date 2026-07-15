@@ -41,8 +41,11 @@ func newServerWithStore(t *testing.T) (*Server, config.Store) {
 }
 
 type countingProjectStore struct {
-	projects  []project.Project
-	listCalls int32
+	projects    []project.Project
+	listCalls   int32
+	hiddenCalls int32
+	hiddenSlug  string
+	hiddenValue bool
 }
 
 func (s *countingProjectStore) List(bool) ([]project.Project, error) {
@@ -62,8 +65,27 @@ func (s *countingProjectStore) Update(project.UpdateInput) (project.Project, err
 	return project.Project{}, errors.New("not implemented")
 }
 
-func (s *countingProjectStore) SetHidden(string, bool) error {
-	return errors.New("not implemented")
+func (s *countingProjectStore) SetHidden(slug string, hidden bool) error {
+	atomic.AddInt32(&s.hiddenCalls, 1)
+	s.hiddenSlug = slug
+	s.hiddenValue = hidden
+	return nil
+}
+
+type stubConfigStore struct {
+	cfg config.Config
+}
+
+func (s *stubConfigStore) Load() (*config.Config, bool, error) {
+	cfg := s.cfg
+	return &cfg, true, nil
+}
+
+func (s *stubConfigStore) Save(cfg *config.Config) error {
+	if cfg != nil {
+		s.cfg = *cfg
+	}
+	return nil
 }
 
 func TestNewBasePageUsesCachedProjectNav(t *testing.T) {
@@ -98,6 +120,103 @@ func TestNewBasePageUsesCachedProjectNav(t *testing.T) {
 	bp = s.newBasePage("status")
 	if bp.ActiveProjectName != "Demo Project" || bp.ProjectSlugs[1] != "demo" {
 		t.Fatalf("project nav snapshot was mutated across renders: %#v %#v", bp.ProjectNames, bp.ProjectSlugs)
+	}
+}
+
+func TestListProjectsGETDoesNotRunProjectActions(t *testing.T) {
+	s := NewServer(3000)
+	store := &countingProjectStore{projects: []project.Project{
+		{Slug: project.GlobalSlug, DisplayName: "Global"},
+		{Slug: "demo", DisplayName: "Demo Project"},
+	}}
+	s.SetProjectStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/projects?activate=demo&hide=demo&unhide=demo", nil)
+	rec := httptest.NewRecorder()
+	s.listProjects(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if got := atomic.LoadInt32(&store.hiddenCalls); got != 0 {
+		t.Fatalf("GET /projects should not mutate visibility, got %d SetHidden calls", got)
+	}
+	if s.state.snapshot().ProjectSlug == "demo" {
+		t.Fatal("GET /projects should not activate projects")
+	}
+}
+
+func TestHandleProjectActivatePOST(t *testing.T) {
+	s := NewServer(3000)
+	cfgStore := &stubConfigStore{cfg: config.Defaults()}
+	s.SetConfigStore(cfgStore)
+	s.SetProjectStore(&countingProjectStore{projects: []project.Project{
+		{Slug: project.GlobalSlug, DisplayName: "Global"},
+		{Slug: "demo", DisplayName: "Demo Project"},
+	}})
+
+	form := url.Values{"slug": {"demo"}}
+	req := httptest.NewRequest(http.MethodPost, "/projects/activate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleProjectActivate(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rec.Code)
+	}
+	if cfgStore.cfg.Project.ActiveProjectSlug != "demo" {
+		t.Fatalf("active project = %q, want demo", cfgStore.cfg.Project.ActiveProjectSlug)
+	}
+	if got := s.state.snapshot().ProjectSlug; got != "demo" {
+		t.Fatalf("state project slug = %q, want demo", got)
+	}
+}
+
+func TestHandleProjectActionsRequirePOST(t *testing.T) {
+	s := NewServer(3000)
+
+	for name, handler := range map[string]http.HandlerFunc{
+		"activate": s.handleProjectActivate,
+		"hide":     s.handleProjectHide,
+		"unhide":   s.handleProjectUnhide,
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/projects/"+name+"?slug=demo", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s: expected 405, got %d", name, rec.Code)
+		}
+	}
+}
+
+func TestHandleProjectVisibilityPOST(t *testing.T) {
+	s := NewServer(3000)
+	store := &countingProjectStore{projects: []project.Project{{Slug: "demo", DisplayName: "Demo Project"}}}
+	s.SetProjectStore(store)
+
+	form := url.Values{"slug": {"demo"}}
+	req := httptest.NewRequest(http.MethodPost, "/projects/hide", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleProjectHide(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("hide: expected 303, got %d", rec.Code)
+	}
+	if got := atomic.LoadInt32(&store.hiddenCalls); got != 1 || store.hiddenSlug != "demo" || !store.hiddenValue {
+		t.Fatalf("hide SetHidden = calls:%d slug:%q hidden:%v", got, store.hiddenSlug, store.hiddenValue)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/projects/unhide", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	s.handleProjectUnhide(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("unhide: expected 303, got %d", rec.Code)
+	}
+	if got := atomic.LoadInt32(&store.hiddenCalls); got != 2 || store.hiddenSlug != "demo" || store.hiddenValue {
+		t.Fatalf("unhide SetHidden = calls:%d slug:%q hidden:%v", got, store.hiddenSlug, store.hiddenValue)
 	}
 }
 func TestHandleStatus_OK(t *testing.T) {
