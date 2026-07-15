@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,11 +9,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	gogit "github.com/go-git/go-git/v5"
 	gitw "github.com/vrnc/harness/internal/git"
@@ -335,62 +332,6 @@ func (s *Server) handleProjectEdit(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/projects?flash="+url.QueryEscape("Project "+slug+" updated."), http.StatusSeeOther)
 }
 
-func (s *Server) handleProjectBackup(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if !sameOrigin(r) {
-		http.Error(w, "forbidden", http.StatusForbidden)
-		return
-	}
-	store := s.getProjectStore()
-	if store == nil {
-		http.Error(w, "project store not available", http.StatusServiceUnavailable)
-		return
-	}
-	slug := strings.TrimSpace(r.URL.Query().Get("slug"))
-	if slug == "" {
-		http.Redirect(w, r, "/projects?error="+url.QueryEscape("slug is required"), http.StatusSeeOther)
-		return
-	}
-	proj, err := store.Get(slug)
-	if err != nil {
-		http.Redirect(w, r, "/projects?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
-		return
-	}
-	if _, err := exec.LookPath("gh"); err != nil {
-		http.Redirect(w, r, "/projects?error="+url.QueryEscape("GitHub backup requires the GitHub CLI (gh) to be installed and logged in."), http.StatusSeeOther)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
-	defer cancel()
-
-	var cmd *exec.Cmd
-	flash := "GitHub backup created for " + slug + "."
-	if projectMemoryRepoHasOrigin(proj.MemoryRepoPath) {
-		if _, err := exec.LookPath("git"); err != nil {
-			http.Redirect(w, r, "/projects?error="+url.QueryEscape("GitHub backup found an origin remote, but git was not available to push it."), http.StatusSeeOther)
-			return
-		}
-		cmd = exec.CommandContext(ctx, "git", "-C", proj.MemoryRepoPath, "push", "-u", "origin", "HEAD")
-		flash = "GitHub backup pushed for " + slug + "."
-	} else {
-		repoName := "harness-memory-" + slug
-		cmd = exec.CommandContext(ctx, "gh", "repo", "create", repoName, "--private", "--source", proj.MemoryRepoPath, "--remote", "origin", "--push")
-	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			msg = err.Error()
-		}
-		http.Redirect(w, r, "/projects?error="+url.QueryEscape("GitHub backup failed: "+msg), http.StatusSeeOther)
-		return
-	}
-	http.Redirect(w, r, "/projects?flash="+url.QueryEscape(flash), http.StatusSeeOther)
-}
-
 func sameOrigin(r *http.Request) bool {
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin == "" {
@@ -401,14 +342,6 @@ func sameOrigin(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(u.Host, r.Host)
-}
-
-func projectMemoryRepoHasOrigin(repoPath string) bool {
-	body, err := os.ReadFile(filepath.Join(repoPath, ".git", "config"))
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(body), "[remote \"origin\"]")
 }
 
 func prepareProjectMemoryRepo(repoPath string, global bool) error {
