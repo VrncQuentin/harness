@@ -6,11 +6,9 @@ import (
 	"log/slog"
 
 	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/proc"
 	"github.com/vrnc/harness/internal/ui"
-	"github.com/vrnc/harness/pkg/httpclient"
 )
 
 // ApplyConfig reloads config from the store, validates it, and either starts
@@ -91,10 +89,9 @@ func (rt *Runtime) ApplyConfig(
 			result.LiveApplied = true
 		}
 		if old.Model.Port != loaded.Model.Port && rt.reqQueue != nil {
-			rt.reqQueue.SetClient(inference.NewClient(
-				fmt.Sprintf("http://127.0.0.1:%d", loaded.Model.Port),
-				httpclient.NewStreaming(),
-			))
+			client := rt.newInferenceClient()
+			rt.inferClient = client
+			rt.reqQueue.SetClient(client)
 		}
 
 		if old.Prompt != loaded.Prompt ||
