@@ -524,6 +524,21 @@ func (a *apiSessionAdapter) Append(id, role, content string) error {
 	return a.mgr.Append(id, inference.Message{Role: role, Content: content})
 }
 
+func (a *apiSessionAdapter) Save(ctx context.Context, id string) error {
+	if a.mgr == nil {
+		return errors.New("session: api adapter has no manager")
+	}
+	_, err := a.mgr.Save(ctx, id)
+	return err
+}
+
+func (a *apiSessionAdapter) End(id string) {
+	if a.mgr == nil {
+		return
+	}
+	a.mgr.End(id)
+}
+
 type taskRunnerAdapter struct {
 	rt       *Runtime
 	registry *tools.Registry
