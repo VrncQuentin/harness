@@ -127,7 +127,7 @@ func validatePath(path string, roots []string) (string, error) {
 		// unresolved path against sandbox roots to prevent traversal.
 		for _, root := range roots {
 			clean := filepath.Clean(root)
-			if strings.HasPrefix(abs, clean+string(filepath.Separator)) || abs == clean {
+			if pathWithinRoot(abs, clean) {
 				return abs, nil
 			}
 		}
@@ -139,11 +139,21 @@ func validatePath(path string, roots []string) (string, error) {
 		if err != nil {
 			resolvedRoot = clean
 		}
-		if strings.HasPrefix(resolved, resolvedRoot+string(filepath.Separator)) || resolved == resolvedRoot {
+		if pathWithinRoot(resolved, resolvedRoot) {
 			return resolved, nil
 		}
 	}
 	return "", fmt.Errorf("%w: %s", ErrSandboxViolation, path)
+}
+
+func pathWithinRoot(path, root string) bool {
+	path = filepath.Clean(path)
+	root = filepath.Clean(root)
+	if runtime.GOOS == "windows" {
+		path = strings.ToLower(path)
+		root = strings.ToLower(root)
+	}
+	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 // RegisterBuiltins registers the built-in tools on r. Read-only tools
