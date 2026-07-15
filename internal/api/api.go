@@ -45,6 +45,8 @@ type Enqueuer interface {
 type SessionRecorder interface {
 	Start(agent string) Session
 	Append(id string, role, content string) error
+	Save(ctx context.Context, id string) error
+	End(id string)
 }
 
 // Session is the small subset of session.Session the API needs.
@@ -308,13 +310,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.streamTokensWithSession(w, flusher, respCh, reqID, modelEcho, sess)
+	s.streamTokensWithSession(ctx, w, flusher, respCh, reqID, modelEcho, sess)
 }
 
 // streamTokensWithSession is streamTokens plus an optional Session
 // that receives the assistant's joined content as a single Append once
 // the stream ends. Pass a zero-value Session to skip recording.
-func (s *Server) streamTokensWithSession(w http.ResponseWriter, flusher http.Flusher, respCh <-chan inference.Token, reqID, modelEcho string, sess Session) {
+func (s *Server) streamTokensWithSession(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, respCh <-chan inference.Token, reqID, modelEcho string, sess Session) {
+	if s.rec != nil && sess.ID != "" {
+		defer s.rec.End(sess.ID)
+	}
 	stopReason := "stop"
 	var assistant strings.Builder
 	for tok := range respCh {
@@ -364,9 +369,14 @@ func (s *Server) streamTokensWithSession(w http.ResponseWriter, flusher http.Flu
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
 
-	if s.rec != nil && sess.ID != "" && assistant.Len() > 0 {
-		if err := s.rec.Append(sess.ID, "assistant", assistant.String()); err != nil {
-			s.logger.Warn("session append (assistant)", slog.Any("err", err))
+	if s.rec != nil && sess.ID != "" {
+		if assistant.Len() > 0 {
+			if err := s.rec.Append(sess.ID, "assistant", assistant.String()); err != nil {
+				s.logger.Warn("session append (assistant)", slog.Any("err", err))
+			}
+		}
+		if err := s.rec.Save(ctx, sess.ID); err != nil {
+			s.logger.Warn("session save (api)", slog.Any("err", err))
 		}
 	}
 }
