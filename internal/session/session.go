@@ -110,11 +110,11 @@ type FileWriter interface {
 	WriteFile(relPath string, data []byte) error
 }
 
-// FileReader is the subset of memory.Reader session needs to count
+// FileReader is the subset of memory.Repo session needs to count
 // episode files and hydrate a sidecar on Resume.
 type FileReader interface {
 	Read(relPath string) ([]byte, error)
-	Glob(pattern string) ([]string, error)
+	Walk(relPath string) ([]memory.Entry, error)
 }
 
 // Committer is the subset of *git.Repo session uses. Tests inject a
@@ -156,12 +156,6 @@ type Manager struct {
 	deps        ManagerDeps
 	summarizer  *Summarizer
 	projectSlug string
-}
-
-// episodesDir returns the repo-relative path for the episode directory
-// of a given agent.
-func episodesDir(agent string) string {
-	return path.Join(episodesRootRel, agent)
 }
 
 // episodeMarkdownPath returns the repo-relative path to an episode .md
@@ -544,37 +538,19 @@ func (m *Manager) findLatestRecord(id string) (*Record, error) {
 // count is used as the EpisodeCount metric. Cheap enough to compute on
 // every save - the tree is small at M3 scale.
 func (m *Manager) countEpisodeFiles() int {
-	root := episodesRootRel
-	if w, ok := m.deps.Reader.(memory.Walker); ok {
-		entries, err := w.Walk(root)
-		if err != nil {
-			return 0
-		}
-		count := 0
-		for _, e := range entries {
-			if e.Dir {
-				continue
-			}
-			if !strings.HasSuffix(e.Path, episodeFileSuffix) {
-				continue
-			}
-			count++
-		}
-		return count
+	entries, err := m.deps.Reader.Walk(episodesRootRel)
+	if err != nil {
+		return 0
 	}
-	// Walker unavailable: fall back to per-agent glob. Slower but
-	// correct for tests that ship a stub Reader.
-	pattern := root + "/*"
-	agents, err := m.deps.Reader.Glob(pattern + "/")
-	_ = err // best-effort metric
 	count := 0
-	for _, agentDir := range agents {
-		agentName := strings.TrimSuffix(strings.TrimPrefix(agentDir, root+"/"), "/")
-		matches, gerr := m.deps.Reader.Glob(episodesDir(agentName) + "/*" + episodeFileSuffix)
-		if gerr != nil {
+	for _, e := range entries {
+		if e.Dir {
 			continue
 		}
-		count += len(matches)
+		if !strings.HasSuffix(e.Path, episodeFileSuffix) {
+			continue
+		}
+		count++
 	}
 	return count
 }
