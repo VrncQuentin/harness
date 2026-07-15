@@ -186,6 +186,23 @@ func TestUIAgentRegistryAdapterListTreatsMissingFilesAsEmpty(t *testing.T) {
 	}
 }
 
+func TestTaskRunnerCancelTaskCancelsActiveEngine(t *testing.T) {
+	called := false
+	ad := &taskRunnerAdapter{
+		cancels: map[string]context.CancelFunc{
+			"task-1": func() { called = true },
+		},
+	}
+	if err := ad.CancelTask("task-1"); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	if !called {
+		t.Fatal("cancel func was not called")
+	}
+	if err := ad.CancelTask("missing"); err == nil {
+		t.Fatal("expected missing task to return an error")
+	}
+}
 func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	root := t.TempDir()
 	for rel, body := range map[string]string{

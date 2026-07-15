@@ -779,6 +779,17 @@ func (ad *taskRunnerAdapter) CancelAll(ctx context.Context) error {
 	return nil
 }
 
+func (ad *taskRunnerAdapter) CancelTask(sessionID string) error {
+	ad.enginesMu.Lock()
+	cancel, ok := ad.cancels[sessionID]
+	ad.enginesMu.Unlock()
+	if !ok || cancel == nil {
+		return fmt.Errorf("task: no active engine for session %q", sessionID)
+	}
+	cancel()
+	return nil
+}
+
 // ApplyApproval routes a user decision to the correct running engine.
 func (ad *taskRunnerAdapter) ApplyApproval(sessionID, approvalID, decision string) error {
 	ad.enginesMu.Lock()
