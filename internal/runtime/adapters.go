@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +27,8 @@ import (
 
 type uiAgentRegistryAdapter struct {
 	reg            agent.Registry
-	mem            memory.Repo
+	globalMem      memory.Repo
+	activeMem      memory.Repo
 	getProjectSlug func() string
 }
 
@@ -42,9 +44,8 @@ func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
 	}
 
 	projectAgents := make(map[string]bool)
-	if slug != "" {
-		dirPath := fmt.Sprintf("projects/%s/agents", slug)
-		names, err := ad.mem.ListDirs(dirPath)
+	if slug != "" && slug != project.GlobalSlug {
+		names, err := ad.activeMem.ListDirs("agents")
 		if err == nil {
 			for _, name := range names {
 				if name != "" && name != "." && name != ".." {
@@ -75,10 +76,10 @@ func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
 		if seen[name] {
 			continue
 		}
-		projectPath := fmt.Sprintf("projects/%s/agents/%s", slug, name)
-		persona, _ := readOptional(ad.mem, projectPath+"/persona.md")
-		rules, _ := readOptional(ad.mem, projectPath+"/rules.md")
-		notes, _ := readOptional(ad.mem, projectPath+"/notes.md")
+		projectPath := path.Join("agents", name)
+		persona, _ := readOptional(ad.activeMem, projectPath+"/persona.md")
+		rules, _ := readOptional(ad.activeMem, projectPath+"/rules.md")
+		notes, _ := readOptional(ad.activeMem, projectPath+"/notes.md")
 		out = append(out, ui.AgentInfo{
 			Name:        name,
 			PersonaPath: projectPath + "/persona.md",
@@ -115,9 +116,9 @@ func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
 	if ad.getProjectSlug != nil {
 		slug = ad.getProjectSlug()
 	}
-	if slug != "" {
-		projectPersonaPath := fmt.Sprintf("projects/%s/agents/%s/persona.md", slug, a.Name)
-		if _, err := ad.mem.Read(projectPersonaPath); err == nil {
+	if slug != "" && slug != project.GlobalSlug {
+		projectPersonaPath := path.Join("agents", a.Name, "persona.md")
+		if _, err := ad.activeMem.Read(projectPersonaPath); err == nil {
 			info.Origin = "extends-global"
 			return info, nil
 		}
@@ -131,13 +132,13 @@ func (ad *uiAgentRegistryAdapter) getProjectAgent(name string) (ui.AgentInfo, er
 	if ad.getProjectSlug != nil {
 		slug = ad.getProjectSlug()
 	}
-	if slug == "" {
+	if slug == "" || slug == project.GlobalSlug {
 		return ui.AgentInfo{}, fmt.Errorf("no active project")
 	}
-	projectPath := fmt.Sprintf("projects/%s/agents/%s", slug, name)
-	persona, _ := readOptional(ad.mem, projectPath+"/persona.md")
-	rules, _ := readOptional(ad.mem, projectPath+"/rules.md")
-	notes, _ := readOptional(ad.mem, projectPath+"/notes.md")
+	projectPath := path.Join("agents", name)
+	persona, _ := readOptional(ad.activeMem, projectPath+"/persona.md")
+	rules, _ := readOptional(ad.activeMem, projectPath+"/rules.md")
+	notes, _ := readOptional(ad.activeMem, projectPath+"/notes.md")
 	if persona == "" && rules == "" && notes == "" {
 		return ui.AgentInfo{}, fmt.Errorf("agent %q not found", name)
 	}
@@ -160,17 +161,17 @@ func (ad *uiAgentRegistryAdapter) buildAgentInfo(a agent.Agent) (ui.AgentInfo, e
 		RulesPath:   a.RulesPath,
 		NotesPath:   a.NotesPath,
 	}
-	persona, err := readOptional(ad.mem, a.PersonaPath)
+	persona, err := readOptional(ad.globalMem, a.PersonaPath)
 	if err != nil {
 		return info, err
 	}
 	info.Persona = persona
-	rules, err := readOptional(ad.mem, a.RulesPath)
+	rules, err := readOptional(ad.globalMem, a.RulesPath)
 	if err != nil {
 		return info, err
 	}
 	info.Rules = rules
-	notes, err := readOptional(ad.mem, a.NotesPath)
+	notes, err := readOptional(ad.globalMem, a.NotesPath)
 	if err != nil {
 		return info, err
 	}

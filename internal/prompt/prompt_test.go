@@ -57,6 +57,14 @@ func newAssembler(t *testing.T, mem *memory.DirReader, cfg config.PromptConfig) 
 	return NewDiskAssembler(mem, reg, cfg)
 }
 
+func newProjectAssembler(t *testing.T, globalFiles, activeFiles map[string]string, cfg config.PromptConfig) *DiskAssembler {
+	t.Helper()
+	global := writeRepo(t, globalFiles)
+	active := writeRepo(t, activeFiles)
+	selected := ""
+	reg := agent.NewDiskRegistry(global, func() string { return selected }, func(n string) error { selected = n; return nil })
+	return NewProjectDiskAssembler(global, active, reg, cfg).WithProjectSlug("dt")
+}
 func baseCfg() config.PromptConfig {
 	return config.PromptConfig{
 		CtxSize:             0,
@@ -84,7 +92,7 @@ func TestAssemble_MissingRulesIsRequired(t *testing.T) {
 
 func TestAssemble_RequiresAgentName(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md": "RULES",
+		"rules.md": "RULES",
 	})
 	asm := newAssembler(t, mem, baseCfg())
 	_, _, err := asm.Assemble(context.Background(), "", nil)
@@ -95,7 +103,7 @@ func TestAssemble_RequiresAgentName(t *testing.T) {
 
 func TestAssemble_AgentRequiresPersona(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md": "x",
+		"rules.md": "x",
 		// agent folder exists but has no persona.md - ListDirs surfaces
 		// the folder but Get rejects it as missing, which wraps
 		// fs.ErrNotExist and propagates here.
@@ -110,15 +118,14 @@ func TestAssemble_AgentRequiresPersona(t *testing.T) {
 
 func TestAssemble_FullStackOrder(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                              "RULES",
-		"global/user.md":                               "USER",
-		"global/facts.md":                              "FACTS",
-		"projects/global/rules.md":                     "PROJRULES",
-		"agents/coder/persona.md":                      "PERSONA",
-		"agents/coder/rules.md":                        "AGENTRULES",
-		"agents/coder/notes.md":                        "NOTES",
-		"projects/global/episodes/coder/2026-01-01.md": "EP1",
-		"projects/global/episodes/coder/2026-02-01.md": "EP2",
+		"rules.md":                     "RULES",
+		"user.md":                      "USER",
+		"facts.md":                     "FACTS",
+		"agents/coder/persona.md":      "PERSONA",
+		"agents/coder/rules.md":        "AGENTRULES",
+		"agents/coder/notes.md":        "NOTES",
+		"episodes/coder/2026-01-01.md": "EP1",
+		"episodes/coder/2026-02-01.md": "EP2",
 	})
 	asm := newAssembler(t, mem, baseCfg())
 	msgs, stats, err := asm.Assemble(context.Background(), "coder", nil)
@@ -126,10 +133,9 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		t.Fatalf("Assemble: %v", err)
 	}
 	sys := msgs[0].Content
-	// Verify section order by checking indices. Project Rules sits
-	// between User and Persona, and Agent Rules sits between Persona
+	// Verify section order by checking indices. Agent Rules sits between Persona
 	// and Facts in the mandatory-layer block.
-	headers := []string{"# Rules", "# User", "# Project Rules", "# Persona", "# Agent Rules", "# Facts", "# Notes", "# Episodes"}
+	headers := []string{"# Rules", "# User", "# Persona", "# Agent Rules", "# Facts", "# Notes", "# Episodes"}
 	lastIdx := -1
 	for _, h := range headers {
 		idx := strings.Index(sys, h)
@@ -151,14 +157,14 @@ func TestAssemble_FullStackOrder(t *testing.T) {
 		t.Errorf("episodes not ordered oldest-first; ep1=%d ep2=%d", ep1Idx, ep2Idx)
 	}
 
-	if stats.Rules == 0 || stats.User == 0 || stats.ProjectRules == 0 || stats.Persona == 0 || stats.AgentRules == 0 || stats.Facts == 0 || stats.Notes == 0 || stats.Episodes == 0 {
+	if stats.Rules == 0 || stats.User == 0 || stats.Persona == 0 || stats.AgentRules == 0 || stats.Facts == 0 || stats.Notes == 0 || stats.Episodes == 0 {
 		t.Errorf("stats missing counts: %+v", stats)
 	}
 }
 
 func TestAssemble_ConversationAppendedVerbatim(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "RULES",
+		"rules.md":                "RULES",
 		"agents/coder/persona.md": "PERSONA",
 	})
 	asm := newAssembler(t, mem, baseCfg())
@@ -186,13 +192,13 @@ func TestAssemble_TrimsEpisodesOldestFirstForMemoryBudget(t *testing.T) {
 	// Generate five episodes with increasing content size; use a
 	// deterministic tokenizer so we can reason about counts.
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                      "r",
-		"agents/coder/persona.md":              "p",
-		"projects/global/episodes/coder/01.md": strings.Repeat("a", 200),
-		"projects/global/episodes/coder/02.md": strings.Repeat("b", 200),
-		"projects/global/episodes/coder/03.md": strings.Repeat("c", 200),
-		"projects/global/episodes/coder/04.md": strings.Repeat("d", 200),
-		"projects/global/episodes/coder/05.md": strings.Repeat("e", 200),
+		"rules.md":                "r",
+		"agents/coder/persona.md": "p",
+		"episodes/coder/01.md":    strings.Repeat("a", 200),
+		"episodes/coder/02.md":    strings.Repeat("b", 200),
+		"episodes/coder/03.md":    strings.Repeat("c", 200),
+		"episodes/coder/04.md":    strings.Repeat("d", 200),
+		"episodes/coder/05.md":    strings.Repeat("e", 200),
 	})
 	cfg := baseCfg()
 	// Each episode is 200 runes => 50 tokens under the default heuristic.
@@ -229,11 +235,11 @@ func TestAssemble_TrimsEpisodesOldestFirstForMemoryBudget(t *testing.T) {
 // cap is disabled and all seven land.
 func TestAssemble_RecencyNCapsEpisodeCount(t *testing.T) {
 	files := map[string]string{
-		"global/rules.md":         "r",
+		"rules.md":                "r",
 		"agents/coder/persona.md": "p",
 	}
 	for i := 1; i <= 7; i++ {
-		files[fmt.Sprintf("projects/global/episodes/coder/2026-01-%02d.md", i)] = fmt.Sprintf("EP%d", i)
+		files[fmt.Sprintf("episodes/coder/2026-01-%02d.md", i)] = fmt.Sprintf("EP%d", i)
 	}
 
 	tests := []struct {
@@ -302,15 +308,14 @@ func TestAssemble_RecencyNCapsEpisodeCount(t *testing.T) {
 
 func TestAssemble_MandatoryLayersNeverTrimmed(t *testing.T) {
 	// Set a memory budget smaller than the mandatory layers combined;
-	// these must still be present, including project rules and per-agent rules.
+	// these must still be present, including per-agent rules.
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":          strings.Repeat("R", 400), // 100 tokens
-		"global/user.md":           strings.Repeat("U", 400),
-		"global/facts.md":          strings.Repeat("F", 400),
-		"projects/global/rules.md": strings.Repeat("P", 400),
-		"agents/coder/persona.md":  strings.Repeat("P", 400),
-		"agents/coder/rules.md":    strings.Repeat("A", 400),
-		"agents/coder/notes.md":    strings.Repeat("N", 400),
+		"rules.md":                strings.Repeat("R", 400), // 100 tokens
+		"user.md":                 strings.Repeat("U", 400),
+		"facts.md":                strings.Repeat("F", 400),
+		"agents/coder/persona.md": strings.Repeat("P", 400),
+		"agents/coder/rules.md":   strings.Repeat("A", 400),
+		"agents/coder/notes.md":   strings.Repeat("N", 400),
 	})
 	cfg := baseCfg()
 	cfg.MemoryTokenBudget = 10 // absurdly low
@@ -321,7 +326,7 @@ func TestAssemble_MandatoryLayersNeverTrimmed(t *testing.T) {
 		t.Fatalf("Assemble: %v", err)
 	}
 	sys := msgs[0].Content
-	for _, section := range []string{"# Rules", "# User", "# Project Rules", "# Persona", "# Agent Rules"} {
+	for _, section := range []string{"# Rules", "# User", "# Persona", "# Agent Rules"} {
 		if !strings.Contains(sys, section) {
 			t.Errorf("mandatory %q missing when budget pressure is high", section)
 		}
@@ -330,11 +335,11 @@ func TestAssemble_MandatoryLayersNeverTrimmed(t *testing.T) {
 
 func TestAssemble_CtxSizeTrimsAgainstConversationReserve(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                      "r",                      // 1 token
-		"agents/coder/persona.md":              "p",                      // 1 token
-		"projects/global/episodes/coder/01.md": strings.Repeat("a", 400), // 100 tokens
-		"projects/global/episodes/coder/02.md": strings.Repeat("b", 400),
-		"projects/global/episodes/coder/03.md": strings.Repeat("c", 400),
+		"rules.md":                "r",                      // 1 token
+		"agents/coder/persona.md": "p",                      // 1 token
+		"episodes/coder/01.md":    strings.Repeat("a", 400), // 100 tokens
+		"episodes/coder/02.md":    strings.Repeat("b", 400),
+		"episodes/coder/03.md":    strings.Repeat("c", 400),
 	})
 	cfg := config.PromptConfig{
 		CtxSize:             250, // effective limit 250 - 100 = 150 tokens for layers+convo
@@ -367,7 +372,7 @@ func TestAssemble_CtxSizeTrimsAgainstConversationReserve(t *testing.T) {
 
 func TestAssemble_CustomTokenizer(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "abcd", // 4 runes, default tokenizer says 1
+		"rules.md":                "abcd", // 4 runes, default tokenizer says 1
 		"agents/coder/persona.md": "p",
 	})
 	asm := newAssembler(t, mem, baseCfg()).WithTokenizer(func(s string) int { return len(s) })
@@ -382,7 +387,7 @@ func TestAssemble_CustomTokenizer(t *testing.T) {
 
 func TestAssemble_CancelledContext(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "r",
+		"rules.md":                "r",
 		"agents/coder/persona.md": "p",
 	})
 	asm := newAssembler(t, mem, baseCfg())
@@ -399,9 +404,9 @@ func TestAssemble_CancelledContext(t *testing.T) {
 
 func TestAssemble_TotalEqualsSum(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "RULES",
-		"global/user.md":          "USER",
-		"global/facts.md":         "FACTS",
+		"rules.md":                "RULES",
+		"user.md":                 "USER",
+		"facts.md":                "FACTS",
 		"agents/coder/persona.md": "PERSONA",
 		"agents/coder/rules.md":   "AGENTRULES",
 		"agents/coder/notes.md":   "NOTES",
@@ -423,9 +428,9 @@ func TestAssemble_TotalEqualsSum(t *testing.T) {
 // header with no body.
 func TestAssemble_SkipsEmptyOptionalLayers(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "RULES",
-		"global/user.md":          "   \n\n\n   ", // whitespace only
-		"global/facts.md":         "",
+		"rules.md":                "RULES",
+		"user.md":                 "   \n\n\n   ", // whitespace only
+		"facts.md":                "",
 		"agents/coder/persona.md": "PERSONA",
 		"agents/coder/rules.md":   "", // empty agent rules → no header
 	})
@@ -450,7 +455,7 @@ func TestAssemble_SkipsEmptyOptionalLayers(t *testing.T) {
 // file assembles without error and omits the section.
 func TestAssemble_AgentRulesOptional(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "RULES",
+		"rules.md":                "RULES",
 		"agents/coder/persona.md": "PERSONA",
 		// agents/coder/rules.md missing on purpose
 	})
@@ -473,8 +478,8 @@ func TestAssemble_AgentRulesOptional(t *testing.T) {
 // agent rules constrain behaviour, then global facts follow.
 func TestAssemble_AgentRulesRenderedBetweenPersonaAndFacts(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "GLOBALRULES",
-		"global/facts.md":         "GLOBALFACTS",
+		"rules.md":                "GLOBALRULES",
+		"facts.md":                "GLOBALFACTS",
 		"agents/coder/persona.md": "PERSONABODY",
 		"agents/coder/rules.md":   "PLANBEFOREEDIT",
 	})
@@ -501,11 +506,11 @@ func TestAssemble_AgentRulesRenderedBetweenPersonaAndFacts(t *testing.T) {
 // trimming).
 func TestAssemble_AgentRulesCountedAgainstCtxLimit(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                      "r",                      // 1 token
-		"agents/coder/persona.md":              "p",                      // 1 token
-		"agents/coder/rules.md":                strings.Repeat("a", 400), // 100 tokens
-		"projects/global/episodes/coder/01.md": strings.Repeat("e", 400), // 100 tokens
-		"projects/global/episodes/coder/02.md": strings.Repeat("e", 400), // 100 tokens
+		"rules.md":                "r",                      // 1 token
+		"agents/coder/persona.md": "p",                      // 1 token
+		"agents/coder/rules.md":   strings.Repeat("a", 400), // 100 tokens
+		"episodes/coder/01.md":    strings.Repeat("e", 400), // 100 tokens
+		"episodes/coder/02.md":    strings.Repeat("e", 400), // 100 tokens
 	})
 	cfg := config.PromptConfig{
 		CtxSize:             250, // limit minus reserve = 150 tokens
@@ -528,13 +533,13 @@ func TestAssemble_AgentRulesCountedAgainstCtxLimit(t *testing.T) {
 }
 
 func TestAssemble_ProjectRulesOrdering(t *testing.T) {
-	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "GLOBALRULES",
-		"global/user.md":          "USERBODY",
-		"projects/dt/rules.md":    "PROJECTRULES",
+	asm := newProjectAssembler(t, map[string]string{
+		"rules.md":                "GLOBALRULES",
+		"user.md":                 "USERBODY",
 		"agents/coder/persona.md": "PERSONABODY",
-	})
-	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("dt")
+	}, map[string]string{
+		"rules.md": "PROJECTRULES",
+	}, baseCfg())
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -552,13 +557,12 @@ func TestAssemble_ProjectRulesOrdering(t *testing.T) {
 }
 
 func TestAssemble_ProjectRulesUseActiveProjectSlug(t *testing.T) {
-	mem := writeRepo(t, map[string]string{
-		"global/rules.md":          "GLOBALRULES",
-		"projects/global/rules.md": "GLOBALPROJECT",
-		"projects/dt/rules.md":     "DTPROJECT",
-		"agents/coder/persona.md":  "PERSONA",
-	})
-	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("dt")
+	asm := newProjectAssembler(t, map[string]string{
+		"rules.md":                "GLOBALRULES",
+		"agents/coder/persona.md": "PERSONA",
+	}, map[string]string{
+		"rules.md": "DTPROJECT",
+	}, baseCfg())
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -574,7 +578,7 @@ func TestAssemble_ProjectRulesUseActiveProjectSlug(t *testing.T) {
 
 func TestAssemble_ProjectRulesOptionalMissing(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "RULES",
+		"rules.md":                "RULES",
 		"agents/coder/persona.md": "PERSONA",
 	})
 	asm := newAssembler(t, mem, baseCfg())
@@ -593,7 +597,7 @@ func TestAssemble_ProjectRulesOptionalMissing(t *testing.T) {
 
 func TestAssemble_InvalidProjectSlugReturnsError(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":         "RULES",
+		"rules.md":                "RULES",
 		"agents/coder/persona.md": "PERSONA",
 	})
 	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("bad_slug!")
@@ -605,7 +609,7 @@ func TestAssemble_InvalidProjectSlugReturnsError(t *testing.T) {
 
 func TestAssemble_InvalidAgentNameRejected(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md": "RULES",
+		"rules.md": "RULES",
 	})
 	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("dt")
 	_, _, err := asm.Assemble(context.Background(), "foo/bar", nil)
@@ -618,13 +622,13 @@ func TestAssemble_InvalidAgentNameRejected(t *testing.T) {
 }
 
 func TestAssemble_ProjectRulesStatsAndTotal(t *testing.T) {
-	mem := writeRepo(t, map[string]string{
-		"global/rules.md":          "RULES",
-		"global/user.md":           "USER",
-		"projects/global/rules.md": "PROJECT",
-		"agents/coder/persona.md":  "PERSONA",
-	})
-	asm := newAssembler(t, mem, baseCfg())
+	asm := newProjectAssembler(t, map[string]string{
+		"rules.md":                "RULES",
+		"user.md":                 "USER",
+		"agents/coder/persona.md": "PERSONA",
+	}, map[string]string{
+		"rules.md": "PROJECT",
+	}, baseCfg())
 	_, stats, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -639,16 +643,16 @@ func TestAssemble_ProjectRulesStatsAndTotal(t *testing.T) {
 }
 
 func TestAssemble_ProjectRulesNotTrimmed(t *testing.T) {
-	mem := writeRepo(t, map[string]string{
-		"global/rules.md":          strings.Repeat("R", 400),
-		"global/user.md":           strings.Repeat("U", 400),
-		"projects/global/rules.md": strings.Repeat("P", 400),
-		"agents/coder/persona.md":  strings.Repeat("P", 400),
-		"agents/coder/rules.md":    strings.Repeat("A", 400),
-	})
 	cfg := baseCfg()
 	cfg.MemoryTokenBudget = 10
-	asm := newAssembler(t, mem, cfg)
+	asm := newProjectAssembler(t, map[string]string{
+		"rules.md":                strings.Repeat("R", 400),
+		"user.md":                 strings.Repeat("U", 400),
+		"agents/coder/persona.md": strings.Repeat("P", 400),
+		"agents/coder/rules.md":   strings.Repeat("A", 400),
+	}, map[string]string{
+		"rules.md": strings.Repeat("P", 400),
+	}, cfg)
 
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
@@ -661,19 +665,19 @@ func TestAssemble_ProjectRulesNotTrimmed(t *testing.T) {
 }
 
 func TestAssemble_CtxSizeTrimsEpisodesWithProjectRules(t *testing.T) {
-	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                      "r",
-		"projects/global/rules.md":             strings.Repeat("p", 400),
-		"agents/coder/persona.md":              "p",
-		"projects/global/episodes/coder/01.md": strings.Repeat("e", 400),
-		"projects/global/episodes/coder/02.md": strings.Repeat("e", 400),
-	})
 	cfg := config.PromptConfig{
 		CtxSize:             250,
 		ConversationReserve: 100,
 		MemoryTokenBudget:   1000,
 	}
-	asm := newAssembler(t, mem, cfg)
+	asm := newProjectAssembler(t, map[string]string{
+		"rules.md":                "r",
+		"agents/coder/persona.md": "p",
+	}, map[string]string{
+		"rules.md":             strings.Repeat("p", 400),
+		"episodes/coder/01.md": strings.Repeat("e", 400),
+		"episodes/coder/02.md": strings.Repeat("e", 400),
+	}, cfg)
 	_, stats, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -686,14 +690,34 @@ func TestAssemble_CtxSizeTrimsEpisodesWithProjectRules(t *testing.T) {
 	}
 }
 
+// errReader wraps a memory.Reader and returns a synthetic error for
+// reads of failOn (which is not fs.ErrNotExist), simulating a disk
+// fault. It also forwards DirLister when available so the agent
+// registry keeps working for unrelated tests.
+type errReader struct {
+	memory.Repo
+	failOn string
+}
+
+func (e errReader) Read(p string) ([]byte, error) {
+	if p == e.failOn {
+		return nil, fmt.Errorf("synthetic read error for %s", p)
+	}
+	return e.Repo.Read(p)
+}
+
+func (e errReader) ListDirs(p string) ([]string, error) {
+	return e.Repo.ListDirs(p)
+}
+
 // TestAssemble_ReadError ensures non-NotExist read errors propagate.
 func TestAssemble_ReadErrorPropagates(t *testing.T) {
 	mem := errReader{
-		Reader: writeRepo(t, map[string]string{
-			"global/rules.md":         "r",
+		Repo: writeRepo(t, map[string]string{
+			"rules.md":                "r",
 			"agents/coder/persona.md": "p",
 		}),
-		failOn: "global/user.md",
+		failOn: "user.md",
 	}
 	reg := agent.NewDiskRegistry(mem, func() string { return "coder" }, func(string) error { return nil })
 	asm := NewDiskAssembler(mem, reg, baseCfg())
@@ -704,15 +728,16 @@ func TestAssemble_ReadErrorPropagates(t *testing.T) {
 }
 
 func TestAssemble_ProjectAgentReadErrorPropagates(t *testing.T) {
-	mem := errReader{
-		Reader: writeRepo(t, map[string]string{
-			"global/rules.md":         "RULES",
-			"agents/coder/persona.md": "GLOBALPERSONA",
-		}),
-		failOn: "projects/dt/agents/coder/persona.md",
+	global := writeRepo(t, map[string]string{
+		"rules.md":                "RULES",
+		"agents/coder/persona.md": "GLOBALPERSONA",
+	})
+	active := errReader{
+		Repo:   writeRepo(t, nil),
+		failOn: "agents/coder/persona.md",
 	}
-	reg := agent.NewDiskRegistry(mem, func() string { return "coder" }, func(string) error { return nil })
-	asm := NewDiskAssembler(mem, reg, baseCfg()).WithProjectSlug("dt")
+	reg := agent.NewDiskRegistry(global, func() string { return "coder" }, func(string) error { return nil })
+	asm := NewProjectDiskAssembler(global, active, reg, baseCfg()).WithProjectSlug("dt")
 	_, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err == nil {
 		t.Fatal("expected error from failing project agent read")
@@ -721,11 +746,10 @@ func TestAssemble_ProjectAgentReadErrorPropagates(t *testing.T) {
 		t.Errorf("expected synthetic read error in message, got %v", err)
 	}
 }
-
 func TestAssemble_GlobalAgentFallbackReadErrorPropagates(t *testing.T) {
 	mem := errReader{
-		Reader: writeRepo(t, map[string]string{
-			"global/rules.md":         "RULES",
+		Repo: writeRepo(t, map[string]string{
+			"rules.md":                "RULES",
 			"agents/coder/persona.md": "GLOBALPERSONA",
 		}),
 		failOn: "agents/coder/persona.md",
@@ -742,14 +766,14 @@ func TestAssemble_GlobalAgentFallbackReadErrorPropagates(t *testing.T) {
 }
 
 func TestAssemble_ProjectPersonaOverrideInheritsGlobalRulesNotes(t *testing.T) {
-	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                     "RULES",
-		"agents/coder/persona.md":             "GLOBALPERSONA",
-		"agents/coder/rules.md":               "GLOBALRULES",
-		"agents/coder/notes.md":               "GLOBALNOTES",
-		"projects/dt/agents/coder/persona.md": "DTPERSONA",
-	})
-	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("dt")
+	asm := newProjectAssembler(t, map[string]string{
+		"rules.md":                "RULES",
+		"agents/coder/persona.md": "GLOBALPERSONA",
+		"agents/coder/rules.md":   "GLOBALRULES",
+		"agents/coder/notes.md":   "GLOBALNOTES",
+	}, map[string]string{
+		"agents/coder/persona.md": "DTPERSONA",
+	}, baseCfg())
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -770,11 +794,11 @@ func TestAssemble_ProjectPersonaOverrideInheritsGlobalRulesNotes(t *testing.T) {
 }
 
 func TestAssemble_ProjectOnlyAgentSuccess(t *testing.T) {
-	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                     "RULES",
-		"projects/dt/agents/coder/persona.md": "DTPERSONA",
-	})
-	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("dt")
+	asm := newProjectAssembler(t, map[string]string{
+		"rules.md": "RULES",
+	}, map[string]string{
+		"agents/coder/persona.md": "DTPERSONA",
+	}, baseCfg())
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -786,11 +810,10 @@ func TestAssemble_ProjectOnlyAgentSuccess(t *testing.T) {
 }
 
 func TestAssemble_ProjectOnlyAgentNotLeaking(t *testing.T) {
-	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                     "RULES",
-		"projects/dt/agents/coder/persona.md": "DTPERSONA",
-	})
-	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("other")
+	global := writeRepo(t, map[string]string{"rules.md": "RULES"})
+	other := writeRepo(t, nil)
+	reg := agent.NewDiskRegistry(global, func() string { return "coder" }, func(string) error { return nil })
+	asm := NewProjectDiskAssembler(global, other, reg, baseCfg()).WithProjectSlug("other")
 	_, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err == nil {
 		t.Fatal("expected error for project-only agent in wrong project")
@@ -801,13 +824,13 @@ func TestAssemble_ProjectOnlyAgentNotLeaking(t *testing.T) {
 }
 
 func TestAssemble_EmptyProjectRulesSuppressGlobal(t *testing.T) {
-	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                   "RULES",
-		"agents/coder/persona.md":           "PERSONA",
-		"agents/coder/rules.md":             "GLOBALRULES",
-		"projects/dt/agents/coder/rules.md": "",
-	})
-	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("dt")
+	asm := newProjectAssembler(t, map[string]string{
+		"rules.md":                "RULES",
+		"agents/coder/persona.md": "PERSONA",
+		"agents/coder/rules.md":   "GLOBALRULES",
+	}, map[string]string{
+		"agents/coder/rules.md": "",
+	}, baseCfg())
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -818,68 +841,18 @@ func TestAssemble_EmptyProjectRulesSuppressGlobal(t *testing.T) {
 	}
 }
 
-// errReader wraps a memory.Reader and returns a synthetic error for
-// reads of failOn (which is not fs.ErrNotExist), simulating a disk
-// fault. It also forwards DirLister when available so the agent
-// registry keeps working for unrelated tests.
-type errReader struct {
-	memory.Reader
-	failOn string
-}
-
-func (e errReader) Read(p string) ([]byte, error) {
-	if p == e.failOn {
-		return nil, fmt.Errorf("synthetic read error on %s", p)
-	}
-	return e.Reader.Read(p)
-}
-
-func (e errReader) ListDirs(rel string) ([]string, error) {
-	if dl, ok := e.Reader.(memory.DirLister); ok {
-		return dl.ListDirs(rel)
-	}
-	return nil, nil
-}
-func (e errReader) MkdirAll(rel string) error {
-	if repo, ok := e.Reader.(memory.Repo); ok {
-		return repo.MkdirAll(rel)
-	}
-	return errors.New("test reader missing MkdirAll")
-}
-
-func (e errReader) WriteFile(rel string, data []byte) error {
-	if repo, ok := e.Reader.(memory.Repo); ok {
-		return repo.WriteFile(rel, data)
-	}
-	return errors.New("test reader missing WriteFile")
-}
-
-func (e errReader) RemoveAll(rel string) error {
-	if repo, ok := e.Reader.(memory.Repo); ok {
-		return repo.RemoveAll(rel)
-	}
-	return errors.New("test reader missing RemoveAll")
-}
-
-func (e errReader) Walk(rel string) ([]memory.Entry, error) {
-	if repo, ok := e.Reader.(memory.Repo); ok {
-		return repo.Walk(rel)
-	}
-	return nil, errors.New("test reader missing Walk")
-}
-
 // TestAssemble_BlendedRetrievalKeepsTopN verifies the blended retrieval
 // path keeps the top-N episodes by blended score, not the lowest
 // (regression test for consolidation plan bug #3).
 func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                      "r",
-		"agents/coder/persona.md":              "p",
-		"projects/global/episodes/coder/01.md": "EP1",
-		"projects/global/episodes/coder/02.md": "EP2",
-		"projects/global/episodes/coder/03.md": "EP3",
-		"projects/global/episodes/coder/04.md": "EP4",
-		"projects/global/episodes/coder/05.md": "EP5",
+		"rules.md":                "r",
+		"agents/coder/persona.md": "p",
+		"episodes/coder/01.md":    "EP1",
+		"episodes/coder/02.md":    "EP2",
+		"episodes/coder/03.md":    "EP3",
+		"episodes/coder/04.md":    "EP4",
+		"episodes/coder/05.md":    "EP5",
 	})
 	cfg := baseCfg()
 	cfg.RecencyN = 3
@@ -946,10 +919,10 @@ func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
 
 func TestAssemble_BlendedRetrievalTrimDropsLowestScore(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                      "r",
-		"agents/coder/persona.md":              "p",
-		"projects/global/episodes/coder/01.md": strings.Repeat("A", 120),
-		"projects/global/episodes/coder/02.md": strings.Repeat("B", 120),
+		"rules.md":                "r",
+		"agents/coder/persona.md": "p",
+		"episodes/coder/01.md":    strings.Repeat("A", 120),
+		"episodes/coder/02.md":    strings.Repeat("B", 120),
 	})
 	cfg := baseCfg()
 	cfg.RecencyN = 2
@@ -992,10 +965,10 @@ func TestAssemble_BlendedRetrievalTrimDropsLowestScore(t *testing.T) {
 
 func TestAssemble_BlendedRetrievalUsesBestChunkScore(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                      "r",
-		"agents/coder/persona.md":              "p",
-		"projects/global/episodes/coder/01.md": "best chunk episode",
-		"projects/global/episodes/coder/02.md": "steady episode",
+		"rules.md":                "r",
+		"agents/coder/persona.md": "p",
+		"episodes/coder/01.md":    "best chunk episode",
+		"episodes/coder/02.md":    "steady episode",
 	})
 	cfg := baseCfg()
 	cfg.RecencyN = 1
@@ -1036,11 +1009,11 @@ func TestAssemble_BlendedRetrievalUsesBestChunkScore(t *testing.T) {
 // blended path uses exponential recency decay, not linear rank.
 func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
 	mem := writeRepo(t, map[string]string{
-		"global/rules.md":                      "r",
-		"agents/coder/persona.md":              "p",
-		"projects/global/episodes/coder/01.md": "EP1",
-		"projects/global/episodes/coder/02.md": "EP2",
-		"projects/global/episodes/coder/03.md": "EP3",
+		"rules.md":                "r",
+		"agents/coder/persona.md": "p",
+		"episodes/coder/01.md":    "EP1",
+		"episodes/coder/02.md":    "EP2",
+		"episodes/coder/03.md":    "EP3",
 	})
 	cfg := baseCfg()
 	cfg.RecencyN = 2
