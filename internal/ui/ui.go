@@ -173,6 +173,10 @@ type Server struct {
 	projectStoreMu sync.RWMutex
 	projectStore   ProjectStore
 
+	projectNavMu    sync.RWMutex
+	projectNavSlugs []string
+	projectNavNames map[string]string
+
 	logRing   atomic.Pointer[logbuf.Ring]
 	llamaRing atomic.Pointer[logbuf.Ring]
 	embedRing atomic.Pointer[logbuf.Ring]
@@ -331,12 +335,43 @@ func (s *Server) SetProjectStore(store ProjectStore) {
 	s.projectStoreMu.Lock()
 	s.projectStore = store
 	s.projectStoreMu.Unlock()
+	s.refreshProjectNav()
 }
 
 func (s *Server) getProjectStore() ProjectStore {
 	s.projectStoreMu.RLock()
 	defer s.projectStoreMu.RUnlock()
 	return s.projectStore
+}
+func (s *Server) refreshProjectNav() {
+	store := s.getProjectStore()
+	var slugs []string
+	names := make(map[string]string)
+	if store != nil {
+		projects, err := store.List(false)
+		if err == nil {
+			slugs = make([]string, 0, len(projects))
+			for _, p := range projects {
+				slugs = append(slugs, p.Slug)
+				names[p.Slug] = p.DisplayName
+			}
+		}
+	}
+	s.projectNavMu.Lock()
+	s.projectNavSlugs = slugs
+	s.projectNavNames = names
+	s.projectNavMu.Unlock()
+}
+
+func (s *Server) projectNavSnapshot() ([]string, map[string]string) {
+	s.projectNavMu.RLock()
+	defer s.projectNavMu.RUnlock()
+	slugs := append([]string(nil), s.projectNavSlugs...)
+	names := make(map[string]string, len(s.projectNavNames))
+	for slug, name := range s.projectNavNames {
+		names[slug] = name
+	}
+	return slugs, names
 }
 
 // SetBinDir records the directory containing the running harness binary. It is
@@ -576,33 +611,20 @@ type basePage struct {
 }
 
 func (s *Server) newBasePage(page string) basePage {
+	snap := s.state.snapshot()
+	slugs, names := s.projectNavSnapshot()
 	bp := basePage{
-		Page:       page,
-		UptimeText: formatUptime(time.Since(s.state.snapshot().StartTime)),
-	}
-	store := s.getProjectStore()
-	if store != nil {
-		projects, err := store.List(false)
-		if err == nil {
-			bp.ProjectNames = make(map[string]string, len(projects))
-			for _, p := range projects {
-				bp.ProjectSlugs = append(bp.ProjectSlugs, p.Slug)
-				bp.ProjectNames[p.Slug] = p.DisplayName
-			}
-		}
-	}
-	cs := s.configStore()
-	if cs != nil {
-		loaded, _, err := cs.Load()
-		if err == nil && loaded.Project.ActiveProjectSlug != "" {
-			bp.ActiveProjectSlug = loaded.Project.ActiveProjectSlug
-			if bp.ProjectNames != nil {
-				bp.ActiveProjectName = bp.ProjectNames[loaded.Project.ActiveProjectSlug]
-			}
-		}
+		Page:              page,
+		UptimeText:        formatUptime(time.Since(snap.StartTime)),
+		ActiveProjectSlug: snap.ProjectSlug,
+		ProjectSlugs:      slugs,
+		ProjectNames:      names,
 	}
 	if bp.ActiveProjectSlug == "" {
 		bp.ActiveProjectSlug = "global"
+	}
+	if bp.ProjectNames != nil {
+		bp.ActiveProjectName = bp.ProjectNames[bp.ActiveProjectSlug]
 	}
 	if bp.ActiveProjectName == "" {
 		bp.ActiveProjectName = "Global"

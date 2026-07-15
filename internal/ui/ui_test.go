@@ -20,6 +20,7 @@ import (
 	"github.com/vrnc/harness/internal/db"
 	"github.com/vrnc/harness/internal/logbuf"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/project"
 )
 
 // newServerWithStore returns a Server wired to a fresh temp SQLite config store.
@@ -39,6 +40,66 @@ func newServerWithStore(t *testing.T) (*Server, config.Store) {
 	return s, store
 }
 
+type countingProjectStore struct {
+	projects  []project.Project
+	listCalls int32
+}
+
+func (s *countingProjectStore) List(bool) ([]project.Project, error) {
+	atomic.AddInt32(&s.listCalls, 1)
+	return append([]project.Project(nil), s.projects...), nil
+}
+
+func (s *countingProjectStore) Get(string) (project.Project, error) {
+	return project.Project{}, errors.New("not implemented")
+}
+
+func (s *countingProjectStore) Create(project.CreateInput) (project.Project, error) {
+	return project.Project{}, errors.New("not implemented")
+}
+
+func (s *countingProjectStore) Update(project.UpdateInput) (project.Project, error) {
+	return project.Project{}, errors.New("not implemented")
+}
+
+func (s *countingProjectStore) SetHidden(string, bool) error {
+	return errors.New("not implemented")
+}
+
+func TestNewBasePageUsesCachedProjectNav(t *testing.T) {
+	s := NewServer(3000)
+	store := &countingProjectStore{projects: []project.Project{
+		{Slug: project.GlobalSlug, DisplayName: "Global"},
+		{Slug: "demo", DisplayName: "Demo Project"},
+	}}
+	s.SetProjectStore(store)
+
+	if got := atomic.LoadInt32(&store.listCalls); got != 1 {
+		t.Fatalf("SetProjectStore should populate project nav once, got %d List calls", got)
+	}
+
+	s.state.mu.Lock()
+	s.state.data.ProjectSlug = "demo"
+	s.state.mu.Unlock()
+
+	bp := s.newBasePage("status")
+	if got := atomic.LoadInt32(&store.listCalls); got != 1 {
+		t.Fatalf("newBasePage should use cached project nav, got %d List calls", got)
+	}
+	if bp.ActiveProjectSlug != "demo" || bp.ActiveProjectName != "Demo Project" {
+		t.Fatalf("active project = %q/%q, want demo/Demo Project", bp.ActiveProjectSlug, bp.ActiveProjectName)
+	}
+	if len(bp.ProjectSlugs) != 2 || bp.ProjectSlugs[1] != "demo" {
+		t.Fatalf("project slugs = %#v, want cached demo nav", bp.ProjectSlugs)
+	}
+
+	bp.ProjectNames["demo"] = "mutated"
+	bp.ProjectSlugs[1] = "mutated"
+	bp = s.newBasePage("status")
+	if bp.ActiveProjectName != "Demo Project" || bp.ProjectSlugs[1] != "demo" {
+		t.Fatalf("project nav snapshot was mutated across renders: %#v %#v", bp.ProjectNames, bp.ProjectSlugs)
+	}
+}
 func TestHandleStatus_OK(t *testing.T) {
 	s := NewServer(3000)
 
