@@ -168,20 +168,39 @@ func (q *Queue) Restart(ctx context.Context) error {
 
 // Enqueue adds a request to the queue. Returns ErrQueueFull if at capacity.
 func (q *Queue) Enqueue(req Request) error {
-	q.enqMu.Lock()
-	defer q.enqMu.Unlock()
+	q.enqMu.RLock()
+	defer q.enqMu.RUnlock()
 	if q.stopped.Load() {
 		return ErrStopped
 	}
-	if len(q.ch) >= cap(q.ch) {
+	if !q.reserveDepthSlot() {
 		return ErrQueueFull
 	}
+	reserved := true
+	defer func() {
+		if reserved {
+			q.depth.Add(-1)
+		}
+	}()
+
 	if err := q.walAppend(walRecord{ID: req.ID, Timestamp: time.Now(), Request: req.walPayload()}); err != nil {
 		return err
 	}
 	q.ch <- req
-	q.depth.Add(1)
+	reserved = false
 	return nil
+}
+
+func (q *Queue) reserveDepthSlot() bool {
+	for {
+		depth := q.depth.Load()
+		if depth >= int64(q.maxDepth) {
+			return false
+		}
+		if q.depth.CompareAndSwap(depth, depth+1) {
+			return true
+		}
+	}
 }
 
 // Depth returns the current number of items waiting in the queue.
