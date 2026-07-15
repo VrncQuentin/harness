@@ -803,14 +803,9 @@ func sortChildren(nodes []*memoryTreeNode) {
 		if len(n.Children) == 0 {
 			continue
 		}
-		// Bubble sort is fine here: a memory tree has tens of nodes,
-		// and pulling in sort.Slice for each level just to compare
-		// two booleans plus a string is overkill.
-		for i := 1; i < len(n.Children); i++ {
-			for j := i; j > 0 && treeLess(n.Children[j], n.Children[j-1]); j-- {
-				n.Children[j], n.Children[j-1] = n.Children[j-1], n.Children[j]
-			}
-		}
+		sort.SliceStable(n.Children, func(i, j int) bool {
+			return treeLess(n.Children[i], n.Children[j])
+		})
 		sortChildren(n.Children)
 	}
 }
