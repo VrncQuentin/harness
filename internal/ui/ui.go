@@ -24,10 +24,9 @@ import (
 type ServiceDeps struct {
 	MemoryRepoPath string
 
-	AgentRegistry     AgentRegistry
-	MemoryStore       MemoryStore
-	GlobalMemoryStore MemoryStore
-	SessionStore      SessionStore
+	AgentRegistry AgentRegistry
+	MemoryStore   MemoryStore
+	SessionStore  SessionStore
 
 	Committer Committer
 	Dedup     DedupChecker
@@ -120,9 +119,8 @@ type uiDeps struct {
 	// memRepo is the active layout-v2 project memory repo path. Empty means
 	// project memory is not available yet, in which case the status page
 	// suppresses the layout-scaffolding prompt entirely.
-	memRepo   string
-	memStore  MemoryStore
-	globalMem MemoryStore
+	memRepo  string
+	memStore MemoryStore
 
 	committer Committer
 	dedup     DedupChecker
@@ -310,7 +308,6 @@ func (s *Server) SetServiceDeps(deps ServiceDeps) {
 		d.memRepo = deps.MemoryRepoPath
 		d.agentReg = deps.AgentRegistry
 		d.memStore = deps.MemoryStore
-		d.globalMem = deps.GlobalMemoryStore
 		d.sessionStore = deps.SessionStore
 		d.committer = deps.Committer
 		d.dedup = deps.Dedup

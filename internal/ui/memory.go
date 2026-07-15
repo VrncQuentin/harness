@@ -98,20 +98,11 @@ func editableDesc(p string) (string, bool) {
 // detach (e.g. when the active memory repo becomes unavailable); the page
 // then renders the not-configured CTA instead of a blank tree.
 func (s *Server) SetMemoryStore(store MemoryStore) {
-	s.updateDeps(func(d *uiDeps) {
-		d.memStore = store
-		if d.globalMem == nil {
-			d.globalMem = store
-		}
-	})
+	s.updateDeps(func(d *uiDeps) { d.memStore = store })
 }
 
 func (s *Server) memoryStore() MemoryStore {
 	return s.depsSnapshot().memStore
-}
-
-func (s *Server) globalMemoryStore() MemoryStore {
-	return s.depsSnapshot().globalMem
 }
 
 // SetRetrievalScorer wires the scorer used by the memory episode view.

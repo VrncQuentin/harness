@@ -79,7 +79,6 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		Index:    epIdx,
 	}
 	svcDeps.MemoryStore = rt.activeMem
-	svcDeps.GlobalMemoryStore = rt.globalMem
 	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: rt.agentReg, globalMem: rt.globalMem, activeMem: rt.activeMem, getProjectSlug: rt.getActiveProjectSlug}
 
 	// Session manager is layered on top of the validated memory repo.

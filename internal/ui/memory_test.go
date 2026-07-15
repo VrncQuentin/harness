@@ -323,7 +323,7 @@ func TestHandlePromoteFact_UsesActiveProjectStore(t *testing.T) {
 		"facts.md": "global fact\n",
 	})
 	committer := &stubCommitter{}
-	s.SetServiceDeps(ServiceDeps{MemoryStore: activeStore, GlobalMemoryStore: globalStore, Committer: committer})
+	s.SetServiceDeps(ServiceDeps{MemoryStore: activeStore, Committer: committer})
 
 	form := url.Values{}
 	form.Set("text", "new project fact")
@@ -714,10 +714,7 @@ func TestHandleMemoryEpisodes_UsesActiveProject(t *testing.T) {
 	activeStore := newStubMemoryStore(map[string]string{
 		"episodes/coder/dt.md": "project",
 	})
-	globalStore := newStubMemoryStore(map[string]string{
-		"episodes/coder/global.md": "global",
-	})
-	s.SetServiceDeps(ServiceDeps{MemoryStore: activeStore, GlobalMemoryStore: globalStore})
+	s.SetServiceDeps(ServiceDeps{MemoryStore: activeStore})
 
 	req := httptest.NewRequest(http.MethodGet, "/memory/episodes?agent=coder", nil)
 	rec := httptest.NewRecorder()

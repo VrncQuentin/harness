@@ -175,7 +175,6 @@ func (ad *uiAgentRegistryAdapter) buildAgentInfo(a agent.Agent) (ui.AgentInfo, e
 	if err != nil {
 		return info, err
 	}
-	info.NotesPath = a.NotesPath
 	info.Notes = notes
 	return info, nil
 }
