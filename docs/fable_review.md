@@ -250,3 +250,94 @@ One `atomic.Pointer[uiDeps]` snapshot, swapped whole, would replace the ~17 mute
 5. **Retire the logical-path layer** (S1) — the biggest item; do it before M10 pipelines are built on the logical dialect.
 6. **Projects-page hygiene** (S4): POST-ify mutating actions, move repo copy/scaffold code into `internal/memory`, decide the fate of the `gh`-CLI backup feature.
 7. Fold in the N-series items opportunistically as their files are touched.
+
+---
+
+# Addendum 2 — Remediation Verification
+
+**Date:** 2026-07-15
+**Reviewer:** Claude (Fable 5)
+**Scope:** verification of the remediation wave (PRs [#190](https://github.com/VrncQuentin/harness/pull/190)–[#237](https://github.com/VrncQuentin/harness/pull/237)) at `c668190`, re-checking every finding from the two reviews above against the code, plus a regression pass over the rewritten packages. `go build ./...`, `go vet ./...`, and `go test ./... -count=1` pass (26 packages, including the new `internal/retrieval` and `internal/memoryops`). Net −349 production lines while adding ~900 lines of tests.
+
+**Policy note (recorded from the maintainer, applies to all future work):** the harness has no users yet. Backward compatibility is explicitly waived — for any change, prefer the cleaner and simpler code over compat shims, legacy columns, ignored parameters, or dual code paths. Delete, don't deprecate.
+
+---
+
+## 10. Status: every prior finding is closed
+
+All findings from the 2026-07-07 review (C1–C13, A1–A8, D1–D7, O1–O5) and the 2026-07-15 addendum (S1–S6, N1–N12) were verified **applied and correct in code** — not just claimed by PR titles — with the exceptions listed in sections 11–12. Highlights spot-checked line-by-line:
+
+- **C1:** `Queue.Restart` reconstructs the intake channel and resets `stopOnce`/`stopped`/`depth`; the project switch calls it. The WAL/replay machinery (D1/O1) is fully deleted.
+- **C2/C3/S3:** `trimEpisode` drops from the tail under best-first ordering; `retrieval.BestSemanticScores` keeps the max chunk; assembler and UI scorer share `internal/retrieval`, with trim-under-blend tests.
+- **C5/D3:** approval waits are bounded (5-minute default) and `approval_needed`/state events use blocking delivery; only text deltas may drop. UI-side task frames send reliably (2 s, then evict the subscriber).
+- **C6:** chat tokens pass through `sseData(html.EscapeString(...))` — framing and HTML-injection both fixed.
+- **D4:** per-tab `stream_id` (crypto/rand) routing for chat and task SSE.
+- **D5/C9:** `ApplyRetention` downsamples to hourly aggregates and prunes raw rows on a ticker (migration 0016).
+- **A1–A8, C10–C13:** all confirmed — error-returning constructors, sandbox without the memory-repo fallback, `/task/cancel`, dead git query API deleted, queue-depth card wired, API sessions ended and saved, per-task approval evaluators, deferred partial-transcript recording, write-then-manifest index ordering with rollback, case-folded Windows sandbox paths.
+- **C7/C8/A8** were fixed even though no PR in the wave listed them: the evaluator defaults unknown tools to `Ask`, an explicit `Denied` beats the destructive-command downgrade, and `Loop` config changes trigger the rebuild.
+- **S1/S2/S4/S5/S6, O2/O4/O5, N1–N12:** all applied — logical-path layer deleted, `memoryops` extracted, `gh`/`git` shellout removed, mutating project actions are POSTs, repo lifecycle helpers consolidated in `internal/memory/project_repo.go`, single atomic `SetServiceDeps` snapshot, template parse loop, fsnotify watcher deleted.
+
+---
+
+## 11. New issues introduced by the wave (V-series)
+
+Both were introduced by #236's application of S1 and only manifest when a **non-global project is active** — the configuration the test suite never exercises, which is why CI stayed green.
+
+**V1. The `/memory` editor writes `user.md`/`facts.md` to a repo the assembler never reads.**
+The assembler reads `user.md` and `facts.md` exclusively from the global repo ([prompt.go:303,369](../internal/prompt/prompt.go)), while `handleMemoryEdit`/`handleMemorySave` write to the active repo ([ui/memory.go](../internal/ui/memory.go)). With a project active, edits to those files are silent no-ops for prompts; the tree also renders only the active repo, so the files the prompt actually uses are invisible. Internally inconsistent too: `handlePromoteFact` targets the global store for the very same `facts.md`.
+
+**V2. Appending an agent note under an active project shadows all global notes.**
+`handleAppendNote` writes `agents/<agent>/notes.md` into the active repo; agent-file resolution is project-overrides-global per file, so the first project note creates an override containing only that note and every accumulated global note vanishes from the assembled prompt. The pre-#236 code routed `agents/` writes to the global repo.
+
+**Resolution: both close by design decision D8 (section 13), not by re-routing the handlers to the global repo.** Under D8 the assembler moves to the editor's behavior, not the other way around.
+
+---
+
+## 12. Residual issues (R-series)
+
+**R1. `ClassifyShellCmd` must handle PowerShell.**
+The classifier covers `cmd.exe` destructive commands (`del`, `erase`, `rd /s`, `rmdir`, `format`, `reg delete`) but nothing PowerShell-shaped. Decision: **extend the classifier to pwsh** — at minimum `remove-item` and its aliases (`ri`, `rm`, `del`, `rd` already partially overlap), `clear-content`/`clc`, `format-volume`, `clear-disk`, `remove-itemproperty`, `stop-computer`, and `set-executionpolicy`. Matching must be case-insensitive (PowerShell is). Whether `shell_exec` itself should offer a pwsh mode is a separate, optional decision; the classifier must not assume the model only emits `cmd.exe` syntax either way.
+
+**R2. Vestigial parameters and naming from the S1 migration** — folded into the legacy sweep (section 14): `episodesRootForSlug(slug)` ignores its argument, `listAgentEpisodes`/`countEpisodesByAgent` thread a dead `slug`, and `editableGlobalFiles` is now a misnomer with descriptions that describe global-layer semantics.
+
+---
+
+## 13. D8 — Design decision: global is just the default project
+
+**Maintainer decision (2026-07-15):** the global project is simply the project that is active by default. It behaves like any other project — nothing from it is injected into other projects' prompts. Concretely:
+
+- **`user.md` and `facts.md` become per-project.** The assembler reads `rules.md`, `user.md`, and `facts.md` from the **active** project repo only. The separate "project rules" layer disappears — there is one rules layer, one user layer, one facts layer, all project-scoped. When the global project is active, those are global's own files, same as any project.
+- **Fact promotion and dedup become per-project:** `handlePromoteFact` and the dedup checker target the active repo (today they target global).
+- **The agents directory in the global repo remains a shared *library* of agent definitions.** Definition files (`persona.md`, `rules.md`) still resolve project → library. **Accumulating memory does not fall back:** `notes.md`, episodes, and the episode index are strictly per-project — an agent's notes under project P are P's notes, never the library's. This closes V2 without seeding or shadowing semantics: there is nothing to shadow.
+- **The `/memory` page's current behavior becomes correct by definition:** it shows and edits the active project's repo. V1 closes by changing the assembler (and promotion/dedup), not the editor.
+- `docs/architecture.md`'s prompt-layer table, the memory-repo layout section, and the roadmap acceptance tests that mention `global/rules.md`-style always-on layers must be updated to match.
+- The prompt assembler simplifies accordingly: the `globalMem`/`activeMem` split remains only for agent-definition resolution; every other layer reads from `activeMem`, deleting the `slug != GlobalSlug` special cases.
+
+---
+
+## 14. Kill the remaining legacy (L-series)
+
+Inventory of compat shims and dead surface still in the tree at `c668190`. Per the policy note above, all of it should be deleted outright — no deprecation period, no dual paths. Verified counts as of this audit:
+
+**L1. The WAL config column and ignored parameter.** `QueueConfig.WALPath` ("legacy no-op column kept for config schema compatibility", [config.go:148](../internal/config/config.go)), eight `queue_wal_path` references in [db/config_store.go](../internal/db/config_store.go), and `queue.New(maxDepth, walPath, client)` accepting and discarding its second argument ([queue.go:66](../internal/queue/queue.go)). Delete the struct field, drop the column in a new migration, and fix `queue.New`'s signature.
+
+**L2. Eleven zero-caller UI setters.** `SetAgentRegistry`, `SetChatRunner`, `SetMemoryStore`, `SetRetrievalScorer`, `SetIndexRebuilder`, `SetCommitter`, `SetDedupChecker`, `SetPromotionDedupThreshold`, `SetSessionStore`, `SetTaskRunner`, `SetMemoryRepoPath` — every one has **zero production callers** since #234 introduced `SetServiceDeps`; they survive only because tests use them. Port the tests to `SetServiceDeps` and delete all eleven, including `SetCommitter`'s "fall back to committer when globalCommitter is nil" shim (which D8 makes meaningless anyway).
+
+**L3. `Runtime.buildSessionManager`** ([memory_api.go:236](../internal/runtime/memory_api.go)) is a test-only wrapper around `buildSessionManagerWithClients`. Port the four test call sites and delete it.
+
+**L4. Dead `slug` threading in the memory UI.** `episodesRootForSlug(slug)` returns the constant `"episodes"`; `listAgentEpisodes` and `countEpisodesByAgent` accept and forward a slug nothing uses. Inline the constant, drop the parameters.
+
+**L5. `editableGlobalFiles` naming and descriptions.** Rename to `editableProjectFiles`; under D8 the descriptions become "Project rules", "Facts about the user (this project)", "Promoted facts (this project)".
+
+**L6. Unused capability interfaces in `internal/memory`.** After the S6 consolidation onto `memory.Repo`, `DirLister`, `DirCreator`, and `DirRemover` have no references outside [memory.go](../internal/memory/memory.go) itself. Delete them; keep `Reader`, `Walker`, and `FileWriter` only where a narrow consumer actually names them.
+
+**L7. Global/active special-casing that D8 obsoletes.** Once D8 lands: the `slug != GlobalSlug` branches in `loadLayers` and `startMemoryAndAPI`'s double validation, the `projectRules` layer and its header, `resolveProjectRepoRootsForSlug`'s global-aliasing, and the global/active committer pair in the promotion handlers all reduce to the active-repo path plus the agent-library lookup.
+
+**L8. Milestone-history narration in doc comments.** Comments like "M3 extends the adapter…", "Designed M3-minimal… (M4 will replace this)", "M7 adds an optional approval layer…" describe the repo's git history, not the code's current behavior. Sweep them to plain descriptions of what the code does now; the roadmap is the place for milestone history.
+
+### Suggested order
+
+1. **D8 + V1/V2 + L5/L7 as one change** — the assembler/promotion/dedup retarget, the layer-table doc update, and the naming/special-case cleanup are the same diff, and a test that runs the memory page + prompt assembly with a **non-global active project** is the acceptance test the whole wave was missing.
+2. **R1** (pwsh classifier) — small, isolated, security-relevant.
+3. **L1–L4, L6** — pure deletion, one PR, no behavior change.
+4. **L8** — opportunistic, fold into whatever touches those files next.
