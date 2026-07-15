@@ -841,6 +841,7 @@ func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event)
 
 	toolSeq := 0
 	approvalSeq := 0
+	approvalNumbers := make(map[string]int)
 	for _, ev := range events {
 		switch ev.Type {
 		case agentloop.EvtText:
@@ -877,7 +878,11 @@ func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event)
 		case agentloop.EvtApprovalNeeded:
 			flushAssistant()
 			approvalSeq++
-			trail := fmt.Sprintf("[approval_needed #%d] %s: %s", approvalSeq, ev.ToolID, ev.ToolArgs)
+			seq := approvalSeq
+			if ev.ApprovalID != "" {
+				approvalNumbers[ev.ApprovalID] = seq
+			}
+			trail := fmt.Sprintf("[approval_needed #%d] %s: %s", seq, ev.ToolID, ev.ToolArgs)
 			if err := mgr.Append(id, inference.Message{
 				Role:    "system",
 				Name:    "approval",
@@ -886,12 +891,20 @@ func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event)
 				slog.Warn("session: append approval needed", "id", id, "err", err)
 			}
 		case agentloop.EvtApproval:
-			approvalSeq++
+			seq := 0
+			if ev.ApprovalID != "" {
+				seq = approvalNumbers[ev.ApprovalID]
+				delete(approvalNumbers, ev.ApprovalID)
+			}
+			if seq == 0 {
+				approvalSeq++
+				seq = approvalSeq
+			}
 			decision := "approved"
 			if ev.ToolError == "denied" {
 				decision = "denied"
 			}
-			trail := fmt.Sprintf("[approval #%d] %s: %s", approvalSeq, ev.ToolID, decision)
+			trail := fmt.Sprintf("[approval #%d] %s: %s", seq, ev.ToolID, decision)
 			if err := mgr.Append(id, inference.Message{
 				Role:    "system",
 				Name:    "approval",

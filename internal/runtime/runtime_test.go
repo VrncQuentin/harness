@@ -228,7 +228,7 @@ func TestTaskRunnerCancelTaskCancelsActiveEngine(t *testing.T) {
 	}
 }
 func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
-	root := initRuntimeProjectRepo(t, true)
+	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
@@ -275,8 +275,50 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	}
 	t.Fatalf("partial assistant text was not recorded; conversation=%+v", snap.Conversation)
 }
+
+func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	cfg.Project.ActiveProjectSlug = "global"
+	rt := New(cfg, nil, LogRings{})
+	mgr, _ := rt.buildSessionManager(nil, ui.NewServer(0), projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: "global",
+	})
+	if mgr == nil {
+		t.Fatal("buildSessionManager returned nil")
+	}
+	s := mgr.Start("coder")
+
+	recordTaskEvents(mgr, s.ID, []agentloop.Event{
+		{Type: agentloop.EvtApprovalNeeded, ApprovalID: "approval-1", ToolID: "file_write", ToolArgs: `{"path":"x"}`},
+		{Type: agentloop.EvtApproval, ApprovalID: "approval-1", ToolID: "file_write"},
+	})
+
+	snap := mgr.Snapshot(s.ID)
+	if snap == nil {
+		t.Fatal("session snapshot missing")
+	}
+	var approvals []string
+	for _, msg := range snap.Conversation {
+		if msg.Role == "system" && msg.Name == "approval" {
+			approvals = append(approvals, msg.Content)
+		}
+	}
+	if len(approvals) != 2 {
+		t.Fatalf("approval audit messages = %d, want 2; conversation=%+v", len(approvals), snap.Conversation)
+	}
+	if !strings.Contains(approvals[0], "[approval_needed #1]") || !strings.Contains(approvals[1], "[approval #1]") {
+		t.Fatalf("approval audit numbers not paired: %#v", approvals)
+	}
+	if strings.Contains(approvals[1], "#2") {
+		t.Fatalf("approval result consumed a new number: %#v", approvals)
+	}
+}
+
 func TestTaskRunnerDoesNotDuplicateSingleMessageOnResume(t *testing.T) {
-	root := initRuntimeProjectRepo(t, true)
+	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
@@ -473,7 +515,7 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	modelPort, shutdownModel := startFakeModelServer(t, "runtime summary")
 	defer shutdownModel()
 
-	root := initRuntimeProjectRepo(t, true)
+	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	cfg.Model.Port = modelPort
@@ -515,17 +557,17 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	}
 }
 
-func initRuntimeProjectRepo(t *testing.T, global bool) string {
+func initRuntimeProjectRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	repo, err := gitw.Init(root)
 	if err != nil {
 		t.Fatalf("git init: %v", err)
 	}
-	if err := memory.CreateMissingProjectRepo(root, global); err != nil {
+	if err := memory.CreateMissingProjectRepo(root, true); err != nil {
 		t.Fatalf("scaffold project repo: %v", err)
 	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(global)); err != nil {
+	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(true)); err != nil {
 		t.Fatalf("commit scaffold: %v", err)
 	}
 	return root
