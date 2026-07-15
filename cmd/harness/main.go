@@ -104,7 +104,7 @@ func run() error {
 		}
 	}
 
-	go harnessruntime.ForwardEvents(rootCtx, events, uiServer, rt.Managers)
+	go harnessruntime.ForwardEvents(rootCtx, events, uiServer, rt.Managers, rt.QueueStats)
 
 	uiServer.SetRetry(func() ui.ApplyResult {
 		return rt.ApplyConfig(rootCtx, uiServer, events, metricsStore)

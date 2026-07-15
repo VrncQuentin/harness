@@ -46,6 +46,25 @@ func TestNewEventChannelUsesRuntimeBuffer(t *testing.T) {
 	}
 }
 
+func TestQueueStatsReportsLiveQueueDepthAndCapacity(t *testing.T) {
+	rt := New(config.Defaults(), nil, LogRings{})
+	depth, capacity := rt.QueueStats()
+	if depth != 0 || capacity != 0 {
+		t.Fatalf("empty QueueStats = %d/%d, want 0/0", depth, capacity)
+	}
+
+	rt.reqQueue = queue.New(3, "", nil)
+	for _, id := range []string{"one", "two"} {
+		if err := rt.reqQueue.Enqueue(queue.Request{ID: id, Response: make(chan inference.Token, 1), Ctx: context.Background()}); err != nil {
+			t.Fatalf("enqueue %s: %v", id, err)
+		}
+	}
+
+	depth, capacity = rt.QueueStats()
+	if depth != 2 || capacity != 3 {
+		t.Fatalf("QueueStats = %d/%d, want 2/3", depth, capacity)
+	}
+}
 func TestRestartCallbacksTolerateMissingManagers(t *testing.T) {
 	rt := New(config.Defaults(), nil, LogRings{})
 
