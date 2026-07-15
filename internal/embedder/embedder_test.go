@@ -52,6 +52,24 @@ func TestEmbedMapsVectorsByResponseIndex(t *testing.T) {
 	}
 }
 
+func TestEmbedRejectsMissingResponseRows(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(embeddingResponse{Data: []embeddingData{
+			{Index: 0, Embedding: []float32{0.1, 0.4}},
+		}})
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, srv.Client())
+	_, err := client.Embed(context.Background(), []string{"first", "second"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "missing embedding for input 1") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestEmbedEmptyInputSkipsHTTP(t *testing.T) {
 	called := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
