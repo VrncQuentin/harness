@@ -1,20 +1,14 @@
 package ui
 
 import (
-	"errors"
 	"fmt"
-	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
-	gogit "github.com/go-git/go-git/v5"
-	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/project"
 )
@@ -248,7 +242,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/projects?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
-	if err := prepareProjectMemoryRepo(created.MemoryRepoPath, created.Slug == project.GlobalSlug); err != nil {
+	if err := memory.EnsureProjectRepo(created.MemoryRepoPath, created.Slug == project.GlobalSlug); err != nil {
 		http.Redirect(w, r, "/projects?error="+url.QueryEscape("project created, but memory repo setup failed: "+err.Error()), http.StatusSeeOther)
 		return
 	}
@@ -308,12 +302,12 @@ func (s *Server) handleProjectEdit(w http.ResponseWriter, r *http.Request) {
 	if input.MemoryRepoPath != "" && current.MemoryRepoPath != "" && !samePath(input.MemoryRepoPath, current.MemoryRepoPath) {
 		switch r.FormValue("memory_repo_mode") {
 		case "move":
-			if err := copyProjectMemoryRepo(current.MemoryRepoPath, input.MemoryRepoPath, slug == project.GlobalSlug); err != nil {
+			if err := memory.MoveProjectRepo(current.MemoryRepoPath, input.MemoryRepoPath, slug == project.GlobalSlug); err != nil {
 				http.Redirect(w, r, "/projects?error="+url.QueryEscape("move memory repo: "+err.Error()), http.StatusSeeOther)
 				return
 			}
 		case "fresh":
-			if err := prepareProjectMemoryRepo(input.MemoryRepoPath, slug == project.GlobalSlug); err != nil {
+			if err := memory.EnsureProjectRepo(input.MemoryRepoPath, slug == project.GlobalSlug); err != nil {
 				http.Redirect(w, r, "/projects?error="+url.QueryEscape("initialize memory repo: "+err.Error()), http.StatusSeeOther)
 				return
 			}
@@ -342,122 +336,6 @@ func sameOrigin(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(u.Host, r.Host)
-}
-
-func prepareProjectMemoryRepo(repoPath string, global bool) error {
-	repo, err := gitw.Init(repoPath)
-	if err != nil {
-		return err
-	}
-	if err := memory.CreateMissingProjectRepo(repoPath, global); err != nil {
-		return err
-	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(global)); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
-		slog.Warn("project memory repo scaffold commit", "repo", repoPath, "err", err)
-	}
-	return nil
-}
-
-func copyProjectMemoryRepo(src, dst string, global bool) error {
-	if samePath(src, dst) {
-		return prepareProjectMemoryRepo(dst, global)
-	}
-	if err := copyTreeWithoutGit(src, dst); err != nil {
-		return err
-	}
-	if err := prepareProjectMemoryRepo(dst, global); err != nil {
-		return err
-	}
-	repo, err := gitw.Open(dst)
-	if err != nil {
-		return err
-	}
-	files, err := listRepoFiles(dst)
-	if err != nil {
-		return err
-	}
-	if len(files) == 0 {
-		return nil
-	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "migration"}, "move project memory repo"), files); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
-		slog.Warn("project memory repo move commit", "repo", dst, "err", err)
-	}
-	return nil
-}
-
-func copyTreeWithoutGit(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("source is not a directory: %s", src)
-	}
-	return filepath.WalkDir(src, func(srcPath string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.Name() == ".git" && d.IsDir() {
-			return filepath.SkipDir
-		}
-		rel, err := filepath.Rel(src, srcPath)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		dstPath := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(dstPath, 0o755)
-		}
-		return copyFile(srcPath, dstPath)
-	})
-}
-
-func copyFile(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
-	}
-	return nil
-}
-
-func listRepoFiles(root string) ([]string, error) {
-	var files []string
-	err := filepath.WalkDir(root, func(abs string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.Name() == ".git" && d.IsDir() {
-			return filepath.SkipDir
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(root, abs)
-		if err != nil {
-			return err
-		}
-		files = append(files, filepath.ToSlash(rel))
-		return nil
-	})
-	return files, err
 }
 
 func samePath(a, b string) bool {
