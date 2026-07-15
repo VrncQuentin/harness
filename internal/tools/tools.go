@@ -22,6 +22,9 @@ import (
 // outside the active project's configured sandbox roots.
 var ErrSandboxViolation = errors.New("tools: path is outside sandbox roots")
 
+// ErrDuplicateTool is returned when registering a tool ID more than once.
+var ErrDuplicateTool = errors.New("tools: duplicate id")
+
 // ErrPathNotFound is returned when a requested file or directory does not
 // exist.
 var ErrPathNotFound = errors.New("tools: path not found")
@@ -74,13 +77,18 @@ func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]Tool)}
 }
 
-// Register adds t to the registry. Panics on duplicate IDs.
-func (r *Registry) Register(t Tool) {
-	if _, exists := r.tools[t.ID()]; exists {
-		panic(fmt.Sprintf("tools: duplicate id %q", t.ID()))
+// Register adds t to the registry.
+func (r *Registry) Register(t Tool) error {
+	if t == nil {
+		return errors.New("tools: nil tool")
 	}
-	r.tools[t.ID()] = t
-	r.order = append(r.order, t.ID())
+	id := t.ID()
+	if _, exists := r.tools[id]; exists {
+		return fmt.Errorf("%w: %q", ErrDuplicateTool, id)
+	}
+	r.tools[id] = t
+	r.order = append(r.order, id)
+	return nil
 }
 
 // Get returns the tool identified by id, or nil if not registered.
@@ -161,12 +169,19 @@ func pathWithinRoot(path, root string) bool {
 // (file_write, shell_exec) are registered but disabled by default in
 // config — they must be explicitly enabled and pass the M7 approval
 // layer before they can execute.
-func RegisterBuiltins(r *Registry) {
-	r.Register(&fileReadTool{})
-	r.Register(&fileListTool{})
-	r.Register(&fileWriteTool{})
-	r.Register(&shellExecTool{})
-	r.Register(&webSearchTool{})
+func RegisterBuiltins(r *Registry) error {
+	for _, t := range []Tool{
+		&fileReadTool{},
+		&fileListTool{},
+		&fileWriteTool{},
+		&shellExecTool{},
+		&webSearchTool{},
+	} {
+		if err := r.Register(t); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // fileReadTool implements the file_read tool.
