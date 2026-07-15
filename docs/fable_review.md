@@ -335,9 +335,11 @@ Inventory of compat shims and dead surface still in the tree at `c668190`. Per t
 
 **L8. Milestone-history narration in doc comments.** Comments like "M3 extends the adapter…", "Designed M3-minimal… (M4 will replace this)", "M7 adds an optional approval layer…" describe the repo's git history, not the code's current behavior. Sweep them to plain descriptions of what the code does now; the roadmap is the place for milestone history.
 
+**L9. Squash all migrations into a single initial migration.** With no users there are no databases to step through 16 incremental migrations — every `harness.db` in existence is created from scratch. Collapse `0001`–`0016` (and the D8/L1 schema changes when they land) into one `0001_init` pair whose DDL is the current final schema, mirroring `config.Defaults()` directly. This also deletes the intermediate churn (add `wal_path` → no-op it → drop it) that only exists as migration archaeology. Going forward, keep single-migration until first release: schema changes edit `0001_init` in place rather than appending new steps.
+
 ### Suggested order
 
 1. **D8 + V1/V2 + L5/L7 as one change** — the assembler/promotion/dedup retarget, the layer-table doc update, and the naming/special-case cleanup are the same diff, and a test that runs the memory page + prompt assembly with a **non-global active project** is the acceptance test the whole wave was missing.
 2. **R1** (pwsh classifier) — small, isolated, security-relevant.
-3. **L1–L4, L6** — pure deletion, one PR, no behavior change.
+3. **L1–L4, L6, L9** — pure deletion, one PR, no behavior change; do L9 last within the PR so the squashed migration captures the L1 column drop instead of preserving it as a step.
 4. **L8** — opportunistic, fold into whatever touches those files next.
