@@ -2,7 +2,9 @@ package agentloop
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/config"
@@ -308,6 +310,47 @@ func TestUnknownApprovalID(t *testing.T) {
 	}
 }
 
+func TestApprovalWaitTimesOut(t *testing.T) {
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
+	engine := newTestEngine(cfg).WithApprovalTimeout(20 * time.Millisecond)
+	engine.infer = &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
+
+	evch := make(chan Event, 64)
+	done := make(chan error, 1)
+	go func() {
+		done <- engine.Run(context.Background(), []inference.Message{{Role: "user", Content: "write file"}}, evch)
+	}()
+
+	var approvalID string
+	for ev := range evch {
+		if ev.Type == EvtApprovalNeeded {
+			approvalID = ev.ApprovalID
+		}
+	}
+	if approvalID == "" {
+		t.Fatal("expected approval_needed event before timeout")
+	}
+
+	err := <-done
+	if !errors.Is(err, ErrApprovalTimeout) {
+		t.Fatalf("Run error = %v, want ErrApprovalTimeout", err)
+	}
+	if err := engine.ApplyApproval(approvalID, approvals.ApprovalResponse{Decision: approvals.Allowed}); err == nil {
+		t.Fatal("expected timed-out approval id to be removed")
+	}
+}
+
+func TestApprovalNeededDeliveryTimesOutWhenEventChannelIsFull(t *testing.T) {
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
+	engine := newTestEngine(cfg).WithApprovalTimeout(20 * time.Millisecond)
+	engine.infer = &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
+
+	evch := make(chan Event)
+	err := engine.Run(context.Background(), []inference.Message{{Role: "user", Content: "write file"}}, evch)
+	if !errors.Is(err, ErrApprovalTimeout) {
+		t.Fatalf("Run error = %v, want ErrApprovalTimeout", err)
+	}
+}
 func TestApprovalNeededEventHasCorrectFields(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
 	engine := newTestEngine(cfg)
