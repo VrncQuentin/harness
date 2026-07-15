@@ -643,11 +643,6 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 			}
 		}
 	}
-	if len(sandboxRoots) == 0 {
-		if roots, err := ad.rt.resolveProjectRepoRootsForSlug(slug); err == nil && roots.activeRoot != "" {
-			sandboxRoots = append(sandboxRoots, roots.activeRoot)
-		}
-	}
 
 	loopCtx, cancelLoop := context.WithCancel(ctx)
 
