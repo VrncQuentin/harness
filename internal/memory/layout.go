@@ -24,10 +24,10 @@ type LayoutItem struct {
 }
 
 // ExpectedLayout returns the canonical list of items the memory repo
-// should contain. Project-scoped runtime artifacts (sessions.jsonl,
-// queue.wal, index vectors.bin/manifest.json) are intentionally excluded -
-// each is owned by the subsystem that writes it (session manager, queue,
-// embedder) and gets created on first use under projects/global/.
+// should contain. Project-scoped runtime artifacts (sessions.jsonl and
+// index vectors.bin/manifest.json) are intentionally excluded - each is
+// owned by the subsystem that writes it (session manager, embedder) and gets
+// created on first use under projects/global/.
 // Per-agent definition files under agents/<n>/ are also excluded; agents
 // are created by the user, so the scaffolder only ensures the parent
 // directory exists.
@@ -53,7 +53,7 @@ func ExpectedLayout() []LayoutItem {
 // ExpectedProjectRepoLayout returns the canonical layout for one layout-v2
 // project memory repository. Global repos carry the base prompt files and
 // fallback agent library; user repos carry project-owned rules and optional
-// agent overrides. Runtime files such as queue.wal are still created lazily.
+// agent overrides.
 func ExpectedProjectRepoLayout(global bool) []LayoutItem {
 	items := []LayoutItem{
 		{Path: "sessions.jsonl", Dir: false, Desc: "Project session history"},
@@ -149,8 +149,7 @@ func ValidateProjectRepo(root string, global bool) error {
 // identified by slug. For the reserved "global" slug it returns the
 // system-project scaffold with sessions.jsonl but without optional
 // project-local rules.md. For user projects it includes rules.md, agents/,
-// sessions.jsonl, episodes/, index/, and index/_episodes/. The queue.wal is intentionally omitted
-// — it is created lazily by the queue subsystem on first use.
+// sessions.jsonl, episodes/, index/, and index/_episodes/.
 func ProjectLayout(slug string) ([]LayoutItem, error) {
 	if err := project.ValidateSlug(slug); err != nil {
 		return nil, fmt.Errorf("memory: invalid project slug %q: %w", slug, err)

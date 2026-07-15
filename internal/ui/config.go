@@ -173,7 +173,6 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.Prompt.SummarizerPrompt = strings.TrimSpace(r.FormValue("prompt_summarizer_prompt"))
 
 	cfg.Queue.MaxDepth = atoiOr(r.FormValue("queue_max_depth"), cfg.Queue.MaxDepth)
-	cfg.Queue.WALPath = strings.TrimSpace(r.FormValue("queue_wal_path"))
 
 	cfg.Loop.MaxTurns = atoiOr(r.FormValue("loop_max_turns"), cfg.Loop.MaxTurns)
 	cfg.Loop.DoomThreshold = atoiOr(r.FormValue("loop_doom_threshold"), cfg.Loop.DoomThreshold)
