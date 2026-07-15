@@ -502,7 +502,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/chat", s.handleChat)
 	mux.HandleFunc("/chat/events", s.handleChatEvents)
 	mux.HandleFunc("/chat/send", s.handleChatSend)
-	mux.HandleFunc("/chat/stream", s.handleChatStream)
+
 	mux.HandleFunc("/chat/save", s.handleChatSave)
 	mux.HandleFunc("/chat/session", s.handleChatSessionResume)
 	mux.HandleFunc("/memory", s.handleMemory)
