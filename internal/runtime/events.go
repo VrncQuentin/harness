@@ -20,16 +20,22 @@ func recordMetrics(
 	store metrics.Store,
 	llamaMgr, embedMgr *proc.Manager,
 	q *queue.Queue,
+	getRetentionDays func() int,
 ) {
 	rec := metrics.NewRecorder(store)
 	start := time.Now()
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	retentionTicker := time.NewTicker(time.Hour)
+	defer retentionTicker.Stop()
+	applyMetricRetention(store, getRetentionDays)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-retentionTicker.C:
+			applyMetricRetention(store, getRetentionDays)
 		case <-ticker.C:
 			_ = rec.Uptime(time.Since(start))
 			if q != nil {
@@ -49,6 +55,19 @@ func recordMetrics(
 				_ = rec.VRAMUsedMB(sample.gpu, sample.usedMB)
 			}
 		}
+	}
+}
+
+func applyMetricRetention(store metrics.Store, getRetentionDays func() int) {
+	if store == nil || getRetentionDays == nil {
+		return
+	}
+	days := getRetentionDays()
+	if days < 1 {
+		return
+	}
+	if err := store.ApplyRetention(days); err != nil {
+		slog.Warn("metrics retention", "err", err)
 	}
 }
 
