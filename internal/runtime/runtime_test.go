@@ -203,6 +203,47 @@ func TestTaskRunnerCancelTaskCancelsActiveEngine(t *testing.T) {
 		t.Fatal("expected missing task to return an error")
 	}
 }
+func TestTaskRunnerDoesNotDuplicateSingleMessageOnResume(t *testing.T) {
+	root := initRuntimeProjectRepo(t, true)
+	cfg := config.Defaults()
+	cfg.Project.ActiveProjectSlug = "global"
+	rt := New(cfg, nil, LogRings{})
+	rt.inferClient = &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
+
+	mgr, _ := rt.buildSessionManager(nil, ui.NewServer(0), projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: "global",
+	})
+	rt.setSessionManager(mgr)
+
+	s := mgr.Start("coder")
+	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello"}); err != nil {
+		t.Fatalf("seed Append: %v", err)
+	}
+
+	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry()}
+	_, evch, err := ad.RunTask(context.Background(), "coder", s.ID, []ui.ChatMessage{{Role: "user", Content: "hello"}})
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	for range evch {
+	}
+
+	snap := mgr.Snapshot(s.ID)
+	if snap == nil {
+		t.Fatal("session snapshot missing")
+	}
+	userTurns := 0
+	for _, msg := range snap.Conversation {
+		if msg.Role == "user" && msg.Content == "hello" {
+			userTurns++
+		}
+	}
+	if userTurns != 1 {
+		t.Fatalf("user turn count = %d, want 1; conversation=%+v", userTurns, snap.Conversation)
+	}
+}
 func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	root := t.TempDir()
 	for rel, body := range map[string]string{
