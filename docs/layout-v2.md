@@ -51,11 +51,10 @@ The home directory is resolved at startup before SQLite opens. A later implement
     _episodes/
       vectors.bin
       manifest.json
-  queue.wal
   artifacts/
 ```
 
-The `global` repo is semantically special because it supplies base prompt layers and the fallback agent library. It is not structurally special: it has the same session, episode, index, queue, and artifact layout as any other project memory repo.
+The `global` repo is semantically special because it supplies base prompt layers and the fallback agent library. It is not structurally special: it has the same session, episode, index, and artifact layout as any other project memory repo.
 
 ## User Project Memory Repo
 
@@ -81,7 +80,6 @@ Each user project has one memory repo:
     <dir-slug>/
       vectors.bin
       manifest.json
-  queue.wal
   artifacts/
     <run>/
 ```
@@ -180,7 +178,7 @@ Layout v2 destination:
 Migration rules:
 - Move `memory/global/{rules.md,user.md,facts.md}` into `projects/global/`.
 - Move top-level `memory/agents/` into `projects/global/agents/`.
-- Move `memory/projects/global/{sessions.jsonl,queue.wal,episodes,index,artifacts}` into `projects/global/`.
+- Move `memory/projects/global/{sessions.jsonl,episodes,index,artifacts}` into `projects/global/`; legacy `queue.wal` files are discarded because queued interactive requests are not crash-replayed.
 - Move each `memory/projects/<slug>/` to `~/.harness/projects/<slug>/` as its own git repo.
 - Preserve project slugs, session records, episode paths within each destination repo, commit history where feasible, and attached directory rows.
 

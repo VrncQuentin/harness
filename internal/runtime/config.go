@@ -117,9 +117,6 @@ func (rt *Runtime) ApplyConfig(
 	if old.Queue.MaxDepth != loaded.Queue.MaxDepth {
 		result.RestartNeeded = append(result.RestartNeeded, "queue max depth")
 	}
-	if old.Queue.WALPath != loaded.Queue.WALPath {
-		result.RestartNeeded = append(result.RestartNeeded, "queue WAL path")
-	}
 	if old.Log.RingMaxEntries != loaded.Log.RingMaxEntries && rt.logRings.Log != nil {
 		rt.logRings.Log.Resize(loaded.Log.RingMaxEntries)
 		result.LiveApplied = true
