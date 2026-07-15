@@ -234,7 +234,7 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	rt := New(cfg, nil, LogRings{})
 	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
 
-	mgr, _ := rt.buildSessionManager(nil, ui.NewServer(0), projectRepoRoots{
+	mgr, _ := rt.buildSessionManager(ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
@@ -281,7 +281,7 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
-	mgr, _ := rt.buildSessionManager(nil, ui.NewServer(0), projectRepoRoots{
+	mgr, _ := rt.buildSessionManager(ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
@@ -324,7 +324,7 @@ func TestTaskRunnerDoesNotDuplicateSingleMessageOnResume(t *testing.T) {
 	rt := New(cfg, nil, LogRings{})
 	rt.inferClient = &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
 
-	mgr, _ := rt.buildSessionManager(nil, ui.NewServer(0), projectRepoRoots{
+	mgr, _ := rt.buildSessionManager(ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
@@ -524,7 +524,7 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	rt := New(cfg, nil, LogRings{})
 	rt.memReader = memory.NewLayoutV2Reader(root, "global", root)
 
-	mgr, adapter := rt.buildSessionManager(nil, ui.NewServer(0), projectRepoRoots{
+	mgr, adapter := rt.buildSessionManager(ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
