@@ -32,9 +32,9 @@ type ChatToken struct {
 // translates between those layers and the small DTOs above. Same pattern
 // as AgentRegistry.
 //
-// M3 extends Run to take and return a session id so the browser can pin
-// every turn to one persistent session and so the assistant turn is
-// captured by the session manager as it streams.
+// Run takes and returns a session id so the browser can pin every turn
+// to one persistent session and the session manager can capture the
+// assistant turn as it streams.
 type ChatRunner interface {
 	Run(ctx context.Context, agent, sessionID string, conversation []ChatMessage) (string, <-chan ChatToken, error)
 }

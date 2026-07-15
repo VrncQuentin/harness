@@ -139,7 +139,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		}
 	}
 
-	// Wire the M4 task runner (loop engine) with assembler + queue.
+	// Wire the task runner with assembler + queue.
 	registry := tools.NewRegistry()
 	if err := tools.RegisterBuiltins(registry); err != nil {
 		uiServer.SetServiceDeps(svcDeps)
@@ -148,7 +148,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	}
 	rt.loopRegistry = registry
 
-	// Build the M7 permission base layers. Each task engine gets a fresh
+	// Build the permission base layers. Each task engine gets a fresh
 	// evaluator so mutable session approval rules stay scoped to that session.
 	loopCfg := rt.cfg.Loop
 	userLayer := approvals.Layer{Name: "user-config"}
@@ -286,7 +286,7 @@ func (rt *Runtime) SessionManager() *session.Manager {
 	return rt.sessionMg
 }
 
-// stopMemoryAndAPI tears down the M2/M3 services. Caller must hold rt.mu.
+// stopMemoryAndAPI tears down memory, sessions, task, and API services. Caller must hold rt.mu.
 //
 // The session manager has no goroutines to stop - FlushAll is invoked
 // from runtime.Stop() to persist live sessions on shutdown. Resetting

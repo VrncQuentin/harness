@@ -42,9 +42,9 @@ type SessionSaveResult struct {
 	SaveSeq     int       `json:"save_seq"`
 }
 
-// SessionRecord is one saved-session entry rendered by the resume
-// picker. Mirrors session.Record verbatim minus the project field
-// (hardcoded to "global" in M3).
+// SessionRecord is one saved-session entry rendered by the resume picker.
+// It mirrors the session package record shape minus fields the UI does not
+// display.
 type SessionRecord struct {
 	ID          string    `json:"id"`
 	Agent       string    `json:"agent"`

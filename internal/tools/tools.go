@@ -1,5 +1,5 @@
 // Package tools provides the tool registry and built-in read-only file
-// tools for the M4 native agent loop.
+// tools for the native agent loop.
 package tools
 
 import (
@@ -150,7 +150,7 @@ func pathWithinRoot(path, root string) bool {
 // RegisterBuiltins registers the built-in tools on r. Read-only tools
 // (file_read, file_list) are always registered. Destructive tools
 // (file_write, shell_exec) are registered but disabled by default in
-// config — they must be explicitly enabled and pass the M7 approval
+// config — they must be explicitly enabled and pass the approval
 // layer before they can execute.
 func RegisterBuiltins(r *Registry) error {
 	for _, t := range []Tool{

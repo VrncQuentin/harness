@@ -252,10 +252,10 @@ func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, c
 // inference or queue directly: this file translates between the small
 // ChatMessage/ChatToken DTOs and the runtime types.
 //
-// M3 extends the adapter to mint or accept a session id per call. The
-// id is returned to the UI so the browser can pin it to subsequent
-// stream + save requests, and the assistant turn is appended to the
-// live session as tokens arrive.
+// The adapter mints or accepts a session id per call. The id is returned
+// to the UI so the browser can pin it to subsequent stream + save
+// requests, and the assistant turn is appended to the live session as
+// tokens arrive.
 type chatRunnerAdapter struct {
 	asm *apiAssemblerAdapter
 	q   *queue.Queue
@@ -505,12 +505,10 @@ func (ad *uiSessionStoreAdapter) Resume(id string) error {
 	return nil
 }
 
-// apiSessionAdapter implements api.SessionRecorder so the API server
-// can mint a fresh session per /v1/chat/completions request and append
-// the user-side messages plus the assistant turn. Designed M3-minimal
-// so an external client's per-call episodes are recorded without coupling
-// to the client's own session lifecycle (M4 will replace this with a
-// smarter mapping).
+// apiSessionAdapter implements api.SessionRecorder so the API server can
+// mint a fresh session per /v1/chat/completions request and append the
+// user-side messages plus the assistant turn. API requests are recorded
+// independently from any client-side conversation lifecycle.
 type apiSessionAdapter struct {
 	mgr *session.Manager
 }
@@ -550,7 +548,7 @@ type taskRunnerAdapter struct {
 	registry *tools.Registry
 	asm      *apiAssemblerAdapter
 	q        *queue.Queue
-	// approvalLayers seed a fresh M7 permission evaluator for each task engine.
+	// approvalLayers seed a fresh permission evaluator for each task engine.
 	// The evaluator session layer is mutable, so sharing an evaluator would leak
 	// "always" approvals across task sessions.
 	approvalLayers []approvals.Layer

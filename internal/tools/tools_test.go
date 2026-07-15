@@ -139,7 +139,7 @@ func TestDestructiveToolsRegisteredButDisabledByDefault(t *testing.T) {
 	// Destructive tools exist in the registry.
 	for _, id := range []string{"file_write", "shell_exec"} {
 		if r.Get(id) == nil {
-			t.Errorf("%s should be registered (M7 approval layer is active)", id)
+			t.Errorf("%s should be registered (approval layer is active)", id)
 		}
 	}
 }

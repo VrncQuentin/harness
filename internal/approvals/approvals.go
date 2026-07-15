@@ -1,4 +1,4 @@
-// Package approvals provides the M7 permission engine: layered rules,
+// Package approvals provides the permission engine: layered rules,
 // destructive-command classification, and once/always/reject decisions
 // evaluated within the agent loop at tool-dispatch time.
 package approvals

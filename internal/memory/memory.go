@@ -1,6 +1,6 @@
-// Package memory mediates all reads of the on-disk memory repo. M2 ships
-// the read-only file-system view used by the prompt assembler; git and
-// semantic retrieval land in M3 and M5 without changing this interface.
+// Package memory mediates reads and writes for the on-disk memory repo.
+// It provides the filesystem-backed view used by prompt assembly, agent
+// management, sessions, and the memory browser.
 package memory
 
 import (
@@ -278,7 +278,7 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 		}
 		relSlash := filepath.ToSlash(rel)
 		// Prune .git anywhere under the repo - the memory directory is
-		// itself a git repo (M3) and we never want plumbing in the UI.
+		// itself a git repo and we never want plumbing in the UI.
 		if d.Name() == ".git" {
 			if d.IsDir() {
 				return filepath.SkipDir

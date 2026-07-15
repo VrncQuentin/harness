@@ -1,12 +1,9 @@
-// Package agentloop provides the M4 native loop engine: send conversation
-// to the model, parse tool calls, dispatch to the tool registry, inject
-// results, and repeat until stop/limit/cancel.
-//
-// M7 adds an optional approval layer: when an approvals.Evaluator is
-// configured, destructive tool calls are checked before dispatch. Allowed
-// calls proceed immediately; Denied calls inject a tool-error; Ask calls
-// pause the loop, emit an approval event, and wait for the caller to
-// apply a decision via ApplyApproval.
+// Package agentloop sends conversation to the model, parses tool calls,
+// dispatches to the tool registry, injects results, and repeats until
+// stop/limit/cancel. When an approvals.Evaluator is configured, tool
+// calls are checked before dispatch: allowed calls proceed immediately,
+// denied calls inject a tool error, and ask decisions pause the loop until
+// the caller applies a decision via ApplyApproval.
 package agentloop
 
 import (
@@ -85,8 +82,8 @@ type Engine struct {
 
 	approvalTimeout time.Duration
 
-	// evl is the optional M7 permission evaluator. When nil, no
-	// approval checks are performed (all tools dispatch immediately).
+	// evl is the optional permission evaluator. When nil, no approval
+	// checks are performed and tools dispatch immediately.
 	evl *approvals.Evaluator
 
 	// pending guards the approval routing map and counter.
@@ -144,7 +141,7 @@ func buildToolSchemas(registry *tools.Registry) []registeredToolSchema {
 	return schemas
 }
 
-// WithApprovals installs an M7 permission evaluator. When nil (the
+// WithApprovals installs a permission evaluator. When nil (the
 // default), no approval checks are performed. Call before Run().
 func (e *Engine) WithApprovals(evl *approvals.Evaluator) *Engine {
 	e.evl = evl
@@ -338,7 +335,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 			if tool == nil || !e.isToolEnabled(tc.Function.Name) {
 				res = tools.Result{Error: fmt.Sprintf("tool %q not available", tc.Function.Name)}
 			} else {
-				// M7: check approvals before dispatch.
+				// Check approvals before dispatch.
 				decision, err := e.checkApproval(ctx, evch, turns, tc.Function.Name, args)
 				if err != nil {
 					e.emit(ctx, evch, Event{Turn: turns, Type: EvtError, Content: err.Error(), Terminate: EvtError})

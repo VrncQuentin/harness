@@ -55,7 +55,7 @@ func NewSummarizer(client inference.Client, prompt SummarizerPromptFunc, timeout
 // returns the joined token stream as a markdown body. Any
 // error - empty conversation, inference failure, context cancelled, or
 // an explicit error token mid-stream - is returned without falling
-// back to "no summary": M3 prefers refusing the save to committing
+// back to "no summary": refusing the save is better than committing
 // garbage.
 func (s *Summarizer) Summarize(ctx context.Context, conversation []inference.Message) (string, error) {
 	if len(conversation) == 0 {
