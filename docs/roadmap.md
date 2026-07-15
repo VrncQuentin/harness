@@ -180,7 +180,7 @@ the git HEAD of each configured project directory. These depend on:
 This work is descoped from the current phase; project directory indexes will be
 implemented when directory-level semantic search becomes a user-facing feature.
 
-- [x] Embedder sidecar: nomic-embed-text, health check, restart on crash
+- [x] Embedder sidecar: llama-server --embedding mode, health check, restart on crash
 - [x] Embed-on-commit pipeline (episodes): new episode -> embed chunks -> update `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` -> commit
 - [ ] Embed-on-commit pipeline (attached directories): for each tree configured on the active project, walk by HEAD -> embed chunks -> update `projects/<active>/index/<dir-slug>/{vectors.bin, manifest.json}` -> commit
 - [x] ANN search: flat scan initially, upgrade to usearch if latency becomes a problem
