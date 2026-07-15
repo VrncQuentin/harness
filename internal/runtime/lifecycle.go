@@ -196,7 +196,11 @@ func (rt *Runtime) startServices(
 	}
 
 	if metricsStore != nil {
-		go recordMetrics(ctx, metricsStore, rt.llamaMgr, rt.embedMgr, rt.reqQueue)
+		go recordMetrics(ctx, metricsStore, rt.llamaMgr, rt.embedMgr, rt.reqQueue, func() int {
+			rt.mu.Lock()
+			defer rt.mu.Unlock()
+			return rt.cfg.Metrics.RetentionDays
+		})
 	}
 
 	rt.started = true
