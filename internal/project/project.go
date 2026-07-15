@@ -1,4 +1,4 @@
-// Package project defines the M3b project model and store contract.
+// Package project defines the project model and store contract.
 package project
 
 import (

@@ -92,6 +92,68 @@ type noopIndexRebuilder struct{}
 
 func (noopIndexRebuilder) Rebuild(context.Context) error { return nil }
 
+func serviceDepsForTest(s *Server) ServiceDeps {
+	deps := s.depsSnapshot()
+	return ServiceDeps{
+		MemoryRepoPath:          deps.memRepo,
+		AgentRegistry:           deps.agentReg,
+		MemoryStore:             deps.memStore,
+		SessionStore:            deps.sessionStore,
+		Committer:               deps.committer,
+		Dedup:                   deps.dedup,
+		PromotionDedupThreshold: deps.promotionDedupThreshold,
+		RetrievalScorer:         deps.scorer,
+		IndexRebuilder:          deps.rebuilder,
+		ChatRunner:              deps.chatRunner,
+		TaskRunner:              deps.taskRunner,
+	}
+}
+
+func setServiceDepsForTest(s *Server, mut func(*ServiceDeps)) {
+	deps := serviceDepsForTest(s)
+	mut(&deps)
+	s.SetServiceDeps(deps)
+}
+
+func setAgentRegistryForTest(s *Server, reg AgentRegistry) {
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.AgentRegistry = reg })
+}
+
+func setChatRunnerForTest(s *Server, runner ChatRunner) {
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.ChatRunner = runner })
+}
+
+func setMemoryStoreForTest(s *Server, store MemoryStore) {
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.MemoryStore = store })
+}
+
+func setRetrievalScorerForTest(s *Server, scorer RetrievalScorer) {
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.RetrievalScorer = scorer })
+}
+
+func setCommitterForTest(s *Server, committer Committer) {
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.Committer = committer })
+}
+
+func setDedupCheckerForTest(s *Server, checker DedupChecker) {
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.Dedup = checker })
+}
+
+func setPromotionDedupThresholdForTest(s *Server, threshold float64) {
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.PromotionDedupThreshold = threshold })
+}
+
+func setSessionStoreForTest(s *Server, store SessionStore) {
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.SessionStore = store })
+}
+
+func setTaskRunnerForTest(s *Server, runner TaskRunner) {
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.TaskRunner = runner })
+}
+
+func setMemoryRepoPathForTest(s *Server, path string) {
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.MemoryRepoPath = path })
+}
 func TestSetServiceDepsPublishesAndClearsSnapshot(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
@@ -415,7 +477,7 @@ func TestBroadcastTaskSSERoutesByStreamID(t *testing.T) {
 func TestHandleTaskCancel_Success(t *testing.T) {
 	s := NewServer(3000)
 	runner := &recordingTaskRunner{}
-	s.SetTaskRunner(runner)
+	setTaskRunnerForTest(s, runner)
 
 	form := url.Values{"session_id": {"task-123"}}
 	rec := httptest.NewRecorder()
@@ -447,7 +509,7 @@ func TestHandleTaskCancel_Validation(t *testing.T) {
 		t.Fatalf("without runner status = %d, want 503", rec.Code)
 	}
 
-	s.SetTaskRunner(&recordingTaskRunner{})
+	setTaskRunnerForTest(s, &recordingTaskRunner{})
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/task/cancel", strings.NewReader("session_id="))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -459,7 +521,7 @@ func TestHandleTaskCancel_Validation(t *testing.T) {
 
 func TestHandleTaskCancel_RunnerError(t *testing.T) {
 	s := NewServer(3000)
-	s.SetTaskRunner(&recordingTaskRunner{cancelErr: errors.New("no active task")})
+	setTaskRunnerForTest(s, &recordingTaskRunner{cancelErr: errors.New("no active task")})
 
 	form := url.Values{"session_id": {"missing"}}
 	rec := httptest.NewRecorder()
@@ -1461,7 +1523,7 @@ func TestHandleStatus_LayoutPromptHiddenWhenLayoutComplete(t *testing.T) {
 	if err := memory.CreateMissingProjectRepo(root, true); err != nil {
 		t.Fatalf("CreateMissingProjectRepo: %v", err)
 	}
-	s.SetMemoryRepoPath(root)
+	setMemoryRepoPathForTest(s, root)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -1476,7 +1538,7 @@ func TestHandleStatus_LayoutPromptHiddenWhenLayoutComplete(t *testing.T) {
 func TestHandleStatus_LayoutPromptShowsMissingItems(t *testing.T) {
 	s := NewServer(3000)
 	root := t.TempDir() // entirely empty repo
-	s.SetMemoryRepoPath(root)
+	setMemoryRepoPathForTest(s, root)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -1568,7 +1630,7 @@ func TestHandleMemoryScaffold_NoPathConfigured(t *testing.T) {
 func TestHandleMemoryScaffold_CreatesMissingItems(t *testing.T) {
 	s := NewServer(3000)
 	root := t.TempDir()
-	s.SetMemoryRepoPath(root)
+	setMemoryRepoPathForTest(s, root)
 
 	req := httptest.NewRequest(http.MethodPost, "/memory/scaffold", nil)
 	rec := httptest.NewRecorder()
@@ -1600,7 +1662,7 @@ func TestHandleMemoryScaffold_NoMissingItemsRedirectsCleanly(t *testing.T) {
 	if err := memory.CreateMissingProjectRepo(root, true); err != nil {
 		t.Fatalf("CreateMissingProjectRepo: %v", err)
 	}
-	s.SetMemoryRepoPath(root)
+	setMemoryRepoPathForTest(s, root)
 
 	req := httptest.NewRequest(http.MethodPost, "/memory/scaffold", nil)
 	rec := httptest.NewRecorder()
@@ -1612,20 +1674,5 @@ func TestHandleMemoryScaffold_NoMissingItemsRedirectsCleanly(t *testing.T) {
 	loc := rec.Header().Get("Location")
 	if loc != "/" {
 		t.Errorf("expected plain redirect to / when nothing to do, got %q", loc)
-	}
-}
-
-func TestSetMemoryRepoPath_Roundtrip(t *testing.T) {
-	s := NewServer(3000)
-	if got := s.getMemoryRepoPath(); got != "" {
-		t.Errorf("default memRepo should be empty, got %q", got)
-	}
-	s.SetMemoryRepoPath("C:\\repo")
-	if got := s.getMemoryRepoPath(); got != "C:\\repo" {
-		t.Errorf("getMemoryRepoPath after set: got %q, want %q", got, "C:\\repo")
-	}
-	s.SetMemoryRepoPath("")
-	if got := s.getMemoryRepoPath(); got != "" {
-		t.Errorf("getMemoryRepoPath after clear: got %q, want \"\"", got)
 	}
 }

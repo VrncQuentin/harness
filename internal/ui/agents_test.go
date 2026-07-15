@@ -215,7 +215,7 @@ func TestHandleAgents_GETRendersList(t *testing.T) {
 		AgentInfo{Name: "coder", PersonaPath: "agents/coder/persona.md", Persona: "You are a coder."},
 		AgentInfo{Name: "reviewer", PersonaPath: "agents/reviewer/persona.md", Persona: "You review code."},
 	)
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
 	rec := httptest.NewRecorder()
@@ -250,7 +250,7 @@ func TestHandleAgents_GETWithoutRegistryShowsSetupCTA(t *testing.T) {
 
 func TestHandleAgents_GETEmptyRegistryShowsCreateForm(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry(""))
+	setAgentRegistryForTest(s, newStubRegistry(""))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
 	rec := httptest.NewRecorder()
@@ -271,7 +271,7 @@ func TestHandleAgents_GETSurfacesListError(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("")
 	reg.listErr = errors.New("memory repo busy")
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
 	rec := httptest.NewRecorder()
@@ -287,7 +287,7 @@ func TestHandleAgents_GETSurfacesListError(t *testing.T) {
 
 func TestHandleAgents_POSTMethodNotAllowedOnGET(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry(""))
+	setAgentRegistryForTest(s, newStubRegistry(""))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents/active", nil)
 	rec := httptest.NewRecorder()
@@ -304,7 +304,7 @@ func TestHandleAgents_POSTSwitchesActive(t *testing.T) {
 		AgentInfo{Name: "coder", Persona: "c"},
 		AgentInfo{Name: "reviewer", Persona: "r"},
 	)
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "reviewer")
@@ -330,7 +330,7 @@ func TestHandleAgents_POSTSwitchesActive(t *testing.T) {
 func TestHandleAgents_POSTEmptyNameClearsActive(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "")
@@ -356,7 +356,7 @@ func TestHandleAgents_POSTEmptyNameClearsActive(t *testing.T) {
 func TestHandleAgents_POSTUnknownNameReturns400(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "ghost")
@@ -387,7 +387,7 @@ func TestHandleAgents_POSTNoRegistryReturns503(t *testing.T) {
 
 func TestHandleAgents_MethodNotAllowedOnPOST(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry(""))
+	setAgentRegistryForTest(s, newStubRegistry(""))
 
 	req := httptest.NewRequest(http.MethodPost, "/agents", nil)
 	rec := httptest.NewRecorder()
@@ -401,7 +401,7 @@ func TestHandleAgents_MethodNotAllowedOnPOST(t *testing.T) {
 func TestHandleAgentsCreate_POSTRedirectsOnSuccess(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("")
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "coder")
@@ -427,7 +427,7 @@ func TestHandleAgentsCreate_POSTRedirectsOnSuccess(t *testing.T) {
 func TestHandleAgentsCreate_POSTTrimsName(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("")
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "  coder  ")
@@ -445,7 +445,7 @@ func TestHandleAgentsCreate_POSTValidationErrorRendersForm(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("", AgentInfo{Name: "coder", Persona: "c"})
 	reg.createErr = errors.New("agent: invalid name: name is empty")
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "bad name")
@@ -480,7 +480,7 @@ func TestHandleAgentsCreate_POSTNoRegistryReturns503(t *testing.T) {
 
 func TestHandleAgentsCreate_GETMethodNotAllowed(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry(""))
+	setAgentRegistryForTest(s, newStubRegistry(""))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents/create", nil)
 	rec := httptest.NewRecorder()
@@ -493,7 +493,7 @@ func TestHandleAgentsCreate_GETMethodNotAllowed(t *testing.T) {
 
 func TestHandleAgents_GETShowsCreatedFlash(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("", AgentInfo{Name: "coder"}))
+	setAgentRegistryForTest(s, newStubRegistry("", AgentInfo{Name: "coder"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents?created=coder", nil)
 	rec := httptest.NewRecorder()
@@ -519,7 +519,7 @@ func TestHandleAgents_GETRendersEditableTextareasInEditMode(t *testing.T) {
 		NotesPath:   "agents/coder/notes.md",
 		Notes:       "current notes",
 	})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	req := httptest.NewRequest(http.MethodGet, "/agents?edit=coder", nil)
 	rec := httptest.NewRecorder()
@@ -547,7 +547,7 @@ func TestHandleAgents_GETRendersEditableTextareasInEditMode(t *testing.T) {
 
 func TestHandleAgents_GETShowsViewModeByDefault(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{
+	setAgentRegistryForTest(s, newStubRegistry("coder", AgentInfo{
 		Name:        "coder",
 		PersonaPath: "agents/coder/persona.md",
 		Persona:     "p",
@@ -581,7 +581,7 @@ func TestHandleAgents_GETShowsViewModeByDefault(t *testing.T) {
 
 func TestHandleAgents_GETUnknownEditQueryFallsBackToView(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("", AgentInfo{Name: "coder", Persona: "p"}))
+	setAgentRegistryForTest(s, newStubRegistry("", AgentInfo{Name: "coder", Persona: "p"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents?edit=ghost", nil)
 	rec := httptest.NewRecorder()
@@ -598,7 +598,7 @@ func TestHandleAgents_GETUnknownEditQueryFallsBackToView(t *testing.T) {
 
 func TestHandleAgents_GETOmitsNoneOption(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+	setAgentRegistryForTest(s, newStubRegistry("coder", AgentInfo{Name: "coder"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
 	rec := httptest.NewRecorder()
@@ -615,7 +615,7 @@ func TestHandleAgents_GETOmitsNoneOption(t *testing.T) {
 func TestHandleAgentsPersona_POSTRedirectsAndWrites(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "coder")
@@ -649,7 +649,7 @@ func TestHandleAgentsPersona_POSTWritesNonActiveAgent(t *testing.T) {
 		AgentInfo{Name: "coder"},
 		AgentInfo{Name: "reviewer"},
 	)
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "reviewer")
@@ -674,7 +674,7 @@ func TestHandleAgentsPersona_POSTWritesNonActiveAgent(t *testing.T) {
 func TestHandleAgentsRules_POSTRedirectsAndWrites(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "coder")
@@ -705,7 +705,7 @@ func TestHandleAgentsRules_POSTRedirectsAndWrites(t *testing.T) {
 func TestHandleAgentsNotes_POSTRedirectsAndWrites(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "coder")
@@ -736,7 +736,7 @@ func TestHandleAgentsNotes_POSTRedirectsAndWrites(t *testing.T) {
 func TestHandleAgentsPersona_POSTMissingNameReturns400(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("body", "x")
@@ -756,7 +756,7 @@ func TestHandleAgentsPersona_POSTMissingNameReturns400(t *testing.T) {
 func TestHandleAgentsPersona_POSTUnknownNameReturns400(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "ghost")
@@ -777,7 +777,7 @@ func TestHandleAgentsPersona_POSTUnknownNameReturns400(t *testing.T) {
 func TestHandleAgentsRules_POSTMissingNameReturns400(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("body", "x")
@@ -797,7 +797,7 @@ func TestHandleAgentsRules_POSTMissingNameReturns400(t *testing.T) {
 func TestHandleAgentsNotes_POSTMissingNameReturns400(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("body", "x")
@@ -818,7 +818,7 @@ func TestHandleAgentsPersona_POSTRegistryErrorRendersForm(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder", Persona: "old"})
 	reg.personaErr = errors.New("memory: write failed: disk full")
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "coder")
@@ -843,7 +843,7 @@ func TestHandleAgentsRules_POSTRegistryErrorRendersForm(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder", Rules: "old"})
 	reg.rulesErr = errors.New("memory: write failed: disk full")
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "coder")
@@ -868,7 +868,7 @@ func TestHandleAgentsNotes_POSTRegistryErrorRendersForm(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder", Notes: "old"})
 	reg.notesErr = errors.New("memory: write failed: disk full")
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "coder")
@@ -891,7 +891,7 @@ func TestHandleAgentsNotes_POSTRegistryErrorRendersForm(t *testing.T) {
 
 func TestHandleAgentsPersona_GETMethodNotAllowed(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+	setAgentRegistryForTest(s, newStubRegistry("coder", AgentInfo{Name: "coder"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents/persona", nil)
 	rec := httptest.NewRecorder()
@@ -904,7 +904,7 @@ func TestHandleAgentsPersona_GETMethodNotAllowed(t *testing.T) {
 
 func TestHandleAgentsRules_GETMethodNotAllowed(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+	setAgentRegistryForTest(s, newStubRegistry("coder", AgentInfo{Name: "coder"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents/rules", nil)
 	rec := httptest.NewRecorder()
@@ -917,7 +917,7 @@ func TestHandleAgentsRules_GETMethodNotAllowed(t *testing.T) {
 
 func TestHandleAgentsNotes_GETMethodNotAllowed(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+	setAgentRegistryForTest(s, newStubRegistry("coder", AgentInfo{Name: "coder"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents/notes", nil)
 	rec := httptest.NewRecorder()
@@ -969,7 +969,7 @@ func TestHandleAgentsNotes_POSTNoRegistryReturns503(t *testing.T) {
 
 func TestHandleAgents_GETShowsSavedPersonaFlash(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+	setAgentRegistryForTest(s, newStubRegistry("coder", AgentInfo{Name: "coder"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents?saved=persona", nil)
 	rec := httptest.NewRecorder()
@@ -986,7 +986,7 @@ func TestHandleAgents_GETShowsSavedPersonaFlash(t *testing.T) {
 
 func TestHandleAgents_GETShowsSavedRulesFlash(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+	setAgentRegistryForTest(s, newStubRegistry("coder", AgentInfo{Name: "coder"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents?saved=rules", nil)
 	rec := httptest.NewRecorder()
@@ -1007,7 +1007,7 @@ func TestHandleAgentsDelete_POSTRedirectsAndDeletes(t *testing.T) {
 		AgentInfo{Name: "coder"},
 		AgentInfo{Name: "reviewer"},
 	)
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "coder")
@@ -1033,7 +1033,7 @@ func TestHandleAgentsDelete_POSTRedirectsAndDeletes(t *testing.T) {
 func TestHandleAgentsDelete_POSTMissingNameReturns400(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	req := httptest.NewRequest(http.MethodPost, "/agents/delete", strings.NewReader(""))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1051,7 +1051,7 @@ func TestHandleAgentsDelete_POSTMissingNameReturns400(t *testing.T) {
 func TestHandleAgentsDelete_POSTUnknownNameReturns400(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "ghost")
@@ -1072,7 +1072,7 @@ func TestHandleAgentsDelete_POSTRegistryErrorReturns500(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
 	reg.deleteErr = errors.New("memory: remove failed: disk full")
-	s.SetAgentRegistry(reg)
+	setAgentRegistryForTest(s, reg)
 
 	form := url.Values{}
 	form.Set("name", "coder")
@@ -1104,7 +1104,7 @@ func TestHandleAgentsDelete_POSTNoRegistryReturns503(t *testing.T) {
 
 func TestHandleAgentsDelete_GETMethodNotAllowed(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+	setAgentRegistryForTest(s, newStubRegistry("coder", AgentInfo{Name: "coder"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents/delete", nil)
 	rec := httptest.NewRecorder()
@@ -1117,7 +1117,7 @@ func TestHandleAgentsDelete_GETMethodNotAllowed(t *testing.T) {
 
 func TestHandleAgents_GETShowsDeletedFlash(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("", AgentInfo{Name: "reviewer"}))
+	setAgentRegistryForTest(s, newStubRegistry("", AgentInfo{Name: "reviewer"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents?deleted=coder", nil)
 	rec := httptest.NewRecorder()
@@ -1137,7 +1137,7 @@ func TestHandleAgents_GETShowsDeletedFlash(t *testing.T) {
 
 func TestHandleAgents_GETRendersDeleteButton(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+	setAgentRegistryForTest(s, newStubRegistry("coder", AgentInfo{Name: "coder"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents", nil)
 	rec := httptest.NewRecorder()
@@ -1156,7 +1156,7 @@ func TestHandleAgents_GETRendersDeleteButton(t *testing.T) {
 
 func TestHandleAgents_GETShowsSavedNotesFlash(t *testing.T) {
 	s := NewServer(3000)
-	s.SetAgentRegistry(newStubRegistry("coder", AgentInfo{Name: "coder"}))
+	setAgentRegistryForTest(s, newStubRegistry("coder", AgentInfo{Name: "coder"}))
 
 	req := httptest.NewRequest(http.MethodGet, "/agents?saved=notes", nil)
 	rec := httptest.NewRecorder()

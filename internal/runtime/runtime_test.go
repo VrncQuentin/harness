@@ -56,7 +56,7 @@ func TestQueueStatsReportsLiveQueueDepthAndCapacity(t *testing.T) {
 		t.Fatalf("empty QueueStats = %d/%d, want 0/0", depth, capacity)
 	}
 
-	rt.reqQueue = queue.New(3, "", nil)
+	rt.reqQueue = queue.New(3, nil)
 	for _, id := range []string{"one", "two"} {
 		if err := rt.reqQueue.Enqueue(queue.Request{ID: id, Response: make(chan inference.Token, 1), Ctx: context.Background()}); err != nil {
 			t.Fatalf("enqueue %s: %v", id, err)
@@ -82,7 +82,7 @@ func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	cfg.API.Port = port
 
 	rt := New(cfg, nil, LogRings{})
-	rt.reqQueue = queue.New(1, "", nil)
+	rt.reqQueue = queue.New(1, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -276,11 +276,11 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	rt := New(cfg, nil, LogRings{})
 	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
 
-	mgr, _ := rt.buildSessionManager(ui.NewServer(0), projectRepoRoots{
+	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	})
+	}, rt.ensureInferenceClient(), nil)
 	rt.setSessionManager(mgr)
 
 	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry()}
@@ -323,11 +323,11 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
-	mgr, _ := rt.buildSessionManager(ui.NewServer(0), projectRepoRoots{
+	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	})
+	}, rt.ensureInferenceClient(), nil)
 	if mgr == nil {
 		t.Fatal("buildSessionManager returned nil")
 	}
@@ -366,11 +366,11 @@ func TestTaskRunnerDoesNotDuplicateSingleMessageOnResume(t *testing.T) {
 	rt := New(cfg, nil, LogRings{})
 	rt.inferClient = &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
 
-	mgr, _ := rt.buildSessionManager(ui.NewServer(0), projectRepoRoots{
+	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	})
+	}, rt.ensureInferenceClient(), nil)
 	rt.setSessionManager(mgr)
 
 	s := mgr.Start("coder")
@@ -502,7 +502,7 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	)
 
 	queued := &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
-	q := queue.New(1, "", queued)
+	q := queue.New(1, queued)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := q.Start(ctx); err != nil {
@@ -568,11 +568,11 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	rt.globalMem = memory.NewDirReader(root)
 	rt.activeMem = rt.globalMem
 
-	mgr, adapter := rt.buildSessionManager(ui.NewServer(0), projectRepoRoots{
+	mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	})
+	}, rt.ensureInferenceClient(), nil)
 	if mgr == nil || adapter == nil {
 		t.Fatal("buildSessionManager returned nil manager")
 	}

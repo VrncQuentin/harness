@@ -91,8 +91,8 @@ func TestHandleChat_GETUnconfiguredShowsBackendCTA(t *testing.T) {
 // registry is empty - the page should send the user to /agents.
 func TestHandleChat_GETNoAgentsShowsAgentsCTA(t *testing.T) {
 	s := NewServer(3000)
-	s.SetChatRunner(&stubChatRunner{})
-	s.SetAgentRegistry(newStubRegistry(""))
+	setChatRunnerForTest(s, &stubChatRunner{})
+	setAgentRegistryForTest(s, newStubRegistry(""))
 
 	rec := httptest.NewRecorder()
 	s.handleChat(rec, httptest.NewRequest(http.MethodGet, "/chat", nil))
@@ -109,8 +109,8 @@ func TestHandleChat_GETNoAgentsShowsAgentsCTA(t *testing.T) {
 // active selection is empty.
 func TestHandleChat_GETNoActiveAgentShowsActiveCTA(t *testing.T) {
 	s := NewServer(3000)
-	s.SetChatRunner(&stubChatRunner{})
-	s.SetAgentRegistry(newStubRegistry("",
+	setChatRunnerForTest(s, &stubChatRunner{})
+	setAgentRegistryForTest(s, newStubRegistry("",
 		AgentInfo{Name: "coder"},
 	))
 
@@ -129,8 +129,8 @@ func TestHandleChat_GETNoActiveAgentShowsActiveCTA(t *testing.T) {
 // agent set - we expect the chat shell with the agent name baked in.
 func TestHandleChat_GETHappyPathRendersForm(t *testing.T) {
 	s := NewServer(3000)
-	s.SetChatRunner(&stubChatRunner{})
-	s.SetAgentRegistry(newStubRegistry("coder",
+	setChatRunnerForTest(s, &stubChatRunner{})
+	setAgentRegistryForTest(s, newStubRegistry("coder",
 		AgentInfo{Name: "coder"},
 	))
 
@@ -185,7 +185,7 @@ func TestHandleChatSend_NonPOSTReturns405(t *testing.T) {
 // or whitespace-only content is rejected.
 func TestHandleChatSend_EmptyMessageReturns400(t *testing.T) {
 	s := NewServer(3000)
-	s.SetChatRunner(&stubChatRunner{})
+	setChatRunnerForTest(s, &stubChatRunner{})
 	for _, bodyStr := range []string{"", "message=", "message=+++"} {
 		rec := httptest.NewRecorder()
 		body := strings.NewReader(bodyStr)
@@ -202,7 +202,7 @@ func TestHandleChatSend_EmptyMessageReturns400(t *testing.T) {
 // the server-rendered user + assistant placeholder fragment.
 func TestHandleChatSend_RendersFragment(t *testing.T) {
 	s := NewServer(3000)
-	s.SetChatRunner(&stubChatRunner{})
+	setChatRunnerForTest(s, &stubChatRunner{})
 
 	form := url.Values{
 		"message":    {"hello world"},
@@ -235,7 +235,7 @@ func TestHandleChatSend_RendersFragment(t *testing.T) {
 
 func TestHandleChatSend_DoesNotRequireBrowserTrigger(t *testing.T) {
 	s := NewServer(3000)
-	s.SetChatRunner(&stubChatRunner{})
+	setChatRunnerForTest(s, &stubChatRunner{})
 
 	form := url.Values{"message": {"hi"}}
 	rec := httptest.NewRecorder()
@@ -251,7 +251,7 @@ func TestHandleChatSend_DoesNotRequireBrowserTrigger(t *testing.T) {
 func TestHandleChatSend_UsesRequestIndependentStreamContext(t *testing.T) {
 	s := NewServer(3000)
 	runner := &blockingChatRunner{called: make(chan context.Context, 1), release: make(chan struct{})}
-	s.SetChatRunner(runner)
+	setChatRunnerForTest(s, runner)
 
 	form := url.Values{"message": {"hi"}}
 	rec := httptest.NewRecorder()
@@ -335,7 +335,7 @@ func TestBroadcastChatSSERoutesByStreamID(t *testing.T) {
 // out-of-band swaps for session-id display and hidden form fields.
 func TestHandleChatSend_OOBSessionElements(t *testing.T) {
 	s := NewServer(3000)
-	s.SetChatRunner(&stubChatRunner{})
+	setChatRunnerForTest(s, &stubChatRunner{})
 
 	form := url.Values{
 		"message":    {"hi"},

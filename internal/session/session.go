@@ -468,7 +468,7 @@ func (m *Manager) FlushAll(ctx context.Context) error {
 }
 
 // LiveCount returns the number of in-memory sessions. Used by tests
-// and by the UI status page when M3b adds it.
+// and by the UI status page.
 func (m *Manager) LiveCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -536,7 +536,7 @@ func (m *Manager) findLatestRecord(id string) (*Record, error) {
 
 // countEpisodeFiles walks the episodes root and counts .md files. The
 // count is used as the EpisodeCount metric. Cheap enough to compute on
-// every save - the tree is small at M3 scale.
+// every save - the tree is small and this keeps discovery simple.
 func (m *Manager) countEpisodeFiles() int {
 	entries, err := m.deps.Reader.Walk(episodesRootRel)
 	if err != nil {

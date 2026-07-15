@@ -12,7 +12,7 @@ import (
 	"github.com/vrnc/harness/internal/project"
 )
 
-// ProjectStore persists M3b project metadata and attached directories.
+// ProjectStore persists project metadata and attached directories.
 type ProjectStore struct {
 	db          *sql.DB
 	harnessHome string

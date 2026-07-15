@@ -184,7 +184,7 @@ func formatMetricTags(tags map[string]string) string {
 //
 // Errors stating the path is missing/unreadable are deliberately
 // swallowed: those conditions are surfaced separately as startup errors
-// (M3) or via the agents page setup CTA. We do not want two different
+// or via the agents page setup CTA. We do not want two different
 // alerts pointing at the same root cause on the status page.
 func (s *Server) memoryLayoutView() memoryLayoutView {
 	path := s.getMemoryRepoPath()
