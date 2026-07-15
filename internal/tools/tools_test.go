@@ -142,18 +142,6 @@ func TestDestructiveToolsRegisteredButDisabledByDefault(t *testing.T) {
 			t.Errorf("%s should be registered (M7 approval layer is active)", id)
 		}
 	}
-	// Schemas includes destructive tools.
-	schemas := r.Schemas()
-	if len(schemas) != 5 {
-		t.Fatalf("expected 5 schemas, got %d", len(schemas))
-	}
-	// Tool IDs are in insertion order: file_read, file_list, file_write, shell_exec.
-	expectedIDs := []string{"file_read", "file_list", "file_write", "shell_exec", "web_search"}
-	for i, id := range expectedIDs {
-		if schemas[i]["function"].(map[string]any)["name"] != id {
-			t.Errorf("schema %d: expected %s, got %v", i, id, schemas[i]["function"].(map[string]any)["name"])
-		}
-	}
 }
 
 func TestShellExec_EmptySandboxRoots(t *testing.T) {

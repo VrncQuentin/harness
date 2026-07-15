@@ -35,6 +35,23 @@ func (m *mockInferClient) Complete(ctx context.Context, req inference.Completion
 
 func (m *mockInferClient) Health(ctx context.Context) error { return nil }
 
+type countingSchemaTool struct {
+	schemaCalls int
+}
+
+func (t *countingSchemaTool) ID() string          { return "file_list" }
+func (t *countingSchemaTool) Description() string { return "count schema calls" }
+func (t *countingSchemaTool) Schema() map[string]any {
+	t.schemaCalls++
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{},
+	}
+}
+func (t *countingSchemaTool) Execute(context.Context, tools.Context, map[string]any) tools.Result {
+	return tools.Result{Content: "ok"}
+}
+
 // toolCallTokens returns tokens that simulate a model calling a tool.
 func toolCallTokens(toolName, args string) []inference.Token {
 	return []inference.Token{
@@ -64,6 +81,32 @@ func newTestEngine(t *testing.T, loopCfg config.LoopConfig) *Engine {
 	return NewEngine(&mockInferClient{}, reg, loopCfg, tools.Context{}).WithApprovals(
 		approvals.NewEvaluator(approvals.DefaultLayer()),
 	)
+}
+
+func TestEngineCachesToolSchemasAcrossTurns(t *testing.T) {
+	tool := &countingSchemaTool{}
+	reg := tools.NewRegistry()
+	if err := reg.Register(tool); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	engine := NewEngine(
+		&mockInferClient{tokens: toolCallTokens("file_list", `{"path":"."}`)},
+		reg,
+		config.LoopConfig{MaxTurns: 3, DoomThreshold: 10, FileListEnabled: true},
+		tools.Context{},
+	)
+	if tool.schemaCalls != 1 {
+		t.Fatalf("NewEngine called Schema() %d times, want 1", tool.schemaCalls)
+	}
+
+	evch := make(chan Event, 64)
+	err := engine.Run(context.Background(), []inference.Message{{Role: "user", Content: "list"}}, evch)
+	if !errors.Is(err, ErrLoopLimitReached) {
+		t.Fatalf("Run error = %v, want ErrLoopLimitReached", err)
+	}
+	if tool.schemaCalls != 1 {
+		t.Fatalf("Schema() calls after multi-turn run = %d, want cached 1", tool.schemaCalls)
+	}
 }
 
 func TestRejectDoesNotAddSessionRule(t *testing.T) {
