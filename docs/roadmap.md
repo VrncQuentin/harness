@@ -45,7 +45,7 @@ Windows native and Linux are equal first-class targets. CI must run the Go test 
 - [x] Prompt Assembler: layer ordering (`rules → user → persona → facts → notes → episodes → conversation`)
 - [x] Total memory cap + conversation reserve enforcement, episode trim oldest-first
 - [x] Qwen3 prompt template formatting
-- [x] Hot-reload: fsnotify on rules and persona files, no restart needed
+- [x] Hot-reload: rules and persona files are re-read without restart
 - [x] API Server: OpenAI-compatible `/v1/chat/completions` (streaming), disabled by default
 - [x] UI: agents page — switch active agent, view active persona
 
