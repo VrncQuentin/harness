@@ -98,7 +98,6 @@ func (rt *Runtime) Stop() {
 	rt.mu.Lock()
 	q := rt.reqQueue
 	apiSrv := rt.apiServer
-	hr := rt.hotReload
 	tasks := rt.taskRunner
 	rt.mu.Unlock()
 
@@ -121,11 +120,6 @@ func (rt *Runtime) Stop() {
 	}
 	if q != nil {
 		q.Stop()
-	}
-	if hr != nil {
-		if err := hr.Close(); err != nil {
-			slog.Warn("prompt hot-reload close", "err", err)
-		}
 	}
 }
 
