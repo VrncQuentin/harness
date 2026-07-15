@@ -917,6 +917,94 @@ func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
 	}
 }
 
+func TestAssemble_BlendedRetrievalTrimDropsLowestScore(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":                      "r",
+		"agents/coder/persona.md":              "p",
+		"projects/global/episodes/coder/01.md": strings.Repeat("A", 120),
+		"projects/global/episodes/coder/02.md": strings.Repeat("B", 120),
+	})
+	cfg := baseCfg()
+	cfg.RecencyN = 2
+	cfg.MemoryTokenBudget = 30
+	cfg.SemanticWeight = 1.0
+	cfg.RecencyWeight = 0.0
+
+	idxDir := t.TempDir()
+	idx, err := index.Create(idxDir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("01", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("02", [][]float32{{-1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := &stubEmbedder{vectors: [][]float32{{1, 0}}}
+	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(idx, stub)
+
+	msgs, stats, err := asm.Assemble(context.Background(), "coder",
+		[]inference.Message{{Role: "user", Content: "test query"}})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sys := msgs[0].Content
+
+	if !strings.Contains(sys, "01.md") {
+		t.Errorf("highest-scored episode should survive trimming; got:\n%s", sys)
+	}
+	if strings.Contains(sys, "02.md") {
+		t.Errorf("lowest-scored episode should be trimmed first; got:\n%s", sys)
+	}
+	if stats.Episodes > cfg.MemoryTokenBudget {
+		t.Fatalf("episodes tokens = %d, want <= %d", stats.Episodes, cfg.MemoryTokenBudget)
+	}
+}
+
+func TestAssemble_BlendedRetrievalUsesBestChunkScore(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"global/rules.md":                      "r",
+		"agents/coder/persona.md":              "p",
+		"projects/global/episodes/coder/01.md": "best chunk episode",
+		"projects/global/episodes/coder/02.md": "steady episode",
+	})
+	cfg := baseCfg()
+	cfg.RecencyN = 1
+	cfg.SemanticWeight = 1.0
+	cfg.RecencyWeight = 0.0
+
+	idxDir := t.TempDir()
+	idx, err := index.Create(idxDir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("01", [][]float32{{1, 0}, {-1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("02", [][]float32{{0.5, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := &stubEmbedder{vectors: [][]float32{{1, 0}}}
+	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(idx, stub)
+
+	msgs, _, err := asm.Assemble(context.Background(), "coder",
+		[]inference.Message{{Role: "user", Content: "test query"}})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	sys := msgs[0].Content
+
+	if !strings.Contains(sys, "01.md") {
+		t.Errorf("episode with best matching chunk should be kept; got:\n%s", sys)
+	}
+	if strings.Contains(sys, "02.md") {
+		t.Errorf("lower-scored episode should be dropped; got:\n%s", sys)
+	}
+}
+
 // TestAssemble_BlendedRecencyUsesExponentialDecay verifies that the
 // blended path uses exponential recency decay, not linear rank.
 func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
