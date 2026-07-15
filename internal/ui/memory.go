@@ -67,14 +67,14 @@ type MemoryStore interface {
 	WriteFile(relPath string, data []byte) error
 }
 
-// editableGlobalFiles enumerates the files the UI lets the user create
+// editableProjectFiles enumerates the project files the UI lets the user create
 // or edit inline. Anything outside this set (agent personas, episodes,
 // runtime artifacts) is read-only here so risky edits go through git
 // rather than a textarea.
-var editableGlobalFiles = []editableFile{
-	{Path: "rules.md", Desc: "Active project rules"},
-	{Path: "user.md", Desc: "Hand-authored facts about the user"},
-	{Path: "facts.md", Desc: "Promoted cross-agent facts"},
+var editableProjectFiles = []editableFile{
+	{Path: "rules.md", Desc: "Project rules"},
+	{Path: "user.md", Desc: "Facts about the user (this project)"},
+	{Path: "facts.md", Desc: "Promoted facts (this project)"},
 }
 
 type editableFile struct {
@@ -86,7 +86,7 @@ type editableFile struct {
 // empty string when path is not editable. Lookup is linear because the
 // list is tiny.
 func editableDesc(p string) (string, bool) {
-	for _, f := range editableGlobalFiles {
+	for _, f := range editableProjectFiles {
 		if f.Path == p {
 			return f.Desc, true
 		}
@@ -543,7 +543,7 @@ func episodesRootForSlug(slug string) string {
 }
 
 // handleMemoryEdit renders the textarea form for one editable file.
-// The set of editable paths is closed (see editableGlobalFiles), so any
+// The set of editable paths is closed (see editableProjectFiles), so any
 // other path is rejected outright.
 func (s *Server) handleMemoryEdit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -728,7 +728,7 @@ func buildMemoryTree(store MemoryStore) ([]*memoryTreeNode, int, error) {
 	// exist on disk yet, so the tree always offers an edit link for
 	// them. The parent directory is materialised on-the-fly when
 	// missing too - otherwise a fresh repo would only show "agents".
-	for _, f := range editableGlobalFiles {
+	for _, f := range editableProjectFiles {
 		if _, exists := nodes[f.Path]; exists {
 			continue
 		}

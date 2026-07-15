@@ -20,6 +20,8 @@ func TestProjectLayout_ValidUserProject(t *testing.T) {
 	wantPaths := map[string]bool{
 		"projects/my-project":                 true,
 		"projects/my-project/rules.md":        true,
+		"projects/my-project/user.md":         true,
+		"projects/my-project/facts.md":        true,
 		"projects/my-project/agents":          true,
 		"projects/my-project/sessions.jsonl":  true,
 		"projects/my-project/episodes":        true,
@@ -49,20 +51,19 @@ func TestProjectLayout_Global(t *testing.T) {
 
 	want := []LayoutItem{
 		{Path: "projects/global", Dir: true, Desc: "System project (default scope)"},
+		{Path: "projects/global/rules.md", Dir: false, Desc: "Project rules"},
+		{Path: "projects/global/user.md", Dir: false, Desc: "Facts about the user for this project"},
+		{Path: "projects/global/facts.md", Dir: false, Desc: "Promoted facts for this project"},
+		{Path: "projects/global/agents", Dir: true, Desc: "Project agent definitions"},
 		{Path: "projects/global/sessions.jsonl", Dir: false, Desc: "Project session history"},
-		{Path: "projects/global/episodes", Dir: true, Desc: "Session episode files for the system project"},
-		{Path: "projects/global/index", Dir: true, Desc: "Semantic search indexes for the system project"},
-		{Path: "projects/global/index/_episodes", Dir: true, Desc: "Embeddings of the system project's episodes"},
+		{Path: "projects/global/episodes", Dir: true, Desc: "Project episode files"},
+		{Path: "projects/global/index", Dir: true, Desc: "Project semantic search indexes"},
+		{Path: "projects/global/index/_episodes", Dir: true, Desc: "Project episode embeddings"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ProjectLayout(global) =\n\t%v\nwant\n\t%v", got, want)
 	}
 
-	for _, item := range got {
-		if item.Path == "projects/global/rules.md" {
-			t.Error("ProjectLayout(global) must not include projects/global/rules.md")
-		}
-	}
 }
 
 func TestProjectLayout_InvalidSlug(t *testing.T) {
@@ -402,7 +403,7 @@ func TestEnsureProjectRepoInitializesAndScaffolds(t *testing.T) {
 	if err := EnsureProjectRepo(root, false); err != nil {
 		t.Fatalf("EnsureProjectRepo: %v", err)
 	}
-	for _, rel := range []string{".git", "rules.md", "agents/.gitkeep", "sessions.jsonl", "episodes/.gitkeep", "index/_episodes/.gitkeep"} {
+	for _, rel := range []string{".git", "rules.md", "user.md", "facts.md", "agents/.gitkeep", "sessions.jsonl", "episodes/.gitkeep", "index/_episodes/.gitkeep"} {
 		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
 			t.Fatalf("missing %s: %v", rel, err)
 		}

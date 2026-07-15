@@ -94,8 +94,8 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 - A project is identified by an immutable lowercase-dashed `slug` and editable display name. Filesystem paths and DB keys always use the slug.
 - The `global` project is seeded on first run, is always active by default, and cannot be hidden, deleted, or renamed by slug.
 - M3b originally placed project memory under the then-current single memory repo at `projects/<slug>/{rules.md, agents/, sessions.jsonl, episodes/<agent-name>/, index/}`. M9 layout-v2 keeps the same logical project boundaries but stores each project as its own physical git repo under `~/.harness/projects/<slug>/`.
-- M3b used top-level `global/` rules/user/facts and top-level `agents/<name>/` as the cross-project base library. In the current layout-v2 runtime, those files live in the first-class global project repo at `~/.harness/projects/global/`.
-- Prompt assembly inserts the active project `rules.md` layer between global rules and resolved agent persona. Agent files resolve per file from the active project repo, falling back to the global project repo.
+- The `global` project is the default active project, not an always-injected base layer. Its `agents/<name>/persona.md` and `agents/<name>/rules.md` files are the fallback agent-definition library for other projects; rules/user/facts/notes/episodes are otherwise project-local.
+- Prompt assembly reads `rules.md`, `user.md`, `facts.md`, notes, and episodes from the active project repo. Agent `persona.md` and `rules.md` resolve per file from the active project repo, falling back to the global agent-definition library; `notes.md` does not fall back.
 - Sessions are bound immutably to their project, append to that project's `sessions.jsonl`, and write episodes to that project's `episodes/<agent-name>/` directory.
 - `project_llama_on_switch = reload` drains the queue and restarts llama-server with the destination project's effective model unless the effective config is unchanged. `keep` leaves llama-server running and surfaces any running/preferred model mismatch.
 - Project directories are absolute paths to git repos. Activation warns and continues when a directory is missing or invalid; attached-directory semantic indexes are deferred.
@@ -104,7 +104,7 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 - [x] `projects` and `project_directories` tables; system `global` row seeded on first run (cannot be hidden, deleted, or renamed)
 - [x] `config` additions: `active_project_slug` (NOT NULL, default `'global'`) and `project_llama_on_switch` (`'keep' | 'reload'`, default `'reload'`)
 - [x] Memory repo layout: top-level `runtime/` and `index/` fold into `projects/global/`; episodes move out of `agents/<name>/episodes/` into `projects/<slug>/episodes/<agent-name>/` (agent dirs become definition-only)
-- [x] Prompt assembler: new `projects/<slug>/rules.md` layer between global rules and agent persona
+- [x] Prompt assembler: project-scoped `rules.md`, `user.md`, `facts.md`, notes, and episodes with global fallback only for agent persona/rules
 - [x] Agent resolution: per-file override of the global agents library by `projects/<slug>/agents/<name>/`
 - [x] Activation: eager git-repo check on configured directories (warn-and-continue), fresh session, conditional llama-server swap based on `llama_on_switch`
 - [x] UI: `/projects` page (CRUD + hide), topbar switcher with `Global` always present, project-aware `/agents`, mismatch indicator on status page when `keep` causes a model/preference divergence
@@ -121,7 +121,7 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 - [x] Project agent overrides resolve per-file (project `persona.md` + global `rules.md` works)
 - [x] Activating a project with a missing directory succeeds and surfaces a "directory missing" badge
 - [x] Project-only agent in the active project repo is visible only inside that project (automated: `TestAssemble_ProjectOnlyAgentSuccess`, `TestAssemble_ProjectOnlyAgentNotLeaking`)
-- [x] Project rules file present -> active repo `rules.md` is injected between global rules and agent persona (automated: `TestAssemble_ProjectRulesOrdering`, `TestAssemble_ProjectRulesUseActiveProjectSlug`)
+- [x] Project prompt files present -> active repo `rules.md`, `user.md`, and `facts.md` are injected without leaking global project files (automated: `TestAssemble_ProjectScopedLayersUseActiveProject`)
 - [x] Complete a session in a project repo -> episode file appears at `episodes/<agent>/<timestamp>.md`, not under `agents/<agent>/episodes/` (automated runtime wiring: `TestBuildSessionManagerUsesPhysicalProjectRepoPaths`)
 - [x] Complete a session in the global project repo -> episode file appears at `episodes/<agent>/<timestamp>.md` (automated runtime wiring: `TestBuildSessionManagerUsesPhysicalProjectRepoPaths`)
 - [x] Hide a non-global project -> it disappears from the topbar switcher and default `/projects` list, while data remains on disk (automated DB/UI handler coverage: `TestProjectStore_HideAndUnhide`, `TestHandleProjectVisibilityPOST`)
@@ -205,7 +205,7 @@ implemented when directory-level semantic search becomes a user-facing feature.
 
 **Goal:** memory is actively curated, not just accumulated.
 
-- [x] `PromoteToGlobalFact(text)`: UI action -> append to `global/facts.md` + commit
+- [x] `PromoteFact(text)`: UI action -> append to the active project `facts.md` + commit
 - [x] `AppendAgentNote(agent, text)`: UI action -> append to `agents/<n>/notes.md` + commit
 - [x] Cross-agent episode browser: view episodes for any agent from the memory page
 - [x] Dedup pass on commit: detect near-duplicate facts before appending (embedding similarity threshold)
@@ -217,7 +217,7 @@ injection (e.g. loading `reviewer` episodes during a `coder` task) will be
 implemented when the permission + retrieval architecture matures (M7+).
 
 **Acceptance tests:**
-- [x] Promote a fact via UI -> text appears in `global/facts.md`, git commit present
+- [x] Promote a fact via UI -> text appears in the active project `facts.md`, git commit present
 - [x] Promoted fact appears in the assembled prompt of the next session (verify via logs page)
 - [x] Promote a near-duplicate of an existing fact -> dedup pass blocks it, user sees a warning
 - [x] Append a note to `agents/coder/notes.md` via UI -> appears in next coder session prompt
@@ -298,12 +298,12 @@ are deferred beyond M7.
 Depends on M3b (projects table, active project slug, attached directories), M5 (project-scoped indexes), and M8 (startup validation and reliable packaging).
 
 - [x] Harness home: default `~/.harness/` with `harness.db`, `projects/`, `logs/`, and `cache/`
-- [x] Global project repo: initialize `~/.harness/projects/global` as a first-class git repo containing global rules, user facts, facts, agents, sessions, episodes, index, and artifacts
+- [x] Global project repo: initialize `~/.harness/projects/global` as the default project repo containing project rules, user facts, promoted facts, the fallback agent-definition library, sessions, episodes, index, and artifacts
 - [x] Project memory repos: one git repo per project, defaulting to `~/.harness/projects/<id>/`, with optional user-provided directories
 - [x] Create-project flow: use existing git directory as-is, initialize non-git directory with `go-git`, or create the default directory and initialize it with `go-git`
 - [x] GitHub backup flow removed: project creation remains local and dependency-free beyond harness-managed Go code
 - [x] Path resolution: memory, session, queue, index, and artifact paths resolve relative to the active project memory repo instead of a shared memory repo root
-- [x] Prompt layering: global rules/user/facts and fallback agents resolve from `projects/global`; active project rules and per-file agent overrides resolve from the active project repo
+- [x] Prompt layering: active project rules/user/facts/notes/episodes resolve from the active project repo; persona/rules definitions fall back to `projects/global/agents`
 - [x] Legacy migration removed: there were no pre-M9 installs to migrate, so M9 starts directly with layout-v2 project repos
 - [x] UI: create/edit project forms expose memory repo directory choice without adding cwd-driven activation
 

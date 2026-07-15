@@ -171,10 +171,11 @@ func (ad *uiAgentRegistryAdapter) buildAgentInfo(a agent.Agent) (ui.AgentInfo, e
 		return info, err
 	}
 	info.Rules = rules
-	notes, err := readOptional(ad.globalMem, a.NotesPath)
+	notes, err := readOptional(ad.activeMem, a.NotesPath)
 	if err != nil {
 		return info, err
 	}
+	info.NotesPath = a.NotesPath
 	info.Notes = notes
 	return info, nil
 }
@@ -212,7 +213,14 @@ func (ad *uiAgentRegistryAdapter) WriteRules(name string, body []byte) error {
 }
 
 func (ad *uiAgentRegistryAdapter) WriteNotes(name string, body []byte) error {
-	return ad.reg.WriteNotes(name, body)
+	if _, err := ad.Get(name); err != nil {
+		return err
+	}
+	notePath := path.Join("agents", name, "notes.md")
+	if err := ad.activeMem.WriteFile(notePath, body); err != nil {
+		return fmt.Errorf("agent: write project notes %q: %w", name, err)
+	}
+	return nil
 }
 
 func (ad *uiAgentRegistryAdapter) Delete(name string) error {

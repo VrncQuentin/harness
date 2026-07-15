@@ -314,6 +314,37 @@ func TestHandlePromoteFact_DedupBlockedSkipsWriteAndCommit(t *testing.T) {
 	}
 }
 
+func TestHandlePromoteFact_UsesActiveProjectStore(t *testing.T) {
+	s := NewServer(3000)
+	activeStore := newStubMemoryStore(map[string]string{
+		"facts.md": "active fact\n",
+	})
+	globalStore := newStubMemoryStore(map[string]string{
+		"facts.md": "global fact\n",
+	})
+	committer := &stubCommitter{}
+	s.SetServiceDeps(ServiceDeps{MemoryStore: activeStore, GlobalMemoryStore: globalStore, Committer: committer})
+
+	form := url.Values{}
+	form.Set("text", "new project fact")
+	req := httptest.NewRequest(http.MethodPost, "/memory/promote", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handlePromoteFact(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	if activeStore.lastWritePath != "facts.md" || !strings.Contains(string(activeStore.lastWriteData), "new project fact") {
+		t.Fatalf("active store was not updated: path=%q data=%q", activeStore.lastWritePath, string(activeStore.lastWriteData))
+	}
+	if globalStore.lastWritePath != "" {
+		t.Fatalf("global store was updated: path=%q", globalStore.lastWritePath)
+	}
+	if len(committer.files) != 1 || len(committer.files[0]) != 1 || committer.files[0][0] != "facts.md" {
+		t.Fatalf("commit files = %#v, want facts.md", committer.files)
+	}
+}
 func TestHandlePromoteFact_CommitErrorReturns500(t *testing.T) {
 	s := NewServer(3000)
 	s.SetMemoryStore(newStubMemoryStore(map[string]string{

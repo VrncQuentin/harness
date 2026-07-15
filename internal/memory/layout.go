@@ -51,9 +51,8 @@ func ExpectedLayout() []LayoutItem {
 }
 
 // ExpectedProjectRepoLayout returns the canonical layout for one layout-v2
-// project memory repository. Global repos carry the base prompt files and
-// fallback agent library; user repos carry project-owned rules and optional
-// agent overrides.
+// project memory repository. Every project owns its prompt memory files; the
+// global project additionally carries the fallback agent-definition library.
 func ExpectedProjectRepoLayout(global bool) []LayoutItem {
 	items := []LayoutItem{
 		{Path: "sessions.jsonl", Dir: false, Desc: "Project session history"},
@@ -62,18 +61,17 @@ func ExpectedProjectRepoLayout(global bool) []LayoutItem {
 		{Path: "index/_episodes", Dir: true, Desc: "Episode embeddings"},
 		{Path: "artifacts", Dir: true, Desc: "Project artifacts"},
 	}
-	if global {
-		return append([]LayoutItem{
-			{Path: "rules.md", Dir: false, Desc: "Always-on base prompt"},
-			{Path: "user.md", Dir: false, Desc: "Hand-authored facts about the user"},
-			{Path: "facts.md", Dir: false, Desc: "Promoted cross-agent facts"},
-			{Path: "agents", Dir: true, Desc: "Global agents library"},
-		}, items...)
+	base := []LayoutItem{
+		{Path: "rules.md", Dir: false, Desc: "Project rules"},
+		{Path: "user.md", Dir: false, Desc: "Facts about the user for this project"},
+		{Path: "facts.md", Dir: false, Desc: "Promoted facts for this project"},
 	}
-	return append([]LayoutItem{
-		{Path: "rules.md", Dir: false, Desc: "Project-specific rules"},
-		{Path: "agents", Dir: true, Desc: "Project agent overrides"},
-	}, items...)
+	if global {
+		base = append(base, LayoutItem{Path: "agents", Dir: true, Desc: "Global agents library"})
+	} else {
+		base = append(base, LayoutItem{Path: "agents", Dir: true, Desc: "Project agent overrides"})
+	}
+	return append(base, items...)
 }
 
 // MissingProjectRepoItems returns absent layout-v2 entries under root.
@@ -146,29 +144,23 @@ func ValidateProjectRepo(root string, global bool) error {
 }
 
 // ProjectLayout returns the canonical layout items for a single project
-// identified by slug. For the reserved "global" slug it returns the
-// system-project scaffold with sessions.jsonl but without optional
-// project-local rules.md. For user projects it includes rules.md, agents/,
-// sessions.jsonl, episodes/, index/, and index/_episodes/.
+// identified by slug. Global is the default project, so it has the same
+// project-owned prompt files as user projects.
 func ProjectLayout(slug string) ([]LayoutItem, error) {
 	if err := project.ValidateSlug(slug); err != nil {
 		return nil, fmt.Errorf("memory: invalid project slug %q: %w", slug, err)
 	}
 
-	if slug == project.GlobalSlug {
-		return []LayoutItem{
-			{Path: "projects/global", Dir: true, Desc: "System project (default scope)"},
-			{Path: "projects/global/sessions.jsonl", Dir: false, Desc: "Project session history"},
-			{Path: "projects/global/episodes", Dir: true, Desc: "Session episode files for the system project"},
-			{Path: "projects/global/index", Dir: true, Desc: "Semantic search indexes for the system project"},
-			{Path: "projects/global/index/_episodes", Dir: true, Desc: "Embeddings of the system project's episodes"},
-		}, nil
-	}
-
 	prefix := "projects/" + slug
+	desc := "User project"
+	if slug == project.GlobalSlug {
+		desc = "System project (default scope)"
+	}
 	return []LayoutItem{
-		{Path: prefix, Dir: true, Desc: "User project"},
-		{Path: prefix + "/rules.md", Dir: false, Desc: "Project-specific rules"},
+		{Path: prefix, Dir: true, Desc: desc},
+		{Path: prefix + "/rules.md", Dir: false, Desc: "Project rules"},
+		{Path: prefix + "/user.md", Dir: false, Desc: "Facts about the user for this project"},
+		{Path: prefix + "/facts.md", Dir: false, Desc: "Promoted facts for this project"},
 		{Path: prefix + "/agents", Dir: true, Desc: "Project agent definitions"},
 		{Path: prefix + "/sessions.jsonl", Dir: false, Desc: "Project session history"},
 		{Path: prefix + "/episodes", Dir: true, Desc: "Project episode files"},

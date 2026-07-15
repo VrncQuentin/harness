@@ -160,23 +160,23 @@ Responsibilities:
 Builds the final context sent to the model. Layers assembled in order:
 
 ```
-1. rules.md in the global repo        — always injected, never trimmed
-2. user.md in the global repo         — always injected, never trimmed
-3. rules.md in the active repo        — never trimmed, skipped when active is global
-4. resolved agent persona.md          — active project overrides global per file
-5. resolved agent rules.md            — active project overrides global per file
-6. facts.md in the global repo        — always injected (keep lean by design)
-7. resolved agent notes.md            — active project overrides global per file
-8. retrieved episodes                 — active-project top-K by blended score, trimmed oldest-first
-9. conversation turns                 — current session history
+1. rules.md in the active project repo       — never trimmed
+2. user.md in the active project repo        — never trimmed
+3. resolved agent persona.md                 — active project overrides global library
+4. resolved agent rules.md                   — active project overrides global library
+5. facts.md in the active project repo       — never trimmed (keep lean by design)
+6. agent notes.md in the active project repo — never falls back to global library
+7. retrieved episodes                        — active-project top-K by blended score, trimmed oldest-first
+8. conversation turns                        — current session history
 ```
 
-> **Layout-v2:** prompt assembly receives two physical repo readers: the global
-> repo for base files and fallback agents, and the active project repo for
-> project rules, agent overrides, and episodes.
+> **Layout-v2:** prompt assembly receives two physical repo readers. The active
+> project repo provides prompt memory, notes, and episodes; the global project
+> repo is only the fallback library for agent definition files (`persona.md` and
+> `rules.md`). The global project is otherwise just the default active project.
 
 Responsibilities:
-- **Total memory cap:** sum of layers 6–8 must not exceed `memory_token_budget` (default 6144). Episodes are trimmed oldest-first to fit. Layers 1–5 are never trimmed — keep them small by convention.
+- **Total memory cap:** sum of layers 5–7 must not exceed `memory_token_budget` (default 6144). Episodes are trimmed oldest-first to fit. Layers 1–4 are never trimmed — keep them small by convention.
 - **Conversation reserve:** always guarantee `conversation_reserve` tokens (default 8192) for live turns. If memory + conversation would exceed ctx_size, reduce episode count further.
 - Return OpenAI-style chat messages; llama-server applies the model-specific chat template
 - Hot-reload rule and persona files by re-reading prompt inputs on each request
@@ -186,7 +186,7 @@ Responsibilities:
 Mediates all reads and writes to git-backed project memory repos.
 
 **Read path:**
-1. Load static layers from the global project repo and active project repo: global rules/user/facts, resolved agent persona/rules/notes, and optional active project rules
+1. Load static layers from the active project repo: rules, user, facts, project-local notes, and resolved agent persona/rules (falling back to the global agent library only for persona/rules)
 2. Retrieve episodes: recency (last N) + semantic (ANN on `index/_episodes/vectors.bin`) → merge → deduplicate → re-rank by blended score
 3. Return ordered list of chunks to Prompt Assembler
 
@@ -196,7 +196,7 @@ Mediates all reads and writes to git-backed project memory repos.
 3. Commit via Git Backend with structured message in that repo
 
 **Promotion API:**
-- `PromoteToGlobalFact(text string)` → append to `facts.md` in the global repo + commit
+- `PromoteFact(text string)` → append to `facts.md` in the active project repo + commit
 - `AppendAgentNote(agent, text string)` → append to `agents/<n>/notes.md` in the active repo + commit
 - Both exposed in the UI memory page
 
@@ -330,18 +330,20 @@ Threads a per-request identifier through `context.Context` so API handlers, queu
 ~/.harness/                    ← harness home
   harness.db                   ← config, metrics, and runtime control state
   projects/
-    global/                    ← git repo: global project and fallback agent library
-      rules.md                 ← always-on base prompt
-      user.md                  ← stable facts about the user, hand-authored
-      facts.md                 ← promoted cross-agent facts, kept lean
-      agents/<n>/{persona.md, rules.md, notes.md}
+    global/                    ← git repo: default project and fallback agent-definition library
+      rules.md                 ← default project rules
+      user.md                  ← default project user facts
+      facts.md                 ← default project promoted facts
+      agents/<n>/{persona.md, rules.md, notes.md}   ← persona/rules library; notes only when global is active
       sessions.jsonl
       episodes/<n>/<timestamp>.md
       index/_episodes/{vectors.bin, manifest.json}
       artifacts/<run>/...
     <id>/                      ← git repo: user project memory
-      rules.md                 ← project-specific rules
-      agents/<n>/{persona.md, rules.md, notes.md}   ← optional project agent overrides/additions
+      rules.md                 ← project rules
+      user.md                  ← project user facts
+      facts.md                 ← project promoted facts
+      agents/<n>/{persona.md, rules.md, notes.md}   ← optional project agent definitions and notes
       sessions.jsonl
       episodes/<n>/<timestamp>.md
       index/_episodes/{vectors.bin, manifest.json}

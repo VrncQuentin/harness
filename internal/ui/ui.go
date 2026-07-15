@@ -29,9 +29,8 @@ type ServiceDeps struct {
 	GlobalMemoryStore MemoryStore
 	SessionStore      SessionStore
 
-	Committer       Committer
-	GlobalCommitter Committer
-	Dedup           DedupChecker
+	Committer Committer
+	Dedup     DedupChecker
 
 	PromotionDedupThreshold float64
 	RetrievalScorer         RetrievalScorer
@@ -125,9 +124,8 @@ type uiDeps struct {
 	memStore  MemoryStore
 	globalMem MemoryStore
 
-	committer       Committer
-	globalCommitter Committer
-	dedup           DedupChecker
+	committer Committer
+	dedup     DedupChecker
 
 	promotionDedupThreshold float64
 	scorer                  RetrievalScorer
@@ -315,7 +313,6 @@ func (s *Server) SetServiceDeps(deps ServiceDeps) {
 		d.globalMem = deps.GlobalMemoryStore
 		d.sessionStore = deps.SessionStore
 		d.committer = deps.Committer
-		d.globalCommitter = deps.GlobalCommitter
 		d.dedup = deps.Dedup
 		d.promotionDedupThreshold = deps.PromotionDedupThreshold
 		d.scorer = deps.RetrievalScorer
