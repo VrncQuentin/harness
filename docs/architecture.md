@@ -231,7 +231,7 @@ Responsibilities:
 - Keep the on-disk format isolated from prompt and memory logic.
 
 ### Embedder (`internal/embedder`)
-Runs nomic-embed-text as a sidecar process. Same spawn/monitor pattern as llama-server — consistent failure handling, restart on crash.
+Runs llama-server as a sidecar process in --embedding mode using the configured embedding model. Same spawn/monitor pattern as the chat llama-server process — consistent failure handling, restart on crash.
 
 Interface:
 ```go
@@ -241,7 +241,7 @@ type Embedder interface {
 }
 ```
 
-Ships as a self-contained binary (no Python dependency).
+Uses the configured llama-server-compatible binary and GGUF embedding model; no Python runtime is required.
 
 ANN index: flat scan for small corpora (<10k chunks). Upgrade to usearch or hnswlib if retrieval latency becomes a problem.
 
@@ -389,7 +389,7 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **go-git over git binary.** Removes the git-on-PATH requirement. Pure Go, no subprocess.
 
-**Embedder as sidecar.** Keeps Core free of Python/C dependencies. Uses the same process management pattern as llama-server — uniform failure handling, restart logic, and health checking.
+**Embedder as sidecar.** Runs a separate llama-server process in embedding mode, keeping Core free of Python dependencies while reusing the same process management pattern as the chat model — uniform failure handling, restart logic, and health checking.
 
 **Single SQLite file for operational state.** Config (single-row typed table), metrics (time-series tables), project identity, and runtime control state share `harness.db` under the harness home after layout-v2. One `*sql.DB` handle is opened in `main` and passed to subsystems — no per-package database connection, no lock contention. The UI reads metrics directly — no separate metrics server. Each milestone adds its own table(s). On restart, history is preserved. Prometheus export (M8) reads from the same database.
 

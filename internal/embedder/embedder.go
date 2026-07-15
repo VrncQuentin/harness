@@ -1,5 +1,6 @@
-// Package embedder provides an HTTP client for the nomic-embed-text
-// sidecar, which serves an OpenAI-compatible /v1/embeddings endpoint.
+// Package embedder provides an HTTP client for the embedding sidecar.
+// The sidecar is llama-server running in embedding mode and serving an
+// OpenAI-compatible /v1/embeddings endpoint.
 package embedder
 
 import (
