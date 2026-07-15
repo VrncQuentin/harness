@@ -189,6 +189,11 @@ func (q *Queue) Depth() int {
 	return int(q.depth.Load())
 }
 
+// MaxDepth returns the configured queue capacity.
+func (q *Queue) MaxDepth() int {
+	return q.maxDepth
+}
+
 // worker pulls from the channel and dispatches to the inference client.
 func (q *Queue) worker(ctx context.Context) {
 	for {
