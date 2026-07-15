@@ -91,6 +91,18 @@ type Walker interface {
 	Walk(relPath string) ([]Entry, error)
 }
 
+// Repo is the full production memory repository surface. Narrower consumers may
+// still accept Reader, but runtime wiring and mutable memory features use Repo
+// so missing capabilities fail at compile time instead of at request time.
+type Repo interface {
+	Reader
+	DirLister
+	DirCreator
+	FileWriter
+	DirRemover
+	Walker
+}
+
 // Entry describes one path under the memory repo as returned by Walk.
 // Path is forward-slash relative to the repo root.
 type Entry struct {
@@ -115,6 +127,7 @@ type DirReader struct {
 // interface drifts.
 var (
 	_ Reader     = (*DirReader)(nil)
+	_ Repo       = (*DirReader)(nil)
 	_ DirLister  = (*DirReader)(nil)
 	_ DirCreator = (*DirReader)(nil)
 	_ FileWriter = (*DirReader)(nil)

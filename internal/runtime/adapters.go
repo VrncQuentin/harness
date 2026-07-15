@@ -26,7 +26,7 @@ import (
 
 type uiAgentRegistryAdapter struct {
 	reg            agent.Registry
-	mem            memory.Reader
+	mem            memory.Repo
 	getProjectSlug func() string
 }
 
@@ -44,13 +44,11 @@ func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
 	projectAgents := make(map[string]bool)
 	if slug != "" {
 		dirPath := fmt.Sprintf("projects/%s/agents", slug)
-		if dl, ok := ad.mem.(memory.DirLister); ok {
-			names, err := dl.ListDirs(dirPath)
-			if err == nil {
-				for _, name := range names {
-					if name != "" && name != "." && name != ".." {
-						projectAgents[name] = true
-					}
+		names, err := ad.mem.ListDirs(dirPath)
+		if err == nil {
+			for _, name := range names {
+				if name != "" && name != "." && name != ".." {
+					projectAgents[name] = true
 				}
 			}
 		}
