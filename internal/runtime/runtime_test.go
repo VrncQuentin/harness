@@ -227,6 +227,54 @@ func TestTaskRunnerCancelTaskCancelsActiveEngine(t *testing.T) {
 		t.Fatal("expected missing task to return an error")
 	}
 }
+func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
+	root := initRuntimeProjectRepo(t, true)
+	cfg := config.Defaults()
+	cfg.Project.ActiveProjectSlug = "global"
+	rt := New(cfg, nil, LogRings{})
+	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
+
+	mgr, _ := rt.buildSessionManager(nil, ui.NewServer(0), projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: "global",
+	})
+	rt.setSessionManager(mgr)
+
+	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry()}
+	id, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+
+	select {
+	case ev, ok := <-evch:
+		if !ok {
+			t.Fatal("event channel closed before text event")
+		}
+		if ev.Type != agentloop.EvtText {
+			t.Fatalf("first event = %s, want text", ev.Type)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for text event")
+	}
+	if err := ad.CancelTask(id); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+	for range evch {
+	}
+
+	snap := mgr.Snapshot(id)
+	if snap == nil {
+		t.Fatal("session snapshot missing")
+	}
+	for _, msg := range snap.Conversation {
+		if msg.Role == "assistant" && msg.Content == "partial answer" {
+			return
+		}
+	}
+	t.Fatalf("partial assistant text was not recorded; conversation=%+v", snap.Conversation)
+}
 func TestTaskRunnerDoesNotDuplicateSingleMessageOnResume(t *testing.T) {
 	root := initRuntimeProjectRepo(t, true)
 	cfg := config.Defaults()
@@ -583,6 +631,22 @@ func (c *capturingInferenceClient) Complete(_ context.Context, req inference.Com
 }
 
 func (c *capturingInferenceClient) Health(context.Context) error { return nil }
+
+type blockingInferenceClient struct {
+	token inference.Token
+}
+
+func (c blockingInferenceClient) Complete(ctx context.Context, _ inference.CompletionRequest) (<-chan inference.Token, error) {
+	ch := make(chan inference.Token, 1)
+	go func() {
+		defer close(ch)
+		ch <- c.token
+		<-ctx.Done()
+	}()
+	return ch, nil
+}
+
+func (c blockingInferenceClient) Health(context.Context) error { return nil }
 
 type sequenceInferenceClient struct {
 	mu        sync.Mutex
