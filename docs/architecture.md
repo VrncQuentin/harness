@@ -213,15 +213,13 @@ Thin wrapper around `go-git` (pure Go — no git binary dependency).
 Operations:
 - `Init(path string)` — init or open one memory repo or attached code repo
 - `Commit(msg string, files []string)` — stage specific files + commit in the selected repo
-- `QueryLog(tags map[string]string) []CommitMeta` — filter by structured tags in commit message
-- `BlobByRef(sha string) ([]byte, error)` — fetch chunk content by SHA
 
 Commit message format (machine-parseable):
 ```
 [agent:coder] [type:episode] brief human-readable summary
 ```
 
-Index rebuild: walk all commits, re-embed any SHA missing from `index/manifest.json`. Idempotent, safe to run on a fresh clone.
+Index rebuild: walk episode files in the project memory repo and re-embed any SHA missing from `index/manifest.json`. Idempotent, safe to run on a fresh clone.
 
 ### Vector Index (`internal/index`)
 Manages flat vector indices stored as `vectors.bin` plus `manifest.json` pairs under a project's `index/` tree.
@@ -399,7 +397,7 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **Append-only sessions.jsonl.** Never mutate, only append. Trivial crash recovery, full audit log.
 
-**Commit message tags.** Structured `[key:value]` tags in commit messages enable log filtering without a separate metadata store. The git log *is* the index for episode discovery.
+**Commit message tags.** Structured `[key:value]` tags in commit messages keep memory-repo history readable and auditable without requiring a separate metadata store for commit intent. Episode discovery uses the project memory tree and vector manifests, not a bespoke git-log query API.
 
 **Two HTTP servers, one binary.** UI server (port 3000) and API server (port 8080) are separate. UI is always on. API is opt-in for external OpenAI-compatible clients and is never required for the first-party browser workflow.
 

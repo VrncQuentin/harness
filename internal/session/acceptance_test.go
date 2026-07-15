@@ -99,20 +99,12 @@ func TestM3Acceptance_1_EpisodeFileAndCommit(t *testing.T) {
 		t.Fatalf("expected %s to exist: %v", mdPath, err)
 	}
 
-	// Confirm the commit is in the log under the structured tags.
-	repo, err := git.Open(root)
-	if err != nil {
-		t.Fatalf("git.Open: %v", err)
+	// Confirm the saved commit is HEAD and carries the structured tags.
+	if got := headCommitSHA(t, root); got != res.CommitSHA {
+		t.Errorf("HEAD SHA mismatch: head=%s save=%s", got, res.CommitSHA)
 	}
-	commits, err := repo.Log(map[string]string{"agent": "coder", "type": "episode"})
-	if err != nil {
-		t.Fatalf("Log: %v", err)
-	}
-	if len(commits) == 0 {
-		t.Fatalf("no commits in log")
-	}
-	if commits[0].SHA != res.CommitSHA {
-		t.Errorf("log head SHA mismatch: log=%s save=%s", commits[0].SHA, res.CommitSHA)
+	if got := countCommitsWithPrefix(t, root, "[agent:coder] [type:episode] "); got == 0 {
+		t.Fatalf("no episode commits in log")
 	}
 }
 
@@ -240,16 +232,8 @@ func TestM3Acceptance_4_TenSessions(t *testing.T) {
 	}
 
 	// 10 commits in the log.
-	repo, err := git.Open(root)
-	if err != nil {
-		t.Fatalf("git.Open: %v", err)
-	}
-	commits, err := repo.Log(map[string]string{"agent": "coder", "type": "episode"})
-	if err != nil {
-		t.Fatalf("Log: %v", err)
-	}
-	if len(commits) != 10 {
-		t.Errorf("expected 10 commits, got %d", len(commits))
+	if got := countCommitsWithPrefix(t, root, "[agent:coder] [type:episode] "); got != 10 {
+		t.Errorf("expected 10 commits, got %d", got)
 	}
 
 	// 10 records in sessions.jsonl.
