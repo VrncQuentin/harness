@@ -31,6 +31,10 @@ func (f *fakeStore) Latest() ([]DataPoint, error) {
 	return nil, nil
 }
 
+func (f *fakeStore) ApplyRetention(int) error {
+	return nil
+}
+
 func TestRecorder_Uptime(t *testing.T) {
 	fs := &fakeStore{}
 	r := NewRecorder(fs)
