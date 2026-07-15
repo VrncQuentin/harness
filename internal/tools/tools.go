@@ -366,17 +366,8 @@ func (t *webSearchTool) Execute(ctx context.Context, c Context, args map[string]
 		return Result{Error: "web_search: missing or invalid query argument"}
 	}
 	maxResults := 3
-	if raw, ok := args["max_results"].(float64); ok && raw > 0 {
-		maxResults = int(raw)
-	}
-	if raw, ok := args["max_results"].(int); ok && raw > 0 {
-		maxResults = raw
-	}
-	if maxResults < 1 {
-		maxResults = 1
-	}
-	if maxResults > 5 {
-		maxResults = 5
+	if raw, ok := args["max_results"].(float64); ok {
+		maxResults = min(max(int(raw), 1), 5)
 	}
 
 	client := c.HTTPClient
