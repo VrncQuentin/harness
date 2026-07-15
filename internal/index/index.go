@@ -85,9 +85,8 @@ func Create(dir string, dim int) (*Index, error) {
 	return idx, nil
 }
 
-// Add appends vectors for the given SHA. Returns error if the SHA already
-// exists (idempotent check). The vectors slice must match the index
-// dimension. Safe for concurrent use.
+// Add appends vectors for the given SHA. Existing SHAs are idempotent no-ops.
+// The vectors slice must match the index dimension. Safe for concurrent use.
 func (idx *Index) Add(sha string, vectors [][]float32) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -102,17 +101,18 @@ func (idx *Index) Add(sha string, vectors [][]float32) error {
 			return fmt.Errorf("index: dimension mismatch: got %d, want %d", len(v), idx.dim)
 		}
 	}
-	idx.manifest.Chunks = append(idx.manifest.Chunks, Entry{
-		SHA:    sha,
-		Offset: offset,
-		Length: len(vectors),
-	})
-	idx.manifest.Count += len(vectors)
-
+	entry := Entry{SHA: sha, Offset: offset, Length: len(vectors)}
 	if err := idx.appendVectors(vectors); err != nil {
 		return err
 	}
-	return idx.writeManifest()
+	idx.manifest.Chunks = append(idx.manifest.Chunks, entry)
+	idx.manifest.Count += len(vectors)
+	if err := idx.writeManifest(); err != nil {
+		idx.manifest.Chunks = idx.manifest.Chunks[:len(idx.manifest.Chunks)-1]
+		idx.manifest.Count -= len(vectors)
+		return err
+	}
+	return nil
 }
 
 // Search performs a flat cosine-similarity scan across all vectors and
