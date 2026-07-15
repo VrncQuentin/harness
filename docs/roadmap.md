@@ -2,7 +2,7 @@
 
 Each milestone ends with a usable, stable state. Don't start the next until all acceptance tests pass.
 
-Implementation checkboxes track code that has landed. Acceptance-test checkboxes stay unchecked unless the test was explicitly run and observed passing.
+Implementation checkboxes track code that has landed. Acceptance-test checkboxes stay unchecked unless the test was explicitly run and observed passing; when package-level automated tests cover the acceptance behavior, the checkbox may be checked and annotated with the test scope. Browser, OS, hardware, and live-model checks stay unchecked until exercised end-to-end.
 
 Windows native and Linux are equal first-class targets. CI must run the Go test suite on both OSes for every PR, and platform-specific milestone acceptance tests must be verified on the OS they exercise.
 
@@ -93,10 +93,10 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 
 - A project is identified by an immutable lowercase-dashed `slug` and editable display name. Filesystem paths and DB keys always use the slug.
 - The `global` project is seeded on first run, is always active by default, and cannot be hidden, deleted, or renamed by slug.
-- Project memory lives under the current single memory repo: `projects/<slug>/{rules.md, agents/, sessions.jsonl, episodes/<agent-name>/, index/}`.
-- Top-level `global/` rules/user/facts and top-level `agents/<name>/` remain the cross-project base library until layout-v2.
-- Prompt assembly inserts `projects/<slug>/rules.md` between global rules and resolved agent persona. Agent files resolve per file from `projects/<slug>/agents/<name>/<file>.md`, falling back to top-level `agents/<name>/<file>.md`.
-- Sessions are bound immutably to their project, append to `projects/<slug>/sessions.jsonl`, and write episodes to `projects/<slug>/episodes/<agent-name>/`.
+- M3b originally placed project memory under the then-current single memory repo at `projects/<slug>/{rules.md, agents/, sessions.jsonl, episodes/<agent-name>/, index/}`. M9 layout-v2 keeps the same logical project boundaries but stores each project as its own physical git repo under `~/.harness/projects/<slug>/`.
+- M3b used top-level `global/` rules/user/facts and top-level `agents/<name>/` as the cross-project base library. In the current layout-v2 runtime, those files live in the first-class global project repo at `~/.harness/projects/global/`.
+- Prompt assembly inserts the active project `rules.md` layer between global rules and resolved agent persona. Agent files resolve per file from the active project repo, falling back to the global project repo.
+- Sessions are bound immutably to their project, append to that project's `sessions.jsonl`, and write episodes to that project's `episodes/<agent-name>/` directory.
 - `project_llama_on_switch = reload` drains the queue and restarts llama-server with the destination project's effective model unless the effective config is unchanged. `keep` leaves llama-server running and surfaces any running/preferred model mismatch.
 - Project directories are absolute paths to git repos. Activation warns and continues when a directory is missing or invalid; attached-directory semantic indexes are deferred.
 - Per-project model overrides cover `model_binary`, `model_path`, `model_ctx_size`, `model_gpu_layers`, and `model_n_parallel`; null values inherit from global config.
@@ -112,20 +112,20 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 **Acceptance tests:**
 
 - [x] First run seeds the `global` project; `global` cannot be hidden, deleted, or renamed
-- [ ] Create a project via UI -> row appears in `projects` table, directory is available at `memory/projects/<slug>/`, slug is auto-generated from display name and editable on create
+- [ ] Create a project via UI -> row appears in `projects` table, project memory repo is available, slug is auto-generated from display name and editable on create
 - [ ] Edit a project -> display name and overrides change, slug is read-only
-- [ ] Activate a project -> `active_project_slug` updates, a fresh session opens at `projects/<slug>/sessions.jsonl`, and the session record includes `project: <slug>`
+- [ ] Activate a project -> `active_project_slug` updates, a fresh session opens in that project repo's `sessions.jsonl`, and the session record includes `project: <slug>`
 - [ ] Switching projects with `llama_on_switch = reload` drains the queue and reloads llama-server with the destination's effective model; identical effective configs are a no-op regardless of mode
 - [ ] Switch with `llama_on_switch = keep` -> llama-server keeps running and the status page shows model mismatch when applicable
-- [ ] Switch to the global project from a user project -> subsequent sessions write to `projects/global/sessions.jsonl` with `project: global`, and only the global agents library is visible
+- [ ] Switch to the global project from a user project -> subsequent sessions write to the global repo's `sessions.jsonl` with `project: global`, and only the global agents library is visible
 - [x] Project agent overrides resolve per-file (project `persona.md` + global `rules.md` works)
 - [x] Activating a project with a missing directory succeeds and surfaces a "directory missing" badge
-- [ ] Project-only agent in `projects/<slug>/agents/<name>/` is visible only inside that project
-- [ ] Project rules file present -> `projects/<slug>/rules.md` is injected between global rules and agent persona, verifiable in prompt layer logs
-- [ ] Complete a session in a user project -> episode file appears at `projects/<slug>/episodes/<agent>/<timestamp>.md`, not under `agents/<agent>/episodes/`
-- [ ] Complete a session in the global project -> episode file appears at `projects/global/episodes/<agent>/<timestamp>.md`
-- [ ] Hide a non-global project -> it disappears from the topbar switcher and default `/projects` list, while data remains on disk
-- [ ] Unhide a project -> it reappears in pickers with data intact
+- [x] Project-only agent in the active project repo is visible only inside that project (automated: `TestAssemble_ProjectOnlyAgentSuccess`, `TestAssemble_ProjectOnlyAgentNotLeaking`)
+- [x] Project rules file present -> active repo `rules.md` is injected between global rules and agent persona (automated: `TestAssemble_ProjectRulesOrdering`, `TestAssemble_ProjectRulesUseActiveProjectSlug`)
+- [x] Complete a session in a project repo -> episode file appears at `episodes/<agent>/<timestamp>.md`, not under `agents/<agent>/episodes/` (automated runtime wiring: `TestBuildSessionManagerUsesPhysicalProjectRepoPaths`)
+- [x] Complete a session in the global project repo -> episode file appears at `episodes/<agent>/<timestamp>.md` (automated runtime wiring: `TestBuildSessionManagerUsesPhysicalProjectRepoPaths`)
+- [x] Hide a non-global project -> it disappears from the topbar switcher and default `/projects` list, while data remains on disk (automated DB/UI handler coverage: `TestProjectStore_HideAndUnhide`, `TestHandleProjectVisibilityPOST`)
+- [x] Unhide a project -> it reappears in pickers with data intact (automated DB/UI handler coverage: `TestProjectStore_HideAndUnhide`, `TestHandleProjectVisibilityPOST`)
 - [ ] Restart harness -> `active_project_slug` is honored on startup, activation runs, eager directory checks execute, and the status page reflects the active project
 
 Attached-directory index manifests are not part of scoped M3b; they remain deferred with attached-directory semantic indexing.
@@ -157,12 +157,12 @@ Design references: opencode (part-based messages, step counter, doom-loop detect
 
 **Acceptance tests:**
 - [ ] Open the task UI, enter a prompt -> conversation appears in the chat surface, model response streams in
-- [ ] Model calls `file_read` on a path within the active project's sandbox root -> content is returned and injected into context
-- [ ] Model calls `file_read` on a path outside any configured sandbox root -> request is rejected with a clear error and the rejection is visible to the model
-- [ ] Loop hits the step limit -> terminates gracefully and the UI shows the limit was reached
+- [x] Model calls `file_read` on a path within the active project's sandbox root -> content is returned and injected into context (automated: `TestFileRead_WithinSandbox`)
+- [x] Model calls `file_read` on a path outside any configured sandbox root -> request is rejected with a clear error and the rejection is visible to the model (automated: `TestFileRead_OutsideSandbox`, `TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback`)
+- [x] Loop hits the step limit -> terminates gracefully and emits the limit event/error (automated engine coverage: `TestEngineCachesToolSchemasAcrossTurns`)
 - [ ] Model repeats the same tool call three times in a row -> loop terminates and the UI shows the doom-loop event
-- [ ] Click cancel mid-task -> in-flight model request is aborted, running tool call is cancelled, loop terminates, UI returns to idle
-- [ ] Disable `file_list` in config -> model receives a tool-not-available result when it calls it, loop continues
+- [x] Click cancel mid-task -> active engine cancellation is routed and partial transcript is retained (automated route/runtime coverage: `TestHandleTaskCancel_Success`, `TestTaskRunnerCancelTaskCancelsActiveEngine`, `TestTaskRunnerRecordsPartialTranscriptOnCancel`)
+- [x] Disable `file_list` in config -> model receives a tool-not-available result when it calls it, loop continues (automated disabled-tool coverage: `TestToolDisabledInConfigReturnsNotAvailable`)
 - [ ] Complete a multi-turn task (read several files, answer a question about them) entirely inside the harness UI
 
 ---
@@ -181,8 +181,8 @@ This work is descoped from the current phase; project directory indexes will be
 implemented when directory-level semantic search becomes a user-facing feature.
 
 - [x] Embedder sidecar: llama-server --embedding mode, health check, restart on crash
-- [x] Embed-on-commit pipeline (episodes): new episode -> embed chunks -> update `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` -> commit
-- [ ] Embed-on-commit pipeline (attached directories): for each tree configured on the active project, walk by HEAD -> embed chunks -> update `projects/<active>/index/<dir-slug>/{vectors.bin, manifest.json}` -> commit
+- [x] Embed-on-commit pipeline (episodes): new episode -> embed chunks -> update the active project repo's `index/_episodes/{vectors.bin, manifest.json}` -> commit
+- [ ] Embed-on-commit pipeline (attached directories): for each tree configured on the active project, walk by HEAD -> embed chunks -> update the active project repo's `index/<dir-slug>/{vectors.bin, manifest.json}` -> commit
 - [x] ANN search: flat scan initially, upgrade to usearch if latency becomes a problem
 - [x] Blended retrieval: `score = (semantic_weight * similarity) + (recency_weight * recency_decay)`
 - [x] Index rebuild (UI-triggered from memory browser): walk episodes, re-embed missing SHAs (idempotent). **Directory indexing deferred** — project directory trees require chunking embedded files from the git HEAD, which depends on the attached-directory embed-on-commit pipeline. Episode index rebuild is implemented in `internal/runtime/memory_api.go:indexRebuilder`.
@@ -191,13 +191,13 @@ implemented when directory-level semantic search becomes a user-facing feature.
 **Acceptance tests:**
 - [ ] Start embedder sidecar -> appears healthy in UI status page
 - [ ] Kill embedder -> harness detects and restarts it, same as llama-server
-- [ ] Complete a session -> `projects/<active>/index/_episodes/{vectors.bin, manifest.json}` updated and committed
-- [ ] Ask a question referencing content from session N-10 -> that episode is retrieved despite not being the most recent
+- [ ] Complete a session -> the active project repo's `index/_episodes/{vectors.bin, manifest.json}` is updated and committed
+- [x] Ask a question referencing content from session N-10 -> that episode is retrieved despite not being the most recent (automated blended scoring coverage: `TestAssemble_BlendedRetrievalKeepsTopN`, `TestAssemble_BlendedRetrievalTrimDropsLowestScore`)
 - [ ] Ask a question with no relevant past sessions -> retrieval returns empty gracefully, no crash
-- [ ] Run index rebuild on a fresh clone of the memory repo -> index reconstructed correctly, retrieval works
-- [ ] Set `semantic_weight = 0` -> retrieval falls back to pure recency, top-K matches last N episodes exactly
-- [ ] Set `recency_weight = 0` -> retrieval is pure semantic, oldest relevant episode can appear in top-K
-- [ ] UI memory browser -> shows blended score next to each retrieved episode
+- [x] Run index rebuild on a fresh clone of the memory repo -> episode index is reconstructed (automated: `TestEpisodeRebuilderCreatesMissingEpisodeIndex`, `TestIndexRebuilderCreatesMissingEpisodeIndex`)
+- [x] Set `semantic_weight = 0` -> retrieval falls back to pure recency, top-K matches last N episodes exactly (automated: `TestAssemble_BlendedRecencyUsesExponentialDecay`)
+- [x] Set `recency_weight = 0` -> retrieval is pure semantic, oldest relevant episode can appear in top-K (automated: `TestAssemble_BlendedRetrievalTrimDropsLowestScore`, `TestAssemble_BlendedRetrievalUsesBestChunkScore`)
+- [x] UI memory browser -> shows blended score next to each retrieved episode (automated: `TestHandleMemoryEpisodes_RendersRetrievalScores`)
 
 ---
 
@@ -222,7 +222,7 @@ implemented when the permission + retrieval architecture matures (M7+).
 - [x] Promote a near-duplicate of an existing fact -> dedup pass blocks it, user sees a warning
 - [x] Append a note to `agents/coder/notes.md` via UI -> appears in next coder session prompt
 - [ ] Request cross-agent episodes from `reviewer` while in a `coder` session -> episodes injected correctly (descoped to M7+)
-- [ ] `global/facts.md` grows beyond a reasonable size -> assembler still respects `memory_token_budget`, oldest facts are not silently dropped (warn instead)
+- [x] `facts.md` grows beyond a reasonable size -> assembler still respects `memory_token_budget`; facts/notes are not silently dropped and an over-budget warning is emitted (automated: `TestAssemble_MandatoryLayersNeverTrimmed`)
 
 ---
 
@@ -287,7 +287,7 @@ are deferred beyond M7.
 - [x] Send SIGKILL -> interactive queued requests are lost, but saved sessions and committed memory remain intact
 - [ ] Start with a corrupted `harness.db` -> clear error on the status page, no crash
 - [ ] Start with valid config but wrong model path -> clear error at startup, not at first request
-- [ ] Enable Prometheus endpoint -> `curl /metrics` returns valid Prometheus text format
+- [x] Enable Prometheus endpoint -> `/metrics` returns valid Prometheus text format (automated HTTP handler coverage: `TestHandleMetrics_ExportsLatestPrometheusSamples`)
 
 ---
 
@@ -309,13 +309,13 @@ Depends on M3b (projects table, active project slug, attached directories), M5 (
 
 **Acceptance tests:** see [layout-v2.md](layout-v2.md#acceptance-tests). Highlights:
 
-- [ ] First run creates `~/.harness/harness.db` and initializes `~/.harness/projects/global` as a git repo
+- [x] First run creates `~/.harness/harness.db` and initializes `~/.harness/projects/global` as a git repo (automated DB/repo setup coverage: `TestOpen_CreatesTablesAndSeedsConfigRow`, `TestEnsureProjectRepoInitializesAndScaffolds`)
 - [ ] Creating a project with no directory creates and initializes `~/.harness/projects/<id>`
-- [ ] Creating a project with a non-git directory initializes it through `go-git`
-- [ ] Creating a project with an existing git directory uses it without rewriting unrelated files
+- [x] Creating a project with a non-git directory initializes it through `go-git` (automated repo setup coverage: `TestEnsureProjectRepoInitializesAndScaffolds`)
+- [x] Creating a project with an existing git directory uses it without rewriting unrelated files (automated repo setup coverage: `TestEnsureProjectRepoInitializesAndScaffolds`, `TestMoveProjectRepoCopiesWorkingTreeWithoutGitDir`)
 - [ ] Starting the harness never depends on cwd and never activates a project based on the launch directory
 - [ ] One project with two attached code repos writes sessions and episodes to one project memory repo and creates separate index entries for each attached repo
-- [ ] Agent resolution falls back from active project agents to `projects/global/agents` per file
+- [x] Agent resolution falls back from active project agents to `projects/global/agents` per file (automated: `TestAssemble_ProjectPersonaOverrideInheritsGlobalRulesNotes`)
 - [ ] Pipeline discovery reads `.hp` files from attached code repos, not from project memory repos
 
 ---

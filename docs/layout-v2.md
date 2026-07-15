@@ -190,7 +190,7 @@ If preserving the single old repo history across split repos is impractical, the
 - Creating a project with no directory creates and initializes `~/.harness/projects/<id>`.
 - Creating a project with a non-git directory initializes that directory with `go-git` and uses it as the memory repo.
 - Creating a project with an existing git directory uses it without reinitializing or rewriting unrelated files.
-- The global project can be backed up through the same opt-in GitHub flow as user projects.
+- GitHub backup flow is absent in layout-v2; project creation and repo management stay local.
 - Starting the harness never depends on cwd and never activates a project based on the launch directory.
 - One project with two attached code repos writes sessions and episodes to one project memory repo and creates separate index entries for each attached repo.
 - Agent resolution falls back from `projects/<active>/agents/<name>/<file>` to `projects/global/agents/<name>/<file>` per file.
