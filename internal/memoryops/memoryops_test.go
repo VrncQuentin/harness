@@ -12,14 +12,14 @@ import (
 
 func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	root := t.TempDir()
-	episodePath := filepath.Join(root, "projects", "global", "episodes", "coder", "ep1.md")
+	episodePath := filepath.Join(root, "episodes", "coder", "ep1.md")
 	if err := os.MkdirAll(filepath.Dir(episodePath), 0o755); err != nil {
 		t.Fatalf("MkdirAll episode dir: %v", err)
 	}
 	if err := os.WriteFile(episodePath, []byte("episode body"), 0o644); err != nil {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
-	indexDir := filepath.Join(root, "projects", "global", "index", "_episodes")
+	indexDir := filepath.Join(root, "index", "_episodes")
 	called := false
 	rb := &EpisodeRebuilder{
 		Mem:      memory.NewDirReader(root),

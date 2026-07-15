@@ -160,21 +160,20 @@ Responsibilities:
 Builds the final context sent to the model. Layers assembled in order:
 
 ```
-1. global/rules.md                    — always injected, never trimmed
-2. global/user.md                     — always injected, never trimmed
-3. projects/<active>/rules.md         — never trimmed, skipped when active is global
+1. rules.md in the global repo        — always injected, never trimmed
+2. user.md in the global repo         — always injected, never trimmed
+3. rules.md in the active repo        — never trimmed, skipped when active is global
 4. resolved agent persona.md          — active project overrides global per file
 5. resolved agent rules.md            — active project overrides global per file
-6. global/facts.md                    — always injected (keep lean by design)
+6. facts.md in the global repo        — always injected (keep lean by design)
 7. resolved agent notes.md            — active project overrides global per file
 8. retrieved episodes                 — active-project top-K by blended score, trimmed oldest-first
 9. conversation turns                 — current session history
 ```
 
-> **Layout-v2:** The paths above are logical prompt layers. Physically,
-> global files live in `~/.harness/projects/global/`, while active project
-> files live in that project's own memory repo. The runtime maps the logical
-> paths to the correct project repo before reading or writing.
+> **Layout-v2:** prompt assembly receives two physical repo readers: the global
+> repo for base files and fallback agents, and the active project repo for
+> project rules, agent overrides, and episodes.
 
 Responsibilities:
 - **Total memory cap:** sum of layers 6–8 must not exceed `memory_token_budget` (default 6144). Episodes are trimmed oldest-first to fit. Layers 1–5 are never trimmed — keep them small by convention.
@@ -197,10 +196,9 @@ Mediates all reads and writes to git-backed project memory repos.
 3. Commit via Git Backend with structured message in that repo
 
 **Promotion API:**
-- `PromoteToGlobalFact(text string)` → append to `global/facts.md` + commit
-- `AppendAgentNote(agent, text string)` → append to resolved `agents/<n>/notes.md` + commit
+- `PromoteToGlobalFact(text string)` → append to `facts.md` in the global repo + commit
+- `AppendAgentNote(agent, text string)` → append to `agents/<n>/notes.md` in the active repo + commit
 - Both exposed in the UI memory page
-- After layout-v2: `global/facts.md` will move to `projects/global/facts.md`
 
 **Cross-agent reads:** explicit only. An agent may request episodes from another agent's directory. Not automatic.
 

@@ -23,11 +23,20 @@ type DedupChecker interface {
 }
 
 func (s *Server) SetCommitter(c Committer) {
-	s.updateDeps(func(d *uiDeps) { d.committer = c })
+	s.updateDeps(func(d *uiDeps) {
+		d.committer = c
+		if d.globalCommitter == nil {
+			d.globalCommitter = c
+		}
+	})
 }
 
 func (s *Server) getCommitter() Committer {
 	return s.depsSnapshot().committer
+}
+
+func (s *Server) getGlobalCommitter() Committer {
+	return s.depsSnapshot().globalCommitter
 }
 
 func (s *Server) SetDedupChecker(dc DedupChecker) {
@@ -46,7 +55,7 @@ func (s *Server) getPromotionDedupThreshold() float64 {
 	return s.depsSnapshot().promotionDedupThreshold
 }
 
-// handlePromoteFact appends text to global/facts.md and commits it.
+// handlePromoteFact appends text to facts.md in the global memory repo and commits it.
 // When a DedupChecker and non-zero threshold are available, the handler
 // checks for near-duplicate facts before writing and redirects with a
 // dedup-blocked flash message if one is found.
@@ -55,14 +64,14 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	store := s.memoryStore()
+	store := s.globalMemoryStore()
 	if store == nil {
-		http.Error(w, "memory store not available", http.StatusServiceUnavailable)
+		http.Error(w, "global memory store not available", http.StatusServiceUnavailable)
 		return
 	}
-	c := s.getCommitter()
+	c := s.getGlobalCommitter()
 	if c == nil {
-		http.Error(w, "committer not available", http.StatusServiceUnavailable)
+		http.Error(w, "global committer not available", http.StatusServiceUnavailable)
 		return
 	}
 	text := strings.TrimSpace(r.FormValue("text"))
@@ -88,7 +97,7 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	existing, _ := store.Read("global/facts.md")
+	existing, _ := store.Read("facts.md")
 	var builder strings.Builder
 	builder.Write(existing)
 	if len(existing) > 0 && !bytes.HasSuffix(existing, []byte("\n")) {
@@ -97,11 +106,11 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 	builder.WriteString("\n")
 	builder.WriteString(text)
 	builder.WriteString("\n")
-	if err := store.WriteFile("global/facts.md", []byte(builder.String())); err != nil {
+	if err := store.WriteFile("facts.md", []byte(builder.String())); err != nil {
 		http.Error(w, fmt.Sprintf("write facts: %v", err), http.StatusInternalServerError)
 		return
 	}
-	if _, err := c.Commit("[type:fact] promote fact", []string{"global/facts.md"}); err != nil {
+	if _, err := c.Commit("[type:fact] promote fact", []string{"facts.md"}); err != nil {
 		http.Error(w, fmt.Sprintf("commit fact: %v", err), http.StatusInternalServerError)
 		return
 	}

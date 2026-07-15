@@ -153,8 +153,8 @@ func TestHandleMemory_NoStoreShowsCTA(t *testing.T) {
 func TestHandleMemory_RendersTreeAndTokens(t *testing.T) {
 	s := NewServer(3000)
 	store := newStubMemoryStore(map[string]string{
-		"global/rules.md":         "be helpful",
-		"global/user.md":          "the user is named alice",
+		"rules.md":                "be helpful",
+		"user.md":                 "the user is named alice",
 		"agents/coder/persona.md": "you are a coder",
 	})
 	s.SetMemoryStore(store)
@@ -175,8 +175,8 @@ func TestHandleMemory_RendersTreeAndTokens(t *testing.T) {
 		"persona.md",
 		// html/template percent-encodes "/" in href attributes; the
 		// browser decodes it back, so the route still matches.
-		`href="/memory/edit?path=global%2frules.md"`,
-		`href="/memory/edit?path=global%2ffacts.md"`,
+		`href="/memory/edit?path=rules.md"`,
+		`href="/memory/edit?path=facts.md"`,
 		"C:\\repo",
 		filepath.Join("C:\\repo", "agents"),
 		"biggest agent",
@@ -194,7 +194,7 @@ func TestHandleMemory_RendersTreeAndTokens(t *testing.T) {
 func TestHandleMemory_InlinesFileContent(t *testing.T) {
 	s := NewServer(3000)
 	store := newStubMemoryStore(map[string]string{
-		"global/rules.md":         "be helpful and terse",
+		"rules.md":                "be helpful and terse",
 		"agents/coder/persona.md": "you are a coder",
 	})
 	s.SetMemoryStore(store)
@@ -221,7 +221,7 @@ func TestHandleMemory_InlinesFileContent(t *testing.T) {
 func TestHandleMemory_EmptyFileShowsHint(t *testing.T) {
 	s := NewServer(3000)
 	store := newStubMemoryStore(map[string]string{
-		"global/rules.md": "",
+		"rules.md": "",
 	})
 	s.SetMemoryStore(store)
 
@@ -240,12 +240,12 @@ func TestHandleMemory_ShowsSavedFlash(t *testing.T) {
 	store := newStubMemoryStore(nil)
 	s.SetMemoryStore(store)
 
-	req := httptest.NewRequest(http.MethodGet, "/memory?saved=global%2Frules.md", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory?saved=rules.md", nil)
 	rec := httptest.NewRecorder()
 	s.handleMemory(rec, req)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, "Saved") || !strings.Contains(body, "global/rules.md") {
+	if !strings.Contains(body, "Saved") || !strings.Contains(body, "rules.md") {
 		t.Errorf("expected saved flash, got:\n%s", body)
 	}
 }
@@ -280,7 +280,7 @@ func TestHandleMemory_RejectsPOST(t *testing.T) {
 func TestHandlePromoteFact_DedupBlockedSkipsWriteAndCommit(t *testing.T) {
 	s := NewServer(3000)
 	store := newStubMemoryStore(map[string]string{
-		"global/facts.md": "existing fact\n",
+		"facts.md": "existing fact\n",
 	})
 	committer := &stubCommitter{}
 	checker := &stubDedupChecker{blocked: true, similar: "existing fact", score: 0.972}
@@ -317,7 +317,7 @@ func TestHandlePromoteFact_DedupBlockedSkipsWriteAndCommit(t *testing.T) {
 func TestHandlePromoteFact_CommitErrorReturns500(t *testing.T) {
 	s := NewServer(3000)
 	s.SetMemoryStore(newStubMemoryStore(map[string]string{
-		"global/facts.md": "existing fact\n",
+		"facts.md": "existing fact\n",
 	}))
 	s.SetCommitter(&stubCommitter{err: errors.New("git offline")})
 
@@ -362,11 +362,11 @@ func TestHandleAppendNote_CommitErrorReturns500(t *testing.T) {
 func TestHandleMemoryEdit_RendersExistingContent(t *testing.T) {
 	s := NewServer(3000)
 	store := newStubMemoryStore(map[string]string{
-		"global/rules.md": "be terse",
+		"rules.md": "be terse",
 	})
 	s.SetMemoryStore(store)
 
-	req := httptest.NewRequest(http.MethodGet, "/memory/edit?path=global/rules.md", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory/edit?path=rules.md", nil)
 	rec := httptest.NewRecorder()
 	s.handleMemoryEdit(rec, req)
 
@@ -374,7 +374,7 @@ func TestHandleMemoryEdit_RendersExistingContent(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"be terse", `name="path" value="global/rules.md"`, `action="/memory/save"`} {
+	for _, want := range []string{"be terse", `name="path" value="rules.md"`, `action="/memory/save"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("edit body missing %q", want)
 		}
@@ -385,7 +385,7 @@ func TestHandleMemoryEdit_NewFileShowsBlankForm(t *testing.T) {
 	s := NewServer(3000)
 	s.SetMemoryStore(newStubMemoryStore(nil))
 
-	req := httptest.NewRequest(http.MethodGet, "/memory/edit?path=global/facts.md", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory/edit?path=facts.md", nil)
 	rec := httptest.NewRecorder()
 	s.handleMemoryEdit(rec, req)
 
@@ -414,7 +414,7 @@ func TestHandleMemoryEdit_RejectsNonEditablePath(t *testing.T) {
 func TestHandleMemoryEdit_NoStoreReturns503(t *testing.T) {
 	s := NewServer(3000)
 
-	req := httptest.NewRequest(http.MethodGet, "/memory/edit?path=global/rules.md", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory/edit?path=rules.md", nil)
 	rec := httptest.NewRecorder()
 	s.handleMemoryEdit(rec, req)
 
@@ -429,7 +429,7 @@ func TestHandleMemorySave_PersistsAndRedirects(t *testing.T) {
 	s.SetMemoryStore(store)
 
 	form := url.Values{}
-	form.Set("path", "global/rules.md")
+	form.Set("path", "rules.md")
 	form.Set("content", "line one\r\nline two\r\n")
 
 	req := httptest.NewRequest(http.MethodPost, "/memory/save", strings.NewReader(form.Encode()))
@@ -440,11 +440,11 @@ func TestHandleMemorySave_PersistsAndRedirects(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
 	}
-	if got, want := rec.Header().Get("Location"), "/memory?saved=global%2Frules.md"; got != want {
+	if got, want := rec.Header().Get("Location"), "/memory?saved=rules.md"; got != want {
 		t.Errorf("Location = %q, want %q", got, want)
 	}
-	if got := store.lastWritePath; got != "global/rules.md" {
-		t.Errorf("Write path = %q, want global/rules.md", got)
+	if got := store.lastWritePath; got != "rules.md" {
+		t.Errorf("Write path = %q, want rules.md", got)
 	}
 	// CRLF must be normalised before persisting.
 	if got := string(store.lastWriteData); got != "line one\nline two\n" {
@@ -480,7 +480,7 @@ func TestHandleMemorySave_TooLargeRejected(t *testing.T) {
 	s.SetMemoryStore(store)
 
 	form := url.Values{}
-	form.Set("path", "global/rules.md")
+	form.Set("path", "rules.md")
 	form.Set("content", strings.Repeat("a", maxMemoryFileBytes+1))
 
 	req := httptest.NewRequest(http.MethodPost, "/memory/save", strings.NewReader(form.Encode()))
@@ -503,7 +503,7 @@ func TestHandleMemorySave_StoreErrorRendersForm(t *testing.T) {
 	s.SetMemoryStore(store)
 
 	form := url.Values{}
-	form.Set("path", "global/rules.md")
+	form.Set("path", "rules.md")
 	form.Set("content", "x")
 
 	req := httptest.NewRequest(http.MethodPost, "/memory/save", strings.NewReader(form.Encode()))
@@ -532,73 +532,47 @@ func TestHandleMemorySave_RejectsGET(t *testing.T) {
 
 func TestBuildMemoryTree_InjectsMissingGlobals(t *testing.T) {
 	store := newStubMemoryStore(map[string]string{
-		"global/rules.md": "x",
+		"rules.md": "x",
 	})
 	tree, _, err := buildMemoryTree(store)
 	if err != nil {
 		t.Fatalf("buildMemoryTree: %v", err)
 	}
-	// Find the global dir node.
-	var global *memoryTreeNode
-	for _, n := range tree {
-		if n.Path == "global" {
-			global = n
-			break
-		}
-	}
-	if global == nil {
-		t.Fatal("expected global/ in the rendered tree")
-	}
 	have := map[string]bool{}
-	for _, c := range global.Children {
-		have[c.Path] = c.Missing
+	for _, n := range tree {
+		have[n.Path] = n.Missing
 	}
-	if missing, ok := have["global/user.md"]; !ok || !missing {
-		t.Errorf("expected global/user.md as a missing virtual node; map=%v", have)
+	if missing, ok := have["user.md"]; !ok || !missing {
+		t.Errorf("expected user.md as a missing virtual node; map=%v", have)
 	}
-	if missing, ok := have["global/facts.md"]; !ok || !missing {
-		t.Errorf("expected global/facts.md as a missing virtual node; map=%v", have)
+	if missing, ok := have["facts.md"]; !ok || !missing {
+		t.Errorf("expected facts.md as a missing virtual node; map=%v", have)
 	}
-	if missing, ok := have["global/rules.md"]; !ok || missing {
-		t.Errorf("expected global/rules.md to be present and not missing; map=%v", have)
+	if missing, ok := have["rules.md"]; !ok || missing {
+		t.Errorf("expected rules.md to be present and not missing; map=%v", have)
 	}
 }
-
 func TestBuildMemoryTree_DirTokensAreSumOfChildren(t *testing.T) {
 	store := newStubMemoryStore(map[string]string{
 		// rune count 8 → 2 tokens; rune count 16 → 4 tokens
-		"global/rules.md": "abcdefgh",
-		"global/user.md":  "abcdefghijklmnop",
+		"rules.md": "abcdefgh",
+		"user.md":  "abcdefghijklmnop",
 	})
-	tree, total, err := buildMemoryTree(store)
+	_, total, err := buildMemoryTree(store)
 	if err != nil {
 		t.Fatalf("buildMemoryTree: %v", err)
-	}
-	var global *memoryTreeNode
-	for _, n := range tree {
-		if n.Path == "global" {
-			global = n
-			break
-		}
-	}
-	if global == nil {
-		t.Fatal("expected global/ in tree")
-	}
-	if global.Tokens != 6 {
-		t.Errorf("global Tokens = %d, want 6 (2+4)", global.Tokens)
 	}
 	if total != 6 {
 		t.Errorf("total Tokens = %d, want 6", total)
 	}
 }
-
 func TestBuildMemoryTree_AgentsDirUsesBiggestAgent(t *testing.T) {
 	// Two agents at very different sizes. The page total should
 	// reflect global + the biggest single agent, not the sum across
 	// agents, since only one agent runs in any given prompt.
 	// rune-quarter tokens: 8→2, 16→4, 40→10.
 	store := newStubMemoryStore(map[string]string{
-		"global/rules.md":            "abcdefgh",              // 2
+		"rules.md":                   "abcdefgh",              // 2
 		"agents/small/persona.md":    "abcdefghijklmnop",      // 4
 		"agents/big/persona.md":      strings.Repeat("a", 40), // 10
 		"agents/big/episodes/one.md": strings.Repeat("b", 40), // 10
@@ -665,11 +639,11 @@ func TestHandleMemoryEpisodes_ListsNewestFirst(t *testing.T) {
 	// ISO 8601 timestamps sort lexicographically, so a reverse sort
 	// yields chronological newest-first.
 	store := newStubMemoryStore(map[string]string{
-		"projects/global/episodes/coder/2026-04-20T10:00:00Z.md": "first",
-		"projects/global/episodes/coder/2026-04-22T11:30:00Z.md": "middle",
-		"projects/global/episodes/coder/2026-04-25T09:15:00Z.md": "newest",
+		"episodes/coder/2026-04-20T10:00:00Z.md": "first",
+		"episodes/coder/2026-04-22T11:30:00Z.md": "middle",
+		"episodes/coder/2026-04-25T09:15:00Z.md": "newest",
 		// Files for another agent must not leak into the coder list.
-		"projects/global/episodes/reviewer/2026-04-19T08:00:00Z.md": "other",
+		"episodes/reviewer/2026-04-19T08:00:00Z.md": "other",
 	})
 	s.SetMemoryStore(store)
 
@@ -706,11 +680,13 @@ func TestHandleMemoryEpisodes_ListsNewestFirst(t *testing.T) {
 func TestHandleMemoryEpisodes_UsesActiveProject(t *testing.T) {
 	s := NewServer(3000)
 	s.SetProjectDirectoryWarnings("dt", nil)
-	store := newStubMemoryStore(map[string]string{
-		"projects/global/episodes/coder/global.md": "global",
-		"projects/dt/episodes/coder/dt.md":         "project",
+	activeStore := newStubMemoryStore(map[string]string{
+		"episodes/coder/dt.md": "project",
 	})
-	s.SetMemoryStore(store)
+	globalStore := newStubMemoryStore(map[string]string{
+		"episodes/coder/global.md": "global",
+	})
+	s.SetServiceDeps(ServiceDeps{MemoryStore: activeStore, GlobalMemoryStore: globalStore})
 
 	req := httptest.NewRequest(http.MethodGet, "/memory/episodes?agent=coder", nil)
 	rec := httptest.NewRecorder()
@@ -727,10 +703,9 @@ func TestHandleMemoryEpisodes_UsesActiveProject(t *testing.T) {
 		t.Errorf("global episode leaked into active project listing:\n%s", body)
 	}
 }
-
 func TestHandleMemoryEpisodes_RendersRetrievalScores(t *testing.T) {
 	s := NewServer(3000)
-	path := "projects/global/episodes/coder/2026-04-25T09:15:00Z.md"
+	path := "episodes/coder/2026-04-25T09:15:00Z.md"
 	store := newStubMemoryStore(map[string]string{path: "episode"})
 	s.SetMemoryStore(store)
 	scorer := &stubRetrievalScorer{scores: map[string]RetrievalScore{
@@ -834,11 +809,11 @@ func TestHandleMemoryEpisodes_RejectsPOST(t *testing.T) {
 func TestHandleMemoryEpisodeView_RendersContent(t *testing.T) {
 	s := NewServer(3000)
 	store := newStubMemoryStore(map[string]string{
-		"projects/global/episodes/coder/2026-04-25T09:15:00Z.md": "## Episode body\nSome notes.",
+		"episodes/coder/2026-04-25T09:15:00Z.md": "## Episode body\nSome notes.",
 	})
 	s.SetMemoryStore(store)
 
-	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=projects/global/episodes/coder/2026-04-25T09:15:00Z.md", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=episodes/coder/2026-04-25T09:15:00Z.md", nil)
 	rec := httptest.NewRecorder()
 	s.handleMemoryEpisodeView(rec, req)
 
@@ -864,10 +839,10 @@ func TestHandleMemoryEpisodeView_RejectsNonEpisodePath(t *testing.T) {
 		path string
 	}{
 		{"empty", ""},
-		{"outside episodes root", "global/rules.md"},
+		{"outside episodes root", "rules.md"},
 		{"agents tree", "agents/coder/persona.md"},
 		{"different project root", "projects/other/episodes/coder/x.md"},
-		{"traversal", "projects/global/episodes/coder/../../etc/passwd.md"},
+		{"traversal", "episodes/coder/../../etc/passwd.md"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -889,7 +864,7 @@ func TestHandleMemoryEpisodeView_RejectsNonMarkdownSuffix(t *testing.T) {
 	s := NewServer(3000)
 	s.SetMemoryStore(newStubMemoryStore(nil))
 
-	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=projects/global/episodes/coder/notes.txt", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=episodes/coder/notes.txt", nil)
 	rec := httptest.NewRecorder()
 	s.handleMemoryEpisodeView(rec, req)
 
@@ -903,7 +878,7 @@ func TestHandleMemoryEpisodeView_MissingFileReturns404(t *testing.T) {
 	store := newStubMemoryStore(nil)
 	s.SetMemoryStore(store)
 
-	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=projects/global/episodes/coder/2026-04-25T09:15:00Z.md", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=episodes/coder/2026-04-25T09:15:00Z.md", nil)
 	rec := httptest.NewRecorder()
 	s.handleMemoryEpisodeView(rec, req)
 
@@ -915,7 +890,7 @@ func TestHandleMemoryEpisodeView_MissingFileReturns404(t *testing.T) {
 func TestHandleMemoryEpisodeView_NoStoreReturns503(t *testing.T) {
 	s := NewServer(3000)
 
-	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=projects/global/episodes/coder/x.md", nil)
+	req := httptest.NewRequest(http.MethodGet, "/memory/episodes/view?path=episodes/coder/x.md", nil)
 	rec := httptest.NewRecorder()
 	s.handleMemoryEpisodeView(rec, req)
 
@@ -927,9 +902,9 @@ func TestHandleMemoryEpisodeView_NoStoreReturns503(t *testing.T) {
 func TestHandleMemory_RendersEpisodesByAgent(t *testing.T) {
 	s := NewServer(3000)
 	store := newStubMemoryStore(map[string]string{
-		"projects/global/episodes/coder/2026-04-20T10:00:00Z.md":    "a",
-		"projects/global/episodes/coder/2026-04-22T11:30:00Z.md":    "b",
-		"projects/global/episodes/reviewer/2026-04-19T08:00:00Z.md": "c",
+		"episodes/coder/2026-04-20T10:00:00Z.md":    "a",
+		"episodes/coder/2026-04-22T11:30:00Z.md":    "b",
+		"episodes/reviewer/2026-04-19T08:00:00Z.md": "c",
 	})
 	s.SetMemoryStore(store)
 
@@ -962,7 +937,7 @@ func TestHandleMemory_EmptyEpisodesShowsHint(t *testing.T) {
 	s := NewServer(3000)
 	// Repo has global content but no episodes anywhere.
 	store := newStubMemoryStore(map[string]string{
-		"global/rules.md": "x",
+		"rules.md": "x",
 	})
 	s.SetMemoryStore(store)
 

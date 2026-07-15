@@ -51,7 +51,8 @@ type Runtime struct {
 	reqQueue *queue.Queue
 	started  bool
 
-	memReader     memory.Repo
+	globalMem     memory.Repo
+	activeMem     memory.Repo
 	agentReg      *agent.DiskRegistry
 	assembler     *prompt.DiskAssembler
 	apiServer     *api.Server
