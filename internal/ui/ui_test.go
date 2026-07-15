@@ -98,10 +98,8 @@ func serviceDepsForTest(s *Server) ServiceDeps {
 		MemoryRepoPath:          deps.memRepo,
 		AgentRegistry:           deps.agentReg,
 		MemoryStore:             deps.memStore,
-		GlobalMemoryStore:       deps.globalMem,
 		SessionStore:            deps.sessionStore,
 		Committer:               deps.committer,
-		GlobalCommitter:         deps.globalCommitter,
 		Dedup:                   deps.dedup,
 		PromotionDedupThreshold: deps.promotionDedupThreshold,
 		RetrievalScorer:         deps.scorer,
@@ -126,12 +124,7 @@ func setChatRunnerForTest(s *Server, runner ChatRunner) {
 }
 
 func setMemoryStoreForTest(s *Server, store MemoryStore) {
-	setServiceDepsForTest(s, func(d *ServiceDeps) {
-		d.MemoryStore = store
-		if d.GlobalMemoryStore == nil {
-			d.GlobalMemoryStore = store
-		}
-	})
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.MemoryStore = store })
 }
 
 func setRetrievalScorerForTest(s *Server, scorer RetrievalScorer) {
@@ -139,12 +132,7 @@ func setRetrievalScorerForTest(s *Server, scorer RetrievalScorer) {
 }
 
 func setCommitterForTest(s *Server, committer Committer) {
-	setServiceDepsForTest(s, func(d *ServiceDeps) {
-		d.Committer = committer
-		if d.GlobalCommitter == nil {
-			d.GlobalCommitter = committer
-		}
-	})
+	setServiceDepsForTest(s, func(d *ServiceDeps) { d.Committer = committer })
 }
 
 func setDedupCheckerForTest(s *Server, checker DedupChecker) {
