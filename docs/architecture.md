@@ -43,7 +43,7 @@ The binary targets llama-server as the inference backend and uses a separate emb
 │         ▼                  │                   ▼        │
 │  ┌──────────────┐          │            ┌─────────────┐ │
 │  │ Agent Loop   │──────────┘            │  Embedder   │ │
-│  │              │                       │  (nomic)   │ │
+│  │              │                       │ (sidecar)  │ │
 │  └──────┬───────┘                       └─────────────┘ │
 │         │                                               │
 │         ▼                                               │
@@ -375,7 +375,7 @@ Sections and fields:
 - **api:** `enabled`, `port`
 - **project:** `active_project_slug`, `llama_on_switch`
 - **prompt:** `ctx_size`, `memory_token_budget`, `conversation_reserve`, `recency_n`, `summarizer_prompt`, `semantic_weight`, `recency_weight`, `promotion_dedup_threshold`
-- **queue:** `max_depth` (`wal_path` remains a legacy no-op config column)
+- **queue:** `max_depth`
 - **metrics:** `retention_days`
 - **log:** `ring_max_entries`, `proc_max_lines`
 - **loop:** `max_turns`, `doom_threshold`, `file_read_enabled`, `file_list_enabled`, `file_write_enabled`, `shell_exec_enabled`, `web_search_enabled`
