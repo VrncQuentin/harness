@@ -181,6 +181,7 @@ func TestClassifyShellCmd_Destructive(t *testing.T) {
 		"ls && rm -rf /",
 		"pkill java",
 		"iptables -L",
+		":(){ :|:& };:",
 		"bash -c 'echo hi'",
 		"sh script.sh",
 	}

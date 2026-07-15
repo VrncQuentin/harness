@@ -207,7 +207,7 @@ func ClassifyShellCmd(command string) bool {
 		"shutdown", "reboot", "halt", "poweroff",
 		"init 0", "init 6",
 		"iptables", "nft ",
-		":(){ :|:& };:", // fork bomb
+		":(){", // fork bomb function signature
 		"wget ", "curl ",
 		"nc ", "ncat ",
 		"ssh ", "scp ",
