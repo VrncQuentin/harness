@@ -702,6 +702,11 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		defer close(done)
 		defer ad.unregisterEngine(id, done)
 		var events []agentloop.Event
+		defer func() {
+			if mgr != nil && id != "" {
+				recordTaskEvents(mgr, id, events)
+			}
+		}()
 		for ev := range rawEvch {
 			events = append(events, ev)
 			select {
@@ -709,9 +714,6 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 			case <-loopCtx.Done():
 				return
 			}
-		}
-		if mgr != nil && id != "" {
-			recordTaskEvents(mgr, id, events)
 		}
 	}()
 
