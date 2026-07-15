@@ -21,6 +21,7 @@ import (
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/proc"
+	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/queue"
 	"github.com/vrnc/harness/internal/tools"
@@ -242,6 +243,74 @@ func TestTaskRunnerDoesNotDuplicateSingleMessageOnResume(t *testing.T) {
 	}
 	if userTurns != 1 {
 		t.Fatalf("user turn count = %d, want 1; conversation=%+v", userTurns, snap.Conversation)
+	}
+}
+func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
+	root := t.TempDir()
+	secretPath := filepath.Join(root, "secret.txt")
+	if err := os.WriteFile(secretPath, []byte("secret memory contents"), 0o644); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Agent.Active = "coder"
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	client := &sequenceInferenceClient{sequences: [][]inference.Token{
+		{
+			{ToolCallDelta: &inference.ToolCallDelta{
+				Index:     0,
+				ID:        "call-1",
+				Name:      "file_read",
+				Arguments: fmt.Sprintf("{\"path\":%q}", secretPath),
+			}},
+			{Done: true},
+		},
+		{
+			{Content: "done"},
+			{Done: true},
+		},
+	}}
+
+	rt := New(cfg, nil, LogRings{})
+	rt.inferClient = client
+	rt.projectStore = &runtimeProjectStoreStub{
+		projects: map[string]project.Project{
+			project.GlobalSlug: {
+				Slug:           project.GlobalSlug,
+				DisplayName:    "Global",
+				MemoryRepoPath: root,
+			},
+		},
+		dirs: map[string][]project.Directory{
+			project.GlobalSlug: nil,
+		},
+	}
+
+	registry := tools.NewRegistry()
+	tools.RegisterBuiltins(registry)
+	ad := &taskRunnerAdapter{rt: rt, registry: registry}
+
+	_, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "read the file"}})
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+
+	sawFileRead := false
+	for ev := range evch {
+		if ev.Type != agentloop.EvtToolResult || ev.ToolID != "file_read" {
+			continue
+		}
+		sawFileRead = true
+		if !strings.Contains(ev.ToolError, "sandbox") {
+			t.Fatalf("file_read ToolError = %q, want sandbox error", ev.ToolError)
+		}
+		if strings.Contains(ev.ToolResult, "secret memory contents") {
+			t.Fatalf("file_read returned memory repo content despite no configured project directories: %q", ev.ToolResult)
+		}
+	}
+	if !sawFileRead {
+		t.Fatal("did not observe file_read tool result")
 	}
 }
 func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
@@ -489,6 +558,73 @@ func (c *capturingInferenceClient) Complete(_ context.Context, req inference.Com
 }
 
 func (c *capturingInferenceClient) Health(context.Context) error { return nil }
+
+type sequenceInferenceClient struct {
+	mu        sync.Mutex
+	sequences [][]inference.Token
+	calls     int
+}
+
+func (c *sequenceInferenceClient) Complete(_ context.Context, req inference.CompletionRequest) (<-chan inference.Token, error) {
+	c.mu.Lock()
+	idx := c.calls
+	c.calls++
+	var tokens []inference.Token
+	if idx < len(c.sequences) {
+		tokens = append([]inference.Token(nil), c.sequences[idx]...)
+	} else {
+		tokens = []inference.Token{{Done: true}}
+	}
+	c.mu.Unlock()
+
+	ch := make(chan inference.Token, len(tokens))
+	for _, tok := range tokens {
+		ch <- tok
+	}
+	close(ch)
+	return ch, nil
+}
+
+func (c *sequenceInferenceClient) Health(context.Context) error { return nil }
+
+type runtimeProjectStoreStub struct {
+	projects map[string]project.Project
+	dirs     map[string][]project.Directory
+}
+
+func (s *runtimeProjectStoreStub) List(bool) ([]project.Project, error) {
+	projects := make([]project.Project, 0, len(s.projects))
+	for _, p := range s.projects {
+		projects = append(projects, p)
+	}
+	return projects, nil
+}
+
+func (s *runtimeProjectStoreStub) Get(slug string) (project.Project, error) {
+	p, ok := s.projects[slug]
+	if !ok {
+		return project.Project{}, project.ErrNotFound
+	}
+	return p, nil
+}
+
+func (s *runtimeProjectStoreStub) Create(project.CreateInput) (project.Project, error) {
+	return project.Project{}, nil
+}
+
+func (s *runtimeProjectStoreStub) Update(project.UpdateInput) (project.Project, error) {
+	return project.Project{}, nil
+}
+
+func (s *runtimeProjectStoreStub) SetHidden(string, bool) error { return nil }
+
+func (s *runtimeProjectStoreStub) ListDirectories(slug string) ([]project.Directory, error) {
+	return append([]project.Directory(nil), s.dirs[slug]...), nil
+}
+
+func (s *runtimeProjectStoreStub) AddDirectory(string, string) error { return nil }
+
+func (s *runtimeProjectStoreStub) RemoveDirectory(string, string) error { return nil }
 
 type failingInferenceClient struct {
 	err error
