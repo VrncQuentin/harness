@@ -144,6 +144,42 @@ func TestDestructiveToolsRegisteredButDisabledByDefault(t *testing.T) {
 	}
 }
 
+func TestFileWrite_CreatesParentDirectories(t *testing.T) {
+	dir := t.TempDir()
+	tool := &fileWriteTool{}
+	path := filepath.Join(dir, "nested", "notes", "todo.txt")
+	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{
+		"path":    path,
+		"content": "hello",
+	})
+	if res.Error != "" {
+		t.Fatalf("unexpected error: %s", res.Error)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("written content = %q, want hello", string(got))
+	}
+}
+
+func TestFileWrite_ParentOverFileFails(t *testing.T) {
+	dir := t.TempDir()
+	parent := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(parent, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile parent: %v", err)
+	}
+	tool := &fileWriteTool{}
+	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{
+		"path":    filepath.Join(parent, "child.txt"),
+		"content": "hello",
+	})
+	if res.Error == "" || !strings.Contains(res.Error, "create parent directories") {
+		t.Fatalf("expected parent creation error, got %q", res.Error)
+	}
+}
+
 func TestShellExec_EmptySandboxRoots(t *testing.T) {
 	tool := &shellExecTool{}
 	// Empty slice.

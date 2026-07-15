@@ -283,6 +283,9 @@ func (t *fileWriteTool) Execute(ctx context.Context, c Context, args map[string]
 	if err != nil {
 		return Result{Error: err.Error()}
 	}
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		return Result{Error: fmt.Sprintf("file_write: create parent directories: %v", err)}
+	}
 	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
 		return Result{Error: fmt.Sprintf("file_write: %v", err)}
 	}
