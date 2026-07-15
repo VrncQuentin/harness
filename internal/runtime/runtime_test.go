@@ -21,6 +21,7 @@ import (
 	"github.com/vrnc/harness/internal/index"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/memoryops"
 	"github.com/vrnc/harness/internal/proc"
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
@@ -605,12 +606,12 @@ func TestIndexRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	}
 	indexDir := filepath.Join(root, "projects", "global", "index", "_episodes")
 	called := false
-	rb := &indexRebuilder{
-		mem:      memory.NewDirReader(root),
-		emb:      stubEmbedder{vec: []float32{1, 0}},
-		indexDir: indexDir,
-		slug:     "global",
-		onRebuilt: func(idx *index.Index) {
+	rb := &memoryops.EpisodeRebuilder{
+		Mem:      memory.NewDirReader(root),
+		Embedder: stubEmbedder{vec: []float32{1, 0}},
+		IndexDir: indexDir,
+		Slug:     "global",
+		OnRebuilt: func(idx *index.Index) {
 			called = true
 			if !idx.Contains("ep1") {
 				t.Errorf("rebuilt index missing ep1")
@@ -621,7 +622,7 @@ func TestIndexRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if err := rb.Rebuild(context.Background()); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	if rb.idx == nil {
+	if rb.Index == nil {
 		t.Fatal("rebuilder did not retain created index")
 	}
 	if !called {

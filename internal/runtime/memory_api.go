@@ -5,27 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
-	"path"
 	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/agentloop"
 	"github.com/vrnc/harness/internal/api"
 	"github.com/vrnc/harness/internal/approvals"
-	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/embedder"
 	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/index"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/memoryops"
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
-	"github.com/vrnc/harness/internal/retrieval"
 	"github.com/vrnc/harness/internal/session"
 	"github.com/vrnc/harness/internal/tools"
 	"github.com/vrnc/harness/internal/ui"
@@ -76,11 +71,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	} else {
 		rt.assembler = rt.assembler.WithBlendedRetrieval(epIdx, embedClient)
 	}
-	svcDeps.RetrievalScorer = &indexScorer{
-		indexDir: indexDir,
-		emb:      embedClient,
-		cfg:      rt.cfg.Prompt,
-		idx:      epIdx,
+	svcDeps.RetrievalScorer = &memoryops.EpisodeScorer{
+		IndexDir: indexDir,
+		Embedder: embedClient,
+		Config:   rt.cfg.Prompt,
+		Index:    epIdx,
 	}
 	if memStore, ok := rt.memReader.(ui.MemoryStore); ok {
 		svcDeps.MemoryStore = memStore
@@ -106,22 +101,21 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		}
 	}
 	// Wire dedup checker for M6 fact deduplication.
-	svcDeps.Dedup = &dedupChecker{
-		mem: rt.memReader,
-		emb: embedClient,
+	svcDeps.Dedup = &memoryops.DedupChecker{
+		Mem:      rt.memReader,
+		Embedder: embedClient,
 	}
 	svcDeps.PromotionDedupThreshold = rt.cfg.Prompt.PromotionDedupThreshold
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
-	svcDeps.IndexRebuilder = &indexRebuilder{
-		mem:      rt.memReader,
-		emb:      embedClient,
-		idx:      epIdx,
-		indexDir: indexDir,
-		repoPath: roots.activeRoot,
-		slug:     rt.cfg.Project.ActiveProjectSlug,
-		gitRepo:  rt.gitRepo,
-		onRebuilt: func(idx *index.Index) {
+	svcDeps.IndexRebuilder = &memoryops.EpisodeRebuilder{
+		Mem:      rt.memReader,
+		Embedder: embedClient,
+		Index:    epIdx,
+		IndexDir: indexDir,
+		Slug:     rt.cfg.Project.ActiveProjectSlug,
+		Repo:     rt.gitRepo,
+		OnRebuilt: func(idx *index.Index) {
 			rt.mu.Lock()
 			if rt.assembler != nil {
 				rt.assembler = rt.assembler.WithBlendedRetrieval(idx, embedClient)
@@ -277,7 +271,7 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		Metrics:            rec,
 		SummarizerPrompt:   rt.summarizerPromptFn(),
 		ResolveAbsRepoPath: repoPath,
-		AfterSave:          rt.afterSaveEmbed(embedClient, repoPath),
+		AfterSave:          memoryops.AfterSaveEmbed(embedClient, repoPath, rt.gitRepo),
 	}, rt.cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
@@ -296,73 +290,6 @@ func (rt *Runtime) summarizerPromptFn() session.SummarizerPromptFunc {
 		defer rt.mu.Unlock()
 		return rt.cfg.Prompt.SummarizerPrompt
 	}
-}
-
-// afterSaveEmbed returns an AfterSaveFunc that embeds the episode summary
-// and updates the project's _episodes index.
-func (rt *Runtime) afterSaveEmbed(embedClient embedder.Client, repoPath string) session.AfterSaveFunc {
-	return func(ctx context.Context, result session.SaveResult) error {
-		if embedClient == nil || result.Summary == "" {
-			return nil
-		}
-		// Chunk the summary into paragraphs for embedding.
-		chunks := chunkSummary(result.Summary)
-		if len(chunks) == 0 {
-			return nil
-		}
-
-		vectors, err := embedClient.Embed(ctx, chunks)
-		if err != nil {
-			return fmt.Errorf("embed episode %s: %w", result.ID, err)
-		}
-		if len(vectors) == 0 || len(vectors[0]) == 0 {
-			return nil
-		}
-		indexDir := filepath.Join(repoPath, "index", "_episodes")
-		dim := len(vectors[0])
-
-		idx, err := index.Open(indexDir)
-		if err != nil {
-			idx, err = index.Create(indexDir, dim)
-			if err != nil {
-				return fmt.Errorf("create index %s: %w", indexDir, err)
-			}
-		}
-		if idx.Dim() != dim {
-			return fmt.Errorf("index dimension mismatch: index has %d, got %d", idx.Dim(), dim)
-		}
-
-		sha := result.ID
-		if err := idx.Add(sha, vectors); err != nil {
-			return fmt.Errorf("add to index %s: %w", indexDir, err)
-		}
-
-		// Commit index files.
-		if rt.gitRepo != nil {
-			msg := gitw.BuildMessage(
-				map[string]string{"type": "index", "episode_id": result.ID},
-				"update episode index",
-			)
-			relVectors := path.Join("index", "_episodes", "vectors.bin")
-			relManifest := path.Join("index", "_episodes", "manifest.json")
-			if _, err := rt.gitRepo.Commit(msg, []string{relVectors, relManifest}); err != nil {
-				slog.Warn("commit index", "err", err)
-			}
-		}
-		return nil
-	}
-}
-
-func chunkSummary(summary string) []string {
-	var chunks []string
-	for _, para := range strings.Split(summary, "\n\n") {
-		para = strings.TrimSpace(para)
-		if para == "" {
-			continue
-		}
-		chunks = append(chunks, para)
-	}
-	return chunks
 }
 
 // setSessionManager swaps the live manager under its dedicated mutex
@@ -448,303 +375,4 @@ func (rt *Runtime) setActiveAgent(name string) error {
 	rt.mu.Unlock()
 
 	return nil
-}
-
-// indexScorer implements ui.RetrievalScorer for the active project's episode
-// index. It opens lazily so the memory browser can show scores immediately
-// after a fresh-clone rebuild creates the index files.
-type indexScorer struct {
-	mu       sync.Mutex
-	indexDir string
-	emb      embedder.Client
-	cfg      config.PromptConfig
-	idx      *index.Index
-}
-
-func (s *indexScorer) ScoreEpisodes(ctx context.Context, _, _ string, query string, episodePaths []string) (map[string]ui.RetrievalScore, error) {
-	out := make(map[string]ui.RetrievalScore, len(episodePaths))
-	for _, p := range episodePaths {
-		out[p] = ui.RetrievalScore{}
-	}
-	idx, err := s.open()
-	if err != nil {
-		return out, nil
-	}
-
-	for _, p := range episodePaths {
-		id := retrieval.EpisodeID(p)
-		score := out[p]
-		score.Indexed = idx.Contains(id)
-		out[p] = score
-	}
-	if strings.TrimSpace(query) == "" || s.emb == nil || len(episodePaths) == 0 {
-		return out, nil
-	}
-
-	vecs, err := s.emb.Embed(ctx, []string{query})
-	if err != nil {
-		return out, err
-	}
-	if len(vecs) == 0 || len(vecs[0]) == 0 {
-		return out, nil
-	}
-	results, err := idx.Search(vecs[0], len(episodePaths)*2)
-	if err != nil {
-		return out, err
-	}
-	semantic := retrieval.BestSemanticScores(results)
-	oldestFirst := append([]string(nil), episodePaths...)
-	sort.Strings(oldestFirst)
-	scores := retrieval.BlendEpisodeScores(oldestFirst, semantic, s.cfg.SemanticWeight, s.cfg.RecencyWeight)
-	for _, p := range oldestFirst {
-		score := out[p]
-		score.Score = scores[p]
-		score.HasScore = true
-		out[p] = score
-	}
-	return out, nil
-}
-
-func (s *indexScorer) open() (*index.Index, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.idx != nil {
-		return s.idx, nil
-	}
-	idx, err := index.Open(s.indexDir)
-	if err != nil {
-		return nil, err
-	}
-	s.idx = idx
-	return idx, nil
-}
-
-// indexRebuilder implements ui.IndexRebuilder by walking episode files,
-// re-embedding any SHA missing from the index, and committing the
-// updated manifest and vectors. The operation is idempotent: already-
-// indexed episodes are skipped.
-type indexRebuilder struct {
-	mem       memory.Repo
-	emb       embedder.Client
-	idx       *index.Index
-	indexDir  string
-	repoPath  string
-	slug      string
-	gitRepo   *gitw.Repo
-	onRebuilt func(*index.Index)
-}
-
-func (rb *indexRebuilder) Rebuild(ctx context.Context) error {
-	if rb.idx == nil {
-		if idx, err := index.Open(rb.indexDir); err == nil {
-			rb.idx = idx
-		}
-	}
-
-	// Walk all episode files under the active project. DirReader.Glob only
-	// supports wildcards in the final path segment, so recursive episode lookup
-	// needs Walk rather than a projects/<slug>/episodes/*/*.md glob.
-	episodesRoot := path.Join("projects", rb.slug, "episodes")
-	entries, err := rb.mem.Walk(episodesRoot)
-	if err != nil {
-		return fmt.Errorf("index rebuild: walk episodes: %w", err)
-	}
-	paths := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.Dir || !strings.HasSuffix(e.Path, ".md") {
-			continue
-		}
-		paths = append(paths, e.Path)
-	}
-	sort.Strings(paths)
-
-	if len(paths) == 0 {
-		return nil
-	}
-
-	// Collect episodes not yet indexed by computing SHA from file path
-	// (same ID scheme as afterSaveEmbed: base name without .md).
-	type pending struct {
-		path    string
-		id      string
-		content string
-	}
-	var work []pending
-	for _, p := range paths {
-		id := strings.TrimSuffix(path.Base(p), ".md")
-		if rb.idx != nil && rb.idx.Contains(id) {
-			continue
-		}
-		body, err := rb.mem.Read(p)
-		if err != nil {
-			slog.Warn("index rebuild: skip unreadable episode", "path", p, "err", err)
-			continue
-		}
-		chunks := chunkSummary(string(body))
-		if len(chunks) == 0 {
-			continue
-		}
-		work = append(work, pending{path: p, id: id, content: string(body)})
-	}
-
-	if len(work) == 0 {
-		return nil
-	}
-
-	// Batch embed all pending chunks.
-	allChunks := make([]string, 0)
-	chunkCounts := make([]int, len(work))
-	for i, w := range work {
-		chunks := chunkSummary(w.content)
-		allChunks = append(allChunks, chunks...)
-		chunkCounts[i] = len(chunks)
-	}
-
-	vectors, err := rb.emb.Embed(ctx, allChunks)
-	if err != nil {
-		return fmt.Errorf("index rebuild: embed: %w", err)
-	}
-	if len(vectors) == 0 || len(vectors[0]) == 0 {
-		return nil
-	}
-	if len(vectors) != len(allChunks) {
-		return fmt.Errorf("index rebuild: embed returned %d vectors for %d chunks", len(vectors), len(allChunks))
-	}
-	dim := len(vectors[0])
-	for i, v := range vectors {
-		if len(v) != dim {
-			return fmt.Errorf("index rebuild: vector %d dimension mismatch: got %d, want %d", i, len(v), dim)
-		}
-	}
-	if rb.idx == nil {
-		idx, err := index.Create(rb.indexDir, dim)
-		if err != nil {
-			return fmt.Errorf("index rebuild: create index %s: %w", rb.indexDir, err)
-		}
-		rb.idx = idx
-	}
-	if rb.idx.Dim() != dim {
-		return fmt.Errorf("index rebuild: dimension mismatch: index has %d, got %d", rb.idx.Dim(), dim)
-	}
-
-	// Assign vectors back to each episode and add to index.
-	offset := 0
-	for i, w := range work {
-		n := chunkCounts[i]
-		if n == 0 {
-			continue
-		}
-		epVecs := vectors[offset : offset+n]
-		offset += n
-		if err := rb.idx.Add(w.id, epVecs); err != nil {
-			slog.Warn("index rebuild: add episode", "id", w.id, "err", err)
-		}
-	}
-
-	// Commit the updated index files.
-	if rb.gitRepo != nil {
-		relVectors := path.Join("index", "_episodes", "vectors.bin")
-		relManifest := path.Join("index", "_episodes", "manifest.json")
-		msg := gitw.BuildMessage(
-			map[string]string{"type": "index-rebuild"},
-			fmt.Sprintf("rebuild episode index: %d new episodes", len(work)),
-		)
-		if _, err := rb.gitRepo.Commit(msg, []string{relVectors, relManifest}); err != nil {
-			slog.Warn("index rebuild: commit", "err", err)
-		}
-	}
-
-	slog.Info("index rebuild complete", "new_episodes", len(work))
-	if rb.onRebuilt != nil {
-		rb.onRebuilt(rb.idx)
-	}
-	return nil
-}
-
-// dedupChecker implements ui.DedupChecker by embedding the candidate text and
-// existing facts, then comparing cosine similarity.
-type dedupChecker struct {
-	mem memory.Reader
-	emb embedder.Client
-}
-
-func (dc *dedupChecker) CheckSimilar(ctx context.Context, text string, threshold float64) (bool, string, float64, error) {
-	if dc.mem == nil || dc.emb == nil {
-		return false, "", 0, nil
-	}
-	existing, err := dc.mem.Read("global/facts.md")
-	if err != nil || len(existing) == 0 {
-		return false, "", 0, nil
-	}
-	// Split existing facts into individual lines — non-empty, trimmed.
-	facts := extractFactLines(string(existing))
-	if len(facts) == 0 {
-		return false, "", 0, nil
-	}
-
-	// Embed the candidate + all existing facts in one batch call.
-	chunks := make([]string, 0, len(facts)+1)
-	chunks = append(chunks, text)
-	chunks = append(chunks, facts...)
-
-	vectors, err := dc.emb.Embed(ctx, chunks)
-	if err != nil || len(vectors) == 0 || len(vectors[0]) == 0 {
-		return false, "", 0, err
-	}
-	if len(vectors) != len(chunks) {
-		return false, "", 0, fmt.Errorf("embedder returned %d vectors for %d chunks", len(vectors), len(chunks))
-	}
-
-	candidate := vectors[0]
-	bestScore := 0.0
-	bestFact := ""
-	for i, v := range vectors[1:] {
-		sim := cosineSimilarity(candidate, v)
-		if sim > bestScore {
-			bestScore = sim
-			bestFact = facts[i]
-			// Truncate for the flash message.
-			if len(bestFact) > 120 {
-				bestFact = bestFact[:120] + "..."
-			}
-		}
-	}
-	if bestScore >= threshold {
-		return true, bestFact, bestScore, nil
-	}
-	return false, "", bestScore, nil
-}
-
-// extractFactLines splits content into non-empty trimmed lines. The facts.md
-// file stores one fact per line; leading dashes and bullets are stripped.
-func extractFactLines(content string) []string {
-	lines := strings.Split(content, "\n")
-	facts := make([]string, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		line = strings.TrimLeft(line, "-* \t")
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		facts = append(facts, line)
-	}
-	return facts
-}
-
-// cosineSimilarity returns the cosine similarity between two vectors.
-func cosineSimilarity(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		normA += float64(a[i]) * float64(a[i])
-		normB += float64(b[i]) * float64(b[i])
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
