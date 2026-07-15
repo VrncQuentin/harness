@@ -141,9 +141,9 @@ Project creation always produces or selects a git repo for memory:
 1. Directory provided and has `.git`: use it as the project memory repo.
 2. Directory provided and has no `.git`: initialize it with `go-git` and use it.
 3. No directory provided: create `~/.harness/projects/<project-id>/`, initialize it with `go-git`, and use it.
-4. After creation: optionally offer "Back up to GitHub?". This opt-in path shells to the logged-in `gh` binary and is isolated from core memory operations.
+4. After creation: remain local. GitHub backup is out of scope until it can be implemented without shelling out to external CLIs.
 
-The GitHub backup path is deliberately external and optional. Core project creation stays local, offline, and dependency-free beyond the harness-managed Go code.
+Core project creation stays local, offline, and dependency-free beyond the harness-managed Go code.
 
 ## SQLite State
 

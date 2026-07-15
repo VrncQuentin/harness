@@ -49,9 +49,6 @@
         <button type="submit" class="btn btn-sm">Activate</button>
       </form>
       {{end}}
-      <form method="post" action="/projects/backup?slug={{.Slug}}" class="inline-form">
-        <button type="submit" class="btn btn-sm btn-ghost">Back up</button>
-      </form>
       {{if not .IsGlobal}}
       <a href="/projects?edit={{.Slug}}" class="btn btn-sm btn-ghost">Edit</a>
       {{if .Hidden}}
