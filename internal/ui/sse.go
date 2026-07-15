@@ -2,6 +2,8 @@ package ui
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,6 +11,14 @@ import (
 
 	"github.com/vrnc/harness/internal/logbuf"
 )
+
+func newEventStreamID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // logSubBuffer is the per-subscription channel buffer for a log ring.
 //

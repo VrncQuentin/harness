@@ -516,10 +516,10 @@ func TestStreamChatTokens_EscapesBroadcastTokenFrames(t *testing.T) {
 	}
 
 	ch := make(chan string, 4)
-	s.chatSSEClients.Store(ch, struct{}{})
+	s.chatSSEClients.Store(ch, "chat-a")
 	defer s.chatSSEClients.Delete(ch)
 
-	s.streamChatTokens(context.Background(), runner, "coder", "", []ChatMessage{{Role: "user", Content: "hi"}})
+	s.streamChatTokens(context.Background(), runner, "coder", "", "chat-a", []ChatMessage{{Role: "user", Content: "hi"}})
 
 	var tokenFrame string
 	select {
@@ -538,6 +538,32 @@ func TestStreamChatTokens_EscapesBroadcastTokenFrames(t *testing.T) {
 	}
 	if strings.Contains(tokenFrame, "\n<second>") {
 		t.Errorf("token frame contains raw multiline payload: %q", tokenFrame)
+	}
+}
+
+func TestBroadcastChatSSERoutesByStreamID(t *testing.T) {
+	s := NewServer(3000)
+	wantCh := make(chan string, 1)
+	otherCh := make(chan string, 1)
+	s.chatSSEClients.Store(wantCh, "chat-a")
+	s.chatSSEClients.Store(otherCh, "chat-b")
+	defer s.chatSSEClients.Delete(wantCh)
+	defer s.chatSSEClients.Delete(otherCh)
+
+	s.broadcastChatSSE("chat-a", "event: chat-token\ndata: hello\n\n")
+
+	select {
+	case got := <-wantCh:
+		if !strings.Contains(got, "hello") {
+			t.Fatalf("routed frame = %q, want hello", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for routed chat frame")
+	}
+	select {
+	case got := <-otherCh:
+		t.Fatalf("other stream received frame %q", got)
+	default:
 	}
 }
 

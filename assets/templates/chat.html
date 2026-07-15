@@ -25,7 +25,7 @@
 </div>
 {{else}}
 
-<section class="chat" id="chat-root" data-agent="{{.ActiveAgent}}" hx-ext="sse" sse-connect="/chat/events">
+<section class="chat" id="chat-root" data-agent="{{.ActiveAgent}}" hx-ext="sse" sse-connect="/chat/events?stream_id={{.StreamID}}">
   <span sse-swap="chat-session" hidden></span>
   <header class="chat-head card-head">
     <div class="chat-head-meta">
@@ -83,6 +83,7 @@
     hx-swap="beforeend"
     hx-disabled-elt="#chat-send,#chat-input">
     <input type="hidden" name="agent" id="chat-agent-input" value="{{.ActiveAgent}}">
+    <input type="hidden" name="stream_id" id="chat-stream-input" value="{{.StreamID}}">
     <input type="hidden" name="session_id" id="chat-session-input" value="">
     <div class="chat-input-wrap">
       <textarea id="chat-input" name="message" rows="3" placeholder="Type a message. Enter sends, Shift+Enter inserts a newline." required></textarea>
@@ -131,6 +132,7 @@
 <code id="chat-session-id" hx-swap-oob="true">{{.SessionID}}</code>
 <input type="hidden" id="chat-session-input" name="session_id" hx-swap-oob="true" value="{{.SessionID}}">
 <input type="hidden" id="chat-agent-input" name="agent" hx-swap-oob="true" value="{{.Agent}}">
+<input type="hidden" id="chat-stream-input" name="stream_id" hx-swap-oob="true" value="{{.StreamID}}">
 <textarea id="chat-input" name="message" rows="3" placeholder="Type a message. Enter sends, Shift+Enter inserts a newline." required hx-swap-oob="true"></textarea>
 {{end}}
 

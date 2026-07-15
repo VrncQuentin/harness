@@ -82,6 +82,7 @@ type chatView struct {
 	ActiveAgent    string
 	RecentSessions []chatResumeRow
 	ResumeErr      string
+	StreamID       string
 }
 
 type chatResumeRow struct {
@@ -101,7 +102,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := chatView{basePage: s.newBasePage("chat")}
+	data := chatView{basePage: s.newBasePage("chat"), StreamID: newEventStreamID()}
 	data.Configured = s.getChatRunner() != nil
 	if reg := s.agentRegistry(); reg != nil {
 		data.ActiveAgent = reg.Active()
@@ -310,6 +311,7 @@ type chatSendView struct {
 	UserContent string
 	SessionID   string
 	Agent       string
+	StreamID    string
 }
 
 // chatSendMaxBytes caps the form body. A single message plus small
@@ -340,6 +342,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	}
 	agent := strings.TrimSpace(r.FormValue("agent"))
 	sessionID := strings.TrimSpace(r.FormValue("session_id"))
+	streamID := strings.TrimSpace(r.FormValue("stream_id"))
 
 	var conversation []ChatMessage
 	if sessionID != "" {
@@ -356,6 +359,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		UserContent: msg,
 		SessionID:   sessionID,
 		Agent:       agent,
+		StreamID:    streamID,
 	}); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
@@ -367,36 +371,36 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithCancel(s.asyncContext())
 		go func() {
 			defer cancel()
-			s.streamChatTokens(ctx, runner, agent, sessionID, conversation)
+			s.streamChatTokens(ctx, runner, agent, sessionID, streamID, conversation)
 		}()
 	}
 }
 
 // streamChatTokens runs the chat runner in a goroutine and broadcasts
 // tokens, done, and error events to the chat SSE subscribers.
-func (s *Server) streamChatTokens(ctx context.Context, runner ChatRunner, agent, sessionID string, conversation []ChatMessage) {
+func (s *Server) streamChatTokens(ctx context.Context, runner ChatRunner, agent, sessionID, streamID string, conversation []ChatMessage) {
 	newID, tokens, err := runner.Run(ctx, agent, sessionID, conversation)
 	if err != nil {
-		s.broadcastChatSSE(fmt.Sprintf("event: chat-error\ndata: %s\n\n", sseData(err.Error())))
+		s.broadcastChatSSE(streamID, fmt.Sprintf("event: chat-error\ndata: %s\n\n", sseData(err.Error())))
 		return
 	}
 	if newID != "" && newID != sessionID {
-		s.broadcastChatSSE(fmt.Sprintf("event: chat-session\ndata: %s\n\n", sseData(chatSessionOOB(newID))))
+		s.broadcastChatSSE(streamID, fmt.Sprintf("event: chat-session\ndata: %s\n\n", sseData(chatSessionOOB(newID))))
 	}
 	for tok := range tokens {
 		if tok.Err != nil {
-			s.broadcastChatSSE(fmt.Sprintf("event: chat-error\ndata: %s\n\n", sseData(tok.Err.Error())))
+			s.broadcastChatSSE(streamID, fmt.Sprintf("event: chat-error\ndata: %s\n\n", sseData(tok.Err.Error())))
 			return
 		}
 		if tok.Done {
-			s.broadcastChatSSE("event: chat-done\ndata: \n\n")
+			s.broadcastChatSSE(streamID, "event: chat-done\ndata: \n\n")
 			return
 		}
 		if tok.Content != "" {
-			s.broadcastChatSSE(fmt.Sprintf("event: chat-token\ndata: %s\n\n", chatTextSSEData(tok.Content)))
+			s.broadcastChatSSE(streamID, fmt.Sprintf("event: chat-token\ndata: %s\n\n", chatTextSSEData(tok.Content)))
 		}
 	}
-	s.broadcastChatSSE("event: chat-done\ndata: \n\n")
+	s.broadcastChatSSE(streamID, "event: chat-done\ndata: \n\n")
 }
 
 func chatSessionOOB(id string) string {
@@ -423,8 +427,9 @@ func (s *Server) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
+	streamID := strings.TrimSpace(r.URL.Query().Get("stream_id"))
 	ch := make(chan string, 8)
-	s.chatSSEClients.Store(ch, struct{}{})
+	s.chatSSEClients.Store(ch, streamID)
 	defer s.chatSSEClients.Delete(ch)
 
 	for {
@@ -443,13 +448,17 @@ func (s *Server) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// broadcastChatSSE sends an SSE frame to all chat SSE subscribers. The
+// broadcastChatSSE sends an SSE frame to matching chat SSE subscribers. The
 // frame must be a complete SSE frame (event + data lines with trailing
 // blank line). Non-blocking; a slow client drops this frame.
-func (s *Server) broadcastChatSSE(frame string) {
-	s.chatSSEClients.Range(func(key, _ any) bool {
+func (s *Server) broadcastChatSSE(streamID, frame string) {
+	s.chatSSEClients.Range(func(key, value any) bool {
 		ch, ok := key.(chan string)
 		if !ok {
+			return true
+		}
+		clientStreamID, _ := value.(string)
+		if streamID != "" && clientStreamID != streamID {
 			return true
 		}
 		select {
