@@ -29,8 +29,8 @@
       <a href="/config" class="nav-link {{if eq .Page "config"}}active{{end}}">Config</a>
     </nav>
     <div class="topbar-actions">
-      <form method="get" action="/projects" class="project-switcher-form">
-        <select class="select project-switcher" name="activate">
+      <form method="post" action="/projects/activate" class="project-switcher-form">
+        <select class="select project-switcher" name="slug">
           {{range .ProjectSlugs}}
           <option value="{{.}}" {{if eq . $.ActiveProjectSlug}}selected{{end}}>{{index $.ProjectNames .}}</option>
           {{end}}

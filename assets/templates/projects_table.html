@@ -44,7 +44,10 @@
       {{if .IsActive}}
       <span class="btn btn-sm btn-disabled" aria-disabled="true">Active</span>
       {{else}}
-      <a href="/projects?activate={{.Slug}}" class="btn btn-sm">Activate</a>
+      <form method="post" action="/projects/activate" class="inline-form">
+        <input type="hidden" name="slug" value="{{.Slug}}">
+        <button type="submit" class="btn btn-sm">Activate</button>
+      </form>
       {{end}}
       <form method="post" action="/projects/backup?slug={{.Slug}}" class="inline-form">
         <button type="submit" class="btn btn-sm btn-ghost">Back up</button>
@@ -52,9 +55,15 @@
       {{if not .IsGlobal}}
       <a href="/projects?edit={{.Slug}}" class="btn btn-sm btn-ghost">Edit</a>
       {{if .Hidden}}
-      <a href="/projects?unhide={{.Slug}}" class="btn btn-sm btn-ghost">Unhide</a>
+      <form method="post" action="/projects/unhide" class="inline-form">
+        <input type="hidden" name="slug" value="{{.Slug}}">
+        <button type="submit" class="btn btn-sm btn-ghost">Unhide</button>
+      </form>
       {{else}}
-      <a href="/projects?hide={{.Slug}}" class="btn btn-sm btn-ghost">Hide</a>
+      <form method="post" action="/projects/hide" class="inline-form">
+        <input type="hidden" name="slug" value="{{.Slug}}">
+        <button type="submit" class="btn btn-sm btn-ghost">Hide</button>
+      </form>
       {{end}}
       {{end}}
     </div>
