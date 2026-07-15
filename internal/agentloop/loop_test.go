@@ -345,13 +345,50 @@ func TestApprovalWaitTimesOut(t *testing.T) {
 	}
 }
 
+func TestStateEventWaitsForDeliveryWhenChannelIsFull(t *testing.T) {
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3}
+	engine := newTestEngine(t, cfg)
+	engine.infer = &mockInferClient{tokens: []inference.Token{{Content: "dropped text"}, {Done: true}}}
+
+	evch := make(chan Event, 1)
+	evch <- Event{Type: EvtText, Content: "existing"}
+	done := make(chan error, 1)
+	go func() {
+		done <- engine.Run(context.Background(), []inference.Message{{Role: "user", Content: "hello"}}, evch)
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Run finished before the final event could be delivered: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if ev := <-evch; ev.Content != "existing" {
+		t.Fatalf("first event = %+v, want prefilled event", ev)
+	}
+
+	select {
+	case ev := <-evch:
+		if ev.Type != EvtDone {
+			t.Fatalf("event type = %q, want %q", ev.Type, EvtDone)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for final event")
+	}
+
+	if err := <-done; err != nil {
+		t.Fatalf("Run error = %v", err)
+	}
+}
 func TestApprovalNeededDeliveryTimesOutWhenEventChannelIsFull(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
 	engine := newTestEngine(t, cfg).WithApprovalTimeout(20 * time.Millisecond)
 	engine.infer = &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 
-	evch := make(chan Event)
-	err := engine.Run(context.Background(), []inference.Message{{Role: "user", Content: "write file"}}, evch)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	evch := make(chan Event, 1)
+	err := engine.Run(ctx, []inference.Message{{Role: "user", Content: "write file"}}, evch)
 	if !errors.Is(err, ErrApprovalTimeout) {
 		t.Fatalf("Run error = %v, want ErrApprovalTimeout", err)
 	}

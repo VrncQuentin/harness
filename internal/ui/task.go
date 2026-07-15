@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/vrnc/harness/internal/agentloop"
 )
@@ -107,18 +108,18 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent, sessionID string, conversation []ChatMessage) {
 	newID, evch, err := runner.RunTask(ctx, agent, sessionID, conversation)
 	if err != nil {
-		s.broadcastTaskSSE(renderTaskSSE("task-event", s.renderTaskEvent(agentloop.Event{Type: agentloop.EvtError, Content: err.Error(), Terminate: agentloop.EvtError})))
+		s.broadcastTaskSSE(renderTaskSSE("task-event", s.renderTaskEvent(agentloop.Event{Type: agentloop.EvtError, Content: err.Error(), Terminate: agentloop.EvtError})), true)
 		return
 	}
 	if newID != "" && newID != sessionID {
-		s.broadcastTaskSSE(fmt.Sprintf("event: task-session\ndata: %s\n\n", sseData(fmt.Sprintf(`<input type="hidden" id="task-session-input" name="session_id" hx-swap-oob="true" value="%s">`, newID))))
+		s.broadcastTaskSSE(fmt.Sprintf("event: task-session\ndata: %s\n\n", sseData(fmt.Sprintf(`<input type="hidden" id="task-session-input" name="session_id" hx-swap-oob="true" value="%s">`, newID))), true)
 	}
 	for ev := range evch {
 		switch ev.Type {
 		case agentloop.EvtText:
-			s.broadcastTaskSSE(renderTaskSSE("task-text", s.renderTaskText(ev.Content)))
+			s.broadcastTaskSSE(renderTaskSSE("task-text", s.renderTaskText(ev.Content)), false)
 		default:
-			s.broadcastTaskSSE(renderTaskSSE("task-event", s.renderTaskEvent(ev)))
+			s.broadcastTaskSSE(renderTaskSSE("task-event", s.renderTaskEvent(ev)), true)
 		}
 	}
 }
@@ -176,15 +177,25 @@ func renderTaskSSE(eventName, html string) string {
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", eventName, sseData(html))
 }
 
-func (s *Server) broadcastTaskSSE(frame string) {
+const taskSSEReliableSendTimeout = 2 * time.Second
+
+func (s *Server) broadcastTaskSSE(frame string, reliable bool) {
 	s.taskSSEClients.Range(func(key, _ any) bool {
 		ch, ok := key.(chan string)
 		if !ok {
 			return true
 		}
+		if !reliable {
+			select {
+			case ch <- frame:
+			default:
+			}
+			return true
+		}
 		select {
 		case ch <- frame:
-		default:
+		case <-time.After(taskSSEReliableSendTimeout):
+			s.taskSSEClients.Delete(ch)
 		}
 		return true
 	})
