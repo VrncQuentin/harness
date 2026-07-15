@@ -15,6 +15,7 @@ import (
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/agentloop"
+	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/config"
 	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/index"
@@ -187,6 +188,28 @@ func TestUIAgentRegistryAdapterListTreatsMissingFilesAsEmpty(t *testing.T) {
 	}
 }
 
+func TestTaskRunnerApprovalEvaluatorsDoNotShareSessionRules(t *testing.T) {
+	ad := &taskRunnerAdapter{approvalLayers: []approvals.Layer{approvals.DefaultLayer()}}
+
+	first := ad.newApprovalEvaluator()
+	second := ad.newApprovalEvaluator()
+	if first == nil || second == nil {
+		t.Fatal("expected approval evaluators")
+	}
+
+	first.AddSessionRule(approvals.Rule{
+		ToolID:   "file_write",
+		Decision: approvals.Allowed,
+		Source:   "session: always allowed",
+	})
+
+	if got, _ := first.Evaluate("file_write", ""); got != approvals.Allowed {
+		t.Fatalf("first evaluator decision = %v, want Allowed", got)
+	}
+	if got, _ := second.Evaluate("file_write", ""); got != approvals.Ask {
+		t.Fatalf("second evaluator decision = %v, want Ask without first session rule", got)
+	}
+}
 func TestTaskRunnerCancelTaskCancelsActiveEngine(t *testing.T) {
 	called := false
 	ad := &taskRunnerAdapter{
