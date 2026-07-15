@@ -57,7 +57,10 @@ const (
 	EvtApproval       = "approval"
 )
 
-const defaultApprovalTimeout = 5 * time.Minute
+const (
+	defaultApprovalTimeout = 5 * time.Minute
+	maxToolCallSlots       = 64
+)
 
 // ErrApprovalTimeout is returned when the caller does not apply an
 // approval decision within the allowed window.
@@ -250,7 +253,11 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 				e.emit(ctx, evch, Event{Turn: turns, Type: EvtText, Content: tok.Content})
 			}
 			if tok.ToolCallDelta != nil {
-				slot := resolveSlot(&toolCallSlots, tok.ToolCallDelta.Index)
+				slot, err := resolveSlot(&toolCallSlots, tok.ToolCallDelta.Index)
+				if err != nil {
+					e.emit(ctx, evch, Event{Turn: turns, Type: EvtError, Content: err.Error(), Terminate: EvtError})
+					return err
+				}
 				if tok.ToolCallDelta.ID != "" {
 					slot.ID = tok.ToolCallDelta.ID
 				}
@@ -544,11 +551,14 @@ type accumulatedToolCall struct {
 	Arguments strings.Builder
 }
 
-func resolveSlot(slots *[]*accumulatedToolCall, index int) *accumulatedToolCall {
+func resolveSlot(slots *[]*accumulatedToolCall, index int) (*accumulatedToolCall, error) {
+	if index < 0 || index >= maxToolCallSlots {
+		return nil, fmt.Errorf("agentloop: tool call index %d outside allowed range 0-%d", index, maxToolCallSlots-1)
+	}
 	for len(*slots) <= index {
 		*slots = append(*slots, &accumulatedToolCall{})
 	}
-	return (*slots)[index]
+	return (*slots)[index], nil
 }
 
 // turnFingerprint produces a hash of the tool calls in a single turn so
