@@ -32,27 +32,6 @@ type Reader interface {
 	Glob(pattern string) ([]string, error)
 }
 
-// DirLister is an optional capability some Readers expose for
-// enumerating subdirectory names. The agent registry uses this when
-// available to list agent folders; callers can type-assert on it.
-type DirLister interface {
-	// ListDirs returns the names of subdirectories directly under
-	// relPath, sorted lexicographically. A missing relPath yields an
-	// empty slice and no error.
-	ListDirs(relPath string) ([]string, error)
-}
-
-// DirCreator is an optional capability some Readers expose for
-// creating subdirectories under the repo root. The agent registry
-// uses this when available to add a new agent folder; callers can
-// type-assert on it.
-type DirCreator interface {
-	// MkdirAll creates relPath and any necessary parents under the
-	// repo root. It is a no-op if the directory already exists; if
-	// relPath names an existing file, an error is returned.
-	MkdirAll(relPath string) error
-}
-
 // FileWriter is an optional capability some Readers expose for
 // writing files under the repo root. The agent registry and the UI
 // memory editor both use this to persist edits to markdown files;
@@ -63,19 +42,6 @@ type FileWriter interface {
 	// Implementations must publish the new content atomically so
 	// concurrent readers never observe a partial write.
 	WriteFile(relPath string, data []byte) error
-}
-
-// DirRemover is an optional capability some Readers expose for
-// removing a subtree under the repo root. The agent registry uses it
-// to delete an agent folder when available; callers can type-assert
-// on it.
-type DirRemover interface {
-	// RemoveAll removes relPath and any contents underneath it. A
-	// missing path is not an error so callers may treat removal as
-	// idempotent. Implementations must reject empty, absolute, and
-	// traversing paths so a caller cannot delete files outside the
-	// repo root.
-	RemoveAll(relPath string) error
 }
 
 // Walker is an optional capability some Readers expose for enumerating
@@ -96,11 +62,11 @@ type Walker interface {
 // so missing capabilities fail at compile time instead of at request time.
 type Repo interface {
 	Reader
-	DirLister
-	DirCreator
 	FileWriter
-	DirRemover
 	Walker
+	ListDirs(relPath string) ([]string, error)
+	MkdirAll(relPath string) error
+	RemoveAll(relPath string) error
 }
 
 // Entry describes one path under the memory repo as returned by Walk.
@@ -120,18 +86,11 @@ type DirReader struct {
 	Root string
 }
 
-// Compile-time assertions that *DirReader satisfies Reader and the
-// optional DirLister/DirCreator/FileWriter/Walker capabilities, per
-// the Uber Go style guide's "Verify Interface Compliance" rule.
-// Keeping each on its own line surfaces the missing method when one
-// interface drifts.
+// Compile-time assertions for the production memory repo interfaces.
 var (
 	_ Reader     = (*DirReader)(nil)
 	_ Repo       = (*DirReader)(nil)
-	_ DirLister  = (*DirReader)(nil)
-	_ DirCreator = (*DirReader)(nil)
 	_ FileWriter = (*DirReader)(nil)
-	_ DirRemover = (*DirReader)(nil)
 	_ Walker     = (*DirReader)(nil)
 )
 
@@ -166,7 +125,7 @@ func (r *DirReader) Exists(relPath string) bool {
 	return !info.IsDir()
 }
 
-// ListDirs implements DirLister.
+// ListDirs returns direct subdirectories of relPath.
 func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 	if relPath != "" {
 		if err := checkRel(relPath); err != nil {
@@ -191,7 +150,7 @@ func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 	return out, nil
 }
 
-// MkdirAll implements DirCreator.
+// MkdirAll creates relPath and any necessary parents.
 func (r *DirReader) MkdirAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return err
@@ -242,7 +201,7 @@ func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	return nil
 }
 
-// RemoveAll implements DirRemover. It refuses paths that resolve to
+// RemoveAll refuses paths that resolve to
 // the repo root itself so a caller cannot wipe the whole memory repo
 // by passing "." or "" past the validator.
 func (r *DirReader) RemoveAll(relPath string) error {

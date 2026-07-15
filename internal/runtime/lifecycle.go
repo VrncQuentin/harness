@@ -191,7 +191,7 @@ func (rt *Runtime) startServices(
 
 	inferClient := rt.newInferenceClient()
 	rt.inferClient = inferClient
-	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, cfg.Queue.WALPath, inferClient)
+	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, inferClient)
 	if metricsStore != nil {
 		rt.reqQueue.SetMetrics(metrics.NewRecorder(metricsStore))
 	}

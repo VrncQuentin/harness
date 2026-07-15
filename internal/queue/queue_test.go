@@ -29,7 +29,7 @@ func (f *fakeClient) Health(_ context.Context) error { return nil }
 
 func TestEnqueue_And_Dispatch(t *testing.T) {
 	client := &fakeClient{tokens: []string{"hello", " world"}}
-	q := New(8, "", client)
+	q := New(8, client)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -63,7 +63,7 @@ func TestEnqueue_And_Dispatch(t *testing.T) {
 
 func TestEnqueue_DispatchPreservesTools(t *testing.T) {
 	client := &captureClient{seen: make(chan inference.CompletionRequest, 1)}
-	q := New(8, "", client)
+	q := New(8, client)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := q.Start(ctx); err != nil {
@@ -103,7 +103,7 @@ func TestEnqueue_DispatchPreservesTools(t *testing.T) {
 
 func TestEnqueue_Full(t *testing.T) {
 	// Use nil client - worker will stall so queue fills up.
-	q := New(2, "", nil)
+	q := New(2, nil)
 	// Do NOT start the worker - keeps requests in channel.
 
 	resp1 := make(chan inference.Token, 4)
@@ -120,7 +120,7 @@ func TestEnqueue_Full(t *testing.T) {
 }
 
 func TestDepth(t *testing.T) {
-	q := New(8, "", nil)
+	q := New(8, nil)
 	if q.Depth() != 0 {
 		t.Errorf("expected depth 0, got %d", q.Depth())
 	}
@@ -128,7 +128,7 @@ func TestDepth(t *testing.T) {
 
 func TestSetClient_Swaps(t *testing.T) {
 	first := &fakeClient{tokens: []string{"old"}}
-	q := New(8, "", first)
+	q := New(8, first)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -162,7 +162,7 @@ func TestSetClient_Swaps(t *testing.T) {
 
 func TestStop_DrainsAcceptedRequests(t *testing.T) {
 	client := &fakeClient{tokens: []string{"done"}}
-	q := New(4, "", client)
+	q := New(4, client)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -209,7 +209,7 @@ func TestStop_DrainsAcceptedRequests(t *testing.T) {
 
 func TestRestart_AllowsRequestsAfterStop(t *testing.T) {
 	client := &fakeClient{tokens: []string{"restarted"}}
-	q := New(4, "", client)
+	q := New(4, client)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -248,7 +248,7 @@ func TestRestart_AllowsRequestsAfterStop(t *testing.T) {
 func TestDispatch_CancelledFullResponseDoesNotWedgeWorker(t *testing.T) {
 	stream := make(chan inference.Token, 2)
 	client := &streamClient{tokens: stream, started: make(chan struct{})}
-	q := New(2, "", client)
+	q := New(2, client)
 
 	ctx, cancelWorker := context.WithCancel(context.Background())
 	defer cancelWorker()
@@ -326,7 +326,7 @@ func (s *streamClient) Health(_ context.Context) error { return nil }
 
 func TestEnqueue_ClientError(t *testing.T) {
 	errClient := &errInferenceClient{}
-	q := New(8, "", errClient)
+	q := New(8, errClient)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -387,7 +387,7 @@ func (f *fakeQueueMetrics) TokenThroughput(v float64) error {
 }
 
 func TestDispatch_RecordsLatencyAndThroughputMetrics(t *testing.T) {
-	q := New(4, "", &delayedMetricClient{})
+	q := New(4, &delayedMetricClient{})
 	metrics := &fakeQueueMetrics{}
 	q.SetMetrics(metrics)
 
@@ -450,7 +450,7 @@ func TestDispatch_DoesNotRecordTTFTForEmptyOrErrorOnlyStreams(t *testing.T) {
 		{name: "stream error", token: inference.Token{Err: errors.New("stream failed")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			q := New(4, "", &singleTokenClient{token: tc.token})
+			q := New(4, &singleTokenClient{token: tc.token})
 			metrics := &fakeQueueMetrics{}
 			q.SetMetrics(metrics)
 

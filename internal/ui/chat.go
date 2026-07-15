@@ -54,13 +54,6 @@ var (
 	ErrSessionConversationLost = errors.New("session conversation history not available - only the summary survives in git")
 )
 
-// SetChatRunner installs the runner used by /chat/send. Safe to leave
-// unset; the page then renders a "not configured" state instead of a
-// chat input.
-func (s *Server) SetChatRunner(r ChatRunner) {
-	s.updateDeps(func(d *uiDeps) { d.chatRunner = r })
-}
-
 func (s *Server) getChatRunner() ChatRunner {
 	return s.depsSnapshot().chatRunner
 }

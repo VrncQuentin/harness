@@ -54,13 +54,6 @@ type SessionRecord struct {
 	EpisodePath string    `json:"episode_path"`
 }
 
-// SetSessionStore installs the store used by /chat/save and friends.
-// Pass nil to detach (e.g. when the memory repo is invalidated); the
-// handlers then return 503 until a valid store is wired back in.
-func (s *Server) SetSessionStore(store SessionStore) {
-	s.updateDeps(func(d *uiDeps) { d.sessionStore = store })
-}
-
 func (s *Server) getSessionStore() SessionStore {
 	return s.depsSnapshot().sessionStore
 }

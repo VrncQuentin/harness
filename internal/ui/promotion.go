@@ -22,24 +22,12 @@ type DedupChecker interface {
 	CheckSimilar(ctx context.Context, text string, threshold float64) (blocked bool, similarFact string, score float64, err error)
 }
 
-func (s *Server) SetCommitter(c Committer) {
-	s.updateDeps(func(d *uiDeps) { d.committer = c })
-}
-
 func (s *Server) getCommitter() Committer {
 	return s.depsSnapshot().committer
 }
 
-func (s *Server) SetDedupChecker(dc DedupChecker) {
-	s.updateDeps(func(d *uiDeps) { d.dedup = dc })
-}
-
 func (s *Server) getDedupChecker() DedupChecker {
 	return s.depsSnapshot().dedup
-}
-
-func (s *Server) SetPromotionDedupThreshold(t float64) {
-	s.updateDeps(func(d *uiDeps) { d.promotionDedupThreshold = t })
 }
 
 func (s *Server) getPromotionDedupThreshold() float64 {

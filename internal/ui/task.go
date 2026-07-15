@@ -29,12 +29,6 @@ var (
 	ErrTaskNotReady  = errors.New("task runner not available — the harness may still be starting")
 )
 
-// SetTaskRunner installs the runner used by /task/send. Safe to leave
-// unset; the page then renders a "not ready" state.
-func (s *Server) SetTaskRunner(r TaskRunner) {
-	s.updateDeps(func(d *uiDeps) { d.taskRunner = r })
-}
-
 func (s *Server) getTaskRunner() TaskRunner {
 	return s.depsSnapshot().taskRunner
 }

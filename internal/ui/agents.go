@@ -51,13 +51,6 @@ type AgentRegistry interface {
 	Delete(name string) error
 }
 
-// SetAgentRegistry installs the registry used by the /agents page. Safe to
-// leave unset; the page then renders a "memory repo not configured" card
-// instead of a registry error.
-func (s *Server) SetAgentRegistry(reg AgentRegistry) {
-	s.updateDeps(func(d *uiDeps) { d.agentReg = reg })
-}
-
 func (s *Server) agentRegistry() AgentRegistry {
 	return s.depsSnapshot().agentReg
 }

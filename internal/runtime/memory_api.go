@@ -224,14 +224,6 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 	}, nil
 }
 
-// buildSessionManager opens the git repo and constructs a session
-// manager pointed at the validated memory paths. Returns nil for both
-// values when something fails so the caller silently disables save +
-// resume rather than crashing the harness on /chat load.
-func (rt *Runtime) buildSessionManager(uiServer *ui.Server, roots projectRepoRoots) (*session.Manager, *uiSessionStoreAdapter) {
-	return rt.buildSessionManagerWithClients(nil, uiServer, roots, rt.ensureInferenceClient(), rt.newEmbedderClient())
-}
-
 func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client) (*session.Manager, *uiSessionStoreAdapter) {
 	repoPath := roots.activeRoot
 	repo, err := gitw.Open(repoPath)
