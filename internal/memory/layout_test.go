@@ -396,3 +396,50 @@ func TestCreateMissingProjectRepoWritesGitkeep(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureProjectRepoInitializesAndScaffolds(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "project-repo")
+	if err := EnsureProjectRepo(root, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	for _, rel := range []string{".git", "rules.md", "agents/.gitkeep", "sessions.jsonl", "episodes/.gitkeep", "index/_episodes/.gitkeep"} {
+		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("missing %s: %v", rel, err)
+		}
+	}
+	if err := ValidateProjectRepo(root, false); err != nil {
+		t.Fatalf("ValidateProjectRepo: %v", err)
+	}
+}
+
+func TestMoveProjectRepoCopiesWorkingTreeWithoutGitDir(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo(src): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".git", "source-only"), []byte("do not copy"), 0o644); err != nil {
+		t.Fatalf("write git marker: %v", err)
+	}
+
+	dst := filepath.Join(tmp, "dst")
+	if err := MoveProjectRepo(src, dst, false); err != nil {
+		t.Fatalf("MoveProjectRepo: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "notes.md"))
+	if err != nil {
+		t.Fatalf("read copied notes: %v", err)
+	}
+	if string(got) != "keep me" {
+		t.Fatalf("copied notes = %q", string(got))
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".git", "source-only")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("source .git marker copied, err=%v", err)
+	}
+	if err := ValidateProjectRepo(dst, false); err != nil {
+		t.Fatalf("ValidateProjectRepo(dst): %v", err)
+	}
+}
