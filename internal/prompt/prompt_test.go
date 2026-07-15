@@ -840,6 +840,33 @@ func (e errReader) ListDirs(rel string) ([]string, error) {
 	}
 	return nil, nil
 }
+func (e errReader) MkdirAll(rel string) error {
+	if repo, ok := e.Reader.(memory.Repo); ok {
+		return repo.MkdirAll(rel)
+	}
+	return errors.New("test reader missing MkdirAll")
+}
+
+func (e errReader) WriteFile(rel string, data []byte) error {
+	if repo, ok := e.Reader.(memory.Repo); ok {
+		return repo.WriteFile(rel, data)
+	}
+	return errors.New("test reader missing WriteFile")
+}
+
+func (e errReader) RemoveAll(rel string) error {
+	if repo, ok := e.Reader.(memory.Repo); ok {
+		return repo.RemoveAll(rel)
+	}
+	return errors.New("test reader missing RemoveAll")
+}
+
+func (e errReader) Walk(rel string) ([]memory.Entry, error) {
+	if repo, ok := e.Reader.(memory.Repo); ok {
+		return repo.Walk(rel)
+	}
+	return nil, errors.New("test reader missing Walk")
+}
 
 // TestAssemble_BlendedRetrievalKeepsTopN verifies the blended retrieval
 // path keeps the top-N episodes by blended score, not the lowest

@@ -117,29 +117,22 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	uiServer.SetPromotionDedupThreshold(rt.cfg.Prompt.PromotionDedupThreshold)
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
-	if walkMem, ok := rt.memReader.(interface {
-		memory.Reader
-		memory.Walker
-	}); ok {
-		uiServer.SetIndexRebuilder(&indexRebuilder{
-			mem:      walkMem,
-			emb:      embedClient,
-			idx:      epIdx,
-			indexDir: indexDir,
-			repoPath: roots.activeRoot,
-			slug:     rt.cfg.Project.ActiveProjectSlug,
-			gitRepo:  rt.gitRepo,
-			onRebuilt: func(idx *index.Index) {
-				rt.mu.Lock()
-				if rt.assembler != nil {
-					rt.assembler = rt.assembler.WithBlendedRetrieval(idx, embedClient)
-				}
-				rt.mu.Unlock()
-			},
-		})
-	} else {
-		uiServer.SetIndexRebuilder(nil)
-	}
+	uiServer.SetIndexRebuilder(&indexRebuilder{
+		mem:      rt.memReader,
+		emb:      embedClient,
+		idx:      epIdx,
+		indexDir: indexDir,
+		repoPath: roots.activeRoot,
+		slug:     rt.cfg.Project.ActiveProjectSlug,
+		gitRepo:  rt.gitRepo,
+		onRebuilt: func(idx *index.Index) {
+			rt.mu.Lock()
+			if rt.assembler != nil {
+				rt.assembler = rt.assembler.WithBlendedRetrieval(idx, embedClient)
+			}
+			rt.mu.Unlock()
+		},
+	})
 	if rt.reqQueue != nil {
 		uiServer.SetChatRunner(&chatRunnerAdapter{
 			asm: asmAdapter,
@@ -541,10 +534,7 @@ func (s *indexScorer) open() (*index.Index, error) {
 // updated manifest and vectors. The operation is idempotent: already-
 // indexed episodes are skipped.
 type indexRebuilder struct {
-	mem interface {
-		memory.Reader
-		memory.Walker
-	}
+	mem       memory.Repo
 	emb       embedder.Client
 	idx       *index.Index
 	indexDir  string

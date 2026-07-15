@@ -23,28 +23,6 @@ const agentsDir = "agents"
 // filesystem limits and the UI list readable.
 const maxAgentNameLen = 64
 
-// errNoDirLister is returned when the Reader passed to NewDiskRegistry
-// does not also implement memory.DirLister. The production
-// *memory.DirReader always satisfies both.
-var errNoDirLister = errors.New("agent: memory.Reader must also implement memory.DirLister")
-
-// errNoDirCreator is returned by Create when the underlying Reader does
-// not implement memory.DirCreator. The production *memory.DirReader
-// always satisfies it; this surfaces as a clear UI error if some
-// future test fake forgets the capability.
-var errNoDirCreator = errors.New("agent: memory.Reader must also implement memory.DirCreator")
-
-// errNoFileWriter is returned by WritePersona/WriteNotes when the
-// underlying Reader does not implement memory.FileWriter. Mirrors
-// errNoDirCreator: production always satisfies it; the explicit
-// error keeps test fakes that forget the capability discoverable.
-var errNoFileWriter = errors.New("agent: memory.Reader must also implement memory.FileWriter")
-
-// errNoDirRemover is returned by Delete when the underlying Reader
-// does not implement memory.DirRemover. Same shape as the writer/
-// creator counterparts above.
-var errNoDirRemover = errors.New("agent: memory.Reader must also implement memory.DirRemover")
-
 // ErrInvalidName is returned by Create when the requested agent name
 // fails validation (empty, too long, or contains disallowed
 // characters). Wrapped so callers can use errors.Is.
@@ -98,10 +76,7 @@ type Registry interface {
 // persistent state of its own, it delegates via callbacks passed at
 // construction time.
 type DiskRegistry struct {
-	lister    memory.DirLister
-	creator   memory.DirCreator
-	writer    memory.FileWriter
-	remover   memory.DirRemover
+	mem       memory.Repo
 	mu        sync.Mutex
 	getActive func() string
 	setActive func(string) error
@@ -113,22 +88,9 @@ var _ Registry = (*DiskRegistry)(nil)
 // setActive callbacks read and write the active agent name; the
 // registry is agnostic to where that value is stored (in practice,
 // internal/db's config row).
-//
-// mem must also implement memory.DirLister, memory.DirCreator, and
-// memory.FileWriter (the production *memory.DirReader does). If it
-// does not, the affected calls return an error - this trades a
-// startup panic for a deterministic failure mode that the UI can
-// render.
-func NewDiskRegistry(mem memory.Reader, getActive func() string, setActive func(string) error) *DiskRegistry {
-	dl, _ := mem.(memory.DirLister)
-	dc, _ := mem.(memory.DirCreator)
-	fw, _ := mem.(memory.FileWriter)
-	dr, _ := mem.(memory.DirRemover)
+func NewDiskRegistry(mem memory.Repo, getActive func() string, setActive func(string) error) *DiskRegistry {
 	return &DiskRegistry{
-		lister:    dl,
-		creator:   dc,
-		writer:    fw,
-		remover:   dr,
+		mem:       mem,
 		getActive: getActive,
 		setActive: setActive,
 	}
@@ -139,10 +101,7 @@ func NewDiskRegistry(mem memory.Reader, getActive func() string, setActive func(
 // error so a freshly-initialised memory repo is not surfaced as a
 // fatal setup problem.
 func (r *DiskRegistry) List() ([]Agent, error) {
-	if r.lister == nil {
-		return nil, errNoDirLister
-	}
-	names, err := r.lister.ListDirs(agentsDir)
+	names, err := r.mem.ListDirs(agentsDir)
 	if err != nil {
 		return nil, fmt.Errorf("agent: list: %w", err)
 	}
@@ -160,10 +119,7 @@ func (r *DiskRegistry) Get(name string) (Agent, error) {
 	if name == "" {
 		return Agent{}, fmt.Errorf("agent: name is empty")
 	}
-	if r.lister == nil {
-		return Agent{}, errNoDirLister
-	}
-	names, err := r.lister.ListDirs(agentsDir)
+	names, err := r.mem.ListDirs(agentsDir)
 	if err != nil {
 		return Agent{}, fmt.Errorf("agent: get %q: %w", name, err)
 	}
@@ -230,17 +186,10 @@ func (r *DiskRegistry) Create(name string) (Agent, error) {
 	if err := validateName(name); err != nil {
 		return Agent{}, err
 	}
-	if r.lister == nil {
-		return Agent{}, errNoDirLister
-	}
-	if r.creator == nil {
-		return Agent{}, errNoDirCreator
-	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	existing, err := r.lister.ListDirs(agentsDir)
+	existing, err := r.mem.ListDirs(agentsDir)
 	if err != nil {
 		return Agent{}, fmt.Errorf("agent: create %q: %w", name, err)
 	}
@@ -248,7 +197,7 @@ func (r *DiskRegistry) Create(name string) (Agent, error) {
 		return Agent{}, fmt.Errorf("agent: %q: %w", name, ErrAgentExists)
 	}
 
-	if err := r.creator.MkdirAll(path.Join(agentsDir, name)); err != nil {
+	if err := r.mem.MkdirAll(path.Join(agentsDir, name)); err != nil {
 		return Agent{}, fmt.Errorf("agent: create %q: %w", name, err)
 	}
 	return newAgent(name), nil
@@ -262,7 +211,7 @@ func (r *DiskRegistry) WritePersona(name string, body []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := r.writer.WriteFile(a.PersonaPath, body); err != nil {
+	if err := r.mem.WriteFile(a.PersonaPath, body); err != nil {
 		return fmt.Errorf("agent: write persona %q: %w", name, err)
 	}
 	return nil
@@ -275,7 +224,7 @@ func (r *DiskRegistry) WriteRules(name string, body []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := r.writer.WriteFile(a.RulesPath, body); err != nil {
+	if err := r.mem.WriteFile(a.RulesPath, body); err != nil {
 		return fmt.Errorf("agent: write rules %q: %w", name, err)
 	}
 	return nil
@@ -288,7 +237,7 @@ func (r *DiskRegistry) WriteNotes(name string, body []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := r.writer.WriteFile(a.NotesPath, body); err != nil {
+	if err := r.mem.WriteFile(a.NotesPath, body); err != nil {
 		return fmt.Errorf("agent: write notes %q: %w", name, err)
 	}
 	return nil
@@ -303,17 +252,10 @@ func (r *DiskRegistry) Delete(name string) error {
 	if err := validateName(name); err != nil {
 		return err
 	}
-	if r.lister == nil {
-		return errNoDirLister
-	}
-	if r.remover == nil {
-		return errNoDirRemover
-	}
-
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	existing, err := r.lister.ListDirs(agentsDir)
+	existing, err := r.mem.ListDirs(agentsDir)
 	if err != nil {
 		return fmt.Errorf("agent: delete %q: %w", name, err)
 	}
@@ -332,7 +274,7 @@ func (r *DiskRegistry) Delete(name string) error {
 		}
 	}
 
-	if err := r.remover.RemoveAll(path.Join(agentsDir, name)); err != nil {
+	if err := r.mem.RemoveAll(path.Join(agentsDir, name)); err != nil {
 		return fmt.Errorf("agent: delete %q: %w", name, err)
 	}
 	return nil
@@ -343,9 +285,6 @@ func (r *DiskRegistry) Delete(name string) error {
 func (r *DiskRegistry) resolveForWrite(name string) (Agent, error) {
 	if name == "" {
 		return Agent{}, fmt.Errorf("agent: name is empty")
-	}
-	if r.writer == nil {
-		return Agent{}, errNoFileWriter
 	}
 	a, err := r.Get(name)
 	if err != nil {
