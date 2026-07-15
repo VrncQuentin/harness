@@ -18,6 +18,7 @@ import (
 	"github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
 )
 
@@ -71,7 +72,7 @@ func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 		Inference:          fi,
 		SummarizerPrompt:   func() string { return "test" },
 		ResolveAbsRepoPath: root,
-	}, Project)
+	}, project.GlobalSlug)
 	return mgr, root
 }
 
