@@ -610,13 +610,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 			s := mgr.Start(agentName)
 			id = s.ID
 		}
-		if len(msgs) == 1 {
-			if err := mgr.Append(id, msgs[0]); err != nil {
-				slog.Warn("session: append task user turn", "id", id, "err", err)
-			}
-		} else {
-			appendUserSide(mgr, id, msgs)
-		}
+		appendUserSide(mgr, id, msgs)
 	}
 
 	inferClient := ad.rt.getInferClient()
