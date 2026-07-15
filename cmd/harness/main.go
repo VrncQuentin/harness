@@ -44,6 +44,8 @@ func run() error {
 		return fmt.Errorf("cannot determine binary dir: %w", err)
 	}
 
+	// GUI launches on Windows may have no stdout handle; route package-level
+	// stdout writes into stderr so they reach the same logging sink.
 	os.Stdout = os.Stderr
 	logRing, llamaRing, embedRing := configureLogging()
 
