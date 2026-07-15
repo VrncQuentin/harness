@@ -44,7 +44,7 @@ Windows native and Linux are equal first-class targets. CI must run the Go test 
 - [x] Agent registry: named agents with their own persona file path
 - [x] Prompt Assembler: layer ordering (`rules → user → persona → facts → notes → episodes → conversation`)
 - [x] Total memory cap + conversation reserve enforcement, episode trim oldest-first
-- [x] Qwen3 prompt template formatting
+- [x] Chat template delegation: assembler returns OpenAI-style chat messages; llama-server applies the model-specific template
 - [x] Hot-reload: rules and persona files are re-read without restart
 - [x] API Server: OpenAI-compatible `/v1/chat/completions` (streaming), disabled by default
 - [x] UI: agents page — switch active agent, view active persona
