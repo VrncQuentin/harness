@@ -28,7 +28,6 @@ import (
 	"github.com/vrnc/harness/internal/session"
 	"github.com/vrnc/harness/internal/tools"
 	"github.com/vrnc/harness/internal/ui"
-	"github.com/vrnc/harness/pkg/httpclient"
 )
 
 // startMemoryAndAPI brings up the memory reader, agent registry, prompt
@@ -68,10 +67,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	// Open the episode index for blended retrieval. The UI rebuilder is wired even
 	// when the index is missing so a fresh clone can reconstruct it in-place.
 	indexDir := filepath.Join(roots.activeRoot, "index", "_episodes")
-	embedClient := embedder.NewClient(
-		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
-		httpclient.NewStreaming(),
-	)
+	embedClient := rt.newEmbedderClient()
 	epIdx, err := index.Open(indexDir)
 	if err != nil {
 		slog.Debug("no episode index found, retrieval will use recency only", "dir", indexDir)
@@ -103,7 +99,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	// A failure to open the git repo surfaces as a startup error and
 	// silently disables save/resume so the rest of the harness stays
 	// usable.
-	sessionMgr, sessionAdapter := rt.buildSessionManager(metricsStore, uiServer, roots)
+	sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient)
 	rt.setSessionManager(sessionMgr)
 	if sessionAdapter != nil {
 		uiServer.SetSessionStore(sessionAdapter)
@@ -261,7 +257,11 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 // manager pointed at the validated memory paths. Returns nil for both
 // values when something fails so the caller silently disables save +
 // resume rather than crashing the harness on /chat load.
-func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots) (*session.Manager, *uiSessionStoreAdapter) {
+func (rt *Runtime) buildSessionManager(uiServer *ui.Server, roots projectRepoRoots) (*session.Manager, *uiSessionStoreAdapter) {
+	return rt.buildSessionManagerWithClients(nil, uiServer, roots, rt.ensureInferenceClient(), rt.newEmbedderClient())
+}
+
+func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client) (*session.Manager, *uiSessionStoreAdapter) {
 	repoPath := roots.activeRoot
 	repo, err := gitw.Open(repoPath)
 	if err != nil {
@@ -280,20 +280,10 @@ func (rt *Runtime) buildSessionManager(metricsStore metrics.Store, uiServer *ui.
 		rt.globalGitRepo = globalRepo
 	}
 
-	infClient := inference.NewClient(
-		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Model.Port),
-		httpclient.NewStreaming(),
-	)
-
 	var rec session.MetricsRecorder
 	if metricsStore != nil {
 		rec = metrics.NewRecorder(metricsStore)
 	}
-
-	embedClient := embedder.NewClient(
-		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
-		httpclient.NewStreaming(),
-	)
 
 	sessionStore := memory.NewDirReader(repoPath)
 	mgr, err := session.NewManager(session.ManagerDeps{
