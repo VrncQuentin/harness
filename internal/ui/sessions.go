@@ -27,7 +27,7 @@ type SessionStore interface {
 	// LiveConversation returns the in-memory conversation for an active
 	// session, if it exists in this process.
 	LiveConversation(id string) ([]ChatMessage, error)
-	// Resume registers id with the manager so the next /chat/stream
+	// Resume registers id with the manager so the next /chat/send
 	// call appends onto the resumed conversation.
 	Resume(id string) error
 }
