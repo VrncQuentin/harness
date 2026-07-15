@@ -83,6 +83,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		if err := s.activateProject(slug); err != nil {
 			data.Error = err.Error()
 		} else {
+			s.refreshProjectNav()
 			data.Flash = fmt.Sprintf("Activated project %q. The harness is reloading.", slug)
 		}
 	}
@@ -90,6 +91,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		if err := store.SetHidden(slug, true); err != nil {
 			data.Error = fmt.Sprintf("hide: %v", err)
 		} else {
+			s.refreshProjectNav()
 			data.Flash = fmt.Sprintf("Project %q hidden.", slug)
 			// Redirect to avoid re-trigger on refresh.
 			http.Redirect(w, r, "/projects", http.StatusSeeOther)
@@ -100,6 +102,7 @@ func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
 		if err := store.SetHidden(slug, false); err != nil {
 			data.Error = fmt.Sprintf("unhide: %v", err)
 		} else {
+			s.refreshProjectNav()
 			data.Flash = fmt.Sprintf("Project %q unhidden.", slug)
 			http.Redirect(w, r, "/projects", http.StatusSeeOther)
 			return
@@ -212,6 +215,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/projects?error="+url.QueryEscape("project created, but memory repo setup failed: "+err.Error()), http.StatusSeeOther)
 		return
 	}
+	s.refreshProjectNav()
 
 	http.Redirect(w, r, "/projects?flash="+url.QueryEscape("Project "+slug+" created."), http.StatusSeeOther)
 }
@@ -286,6 +290,7 @@ func (s *Server) handleProjectEdit(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/projects?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
+	s.refreshProjectNav()
 
 	http.Redirect(w, r, "/projects?flash="+url.QueryEscape("Project "+slug+" updated."), http.StatusSeeOther)
 }
@@ -507,6 +512,9 @@ func (s *Server) activateProject(slug string) error {
 	if err := store.Save(loaded); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
+	s.state.mu.Lock()
+	s.state.data.ProjectSlug = slug
+	s.state.mu.Unlock()
 	slog.Info("project activated", "slug", slug)
 	s.callRetry()
 	return nil
