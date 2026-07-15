@@ -54,7 +54,7 @@ var (
 	ErrSessionConversationLost = errors.New("session conversation history not available - only the summary survives in git")
 )
 
-// SetChatRunner installs the runner used by /chat/stream. Safe to leave
+// SetChatRunner installs the runner used by /chat/send. Safe to leave
 // unset; the page then renders a "not configured" state instead of a
 // chat input.
 func (s *Server) SetChatRunner(r ChatRunner) {
@@ -144,116 +144,6 @@ func (s *Server) chatResumeRows(agent string) ([]chatResumeRow, string) {
 	return rows, ""
 }
 
-// chatStreamRequest is the JSON body of POST /chat/stream. Agent is
-// optional; an empty value defers to the runner's active-agent default.
-// SessionID is also optional - empty means "start a new session"; a
-// non-empty value resumes the session minted on a previous turn.
-type chatStreamRequest struct {
-	Agent     string        `json:"agent,omitempty"`
-	SessionID string        `json:"session_id,omitempty"`
-	Messages  []ChatMessage `json:"messages"`
-}
-
-// chatStreamMaxBytes caps the request body so a runaway transcript does
-// not exhaust memory before we even decode it. 256 KiB covers thousands
-// of conversation turns at typical sizes.
-const chatStreamMaxBytes = 256 * 1024
-
-// handleChatStream consumes a POSTed conversation, dispatches it to the
-// chat runner, and streams tokens back as `text/event-stream` JSON
-// chunks. The browser reads the stream with fetch + a body reader since
-// EventSource is GET only and we need a JSON body.
-func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	runner := s.getChatRunner()
-	if runner == nil {
-		writeChatJSONError(w, http.StatusServiceUnavailable, "chat backend not configured")
-		return
-	}
-
-	r.Body = http.MaxBytesReader(w, r.Body, chatStreamMaxBytes)
-	var req chatStreamRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeChatJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return
-	}
-	if len(req.Messages) == 0 {
-		writeChatJSONError(w, http.StatusBadRequest, "messages must not be empty")
-		return
-	}
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeChatJSONError(w, http.StatusInternalServerError, "streaming unsupported by this transport")
-		return
-	}
-
-	// Wrap in a cancellable child so an early return propagates to the
-	// runner (and through it to the queue + inference client). Without
-	// this, a write failure would leave the producer running until the
-	// model completes on its own.
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-
-	sessionID, tokens, err := runner.Run(ctx, req.Agent, req.SessionID, req.Messages)
-	if err != nil {
-		writeChatJSONError(w, statusFromChatErr(err), err.Error())
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	// Emit the session id as the first SSE event so the browser can
-	// pin subsequent stream and save calls to the same id. This always
-	// lands before any token frames, giving the client a chance to
-	// stash the id even if the user navigates away mid-stream.
-	if sessionID != "" {
-		writeChatSSEEvent(w, flusher, "session", map[string]any{"id": sessionID})
-	}
-
-	for tok := range tokens {
-		if tok.Err != nil {
-			writeChatSSEError(w, flusher, tok.Err.Error())
-			return
-		}
-		if tok.Done {
-			writeChatSSEDone(w, flusher)
-			return
-		}
-		if tok.Content == "" {
-			continue
-		}
-		if !writeChatSSEContent(w, flusher, tok.Content) {
-			return
-		}
-	}
-	// Channel closed without an explicit Done token. Emit one so the
-	// client always sees a terminal frame and can re-enable input.
-	writeChatSSEDone(w, flusher)
-}
-
-func statusFromChatErr(err error) int {
-	switch {
-	case errors.Is(err, ErrChatNoAgent):
-		return http.StatusBadRequest
-	case errors.Is(err, ErrChatQueueFull):
-		return http.StatusTooManyRequests
-	case errors.Is(err, ErrChatUnavailable):
-		return http.StatusServiceUnavailable
-	default:
-		return http.StatusInternalServerError
-	}
-}
-
 func writeChatJSONError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -262,46 +152,6 @@ func writeChatJSONError(w http.ResponseWriter, status int, msg string) {
 
 func chatTextSSEData(text string) string {
 	return sseData(html.EscapeString(text))
-}
-
-// writeChatSSEContent emits a single SSE data frame with plain-text
-// content. No JSON wrapping — the browser inserts the text directly.
-func writeChatSSEContent(w http.ResponseWriter, flusher http.Flusher, content string) bool {
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", chatTextSSEData(content)); err != nil {
-		return false
-	}
-	flusher.Flush()
-	return true
-}
-
-// writeChatSSEDone emits a named event signalling the stream is complete.
-func writeChatSSEDone(w http.ResponseWriter, flusher http.Flusher) {
-	_, _ = fmt.Fprint(w, "event: chat-done\ndata: \n\n")
-	flusher.Flush()
-}
-
-// writeChatSSEError emits a named event carrying an error message.
-func writeChatSSEError(w http.ResponseWriter, flusher http.Flusher, msg string) bool {
-	if _, err := fmt.Fprintf(w, "event: chat-error\ndata: %s\n\n", chatTextSSEData(msg)); err != nil {
-		return false
-	}
-	flusher.Flush()
-	return true
-}
-
-// writeChatSSEEvent is writeChatSSE with an explicit event: name. Used
-// to tag the session-id frame; JSON is kept here since the session id
-// is a small structured payload.
-func writeChatSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, payload map[string]any) bool {
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return false
-	}
-	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil {
-		return false
-	}
-	flusher.Flush()
-	return true
 }
 
 // chatSendView is the template data for the chat-send-fragment partial.
