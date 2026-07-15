@@ -57,6 +57,8 @@ const (
 	EvtApproval       = "approval"
 )
 
+const defaultApprovalTimeout = 5 * time.Minute
+
 // ErrApprovalTimeout is returned when the caller does not apply an
 // approval decision within the allowed window.
 var ErrApprovalTimeout = errors.New("agentloop: approval timeout")
@@ -76,6 +78,8 @@ type Engine struct {
 	loopCfg  config.LoopConfig
 	toolCtx  tools.Context
 	metrics  MetricsRecorder
+
+	approvalTimeout time.Duration
 
 	// evl is the optional M7 permission evaluator. When nil, no
 	// approval checks are performed (all tools dispatch immediately).
@@ -100,10 +104,11 @@ func NewEngine(
 	toolCtx tools.Context,
 ) *Engine {
 	return &Engine{
-		infer:    infer,
-		registry: registry,
-		loopCfg:  loopCfg,
-		toolCtx:  toolCtx,
+		infer:           infer,
+		registry:        registry,
+		loopCfg:         loopCfg,
+		toolCtx:         toolCtx,
+		approvalTimeout: defaultApprovalTimeout,
 	}
 }
 
@@ -117,6 +122,16 @@ func (e *Engine) WithApprovals(evl *approvals.Evaluator) *Engine {
 // WithMetrics installs optional loop/tool metrics recording. Call before Run().
 func (e *Engine) WithMetrics(rec MetricsRecorder) *Engine {
 	e.metrics = rec
+	return e
+}
+
+// WithApprovalTimeout sets how long the loop waits for approval event delivery
+// and a user decision. Non-positive values restore the default.
+func (e *Engine) WithApprovalTimeout(d time.Duration) *Engine {
+	if d <= 0 {
+		d = defaultApprovalTimeout
+	}
+	e.approvalTimeout = d
 	return e
 }
 
@@ -401,20 +416,33 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 		e.pendingMu.Unlock()
 	}()
 
-	// Emit approval-needed event.
-	e.emit(evch, Event{
+	timeout := e.approvalTimeout
+	if timeout <= 0 {
+		timeout = defaultApprovalTimeout
+	}
+
+	// Emit approval-needed event. This event is a state transition: if it is
+	// dropped, the caller cannot render an approval card and the loop cannot
+	// make progress. Wait for delivery, but still bound the wait.
+	if err := emitApprovalNeeded(ctx, evch, Event{
 		Turn:       turn,
 		Type:       EvtApprovalNeeded,
 		ToolID:     toolID,
 		ToolArgs:   jsonString(args),
 		ApprovalID: approvalID,
 		Content:    fmt.Sprintf("%s requires approval (%s)", toolID, src),
-	})
+	}, timeout); err != nil {
+		return approvals.Denied, err
+	}
 
 	// Wait for user decision with timeout.
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return approvals.Denied, ErrCancelled
+	case <-timer.C:
+		return approvals.Denied, ErrApprovalTimeout
 	case resp := <-ch:
 		slog.Debug("approval resolved", "tool", toolID, "id", approvalID, "decision", resp.Decision, "remember", resp.Remember)
 		if resp.Decision == approvals.Denied {
@@ -445,6 +473,18 @@ func jsonString(v any) string {
 	return string(b)
 }
 
+func emitApprovalNeeded(ctx context.Context, evch chan<- Event, ev Event, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case evch <- ev:
+		return nil
+	case <-ctx.Done():
+		return ErrCancelled
+	case <-timer.C:
+		return ErrApprovalTimeout
+	}
+}
 func (e *Engine) emit(evch chan<- Event, ev Event) {
 	select {
 	case evch <- ev:
