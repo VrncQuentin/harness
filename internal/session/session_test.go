@@ -115,7 +115,7 @@ func newTestManager(t *testing.T, fi *fakeInference) (*Manager, *memory.DirReade
 	dir, repo := initRepo(t)
 	reader := memory.NewDirReader(dir)
 	metricsRec := &fakeMetrics{}
-	mgr := NewManager(ManagerDeps{
+	mgr, err := NewManager(ManagerDeps{
 		Repo:               repo,
 		Writer:             reader,
 		Reader:             reader,
@@ -124,9 +124,21 @@ func newTestManager(t *testing.T, fi *fakeInference) (*Manager, *memory.DirReade
 		SummarizerPrompt:   func() string { return "test prompt" },
 		ResolveAbsRepoPath: dir,
 	}, project.GlobalSlug)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
 	return mgr, reader, dir, metricsRec
 }
 
+func TestNewManagerRequiresDependencies(t *testing.T) {
+	_, err := NewManager(ManagerDeps{}, project.GlobalSlug)
+	if err == nil {
+		t.Fatal("expected missing dependency error")
+	}
+	if !strings.Contains(err.Error(), "ManagerDeps.Repo") {
+		t.Fatalf("NewManager error = %v, want missing repo", err)
+	}
+}
 func TestManager_StartMintsValidID(t *testing.T) {
 	mgr, _, _, _ := newTestManager(t, newFakeInference(summaryTokens("ok")))
 	s := mgr.Start("coder")

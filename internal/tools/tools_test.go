@@ -104,20 +104,21 @@ func TestFileList_OutsideSandbox(t *testing.T) {
 	}
 }
 
-func TestRegistry_DuplicatePanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Fatal("expected panic on duplicate registration")
-		}
-	}()
+func TestRegistry_DuplicateReturnsError(t *testing.T) {
 	r := NewRegistry()
-	r.Register(&fileReadTool{})
-	r.Register(&fileReadTool{}) // should panic
+	if err := r.Register(&fileReadTool{}); err != nil {
+		t.Fatalf("Register first tool: %v", err)
+	}
+	if err := r.Register(&fileReadTool{}); !errors.Is(err, ErrDuplicateTool) {
+		t.Fatalf("Register duplicate error = %v, want ErrDuplicateTool", err)
+	}
 }
 
 func TestRegistry_ListAndGet(t *testing.T) {
 	r := NewRegistry()
-	RegisterBuiltins(r)
+	if err := RegisterBuiltins(r); err != nil {
+		t.Fatalf("RegisterBuiltins: %v", err)
+	}
 	all := r.List()
 	if len(all) != 5 {
 		t.Fatalf("expected 5 tools, got %d", len(all))
@@ -131,7 +132,9 @@ func TestRegistry_ListAndGet(t *testing.T) {
 
 func TestDestructiveToolsRegisteredButDisabledByDefault(t *testing.T) {
 	r := NewRegistry()
-	RegisterBuiltins(r)
+	if err := RegisterBuiltins(r); err != nil {
+		t.Fatalf("RegisterBuiltins: %v", err)
+	}
 
 	// Destructive tools exist in the registry.
 	for _, id := range []string{"file_write", "shell_exec"} {
