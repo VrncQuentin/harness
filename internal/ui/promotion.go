@@ -23,20 +23,11 @@ type DedupChecker interface {
 }
 
 func (s *Server) SetCommitter(c Committer) {
-	s.updateDeps(func(d *uiDeps) {
-		d.committer = c
-		if d.globalCommitter == nil {
-			d.globalCommitter = c
-		}
-	})
+	s.updateDeps(func(d *uiDeps) { d.committer = c })
 }
 
 func (s *Server) getCommitter() Committer {
 	return s.depsSnapshot().committer
-}
-
-func (s *Server) getGlobalCommitter() Committer {
-	return s.depsSnapshot().globalCommitter
 }
 
 func (s *Server) SetDedupChecker(dc DedupChecker) {
@@ -55,7 +46,7 @@ func (s *Server) getPromotionDedupThreshold() float64 {
 	return s.depsSnapshot().promotionDedupThreshold
 }
 
-// handlePromoteFact appends text to facts.md in the global memory repo and commits it.
+// handlePromoteFact appends text to facts.md in the active project memory repo and commits it.
 // When a DedupChecker and non-zero threshold are available, the handler
 // checks for near-duplicate facts before writing and redirects with a
 // dedup-blocked flash message if one is found.
@@ -64,14 +55,14 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	store := s.globalMemoryStore()
+	store := s.memoryStore()
 	if store == nil {
-		http.Error(w, "global memory store not available", http.StatusServiceUnavailable)
+		http.Error(w, "memory store not available", http.StatusServiceUnavailable)
 		return
 	}
-	c := s.getGlobalCommitter()
+	c := s.getCommitter()
 	if c == nil {
-		http.Error(w, "global committer not available", http.StatusServiceUnavailable)
+		http.Error(w, "committer not available", http.StatusServiceUnavailable)
 		return
 	}
 	text := strings.TrimSpace(r.FormValue("text"))

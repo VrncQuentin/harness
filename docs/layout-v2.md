@@ -108,21 +108,20 @@ This keeps multi-repo projects unified without requiring runtime memory to be wr
 
 ## Prompt Layering
 
-The prompt assembler resolves layers from the global project repo and the active project memory repo:
+The prompt assembler resolves prompt memory from the active project repo. The global project is only special as the default active project and as the fallback library for agent definition files:
 
 ```text
-1. projects/global/rules.md                    always injected, never trimmed
-2. projects/global/user.md                     always injected, never trimmed
-3. projects/<active>/rules.md                  skipped when active == global
-4. resolved agent persona.md                   active project overrides global per file
-5. resolved agent rules.md                     active project overrides global per file
-6. projects/global/facts.md                    keep lean
-7. resolved agent notes.md                     keep lean
-8. active project retrieved episodes           project-scoped by default
-9. conversation turns
+1. projects/<active>/rules.md                  never trimmed
+2. projects/<active>/user.md                   never trimmed
+3. resolved agent persona.md                   active project overrides global library
+4. resolved agent rules.md                     active project overrides global library
+5. projects/<active>/facts.md                  keep lean
+6. projects/<active>/agents/<name>/notes.md    keep lean, no global fallback
+7. active project retrieved episodes           project-scoped by default
+8. conversation turns
 ```
 
-Agent resolution is per file:
+Agent definition resolution is per file for `persona.md` and `rules.md`:
 
 ```text
 projects/<active>/agents/<name>/<file>
@@ -193,8 +192,8 @@ If preserving the single old repo history across split repos is impractical, the
 - GitHub backup flow is absent in layout-v2; project creation and repo management stay local.
 - Starting the harness never depends on cwd and never activates a project based on the launch directory.
 - One project with two attached code repos writes sessions and episodes to one project memory repo and creates separate index entries for each attached repo.
-- Agent resolution falls back from `projects/<active>/agents/<name>/<file>` to `projects/global/agents/<name>/<file>` per file.
-- Promoting a global fact appends to `projects/global/facts.md` and commits in the global repo.
+- Agent persona/rules resolution falls back from `projects/<active>/agents/<name>/<file>` to `projects/global/agents/<name>/<file>` per file; notes do not fall back.
+- Promoting a fact appends to the active project `facts.md` and commits in the active project repo.
 - Completing a session in a user project writes and commits `episodes/<agent>/<timestamp>.md` in that project's memory repo.
 - Pipeline discovery reads `.hp` files from attached code repos, not from project memory repos.
 - Pipeline run artifacts are committed under `artifacts/<run>/` in the active project memory repo.

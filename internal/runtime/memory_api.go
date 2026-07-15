@@ -79,7 +79,6 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		Index:    epIdx,
 	}
 	svcDeps.MemoryStore = rt.activeMem
-	svcDeps.GlobalMemoryStore = rt.globalMem
 	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: rt.agentReg, globalMem: rt.globalMem, activeMem: rt.activeMem, getProjectSlug: rt.getActiveProjectSlug}
 
 	// Session manager is layered on top of the validated memory repo.
@@ -92,16 +91,12 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		svcDeps.SessionStore = sessionAdapter
 	}
 
-	// Wire committers for M6 memory promotion and active-project notes.
+	// Wire active-project fact/note promotion and deduplication.
 	if rt.gitRepo != nil {
 		svcDeps.Committer = rt.gitRepo
 	}
-	if rt.globalGitRepo != nil {
-		svcDeps.GlobalCommitter = rt.globalGitRepo
-	}
-	// Wire dedup checker for M6 fact deduplication.
 	svcDeps.Dedup = &memoryops.DedupChecker{
-		Mem:      rt.globalMem,
+		Mem:      rt.activeMem,
 		Embedder: embedClient,
 	}
 	svcDeps.PromotionDedupThreshold = rt.cfg.Prompt.PromotionDedupThreshold
@@ -245,16 +240,6 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		return nil, nil
 	}
 	rt.gitRepo = repo
-	if roots.globalRoot == roots.activeRoot {
-		rt.globalGitRepo = repo
-	} else {
-		globalRepo, gerr := gitw.Open(roots.globalRoot)
-		if gerr != nil {
-			uiServer.AddStartupError(fmt.Errorf("global memory repo: %w", gerr))
-			return nil, nil
-		}
-		rt.globalGitRepo = globalRepo
-	}
 
 	var rec session.MetricsRecorder
 	if metricsStore != nil {
@@ -324,7 +309,6 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	rt.agentReg = nil
 	rt.assembler = nil
 	rt.gitRepo = nil
-	rt.globalGitRepo = nil
 	rt.setSessionManager(nil)
 	uiServer.SetServiceDeps(ui.ServiceDeps{})
 	rt.taskRunner = nil
