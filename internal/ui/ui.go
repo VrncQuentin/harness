@@ -519,6 +519,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/task/events", s.handleTaskEvents)
 	mux.HandleFunc("/task/send", s.handleTaskSend)
 	mux.HandleFunc("/task/approval", s.handleTaskApproval)
+	mux.HandleFunc("/task/cancel", s.handleTaskCancel)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)

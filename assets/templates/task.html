@@ -23,6 +23,10 @@
       <textarea id="task-input" name="message" class="chat-input" rows="3" placeholder="Ask the harness to do something... (e.g. read file.txt and summarize it)" required></textarea>
       <div class="chat-input-actions">
         <button type="submit" class="btn" id="task-send">Send</button>
+        <button type="button" class="btn btn-danger btn-sm" id="task-cancel"
+          hx-post="/task/cancel"
+          hx-include="#task-session-input"
+          hx-swap="none">Cancel</button>
         <a href="/task" class="btn btn-danger btn-sm" id="task-clear">Clear</a>
       </div>
     </form>
