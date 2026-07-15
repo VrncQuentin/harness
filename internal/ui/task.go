@@ -32,15 +32,11 @@ var (
 // SetTaskRunner installs the runner used by /task/send. Safe to leave
 // unset; the page then renders a "not ready" state.
 func (s *Server) SetTaskRunner(r TaskRunner) {
-	s.taskRunnerMu.Lock()
-	s.taskRunner = r
-	s.taskRunnerMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.taskRunner = r })
 }
 
 func (s *Server) getTaskRunner() TaskRunner {
-	s.taskRunnerMu.RLock()
-	defer s.taskRunnerMu.RUnlock()
-	return s.taskRunner
+	return s.depsSnapshot().taskRunner
 }
 
 func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {

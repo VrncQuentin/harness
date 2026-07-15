@@ -17,6 +17,28 @@ import (
 	"github.com/vrnc/harness/internal/metrics"
 )
 
+// ServiceDeps is the set of UI-facing adapters produced by the runtime memory
+// and API service graph. SetServiceDeps publishes these as one immutable
+// snapshot so handlers never observe a half-rebuilt mix of old and new
+// adapters while config/project changes are being applied.
+type ServiceDeps struct {
+	MemoryRepoPath string
+
+	AgentRegistry AgentRegistry
+	MemoryStore   MemoryStore
+	SessionStore  SessionStore
+
+	Committer Committer
+	Dedup     DedupChecker
+
+	PromotionDedupThreshold float64
+	RetrievalScorer         RetrievalScorer
+	IndexRebuilder          IndexRebuilder
+
+	ChatRunner ChatRunner
+	TaskRunner TaskRunner
+}
+
 // RetryFunc is called when the user clicks Retry on the status page or saves
 // a new config. The implementation (in main) is responsible for clearing and
 // re-adding startup errors via the Server's methods, and returns what the
@@ -81,6 +103,63 @@ func (s *State) snapshot() stateSnapshot {
 	return s.data
 }
 
+type uiDeps struct {
+	retry RetryFunc
+
+	llamaRestart func()
+	embedRestart func()
+
+	store        config.Store
+	metricsStore metrics.Store
+	projectStore ProjectStore
+
+	agentReg AgentRegistry
+	binDir   string
+
+	// memRepo is the active layout-v2 project memory repo path. Empty means
+	// project memory is not available yet, in which case the status page
+	// suppresses the layout-scaffolding prompt entirely.
+	memRepo  string
+	memStore MemoryStore
+
+	committer Committer
+	dedup     DedupChecker
+
+	promotionDedupThreshold float64
+	scorer                  RetrievalScorer
+	rebuilder               IndexRebuilder
+
+	chatRunner   ChatRunner
+	taskRunner   TaskRunner
+	sessionStore SessionStore
+
+	projectNavSlugs []string
+	projectNavNames map[string]string
+
+	quit func()
+}
+
+func (d *uiDeps) copy() uiDeps {
+	if d == nil {
+		return uiDeps{}
+	}
+	next := *d
+	next.projectNavSlugs = append([]string(nil), d.projectNavSlugs...)
+	next.projectNavNames = copyStringMap(d.projectNavNames)
+	return next
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 // Server is the UI HTTP server.
 type Server struct {
 	port  int
@@ -115,67 +194,9 @@ type Server struct {
 	// fetches stylesheets the listener may already be gone.
 	shutdownTmpl *template.Template
 
-	retryMu sync.RWMutex
-	retry   RetryFunc
-
-	// procRestartMu guards the manual-restart callbacks wired by main
-	// once the process managers exist. The Restart button on a proc card
-	// POSTs to /procs/{name}/restart and we invoke the matching callback.
-	procRestartMu sync.RWMutex
-	llamaRestart  func()
-	embedRestart  func()
-
-	storeMu sync.RWMutex
-	store   config.Store
-
-	metricsStoreMu sync.RWMutex
-	metricsStore   metrics.Store
-
-	agentRegMu sync.RWMutex
-	agentReg   AgentRegistry
-
-	binDirMu sync.RWMutex
-	binDir   string
-
-	// memRepo is the active layout-v2 project memory repo path. Empty means
-	// project memory is not available yet, in which case the status page
-	// suppresses the layout-scaffolding prompt entirely.
-	memRepoMu sync.RWMutex
-	memRepo   string
-
-	memStoreMu sync.RWMutex
-	memStore   MemoryStore
-
-	committerMu   sync.RWMutex
-	committerData Committer
-
-	dedupMu   sync.RWMutex
-	dedupData DedupChecker
-
-	promotionDedupThresholdMu sync.RWMutex
-	promotionDedupThreshold   float64
-
-	scorerMu   sync.RWMutex
-	scorerData RetrievalScorer
-
-	rebuilderMu   sync.RWMutex
-	rebuilderData IndexRebuilder
-
-	chatRunnerMu sync.RWMutex
-	chatRunner   ChatRunner
-
-	taskRunnerMu sync.RWMutex
-	taskRunner   TaskRunner
-
-	sessionStoreMu sync.RWMutex
-	sessionStore   SessionStore
-
-	projectStoreMu sync.RWMutex
-	projectStore   ProjectStore
-
-	projectNavMu    sync.RWMutex
-	projectNavSlugs []string
-	projectNavNames map[string]string
+	// deps is swapped whole so handlers never observe a half-rebuilt mix of
+	// adapters while the runtime tears down and rewires memory/API services.
+	deps atomic.Pointer[uiDeps]
 
 	logRing   atomic.Pointer[logbuf.Ring]
 	llamaRing atomic.Pointer[logbuf.Ring]
@@ -184,8 +205,6 @@ type Server struct {
 	// quit is the callback that tears down the harness when the user
 	// confirms the shutdown dialog. Wired by main to tray.Quit so the
 	// /shutdown endpoint and the tray menu converge on one exit path.
-	quitMu   sync.RWMutex
-	quit     func()
 	quitOnce sync.Once
 }
 
@@ -259,6 +278,20 @@ func NewServer(port int) *Server {
 	return s
 }
 
+func (s *Server) depsSnapshot() uiDeps {
+	return s.deps.Load().copy()
+}
+
+func (s *Server) updateDeps(mut func(*uiDeps)) {
+	for {
+		old := s.deps.Load()
+		next := old.copy()
+		mut(&next)
+		if s.deps.CompareAndSwap(old, &next) {
+			return
+		}
+	}
+}
 func parsePageTemplates(pages map[string][]string) map[string]*template.Template {
 	out := make(map[string]*template.Template, len(pages))
 	for name, paths := range pages {
@@ -267,18 +300,33 @@ func parsePageTemplates(pages map[string][]string) map[string]*template.Template
 	return out
 }
 
+// SetServiceDeps publishes the runtime-owned UI adapters as one snapshot. Pass
+// a zero value to detach them while the memory/API service graph is stopped or
+// invalid.
+func (s *Server) SetServiceDeps(deps ServiceDeps) {
+	s.updateDeps(func(d *uiDeps) {
+		d.memRepo = deps.MemoryRepoPath
+		d.agentReg = deps.AgentRegistry
+		d.memStore = deps.MemoryStore
+		d.sessionStore = deps.SessionStore
+		d.committer = deps.Committer
+		d.dedup = deps.Dedup
+		d.promotionDedupThreshold = deps.PromotionDedupThreshold
+		d.scorer = deps.RetrievalScorer
+		d.rebuilder = deps.IndexRebuilder
+		d.chatRunner = deps.ChatRunner
+		d.taskRunner = deps.TaskRunner
+	})
+}
+
 // SetRetry installs the callback invoked on /retry and after a successful
 // config save. Safe to call at any time; calls before it is set are no-ops.
 func (s *Server) SetRetry(fn RetryFunc) {
-	s.retryMu.Lock()
-	s.retry = fn
-	s.retryMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.retry = fn })
 }
 
 func (s *Server) callRetry() ApplyResult {
-	s.retryMu.RLock()
-	fn := s.retry
-	s.retryMu.RUnlock()
+	fn := s.depsSnapshot().retry
 	if fn == nil {
 		return ApplyResult{}
 	}
@@ -286,29 +334,26 @@ func (s *Server) callRetry() ApplyResult {
 }
 
 func (s *Server) hasRetry() bool {
-	s.retryMu.RLock()
-	defer s.retryMu.RUnlock()
-	return s.retry != nil
+	return s.depsSnapshot().retry != nil
 }
 
 // SetProcRestarts installs the callbacks used by the /procs/{name}/restart
 // endpoints. Either may be nil while the matching manager is not yet up; the
 // handler treats nil as a no-op and still redirects the user back to /.
 func (s *Server) SetProcRestarts(llama, embed func()) {
-	s.procRestartMu.Lock()
-	s.llamaRestart = llama
-	s.embedRestart = embed
-	s.procRestartMu.Unlock()
+	s.updateDeps(func(d *uiDeps) {
+		d.llamaRestart = llama
+		d.embedRestart = embed
+	})
 }
 
 func (s *Server) getProcRestart(name string) func() {
-	s.procRestartMu.RLock()
-	defer s.procRestartMu.RUnlock()
+	deps := s.depsSnapshot()
 	switch name {
 	case "llama":
-		return s.llamaRestart
+		return deps.llamaRestart
 	case "embed":
-		return s.embedRestart
+		return deps.embedRestart
 	default:
 		return nil
 	}
@@ -317,44 +362,44 @@ func (s *Server) getProcRestart(name string) func() {
 // SetConfigStore installs the config store used by the /config page. If nil,
 // the config page renders an error instead of a form.
 func (s *Server) SetConfigStore(store config.Store) {
-	s.storeMu.Lock()
-	s.store = store
-	s.storeMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.store = store })
 }
 
 func (s *Server) configStore() config.Store {
-	s.storeMu.RLock()
-	defer s.storeMu.RUnlock()
-	return s.store
+	return s.depsSnapshot().store
 }
 
 // SetMetricsStore installs the metrics store used by the Prometheus endpoint.
 func (s *Server) SetMetricsStore(store metrics.Store) {
-	s.metricsStoreMu.Lock()
-	s.metricsStore = store
-	s.metricsStoreMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.metricsStore = store })
 }
 
 func (s *Server) getMetricsStore() metrics.Store {
-	s.metricsStoreMu.RLock()
-	defer s.metricsStoreMu.RUnlock()
-	return s.metricsStore
+	return s.depsSnapshot().metricsStore
 }
 
 func (s *Server) SetProjectStore(store ProjectStore) {
-	s.projectStoreMu.Lock()
-	s.projectStore = store
-	s.projectStoreMu.Unlock()
-	s.refreshProjectNav()
+	slugs, names := projectNavData(store)
+	s.updateDeps(func(d *uiDeps) {
+		d.projectStore = store
+		d.projectNavSlugs = slugs
+		d.projectNavNames = names
+	})
 }
 
 func (s *Server) getProjectStore() ProjectStore {
-	s.projectStoreMu.RLock()
-	defer s.projectStoreMu.RUnlock()
-	return s.projectStore
+	return s.depsSnapshot().projectStore
 }
 func (s *Server) refreshProjectNav() {
 	store := s.getProjectStore()
+	slugs, names := projectNavData(store)
+	s.updateDeps(func(d *uiDeps) {
+		d.projectNavSlugs = slugs
+		d.projectNavNames = names
+	})
+}
+
+func projectNavData(store ProjectStore) ([]string, map[string]string) {
 	var slugs []string
 	names := make(map[string]string)
 	if store != nil {
@@ -367,66 +412,44 @@ func (s *Server) refreshProjectNav() {
 			}
 		}
 	}
-	s.projectNavMu.Lock()
-	s.projectNavSlugs = slugs
-	s.projectNavNames = names
-	s.projectNavMu.Unlock()
-}
-
-func (s *Server) projectNavSnapshot() ([]string, map[string]string) {
-	s.projectNavMu.RLock()
-	defer s.projectNavMu.RUnlock()
-	slugs := append([]string(nil), s.projectNavSlugs...)
-	names := make(map[string]string, len(s.projectNavNames))
-	for slug, name := range s.projectNavNames {
-		names[slug] = name
-	}
 	return slugs, names
+}
+func (s *Server) projectNavSnapshot() ([]string, map[string]string) {
+	deps := s.depsSnapshot()
+	return deps.projectNavSlugs, deps.projectNavNames
 }
 
 // SetBinDir records the directory containing the running harness binary. It is
 // used by the /config page to suggest detected llama-server and .gguf paths.
 // Safe to leave unset; detection then returns no suggestions.
 func (s *Server) SetBinDir(dir string) {
-	s.binDirMu.Lock()
-	s.binDir = dir
-	s.binDirMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.binDir = dir })
 }
 
 func (s *Server) getBinDir() string {
-	s.binDirMu.RLock()
-	defer s.binDirMu.RUnlock()
-	return s.binDir
+	return s.depsSnapshot().binDir
 }
 
 // SetMemoryRepoPath records the active layout-v2 project memory repo path.
 // The status page uses it to detect missing canonical project-repo entries
 // and surface a prompt to scaffold what is missing. Pass "" to clear it.
 func (s *Server) SetMemoryRepoPath(path string) {
-	s.memRepoMu.Lock()
-	s.memRepo = path
-	s.memRepoMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.memRepo = path })
 }
 
 func (s *Server) getMemoryRepoPath() string {
-	s.memRepoMu.RLock()
-	defer s.memRepoMu.RUnlock()
-	return s.memRepo
+	return s.depsSnapshot().memRepo
 }
 
 // SetQuit installs the callback invoked when the user confirms the shutdown
 // dialog. Safe to call before or after Start; calls before it is set return
 // 503 from /shutdown so the user sees a clear failure rather than a no-op.
 func (s *Server) SetQuit(fn func()) {
-	s.quitMu.Lock()
-	s.quit = fn
-	s.quitMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.quit = fn })
 }
 
 func (s *Server) getQuit() func() {
-	s.quitMu.RLock()
-	defer s.quitMu.RUnlock()
-	return s.quit
+	return s.depsSnapshot().quit
 }
 
 // SetLogRing wires the harness log ring into the UI so the status page can

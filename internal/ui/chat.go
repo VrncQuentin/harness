@@ -58,15 +58,11 @@ var (
 // unset; the page then renders a "not configured" state instead of a
 // chat input.
 func (s *Server) SetChatRunner(r ChatRunner) {
-	s.chatRunnerMu.Lock()
-	s.chatRunner = r
-	s.chatRunnerMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.chatRunner = r })
 }
 
 func (s *Server) getChatRunner() ChatRunner {
-	s.chatRunnerMu.RLock()
-	defer s.chatRunnerMu.RUnlock()
-	return s.chatRunner
+	return s.depsSnapshot().chatRunner
 }
 
 // chatView is the template context for the /chat page.
