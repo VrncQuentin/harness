@@ -197,64 +197,74 @@ func NewServer(port int) *Server {
 		state:     &State{data: stateSnapshot{StartTime: time.Now()}},
 		serverCtx: context.Background(),
 	}
-	s.statusTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/layout.html",
-		"templates/status.html",
-	))
-	s.configTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/layout.html",
-		"templates/config.html",
-	))
-	s.agentsTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/layout.html",
-		"templates/agents.html",
-	))
-	s.chatTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/layout.html",
-		"templates/chat.html",
-	))
-	s.memoryTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/layout.html",
-		"templates/memory.html",
-	))
-	s.memoryEditTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/layout.html",
-		"templates/memory_edit.html",
-	))
-	s.memoryEpisodesTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/layout.html",
-		"templates/memory_episodes.html",
-	))
-	s.memoryEpisodeViewTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/layout.html",
-		"templates/memory_episode_view.html",
-	))
-	s.projectsTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/layout.html",
-		"templates/projects.html",
-		"templates/projects_create_form.html",
-		"templates/projects_edit_form.html",
-		"templates/projects_table.html",
-	))
-	s.taskTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/layout.html",
-		"templates/task.html",
-	))
-	s.shutdownTmpl = template.Must(template.ParseFS(
-		assets.TemplateFS,
-		"templates/shutdown.html",
-	))
+	templates := parsePageTemplates(map[string][]string{
+		"status": {
+			"templates/layout.html",
+			"templates/status.html",
+		},
+		"config": {
+			"templates/layout.html",
+			"templates/config.html",
+		},
+		"agents": {
+			"templates/layout.html",
+			"templates/agents.html",
+		},
+		"chat": {
+			"templates/layout.html",
+			"templates/chat.html",
+		},
+		"memory": {
+			"templates/layout.html",
+			"templates/memory.html",
+		},
+		"memory_edit": {
+			"templates/layout.html",
+			"templates/memory_edit.html",
+		},
+		"memory_episodes": {
+			"templates/layout.html",
+			"templates/memory_episodes.html",
+		},
+		"memory_episode_view": {
+			"templates/layout.html",
+			"templates/memory_episode_view.html",
+		},
+		"projects": {
+			"templates/layout.html",
+			"templates/projects.html",
+			"templates/projects_create_form.html",
+			"templates/projects_edit_form.html",
+			"templates/projects_table.html",
+		},
+		"task": {
+			"templates/layout.html",
+			"templates/task.html",
+		},
+		"shutdown": {
+			"templates/shutdown.html",
+		},
+	})
+	s.statusTmpl = templates["status"]
+	s.configTmpl = templates["config"]
+	s.agentsTmpl = templates["agents"]
+	s.chatTmpl = templates["chat"]
+	s.memoryTmpl = templates["memory"]
+	s.memoryEditTmpl = templates["memory_edit"]
+	s.memoryEpisodesTmpl = templates["memory_episodes"]
+	s.memoryEpisodeViewTmpl = templates["memory_episode_view"]
+	s.projectsTmpl = templates["projects"]
+	s.taskTmpl = templates["task"]
+	s.shutdownTmpl = templates["shutdown"]
 	return s
+}
+
+func parsePageTemplates(pages map[string][]string) map[string]*template.Template {
+	out := make(map[string]*template.Template, len(pages))
+	for name, paths := range pages {
+		out[name] = template.Must(template.ParseFS(assets.TemplateFS, paths...))
+	}
+	return out
 }
 
 // SetRetry installs the callback invoked on /retry and after a successful
