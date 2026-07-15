@@ -4,7 +4,6 @@ go 1.25
 
 require (
 	fyne.io/systray v1.11.0
-	github.com/fsnotify/fsnotify v1.9.0
 	github.com/go-git/go-git/v5 v5.18.0
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/golang-migrate/migrate/v4 v4.19.1

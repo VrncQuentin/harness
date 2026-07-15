@@ -54,7 +54,6 @@ type Runtime struct {
 	memReader     memory.Reader
 	agentReg      *agent.DiskRegistry
 	assembler     *prompt.DiskAssembler
-	hotReload     *prompt.HotReload
 	apiServer     *api.Server
 	gitRepo       *gitw.Repo
 	globalGitRepo *gitw.Repo
