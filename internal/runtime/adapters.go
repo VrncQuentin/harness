@@ -544,14 +544,15 @@ type taskRunnerAdapter struct {
 	registry *tools.Registry
 	asm      *apiAssemblerAdapter
 	q        *queue.Queue
-	// evl is the M7 permission evaluator. When nil, no approval checks are
-	// performed and all enabled tools dispatch immediately.
-	evl       *approvals.Evaluator
-	metrics   agentloop.MetricsRecorder
-	enginesMu sync.Mutex
-	engines   map[string]*agentloop.Engine // sessionID → engine
-	cancels   map[string]context.CancelFunc
-	dones     map[string]chan struct{}
+	// approvalLayers seed a fresh M7 permission evaluator for each task engine.
+	// The evaluator session layer is mutable, so sharing an evaluator would leak
+	// "always" approvals across task sessions.
+	approvalLayers []approvals.Layer
+	metrics        agentloop.MetricsRecorder
+	enginesMu      sync.Mutex
+	engines        map[string]*agentloop.Engine // sessionID → engine
+	cancels        map[string]context.CancelFunc
+	dones          map[string]chan struct{}
 }
 
 // queuedInferClient wraps a Queue so the agent loop routes through the
@@ -586,6 +587,14 @@ func (c *queuedInferClient) Health(ctx context.Context) error {
 		return c.raw.Health(ctx)
 	}
 	return nil
+}
+
+func (ad *taskRunnerAdapter) newApprovalEvaluator() *approvals.Evaluator {
+	if len(ad.approvalLayers) == 0 {
+		return nil
+	}
+	layers := append([]approvals.Layer(nil), ad.approvalLayers...)
+	return approvals.NewEvaluator(layers...)
 }
 
 func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sessionID string, conversation []ui.ChatMessage) (string, <-chan agentloop.Event, error) {
@@ -673,8 +682,8 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	if ad.metrics != nil {
 		engine.WithMetrics(ad.metrics)
 	}
-	if ad.evl != nil {
-		engine.WithApprovals(ad.evl)
+	if evl := ad.newApprovalEvaluator(); evl != nil {
+		engine.WithApprovals(evl)
 	}
 
 	// Register engine so approval decisions can be routed back.

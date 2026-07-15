@@ -182,8 +182,8 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	}
 	rt.loopRegistry = registry
 
-	// Build the M7 permission evaluator with layered rules:
-	// agent defaults → user config → session approvals.
+	// Build the M7 permission base layers. Each task engine gets a fresh
+	// evaluator so mutable session approval rules stay scoped to that session.
 	loopCfg := rt.cfg.Loop
 	userLayer := approvals.Layer{Name: "user-config"}
 	if !loopCfg.FileWriteEnabled {
@@ -201,17 +201,19 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			ToolID: "web_search", Decision: approvals.Denied, Source: "user: web_search disabled in config",
 		})
 	}
+	approvalLayers := []approvals.Layer{approvals.DefaultLayer(), userLayer}
+
 	var loopMetrics agentloop.MetricsRecorder
 	if metricsStore != nil {
 		loopMetrics = metrics.NewRecorder(metricsStore)
 	}
 	taskAdapter := &taskRunnerAdapter{
-		rt:       rt,
-		registry: registry,
-		asm:      asmAdapter,
-		q:        rt.reqQueue,
-		evl:      approvals.NewEvaluator(approvals.DefaultLayer(), userLayer),
-		metrics:  loopMetrics,
+		rt:             rt,
+		registry:       registry,
+		asm:            asmAdapter,
+		q:              rt.reqQueue,
+		approvalLayers: approvalLayers,
+		metrics:        loopMetrics,
 	}
 	rt.taskRunner = taskAdapter
 	uiServer.SetTaskRunner(taskAdapter)
