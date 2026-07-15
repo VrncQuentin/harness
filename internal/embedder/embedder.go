@@ -101,6 +101,11 @@ func (c *implClient) Embed(ctx context.Context, chunks []string) ([][]float32, e
 			vectors[d.Index] = d.Embedding
 		}
 	}
+	for i, v := range vectors {
+		if len(v) == 0 {
+			return nil, fmt.Errorf("embedder: response missing embedding for input %d", i)
+		}
+	}
 	return vectors, nil
 }
 
