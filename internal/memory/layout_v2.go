@@ -145,9 +145,7 @@ func (r *LayoutV2Reader) Walk(relPath string) ([]Entry, error) {
 }
 
 func (r *LayoutV2Reader) listRootDirs() []string {
-	out := []string{"agents", "global", "projects"}
-	sort.Strings(out)
-	return out
+	return []string{"agents", "global", "projects"}
 }
 
 func (r *LayoutV2Reader) walkAll() ([]Entry, error) {
