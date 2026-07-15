@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
 	"strings"
 )
@@ -258,10 +259,14 @@ func writeChatJSONError(w http.ResponseWriter, status int, msg string) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
+func chatTextSSEData(text string) string {
+	return sseData(html.EscapeString(text))
+}
+
 // writeChatSSEContent emits a single SSE data frame with plain-text
 // content. No JSON wrapping — the browser inserts the text directly.
 func writeChatSSEContent(w http.ResponseWriter, flusher http.Flusher, content string) bool {
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", content); err != nil {
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", chatTextSSEData(content)); err != nil {
 		return false
 	}
 	flusher.Flush()
@@ -276,7 +281,7 @@ func writeChatSSEDone(w http.ResponseWriter, flusher http.Flusher) {
 
 // writeChatSSEError emits a named event carrying an error message.
 func writeChatSSEError(w http.ResponseWriter, flusher http.Flusher, msg string) bool {
-	if _, err := fmt.Fprintf(w, "event: chat-error\ndata: %s\n\n", msg); err != nil {
+	if _, err := fmt.Fprintf(w, "event: chat-error\ndata: %s\n\n", chatTextSSEData(msg)); err != nil {
 		return false
 	}
 	flusher.Flush()
@@ -388,7 +393,7 @@ func (s *Server) streamChatTokens(ctx context.Context, runner ChatRunner, agent,
 			return
 		}
 		if tok.Content != "" {
-			s.broadcastChatSSE(fmt.Sprintf("event: chat-token\ndata: %s\n\n", tok.Content))
+			s.broadcastChatSSE(fmt.Sprintf("event: chat-token\ndata: %s\n\n", chatTextSSEData(tok.Content)))
 		}
 	}
 	s.broadcastChatSSE("event: chat-done\ndata: \n\n")
