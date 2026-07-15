@@ -61,8 +61,7 @@ type FileWriter interface {
 	// WriteFile writes data to relPath, replacing any existing file
 	// at that path. The parent directory is created if missing.
 	// Implementations must publish the new content atomically so
-	// concurrent readers (e.g. the prompt hot-reload watcher) never
-	// observe a partial write.
+	// concurrent readers never observe a partial write.
 	WriteFile(relPath string, data []byte) error
 }
 
@@ -192,8 +191,8 @@ func (r *DirReader) MkdirAll(relPath string) error {
 }
 
 // WriteFile implements FileWriter. It writes via a temp file in the
-// same directory followed by os.Rename so the prompt hot-reload watcher
-// (fsnotify) never observes a partial write mid-flight.
+// same directory followed by os.Rename so readers never observe a partial
+// write mid-flight.
 func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)

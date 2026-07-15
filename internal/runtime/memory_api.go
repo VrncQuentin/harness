@@ -86,13 +86,6 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		uiServer.SetMemoryStore(nil)
 	}
 
-	hr, err := prompt.NewHotReloadLayoutV2(roots.globalRoot, roots.activeRoot, rt.cfg.Agent.Active, rt.cfg.Project.ActiveProjectSlug, slog.Default())
-	if err != nil {
-		uiServer.AddStartupError(fmt.Errorf("prompt hot-reload: %w", err))
-	} else {
-		rt.hotReload = hr
-	}
-
 	uiServer.SetAgentRegistry(&uiAgentRegistryAdapter{reg: rt.agentReg, mem: rt.memReader, getProjectSlug: rt.getActiveProjectSlug})
 
 	// Session manager is layered on top of the validated memory repo.
@@ -410,12 +403,6 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 		rt.apiServer.Stop()
 		rt.apiServer = nil
 	}
-	if rt.hotReload != nil {
-		if err := rt.hotReload.Close(); err != nil {
-			slog.Warn("prompt hot-reload close", "err", err)
-		}
-		rt.hotReload = nil
-	}
 	rt.memReader = nil
 	rt.agentReg = nil
 	rt.assembler = nil
@@ -458,7 +445,6 @@ func (rt *Runtime) getAssembler() *prompt.DiskAssembler {
 func (rt *Runtime) setActiveAgent(name string) error {
 	rt.mu.Lock()
 	store := rt.cfgStore
-	hr := rt.hotReload
 	rt.mu.Unlock()
 
 	if store == nil {
@@ -477,9 +463,6 @@ func (rt *Runtime) setActiveAgent(name string) error {
 	rt.cfg.Agent.Active = name
 	rt.mu.Unlock()
 
-	if hr != nil {
-		hr.SetActiveAgent(name)
-	}
 	return nil
 }
 
