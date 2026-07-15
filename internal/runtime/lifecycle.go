@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/vrnc/harness/internal/embedder"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/proc"
@@ -47,6 +48,27 @@ func (rt *Runtime) QueueStats() (int, int) {
 		return 0, 0
 	}
 	return q.Depth(), q.MaxDepth()
+}
+
+func (rt *Runtime) newInferenceClient() inference.Client {
+	return inference.NewClient(
+		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Model.Port),
+		httpclient.NewStreaming(),
+	)
+}
+
+func (rt *Runtime) ensureInferenceClient() inference.Client {
+	if rt.inferClient == nil {
+		rt.inferClient = rt.newInferenceClient()
+	}
+	return rt.inferClient
+}
+
+func (rt *Runtime) newEmbedderClient() embedder.Client {
+	return embedder.NewClient(
+		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
+		httpclient.NewStreaming(),
+	)
 }
 
 // RestartLlama restarts the current llama-server manager when one exists.
@@ -174,10 +196,7 @@ func (rt *Runtime) startServices(
 	})
 	go rt.embedMgr.Run(ctx)
 
-	inferClient := inference.NewClient(
-		fmt.Sprintf("http://127.0.0.1:%d", cfg.Model.Port),
-		httpclient.NewStreaming(),
-	)
+	inferClient := rt.newInferenceClient()
 	rt.inferClient = inferClient
 	walPath := cfg.Queue.WALPath
 	if walPath == "" {
