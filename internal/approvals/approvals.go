@@ -190,8 +190,12 @@ func ClassifyShellCmd(command string) bool {
 
 	// Destructive patterns that should always require approval.
 	destructive := []string{
-		"rm ", "rm -", "rmdir", "rmdir /s", "rd /s", "del ", "erase ",
-		"remove-item", "ri ", "remove-item ", "move-item ", "copy-item -recurse",
+		"rm ", "rm -", "rmdir", "rmdir ", "rmdir /s", "rd ", "rd /s", "del ", "erase ",
+		"remove-item", "remove-item ", "ri ", "move-item ", "copy-item -recurse",
+		"clear-content", "clear-content ", "clc ",
+		"format-volume", "format-volume ", "clear-disk", "clear-disk ",
+		"remove-itemproperty", "remove-itemproperty ", "rp ",
+		"stop-computer", "stop-computer ", "set-executionpolicy", "set-executionpolicy ",
 		"mv ", "cp -r", "cp -R",
 		"chmod ", "chown ",
 		"sudo ", "su ",
