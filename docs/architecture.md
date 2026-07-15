@@ -102,7 +102,7 @@ Owns conversation lifecycle for the browser chat/task surface, the optional Open
 - **On start:** resolve active agent → trigger memory read → assemble initial context
 - **Per turn:** append to conversation history → call Prompt Assembler → send to Queue
 - **On end:** call summarizer (Qwen) → write episode file → trigger git commit
-- **Persistence:** append-only `sessions.jsonl` in the active project memory repo (defaults to `~/.harness/projects/global/` once layout-v2 lands)
+- **Persistence:** append-only `sessions.jsonl` in the active project memory repo (default `~/.harness/projects/global/` for the global project)
 
 ### Runtime (`internal/runtime`)
 Owns the mutable service graph behind the harness. `cmd/harness/main.go` creates the UI first, then asks `internal/runtime` to wire and retry the rest of the subsystems after the browser surface is already available.
@@ -276,7 +276,7 @@ Responsibilities:
 - Store metrics samples and expose query APIs for UI/status pages.
 
 ### Metrics Store (`internal/metrics`)
-Defines the typed metrics API and recorder helpers. Persistence lives in `internal/db` and uses the shared `harness.db` SQLite file. Layout-v2 places that database under `~/.harness/`; before M9 it lives next to the binary.
+Defines the typed metrics API and recorder helpers. Persistence lives in `internal/db` and uses the shared `~/.harness/harness.db` SQLite file.
 
 Currently recorded metric names:
 - `uptime_seconds`
@@ -286,8 +286,15 @@ Currently recorded metric names:
 - `session_count`
 - `episode_count`
 - `git_commit_latency_ms`
+- `ttft_ms`
+- `token_throughput_tokens_per_sec`
+- `vram_used_mb`
+- `loop_turn_count`
+- `tool_call_count`
+- `tool_call_error_count`
+- `tool_call_error_rate`
 
-Planned metric families remain milestone-scoped in the roadmap: prompt layer token counts, hot-reload events, loop/tool counters, retrieval and embedding latency, approval decisions, shell outcomes, TTFT, token throughput, VRAM usage, and pipeline run metrics. Until those names exist as constants in `internal/metrics`, they are aspirational.
+Pipeline run metrics remain milestone-scoped in the roadmap until the M10 runner lands.
 
 Interface:
 ```go
@@ -308,7 +315,7 @@ Thin OpenAI-compatible HTTP server. Enables external clients to send chat comple
 - Separate port from UI server, disabled by default, enabled via config
 
 ### Log Buffer (`internal/logbuf`)
-Provides in-memory ring buffers for harness logs and child process output. The UI status/log surfaces read recent entries and subscribe to live batches over SSE. Log buffers are memory-only; durable log files are planned for layout-v2.
+Provides in-memory ring buffers for harness logs and child process output. The UI status/log surfaces read recent entries and subscribe to live batches over SSE. `~/.harness/logs/` is reserved for durable logs, but current log buffers are memory-only.
 
 ### Request IDs (`internal/reqid`)
 Threads a per-request identifier through `context.Context` so API handlers, queue dispatch, prompt assembly, and logs can correlate one request without adding request-id fields to every package API.
