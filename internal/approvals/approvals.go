@@ -190,9 +190,13 @@ func ClassifyShellCmd(command string) bool {
 
 	// Destructive patterns that should always require approval.
 	destructive := []string{
-		"rm ", "rm -", "rmdir", "rmdir /s", "rd /s", "del ", "erase ",
-		"remove-item", "ri ", "remove-item ", "move-item ", "copy-item -recurse",
-		"mv ", "cp -r", "cp -R",
+		"rm ", "rm -", "rmdir", "rd ", "del ", "erase ",
+		"remove-item", "ri ", "move-item ", "copy-item -recurse",
+		"clear-content", "clc ",
+		"format-volume", "clear-disk",
+		"rp ",
+		"stop-computer", "set-executionpolicy",
+		"mv ", "cp -r",
 		"chmod ", "chown ",
 		"sudo ", "su ",
 		"> /", ">> /", "> ~/",
@@ -203,29 +207,46 @@ func ClassifyShellCmd(command string) bool {
 		"shutdown", "reboot", "halt", "poweroff",
 		"init 0", "init 6",
 		"iptables", "nft ",
-		":(){ :|:& };:", // fork bomb
+		":(){", // fork bomb function signature
 		"wget ", "curl ",
 		"nc ", "ncat ",
 		"ssh ", "scp ",
 		"git push", "git pull",
 		"bash ", "sh ", "powershell ", "pwsh ", "cmd /c",
 	}
-	for _, pattern := range destructive {
-		if strings.HasPrefix(cmdLower, pattern) {
-			return true
-		}
-		// Also match when destructive command appears after a pipeline.
-		if strings.Contains(cmdLower, "| "+pattern) || strings.Contains(cmdLower, "; "+pattern) || strings.Contains(cmdLower, "&& "+pattern) {
-			return true
+	for _, segment := range shellCommandSegments(cmdLower) {
+		for _, pattern := range destructive {
+			if strings.HasPrefix(segment, pattern) {
+				return true
+			}
 		}
 	}
 
 	// Redirect-to-file outside sandbox is destructive.
-	if strings.Contains(cmd, "> /etc") || strings.Contains(cmd, "> /dev") {
+	if strings.Contains(cmdLower, "> /etc") || strings.Contains(cmdLower, "> /dev") {
 		return true
 	}
 
 	return false
+}
+
+func shellCommandSegments(command string) []string {
+	parts := strings.FieldsFunc(command, func(r rune) bool {
+		switch r {
+		case '|', '&', ';', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			segments = append(segments, part)
+		}
+	}
+	return segments
 }
 
 // DefaultLayer returns a hardcoded agent-default layer that denies all
