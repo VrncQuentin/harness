@@ -76,6 +76,68 @@ func (r *recordingTaskRunner) ApplyApproval(string, string, string) error {
 	return nil
 }
 
+func TestBroadcastTaskSSEReliableFramesWaitForSubscriber(t *testing.T) {
+	s := NewServer(3000)
+	ch := make(chan string, 1)
+	ch <- "existing"
+	s.taskSSEClients.Store(ch, struct{}{})
+	defer s.taskSSEClients.Delete(ch)
+
+	done := make(chan struct{})
+	go func() {
+		s.broadcastTaskSSE("event: task-event\ndata: final\n\n", true)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("reliable task frame was dropped instead of waiting for delivery")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if got := <-ch; got != "existing" {
+		t.Fatalf("first frame = %q, want prefilled frame", got)
+	}
+
+	select {
+	case got := <-ch:
+		if !strings.Contains(got, "final") {
+			t.Fatalf("reliable frame = %q, want final payload", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reliable task frame")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("broadcast did not complete after subscriber drained")
+	}
+}
+
+func TestBroadcastTaskSSEDropsTextFramesForSlowSubscriber(t *testing.T) {
+	s := NewServer(3000)
+	ch := make(chan string, 1)
+	ch <- "existing"
+	s.taskSSEClients.Store(ch, struct{}{})
+	defer s.taskSSEClients.Delete(ch)
+
+	s.broadcastTaskSSE("event: task-text\ndata: token\n\n", false)
+
+	select {
+	case got := <-ch:
+		if got != "existing" {
+			t.Fatalf("frame = %q, want prefilled frame", got)
+		}
+	default:
+		t.Fatal("prefilled frame was unexpectedly consumed")
+	}
+	select {
+	case got := <-ch:
+		t.Fatalf("text frame should have been dropped, got %q", got)
+	default:
+	}
+}
 func TestHandleTaskCancel_Success(t *testing.T) {
 	s := NewServer(3000)
 	runner := &recordingTaskRunner{}

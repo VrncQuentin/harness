@@ -178,7 +178,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 
 	for {
 		if err := ctx.Err(); err != nil {
-			e.emit(evch, Event{Turn: turns, Type: EvtCancel, Terminate: EvtCancel})
+			e.emit(ctx, evch, Event{Turn: turns, Type: EvtCancel, Terminate: EvtCancel})
 			return ErrCancelled
 		}
 
@@ -207,7 +207,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 
 		tokenCh, err := e.infer.Complete(ctx, req)
 		if err != nil {
-			e.emit(evch, Event{Turn: turns, Type: EvtError, Content: err.Error(), Terminate: EvtError})
+			e.emit(ctx, evch, Event{Turn: turns, Type: EvtError, Content: err.Error(), Terminate: EvtError})
 			return fmt.Errorf("agentloop: complete: %w", err)
 		}
 
@@ -217,7 +217,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 
 		for tok := range tokenCh {
 			if tok.Err != nil {
-				e.emit(evch, Event{Turn: turns, Type: EvtError, Content: tok.Err.Error(), Terminate: EvtError})
+				e.emit(ctx, evch, Event{Turn: turns, Type: EvtError, Content: tok.Err.Error(), Terminate: EvtError})
 				return fmt.Errorf("agentloop: token stream: %w", tok.Err)
 			}
 			if tok.Done {
@@ -225,7 +225,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 			}
 			if tok.Content != "" {
 				assistantText.WriteString(tok.Content)
-				e.emit(evch, Event{Turn: turns, Type: EvtText, Content: tok.Content})
+				e.emit(ctx, evch, Event{Turn: turns, Type: EvtText, Content: tok.Content})
 			}
 			if tok.ToolCallDelta != nil {
 				slot := resolveSlot(&toolCallSlots, tok.ToolCallDelta.Index)
@@ -244,13 +244,13 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 
 		// If no tool calls, the model responded with plain text.
 		if len(toolCallSlots) == 0 {
-			e.emit(evch, Event{Turn: turns, Type: EvtDone, Terminate: EvtDone})
+			e.emit(ctx, evch, Event{Turn: turns, Type: EvtDone, Terminate: EvtDone})
 			return nil
 		}
 
 		// Check turn limit.
 		if turns >= e.loopCfg.MaxTurns {
-			e.emit(evch, Event{Turn: turns, Type: EvtLimit, Terminate: EvtLimit,
+			e.emit(ctx, evch, Event{Turn: turns, Type: EvtLimit, Terminate: EvtLimit,
 				Content: fmt.Sprintf("Loop limit reached after %d turns", turns)})
 			return ErrLoopLimitReached
 		}
@@ -280,7 +280,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 			lastFPs = lastFPs[1:]
 		}
 		if len(lastFPs) >= e.loopCfg.DoomThreshold && allEqualFP(lastFPs) {
-			e.emit(evch, Event{Turn: turns, Type: EvtDoom, Terminate: EvtDoom,
+			e.emit(ctx, evch, Event{Turn: turns, Type: EvtDoom, Terminate: EvtDoom,
 				Content: "Repeated identical tool calls detected — stopping to avoid loop"})
 			return ErrDoomLoop
 		}
@@ -288,7 +288,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 		// Dispatch tool calls and inject results.
 		for _, tc := range assistantMsg.ToolCalls {
 			if err := ctx.Err(); err != nil {
-				e.emit(evch, Event{Turn: turns, Type: EvtCancel, Terminate: EvtCancel})
+				e.emit(ctx, evch, Event{Turn: turns, Type: EvtCancel, Terminate: EvtCancel})
 				return ErrCancelled
 			}
 
@@ -298,7 +298,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 				args = map[string]any{}
 			}
 
-			e.emit(evch, Event{
+			e.emit(ctx, evch, Event{
 				Turn:     turns,
 				Type:     EvtToolCall,
 				ToolID:   tc.Function.Name,
@@ -312,13 +312,13 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 				// M7: check approvals before dispatch.
 				decision, err := e.checkApproval(ctx, evch, turns, tc.Function.Name, args)
 				if err != nil {
-					e.emit(evch, Event{Turn: turns, Type: EvtError, Content: err.Error(), Terminate: EvtError})
+					e.emit(ctx, evch, Event{Turn: turns, Type: EvtError, Content: err.Error(), Terminate: EvtError})
 					return err
 				}
 				switch decision {
 				case approvals.Denied:
 					res = tools.Result{Error: fmt.Sprintf("tool %q denied by permission policy", tc.Function.Name)}
-					e.emit(evch, Event{
+					e.emit(ctx, evch, Event{
 						Turn:      turns,
 						Type:      EvtApproval,
 						ToolID:    tc.Function.Name,
@@ -337,7 +337,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 
 			e.recordToolCall(tc.Function.Name, res.Error != "")
 
-			e.emit(evch, Event{
+			e.emit(ctx, evch, Event{
 				Turn:       turns,
 				Type:       EvtToolResult,
 				ToolID:     tc.Function.Name,
@@ -446,7 +446,7 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 	case resp := <-ch:
 		slog.Debug("approval resolved", "tool", toolID, "id", approvalID, "decision", resp.Decision, "remember", resp.Remember)
 		if resp.Decision == approvals.Denied {
-			e.emit(evch, Event{
+			e.emit(ctx, evch, Event{
 				Turn:       turn,
 				Type:       EvtApproval,
 				ToolID:     toolID,
@@ -454,7 +454,7 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 				ApprovalID: approvalID,
 			})
 		} else {
-			e.emit(evch, Event{
+			e.emit(ctx, evch, Event{
 				Turn:       turn,
 				Type:       EvtApproval,
 				ToolID:     toolID,
@@ -485,10 +485,17 @@ func emitApprovalNeeded(ctx context.Context, evch chan<- Event, ev Event, timeou
 		return ErrApprovalTimeout
 	}
 }
-func (e *Engine) emit(evch chan<- Event, ev Event) {
+func (e *Engine) emit(ctx context.Context, evch chan<- Event, ev Event) {
+	if ev.Type == EvtText {
+		select {
+		case evch <- ev:
+		default:
+		}
+		return
+	}
 	select {
 	case evch <- ev:
-	default:
+	case <-ctx.Done():
 	}
 }
 
