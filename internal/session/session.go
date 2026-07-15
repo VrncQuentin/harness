@@ -33,13 +33,16 @@ import (
 	"github.com/vrnc/harness/internal/project"
 )
 
-// Project is the global project slug. Callers that need to hardcode a
-// fallback should prefer project.GlobalSlug; this constant exists for
-// backward compatibility with M3 era code.
-const Project = project.GlobalSlug
-
-// episodeFileSuffix is the extension used for episode markdown files.
-const episodeFileSuffix = ".md"
+const (
+	// episodesRootRel is the repo-relative root directory for saved episodes.
+	episodesRootRel = "episodes"
+	// sessionsLogRel is the repo-relative append-only session log path.
+	sessionsLogRel = "sessions.jsonl"
+	// episodeFileSuffix is the extension used for episode markdown files.
+	episodeFileSuffix = ".md"
+	// episodeSidecarSuffix is the extension used for raw conversation sidecars.
+	episodeSidecarSuffix = ".json"
+)
 
 // idTimeFormat is the time.Format layout used to mint a session ID.
 // Hyphens replace colons so the same string doubles as a filename on
@@ -156,33 +159,21 @@ type Manager struct {
 }
 
 // episodesDir returns the repo-relative path for the episode directory
-// of a given agent under this manager's project.
-func (m *Manager) episodesDir(agent string) string {
-	return fmt.Sprintf("episodes/%s", agent)
+// of a given agent.
+func episodesDir(agent string) string {
+	return path.Join(episodesRootRel, agent)
 }
 
 // episodeMarkdownPath returns the repo-relative path to an episode .md
 // file for the given agent and session id.
-func (m *Manager) episodeMarkdownPath(agent, id string) string {
-	return fmt.Sprintf("episodes/%s/%s.md", agent, id)
+func episodeMarkdownPath(agent, id string) string {
+	return path.Join(episodesRootRel, agent, id+episodeFileSuffix)
 }
 
 // episodeSidecarPath returns the repo-relative path to an episode .json
 // sidecar for the given agent and session id.
-func (m *Manager) episodeSidecarPath(agent, id string) string {
-	return fmt.Sprintf("episodes/%s/%s.json", agent, id)
-}
-
-// sessionsLogRelPath returns the repo-relative path for this project's
-// sessions.jsonl.
-func (m *Manager) sessionsLogRelPath() string {
-	return "sessions.jsonl"
-}
-
-// episodesRootRelPath returns the repo-relative episodes root directory
-// for this project.
-func (m *Manager) episodesRootRelPath() string {
-	return "episodes"
+func episodeSidecarPath(agent, id string) string {
+	return path.Join(episodesRootRel, agent, id+episodeSidecarSuffix)
 }
 
 // NewManager constructs a Manager from deps. The caller is expected to
@@ -273,7 +264,7 @@ func (m *Manager) Resume(id string) (*Session, error) {
 	if rec == nil {
 		return nil, fmt.Errorf("session: resume %s: %w", id, ErrUnknownSession)
 	}
-	sidecarPath := m.episodeSidecarPath(rec.Agent, rec.ID)
+	sidecarPath := episodeSidecarPath(rec.Agent, rec.ID)
 	body, err := m.deps.Reader.Read(sidecarPath)
 	if err != nil {
 		return nil, fmt.Errorf("session: resume %s: %w", id, ErrConversationLost)
@@ -370,8 +361,8 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		return SaveResult{}, fmt.Errorf("session: summarize %s: summarizer returned empty body", id)
 	}
 
-	episodePath := m.episodeMarkdownPath(snap.Agent, snap.ID)
-	sidecarPath := m.episodeSidecarPath(snap.Agent, snap.ID)
+	episodePath := episodeMarkdownPath(snap.Agent, snap.ID)
+	sidecarPath := episodeSidecarPath(snap.Agent, snap.ID)
 
 	body := renderEpisodeBody(snap.ID, summary)
 	if err := m.deps.Writer.WriteFile(episodePath, []byte(body)); err != nil {
@@ -520,7 +511,7 @@ func (m *Manager) SidecarConversation(agent, id string) ([]inference.Message, er
 	if !validAgent(agent) || !validID(id) {
 		return nil, fmt.Errorf("session: sidecar %s/%s: invalid argument", agent, id)
 	}
-	sidecarPath := m.episodeSidecarPath(agent, id)
+	sidecarPath := episodeSidecarPath(agent, id)
 	body, err := m.deps.Reader.Read(sidecarPath)
 	if err != nil {
 		return nil, fmt.Errorf("session: sidecar %s: %w", sidecarPath, ErrConversationLost)
@@ -554,7 +545,7 @@ func (m *Manager) findLatestRecord(id string) (*Record, error) {
 // count is used as the EpisodeCount metric. Cheap enough to compute on
 // every save - the tree is small at M3 scale.
 func (m *Manager) countEpisodeFiles() int {
-	root := m.episodesRootRelPath()
+	root := episodesRootRel
 	if w, ok := m.deps.Reader.(memory.Walker); ok {
 		entries, err := w.Walk(root)
 		if err != nil {
@@ -580,7 +571,7 @@ func (m *Manager) countEpisodeFiles() int {
 	count := 0
 	for _, agentDir := range agents {
 		agentName := strings.TrimSuffix(strings.TrimPrefix(agentDir, root+"/"), "/")
-		matches, gerr := m.deps.Reader.Glob(m.episodesDir(agentName) + "/*" + episodeFileSuffix)
+		matches, gerr := m.deps.Reader.Glob(episodesDir(agentName) + "/*" + episodeFileSuffix)
 		if gerr != nil {
 			continue
 		}
@@ -593,7 +584,7 @@ func (m *Manager) countEpisodeFiles() int {
 // The memory writer accepts repo-relative paths but ReadAll/AppendRecord
 // take an absolute path so they work without a memory.Reader handle.
 func (m *Manager) sessionsLogPath() string {
-	rel := m.sessionsLogRelPath()
+	rel := sessionsLogRel
 	if m.deps.ResolveAbsRepoPath == "" {
 		return rel
 	}

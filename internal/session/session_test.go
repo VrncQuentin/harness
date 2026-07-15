@@ -16,6 +16,7 @@ import (
 	"github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/project"
 )
 
 // fakeInference returns canned tokens. Each call to Complete consumes
@@ -122,7 +123,7 @@ func newTestManager(t *testing.T, fi *fakeInference) (*Manager, *memory.DirReade
 		Metrics:            metricsRec,
 		SummarizerPrompt:   func() string { return "test prompt" },
 		ResolveAbsRepoPath: dir,
-	}, Project)
+	}, project.GlobalSlug)
 	return mgr, reader, dir, metricsRec
 }
 
@@ -142,8 +143,8 @@ func TestManager_StartMintsValidID(t *testing.T) {
 	if s.Agent != "coder" {
 		t.Errorf("agent: want coder, got %q", s.Agent)
 	}
-	if s.Project != Project {
-		t.Errorf("project: want %q, got %q", Project, s.Project)
+	if s.Project != project.GlobalSlug {
+		t.Errorf("project: want %q, got %q", project.GlobalSlug, s.Project)
 	}
 }
 
