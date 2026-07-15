@@ -14,6 +14,7 @@ import (
 // TaskRunner executes an agent loop and streams events back.
 type TaskRunner interface {
 	RunTask(ctx context.Context, agent string, sessionID string, conversation []ChatMessage) (string, <-chan agentloop.Event, error)
+	CancelTask(sessionID string) error
 	// ApplyApproval delivers a user decision for a pending approval event.
 	// sessionID identifies the task, approvalID identifies the specific
 	// tool call within that task.
@@ -195,6 +196,31 @@ type taskView struct {
 	Error string
 }
 
+func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	runner := s.getTaskRunner()
+	if runner == nil {
+		http.Error(w, ErrTaskNotReady.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	sessionID := strings.TrimSpace(r.FormValue("session_id"))
+	if sessionID == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
+	}
+	if err := runner.CancelTask(sessionID); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
 func (s *Server) handleTaskApproval(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

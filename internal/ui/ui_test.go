@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vrnc/harness/internal/agentloop"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
 	"github.com/vrnc/harness/internal/logbuf"
@@ -55,6 +56,88 @@ func TestHandleStatus_OK(t *testing.T) {
 	}
 }
 
+type recordingTaskRunner struct {
+	cancelSession string
+	cancelErr     error
+}
+
+func (r *recordingTaskRunner) RunTask(context.Context, string, string, []ChatMessage) (string, <-chan agentloop.Event, error) {
+	ch := make(chan agentloop.Event)
+	close(ch)
+	return "", ch, nil
+}
+
+func (r *recordingTaskRunner) CancelTask(sessionID string) error {
+	r.cancelSession = sessionID
+	return r.cancelErr
+}
+
+func (r *recordingTaskRunner) ApplyApproval(string, string, string) error {
+	return nil
+}
+
+func TestHandleTaskCancel_Success(t *testing.T) {
+	s := NewServer(3000)
+	runner := &recordingTaskRunner{}
+	s.SetTaskRunner(runner)
+
+	form := url.Values{"session_id": {"task-123"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/task/cancel", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleTaskCancel(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204 (body %s)", rec.Code, rec.Body.String())
+	}
+	if runner.cancelSession != "task-123" {
+		t.Fatalf("cancel session = %q, want task-123", runner.cancelSession)
+	}
+}
+
+func TestHandleTaskCancel_Validation(t *testing.T) {
+	s := NewServer(3000)
+	rec := httptest.NewRecorder()
+	s.handleTaskCancel(rec, httptest.NewRequest(http.MethodGet, "/task/cancel", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET status = %d, want 405", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/task/cancel", strings.NewReader("session_id=x"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleTaskCancel(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("without runner status = %d, want 503", rec.Code)
+	}
+
+	s.SetTaskRunner(&recordingTaskRunner{})
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/task/cancel", strings.NewReader("session_id="))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleTaskCancel(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing session status = %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleTaskCancel_RunnerError(t *testing.T) {
+	s := NewServer(3000)
+	s.SetTaskRunner(&recordingTaskRunner{cancelErr: errors.New("no active task")})
+
+	form := url.Values{"session_id": {"missing"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/task/cancel", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleTaskCancel(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "no active task") {
+		t.Fatalf("body missing runner error: %s", rec.Body.String())
+	}
+}
 func TestHandleStatus_WithErrors(t *testing.T) {
 	s := NewServer(3000)
 	s.AddStartupError(errors.New("llama-server binary not found: C:\\missing.exe"))
