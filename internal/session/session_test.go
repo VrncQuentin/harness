@@ -13,6 +13,7 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
@@ -130,6 +131,45 @@ func newTestManager(t *testing.T, fi *fakeInference) (*Manager, *memory.DirReade
 	return mgr, reader, dir, metricsRec
 }
 
+func headCommitSHA(t *testing.T, root string) string {
+	t.Helper()
+	gr, err := gogit.PlainOpen(root)
+	if err != nil {
+		t.Fatalf("plain open: %v", err)
+	}
+	head, err := gr.Head()
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	return head.Hash().String()
+}
+
+func countCommitsWithPrefix(t *testing.T, root, prefix string) int {
+	t.Helper()
+	gr, err := gogit.PlainOpen(root)
+	if err != nil {
+		t.Fatalf("plain open: %v", err)
+	}
+	head, err := gr.Head()
+	if err != nil {
+		t.Fatalf("head: %v", err)
+	}
+	iter, err := gr.Log(&gogit.LogOptions{From: head.Hash()})
+	if err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	defer iter.Close()
+	count := 0
+	if err := iter.ForEach(func(c *object.Commit) error {
+		if strings.HasPrefix(c.Message, prefix) {
+			count++
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("iterate log: %v", err)
+	}
+	return count
+}
 func TestNewManagerRequiresDependencies(t *testing.T) {
 	_, err := NewManager(ManagerDeps{}, project.GlobalSlug)
 	if err == nil {
@@ -217,16 +257,8 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 	}
 
 	// Commit message starts with the structured tag prefix.
-	repo, err := git.Open(dir)
-	if err != nil {
-		t.Fatalf("git.Open: %v", err)
-	}
-	commits, err := repo.Log(map[string]string{"agent": "coder", "type": "episode"})
-	if err != nil {
-		t.Fatalf("Log: %v", err)
-	}
-	if len(commits) != 1 {
-		t.Fatalf("expected 1 commit, got %d", len(commits))
+	if got := countCommitsWithPrefix(t, dir, "[agent:coder] [type:episode] "); got != 1 {
+		t.Fatalf("expected 1 episode commit, got %d", got)
 	}
 
 	// Metrics fired once.
