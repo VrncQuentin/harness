@@ -58,15 +58,11 @@ type SessionRecord struct {
 // Pass nil to detach (e.g. when the memory repo is invalidated); the
 // handlers then return 503 until a valid store is wired back in.
 func (s *Server) SetSessionStore(store SessionStore) {
-	s.sessionStoreMu.Lock()
-	s.sessionStore = store
-	s.sessionStoreMu.Unlock()
+	s.updateDeps(func(d *uiDeps) { d.sessionStore = store })
 }
 
 func (s *Server) getSessionStore() SessionStore {
-	s.sessionStoreMu.RLock()
-	defer s.sessionStoreMu.RUnlock()
-	return s.sessionStore
+	return s.depsSnapshot().sessionStore
 }
 
 // chatSaveRequest is the JSON body of POST /chat/save. SessionID is required.

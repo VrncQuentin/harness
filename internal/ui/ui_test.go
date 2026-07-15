@@ -88,6 +88,75 @@ func (s *stubConfigStore) Save(cfg *config.Config) error {
 	return nil
 }
 
+type noopIndexRebuilder struct{}
+
+func (noopIndexRebuilder) Rebuild(context.Context) error { return nil }
+
+func TestSetServiceDepsPublishesAndClearsSnapshot(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
+	memStore := newStubMemoryStore(nil)
+	sessionStore := &stubSessionStore{}
+	committer := &stubCommitter{}
+	dedup := &stubDedupChecker{}
+	scorer := &stubRetrievalScorer{}
+	rebuilder := noopIndexRebuilder{}
+	chatRunner := &stubChatRunner{}
+	taskRunner := &recordingTaskRunner{}
+
+	s.SetServiceDeps(ServiceDeps{
+		MemoryRepoPath:          "C:\\repo",
+		AgentRegistry:           reg,
+		MemoryStore:             memStore,
+		SessionStore:            sessionStore,
+		Committer:               committer,
+		Dedup:                   dedup,
+		PromotionDedupThreshold: 0.95,
+		RetrievalScorer:         scorer,
+		IndexRebuilder:          rebuilder,
+		ChatRunner:              chatRunner,
+		TaskRunner:              taskRunner,
+	})
+
+	if got := s.getMemoryRepoPath(); got != "C:\\repo" {
+		t.Fatalf("memory repo path = %q", got)
+	}
+	if got := s.agentRegistry(); got != reg {
+		t.Fatal("agent registry was not published")
+	}
+	if got := s.memoryStore(); got != memStore {
+		t.Fatal("memory store was not published")
+	}
+	if got := s.getSessionStore(); got != sessionStore {
+		t.Fatal("session store was not published")
+	}
+	if got := s.getCommitter(); got != committer {
+		t.Fatal("committer was not published")
+	}
+	if got := s.getDedupChecker(); got != dedup {
+		t.Fatal("dedup checker was not published")
+	}
+	if got := s.getPromotionDedupThreshold(); got != 0.95 {
+		t.Fatalf("dedup threshold = %v", got)
+	}
+	if got := s.retrievalScorer(); got != scorer {
+		t.Fatal("retrieval scorer was not published")
+	}
+	if got := s.indexRebuilder(); got != rebuilder {
+		t.Fatal("index rebuilder was not published")
+	}
+	if got := s.getChatRunner(); got != chatRunner {
+		t.Fatal("chat runner was not published")
+	}
+	if got := s.getTaskRunner(); got != taskRunner {
+		t.Fatal("task runner was not published")
+	}
+
+	s.SetServiceDeps(ServiceDeps{})
+	if s.getMemoryRepoPath() != "" || s.agentRegistry() != nil || s.memoryStore() != nil || s.getSessionStore() != nil || s.getCommitter() != nil || s.getDedupChecker() != nil || s.retrievalScorer() != nil || s.indexRebuilder() != nil || s.getChatRunner() != nil || s.getTaskRunner() != nil {
+		t.Fatal("service deps were not cleared together")
+	}
+}
 func TestNewBasePageUsesCachedProjectNav(t *testing.T) {
 	s := NewServer(3000)
 	store := &countingProjectStore{projects: []project.Project{
