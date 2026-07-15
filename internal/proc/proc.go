@@ -186,12 +186,7 @@ func (m *Manager) Reconfigure(buildArgs func() (string, []string), healthURL str
 	m.healthURL = healthURL
 	m.mu.Unlock()
 
-	m.clearCircuit()
-	select {
-	case m.reloadCh <- struct{}{}:
-	default:
-	}
-	m.stopProcess()
+	m.Restart()
 }
 
 // Restart clears the circuit breaker and kicks the Run loop to try again with
