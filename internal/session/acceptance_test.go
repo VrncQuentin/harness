@@ -168,7 +168,7 @@ func TestM3Acceptance_3_RecencyWiring(t *testing.T) {
 	// Fresh assembler from the same memory repo. The recency layer
 	// reads episodes/<agent>/*.md, which is exactly
 	// what the session writer produces.
-	reader := memory.NewLayoutV2Reader(root, "global", root)
+	reader := memory.NewDirReader(root)
 	active := "coder"
 	reg := agent.NewDiskRegistry(reader, func() string { return active }, func(name string) error { active = name; return nil })
 	cfg := config.PromptConfig{RecencyN: 5}

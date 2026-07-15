@@ -37,22 +37,17 @@ import (
 // dropping the persona section.
 var ErrAgentRequired = errors.New("prompt: agent name is required")
 
-// Well-known paths inside the memory repo. Kept as package-level
-// constants so tests and hot-reload share the same strings.
+// Well-known paths inside one physical memory repo. The assembler receives the
+// global repo and active project repo separately, so callers choose the repo
+// explicitly instead of encoding that choice in logical path prefixes.
 const (
-	rulesPath = "global/rules.md"
-	userPath  = "global/user.md"
-	factsPath = "global/facts.md"
+	rulesPath = "rules.md"
+	userPath  = "user.md"
+	factsPath = "facts.md"
 
-	// projectRulesPath points at the optional active-project rules layer.
-	// The global project's file is optional too: it is not seeded, but is
-	// honored when the user authors it.
-	projectRulesPath = "projects/%s/rules.md"
-
-	// episodesGlobPattern is the format template for globbing episode
-	// files. The first parameter is the project slug, the second is the
-	// agent name.
-	episodesGlobPattern = "projects/%s/episodes/%s/*.md"
+	// episodesGlobPattern is the format template for globbing episode files
+	// under the active project repo.
+	episodesGlobPattern = "episodes/%s/*.md"
 )
 
 // Static markdown section headers. Each optional layer is skipped if
@@ -97,7 +92,8 @@ type Assembler interface {
 // operation. Safe for concurrent use: Assemble only reads from fields
 // set once at construction.
 type DiskAssembler struct {
-	mem         memory.Reader
+	globalMem   memory.Reader
+	activeMem   memory.Reader
 	reg         agent.Registry
 	cfg         config.PromptConfig
 	projectSlug string
@@ -113,8 +109,20 @@ var _ Assembler = (*DiskAssembler)(nil)
 // resolves agents through reg. The prompt config controls the memory
 // token budget and conversation reserve.
 func NewDiskAssembler(mem memory.Reader, reg agent.Registry, cfg config.PromptConfig) *DiskAssembler {
+	return NewProjectDiskAssembler(mem, mem, reg, cfg)
+}
+
+// NewProjectDiskAssembler returns an assembler over two physical layout-v2
+// repos: globalMem provides always-on rules/user/facts and fallback agents,
+// while activeMem provides the active project's rules, agent overrides, and
+// episodes.
+func NewProjectDiskAssembler(globalMem, activeMem memory.Reader, reg agent.Registry, cfg config.PromptConfig) *DiskAssembler {
+	if activeMem == nil {
+		activeMem = globalMem
+	}
 	return &DiskAssembler{
-		mem:       mem,
+		globalMem: globalMem,
+		activeMem: activeMem,
 		reg:       reg,
 		cfg:       cfg,
 		logger:    slog.Default(),
@@ -286,13 +294,13 @@ type episode struct {
 func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query string) (rawLayers, error) {
 	var lay rawLayers
 
-	rules, err := a.readRequired(rulesPath)
+	rules, err := a.readRequired(a.globalMem, rulesPath)
 	if err != nil {
 		return rawLayers{}, err
 	}
 	lay.rules = rules
 
-	user, err := a.readOptional(userPath)
+	user, err := a.readOptional(a.globalMem, userPath)
 	if err != nil {
 		return rawLayers{}, err
 	}
@@ -305,11 +313,13 @@ func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query 
 	if err := project.ValidateSlug(slug); err != nil {
 		return rawLayers{}, fmt.Errorf("prompt: invalid project slug %q: %w", slug, err)
 	}
-	projectRules, err := a.readOptional(fmt.Sprintf(projectRulesPath, slug))
-	if err != nil {
-		return rawLayers{}, err
+	if slug != project.GlobalSlug {
+		projectRules, err := a.readOptional(a.activeMem, rulesPath)
+		if err != nil {
+			return rawLayers{}, err
+		}
+		lay.projectRules = projectRules
 	}
-	lay.projectRules = projectRules
 
 	if agentName != "" {
 		if err := agent.ValidateName(agentName); err != nil {
@@ -356,7 +366,7 @@ func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query 
 		lay.episodesBestFirst = bestFirst
 	}
 
-	facts, err := a.readOptional(factsPath)
+	facts, err := a.readOptional(a.globalMem, factsPath)
 	if err != nil {
 		return rawLayers{}, err
 	}
@@ -365,7 +375,7 @@ func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query 
 	return lay, nil
 }
 
-// loadEpisodes reads every *.md file under projects/global/episodes/<name>/
+// loadEpisodes reads every *.md file under episodes/<name>/
 // sorted oldest-first (lexicographic file name matches the ISO
 // timestamp naming convention from docs/architecture.md).
 //
@@ -373,12 +383,8 @@ func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query 
 // are returned, so the budget-driven trim further down sees a slice
 // already capped to recency. RecencyN <= 0 means unlimited.
 func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, query string) ([]episode, bool, error) {
-	slug := a.projectSlug
-	if slug == "" {
-		slug = project.GlobalSlug
-	}
-	pattern := fmt.Sprintf(episodesGlobPattern, slug, agentName)
-	paths, err := a.mem.Glob(pattern)
+	pattern := fmt.Sprintf(episodesGlobPattern, agentName)
+	paths, err := a.activeMem.Glob(pattern)
 	if err != nil {
 		return nil, false, fmt.Errorf("prompt: glob episodes: %w", err)
 	}
@@ -387,7 +393,7 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 	sort.Strings(paths)
 	out := make([]episode, 0, len(paths))
 	for _, p := range paths {
-		content, err := a.readOptional(p)
+		content, err := a.readOptional(a.activeMem, p)
 		if err != nil {
 			return nil, false, err
 		}
@@ -438,8 +444,8 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 // readRequired returns the contents of p or an error wrapping
 // fs.ErrNotExist when the file is missing. The error is prefixed so
 // callers get a useful message without unwrapping.
-func (a *DiskAssembler) readRequired(p string) (string, error) {
-	b, err := a.mem.Read(p)
+func (a *DiskAssembler) readRequired(mem memory.Reader, p string) (string, error) {
+	b, err := mem.Read(p)
 	if err != nil {
 		return "", fmt.Errorf("prompt: read required %s: %w", p, err)
 	}
@@ -448,8 +454,8 @@ func (a *DiskAssembler) readRequired(p string) (string, error) {
 
 // readOptional returns the contents of p, or an empty string when the
 // file is missing. Any other error is propagated.
-func (a *DiskAssembler) readOptional(p string) (string, error) {
-	b, err := a.mem.Read(p)
+func (a *DiskAssembler) readOptional(mem memory.Reader, p string) (string, error) {
+	b, err := mem.Read(p)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", nil
@@ -460,13 +466,15 @@ func (a *DiskAssembler) readOptional(p string) (string, error) {
 }
 
 func (a *DiskAssembler) resolveAgentFile(slug, agentName, fileName string, globalAgent agent.Agent, globalExists bool) (string, bool, error) {
-	projPath := fmt.Sprintf("projects/%s/agents/%s/%s", slug, agentName, fileName)
-	b, err := a.mem.Read(projPath)
-	if err == nil {
-		return string(b), true, nil
-	}
-	if !errors.Is(err, fs.ErrNotExist) {
-		return "", false, fmt.Errorf("prompt: read project agent file %s: %w", projPath, err)
+	projPath := path.Join("agents", agentName, fileName)
+	if slug != project.GlobalSlug {
+		b, err := a.activeMem.Read(projPath)
+		if err == nil {
+			return string(b), true, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", false, fmt.Errorf("prompt: read project agent file %s: %w", projPath, err)
+		}
 	}
 
 	if globalExists {
@@ -481,7 +489,7 @@ func (a *DiskAssembler) resolveAgentFile(slug, agentName, fileName string, globa
 		default:
 			globalPath = path.Join("agents", agentName, fileName)
 		}
-		b, err = a.mem.Read(globalPath)
+		b, err := a.globalMem.Read(globalPath)
 		if err == nil {
 			return string(b), true, nil
 		}

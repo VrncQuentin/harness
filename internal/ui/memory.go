@@ -72,9 +72,9 @@ type MemoryStore interface {
 // runtime artifacts) is read-only here so risky edits go through git
 // rather than a textarea.
 var editableGlobalFiles = []editableFile{
-	{Path: "global/rules.md", Desc: "Always-on base prompt"},
-	{Path: "global/user.md", Desc: "Hand-authored facts about the user"},
-	{Path: "global/facts.md", Desc: "Promoted cross-agent facts"},
+	{Path: "rules.md", Desc: "Active project rules"},
+	{Path: "user.md", Desc: "Hand-authored facts about the user"},
+	{Path: "facts.md", Desc: "Promoted cross-agent facts"},
 }
 
 type editableFile struct {
@@ -98,11 +98,20 @@ func editableDesc(p string) (string, bool) {
 // detach (e.g. when the active memory repo becomes unavailable); the page
 // then renders the not-configured CTA instead of a blank tree.
 func (s *Server) SetMemoryStore(store MemoryStore) {
-	s.updateDeps(func(d *uiDeps) { d.memStore = store })
+	s.updateDeps(func(d *uiDeps) {
+		d.memStore = store
+		if d.globalMem == nil {
+			d.globalMem = store
+		}
+	})
 }
 
 func (s *Server) memoryStore() MemoryStore {
 	return s.depsSnapshot().memStore
+}
+
+func (s *Server) globalMemoryStore() MemoryStore {
+	return s.depsSnapshot().globalMem
 }
 
 // SetRetrievalScorer wires the scorer used by the memory episode view.
@@ -153,7 +162,7 @@ type memoryView struct {
 }
 
 // agentEpisodeCount counts how many .md episodes live under an agent's
-// directory in projects/global/episodes/. The /memory page renders one
+// directory in episodes/. The /memory page renders one
 // row per agent linking to /memory/episodes?agent=<Name>.
 type agentEpisodeCount struct {
 	Name  string
@@ -286,7 +295,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMemoryEpisodes renders the per-agent episode list. It reads
-// projects/global/episodes/<agent>/ via the memory store, filters for
+// episodes/<agent>/ via the memory store, filters for
 // .md files, sorts newest-first by filename (ISO timestamps sort
 // lexicographically, so a reverse string sort is the cheapest way to
 // approximate "newest first" without parsing each name), and renders a
@@ -331,7 +340,7 @@ func (s *Server) handleMemoryEpisodes(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMemoryEpisodeView renders one episode's content. The path query
-// parameter must be a repo-relative path under projects/global/episodes/
+// parameter must be a repo-relative path under episodes/
 // that ends in .md - anything else is rejected to keep this endpoint
 // from doubling as a generic file viewer.
 func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request) {
@@ -425,7 +434,7 @@ func validAgentName(name string) bool {
 	return true
 }
 
-// listAgentEpisodes walks projects/global/episodes/<agent>/ and returns
+// listAgentEpisodes walks episodes/<agent>/ and returns
 // one row per .md file, sorted newest-first by filename. ISO 8601
 // timestamps sort lexicographically, so a reverse string sort matches
 // chronological order without parsing every filename. A missing agent
@@ -484,7 +493,7 @@ func listAgentEpisodes(ctx context.Context, store MemoryStore, slug, agent, quer
 	return rows, nil
 }
 
-// countEpisodesByAgent walks projects/global/episodes/ and returns one
+// countEpisodesByAgent walks episodes/ and returns one
 // row per agent directory containing at least one .md file. The
 // resulting slice is sorted by agent name so the /memory page renders
 // stably across reloads.
@@ -530,10 +539,7 @@ func countEpisodesByAgent(store MemoryStore, slug string) ([]agentEpisodeCount, 
 }
 
 func episodesRootForSlug(slug string) string {
-	if slug == "" {
-		slug = "global"
-	}
-	return "projects/" + slug + "/episodes"
+	return "episodes"
 }
 
 // handleMemoryEdit renders the textarea form for one editable file.
@@ -680,7 +686,7 @@ func (s *Server) renderMemoryEpisodeView(w http.ResponseWriter, data memoryEpiso
 }
 
 // buildMemoryTree walks the store, computes token estimates, and links
-// child nodes onto their parents. Editable global/* files that are
+// child nodes onto their parents. Editable root files that are
 // missing from disk are still injected as virtual nodes so the user
 // can create them via the edit page without scaffolding first.
 func buildMemoryTree(store MemoryStore) ([]*memoryTreeNode, int, error) {
@@ -718,9 +724,9 @@ func buildMemoryTree(store MemoryStore) ([]*memoryTreeNode, int, error) {
 		attachToParent(node, nodes, &roots)
 	}
 
-	// Inject virtual placeholders for editable global files that don't
+	// Inject virtual placeholders for editable root files that don't
 	// exist on disk yet, so the tree always offers an edit link for
-	// them. The parent global/ dir is materialised on-the-fly when
+	// them. The parent directory is materialised on-the-fly when
 	// missing too - otherwise a fresh repo would only show "agents".
 	for _, f := range editableGlobalFiles {
 		if _, exists := nodes[f.Path]; exists {
@@ -763,7 +769,7 @@ func attachToParent(node *memoryTreeNode, nodes map[string]*memoryTreeNode, root
 }
 
 // ensureParentDir materialises a virtual directory node for relPath if
-// none exists yet. Used so a missing global/ shows up as a parent for
+// none exists yet. Used so a missing parent directory shows up as a parent for
 // the virtual rules.md/user.md/facts.md placeholders.
 func ensureParentDir(relPath string, nodes map[string]*memoryTreeNode, roots *[]*memoryTreeNode) {
 	if relPath == "." || relPath == "" {

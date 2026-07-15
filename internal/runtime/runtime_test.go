@@ -135,7 +135,7 @@ func TestUIAgentRegistryAdapterListMatchesGet(t *testing.T) {
 		func() string { return active },
 		func(name string) error { active = name; return nil },
 	)
-	ad := &uiAgentRegistryAdapter{reg: reg, mem: mem}
+	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: mem, activeMem: mem, getProjectSlug: func() string { return "global" }}
 
 	list, err := ad.List()
 	if err != nil {
@@ -169,7 +169,7 @@ func TestUIAgentRegistryAdapterListTreatsMissingFilesAsEmpty(t *testing.T) {
 		func() string { return active },
 		func(name string) error { active = name; return nil },
 	)
-	ad := &uiAgentRegistryAdapter{reg: reg, mem: mem}
+	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: mem, activeMem: mem, getProjectSlug: func() string { return "global" }}
 
 	list, err := ad.List()
 	if err != nil {
@@ -432,14 +432,14 @@ func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	root := t.TempDir()
 	for rel, body := range map[string]string{
-		"global/rules.md":                "phase2 global rules",
-		"global/user.md":                 "phase2 user profile",
-		"global/facts.md":                "phase2 fact",
-		"agents/coder/persona.md":        "phase2 coder persona",
-		"agents/coder/rules.md":          "phase2 coder rules",
-		"agents/coder/notes.md":          "phase2 coder notes",
-		"projects/global/rules.md":       "phase2 project rules",
-		"projects/global/sessions.jsonl": "",
+		"rules.md":                "phase2 global rules",
+		"user.md":                 "phase2 user profile",
+		"facts.md":                "phase2 fact",
+		"agents/coder/persona.md": "phase2 coder persona",
+		"agents/coder/rules.md":   "phase2 coder rules",
+		"agents/coder/notes.md":   "phase2 coder notes",
+		"projects/rules.md":       "phase2 project rules",
+		"sessions.jsonl":          "",
 	} {
 		abs := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
@@ -470,7 +470,8 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	defer q.Stop()
 
 	rt := New(cfg, nil, LogRings{})
-	rt.memReader = mem
+	rt.globalMem = mem
+	rt.activeMem = mem
 	rt.agentReg = reg
 	rt.assembler = prompt.NewDiskAssembler(mem, reg, cfg.Prompt).WithProjectSlug("global")
 	rt.inferClient = failingInferenceClient{err: fmt.Errorf("direct inference path used")}
@@ -523,7 +524,8 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, nil, LogRings{})
-	rt.memReader = memory.NewLayoutV2Reader(root, "global", root)
+	rt.globalMem = memory.NewDirReader(root)
+	rt.activeMem = rt.globalMem
 
 	mgr, adapter := rt.buildSessionManager(ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
@@ -597,14 +599,14 @@ func startFakeModelServer(t *testing.T, summary string) (int, func()) {
 }
 func TestIndexRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	root := t.TempDir()
-	episodePath := filepath.Join(root, "projects", "global", "episodes", "coder", "ep1.md")
+	episodePath := filepath.Join(root, "episodes", "coder", "ep1.md")
 	if err := os.MkdirAll(filepath.Dir(episodePath), 0o755); err != nil {
 		t.Fatalf("MkdirAll episode dir: %v", err)
 	}
 	if err := os.WriteFile(episodePath, []byte("episode body"), 0o644); err != nil {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
-	indexDir := filepath.Join(root, "projects", "global", "index", "_episodes")
+	indexDir := filepath.Join(root, "index", "_episodes")
 	called := false
 	rb := &memoryops.EpisodeRebuilder{
 		Mem:      memory.NewDirReader(root),

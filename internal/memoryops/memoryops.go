@@ -177,7 +177,7 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		}
 	}
 
-	episodesRoot := path.Join("projects", rb.Slug, "episodes")
+	episodesRoot := "episodes"
 	entries, err := rb.Mem.Walk(episodesRoot)
 	if err != nil {
 		return fmt.Errorf("index rebuild: walk episodes: %w", err)
@@ -300,7 +300,7 @@ func (dc *DedupChecker) CheckSimilar(ctx context.Context, text string, threshold
 	if dc.Mem == nil || dc.Embedder == nil {
 		return false, "", 0, nil
 	}
-	existing, err := dc.Mem.Read("global/facts.md")
+	existing, err := dc.Mem.Read("facts.md")
 	if err != nil || len(existing) == 0 {
 		return false, "", 0, nil
 	}
