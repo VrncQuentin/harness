@@ -48,7 +48,7 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	s.renderTask(w, taskView{basePage: s.newBasePage("task")})
+	s.renderTask(w, taskView{basePage: s.newBasePage("task"), StreamID: newEventStreamID()})
 }
 
 func (s *Server) renderTask(w http.ResponseWriter, data taskView) {
@@ -63,6 +63,7 @@ const taskSendMaxBytes = 32 * 1024
 type taskSendView struct {
 	UserContent string
 	SessionID   string
+	StreamID    string
 }
 
 func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
@@ -87,12 +88,14 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 	}
 	agent := strings.TrimSpace(r.FormValue("agent"))
 	sessionID := strings.TrimSpace(r.FormValue("session_id"))
+	streamID := strings.TrimSpace(r.FormValue("stream_id"))
 	conversation := []ChatMessage{{Role: "user", Content: msg}}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.taskTmpl.ExecuteTemplate(w, "task-send-fragment", taskSendView{
 		UserContent: msg,
 		SessionID:   sessionID,
+		StreamID:    streamID,
 	}); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
@@ -101,25 +104,25 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(s.asyncContext())
 	go func() {
 		defer cancel()
-		s.streamTaskEvents(ctx, runner, agent, sessionID, conversation)
+		s.streamTaskEvents(ctx, runner, agent, sessionID, streamID, conversation)
 	}()
 }
 
-func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent, sessionID string, conversation []ChatMessage) {
+func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent, sessionID, streamID string, conversation []ChatMessage) {
 	newID, evch, err := runner.RunTask(ctx, agent, sessionID, conversation)
 	if err != nil {
-		s.broadcastTaskSSE(renderTaskSSE("task-event", s.renderTaskEvent(agentloop.Event{Type: agentloop.EvtError, Content: err.Error(), Terminate: agentloop.EvtError})), true)
+		s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(agentloop.Event{Type: agentloop.EvtError, Content: err.Error(), Terminate: agentloop.EvtError})), true)
 		return
 	}
 	if newID != "" && newID != sessionID {
-		s.broadcastTaskSSE(fmt.Sprintf("event: task-session\ndata: %s\n\n", sseData(fmt.Sprintf(`<input type="hidden" id="task-session-input" name="session_id" hx-swap-oob="true" value="%s">`, newID))), true)
+		s.broadcastTaskSSE(streamID, fmt.Sprintf("event: task-session\ndata: %s\n\n", sseData(fmt.Sprintf(`<input type="hidden" id="task-session-input" name="session_id" hx-swap-oob="true" value="%s">`, newID))), true)
 	}
 	for ev := range evch {
 		switch ev.Type {
 		case agentloop.EvtText:
-			s.broadcastTaskSSE(renderTaskSSE("task-text", s.renderTaskText(ev.Content)), false)
+			s.broadcastTaskSSE(streamID, renderTaskSSE("task-text", s.renderTaskText(ev.Content)), false)
 		default:
-			s.broadcastTaskSSE(renderTaskSSE("task-event", s.renderTaskEvent(ev)), true)
+			s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(ev)), true)
 		}
 	}
 }
@@ -138,8 +141,9 @@ func (s *Server) handleTaskEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
+	streamID := strings.TrimSpace(r.URL.Query().Get("stream_id"))
 	ch := make(chan string, 8)
-	s.taskSSEClients.Store(ch, struct{}{})
+	s.taskSSEClients.Store(ch, streamID)
 	defer s.taskSSEClients.Delete(ch)
 	for {
 		select {
@@ -179,10 +183,14 @@ func renderTaskSSE(eventName, html string) string {
 
 const taskSSEReliableSendTimeout = 2 * time.Second
 
-func (s *Server) broadcastTaskSSE(frame string, reliable bool) {
-	s.taskSSEClients.Range(func(key, _ any) bool {
+func (s *Server) broadcastTaskSSE(streamID, frame string, reliable bool) {
+	s.taskSSEClients.Range(func(key, value any) bool {
 		ch, ok := key.(chan string)
 		if !ok {
+			return true
+		}
+		clientStreamID, _ := value.(string)
+		if streamID != "" && clientStreamID != streamID {
 			return true
 		}
 		if !reliable {
@@ -204,7 +212,8 @@ func (s *Server) broadcastTaskSSE(frame string, reliable bool) {
 // taskView is the template context for the /task page.
 type taskView struct {
 	basePage
-	Error string
+	Error    string
+	StreamID string
 }
 
 func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
