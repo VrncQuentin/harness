@@ -342,7 +342,6 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "path must not contain ..", http.StatusBadRequest)
 		return
 	}
-	episodesRoot := episodesRoot
 	if !strings.HasPrefix(p, episodesRoot+"/") {
 		http.Error(w, "path must be under "+episodesRoot+"/", http.StatusBadRequest)
 		return

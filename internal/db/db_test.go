@@ -1,7 +1,9 @@
 package db
 
 import (
+	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +82,40 @@ func TestOpen_Idempotent(t *testing.T) {
 	}
 }
 
+func TestOpen_RejectsUnexpectedMigrationVersion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "harness.db")
+
+	d, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	sqldb, err := sql.Open("sqlite", foreignKeysDSN(path))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := sqldb.Exec(`UPDATE schema_migrations SET version = ?, dirty = ?`, 16, false); err != nil {
+		t.Fatalf("set migration version: %v", err)
+	}
+	if err := sqldb.Close(); err != nil {
+		t.Fatalf("sql Close: %v", err)
+	}
+
+	_, err = Open(path)
+	if err == nil {
+		t.Fatal("expected migration version mismatch error")
+	}
+	if !strings.Contains(err.Error(), "migration version 16") {
+		t.Fatalf("error %q does not mention recorded version", err)
+	}
+	if !strings.Contains(err.Error(), "delete harness.db and restart") {
+		t.Fatalf("error %q does not tell the user how to recover", err)
+	}
+}
 func TestPeekUIPort(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "harness.db")
