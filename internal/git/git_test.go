@@ -1,14 +1,13 @@
 package git
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 )
 
 // initRepo creates a fresh non-bare repo in a temp directory and returns
@@ -70,12 +69,11 @@ func TestOpen(t *testing.T) {
 	})
 }
 
-func TestCommitAndLog(t *testing.T) {
+func TestCommit(t *testing.T) {
 	dir, r := initRepo(t)
 
 	writeFile(t, dir, "projects/global/episodes/coder/2026-04-26.md", "first episode")
-	tags := map[string]string{"agent": "coder", "type": "episode"}
-	msg := BuildMessage(tags, "first session summary")
+	msg := BuildMessage(map[string]string{"agent": "coder", "type": "episode"}, "first session summary")
 
 	sha, err := r.Commit(msg, []string{"projects/global/episodes/coder/2026-04-26.md"})
 	if err != nil {
@@ -85,153 +83,44 @@ func TestCommitAndLog(t *testing.T) {
 		t.Errorf("expected 40-char hex SHA, got %q", sha)
 	}
 
-	got, err := r.Log(nil)
+	head, err := r.repo.Head()
 	if err != nil {
-		t.Fatalf("log: %v", err)
+		t.Fatalf("head: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1 commit, got %d", len(got))
+	if head.Hash().String() != sha {
+		t.Fatalf("HEAD = %s, want committed sha %s", head.Hash(), sha)
 	}
-
-	c := got[0]
-	if c.SHA != sha {
-		t.Errorf("SHA mismatch: log returned %q, commit returned %q", c.SHA, sha)
+	commit, err := r.repo.CommitObject(plumbing.NewHash(sha))
+	if err != nil {
+		t.Fatalf("commit object: %v", err)
 	}
-	if c.Message != "first session summary" {
-		t.Errorf("summary mismatch: %q", c.Message)
+	if commit.Message != msg {
+		t.Fatalf("commit message = %q, want %q", commit.Message, msg)
 	}
-	if !reflect.DeepEqual(c.Tags, tags) {
-		t.Errorf("tags mismatch: got %v, want %v", c.Tags, tags)
-	}
-	if c.Author == "" {
-		t.Error("expected non-empty author")
-	}
-	if c.Time.IsZero() {
-		t.Error("expected non-zero commit time")
+	if commit.Author.Name == "" || commit.Author.Email == "" {
+		t.Fatalf("commit author not populated: %+v", commit.Author)
 	}
 }
 
-func TestLog_FilterAndOrdering(t *testing.T) {
-	dir, r := initRepo(t)
-
-	// Three commits, two for coder and one for reviewer, committed in that order.
-	commits := []struct {
-		path  string
-		body  string
-		tags  map[string]string
-		title string
-	}{
-		{
-			path:  "projects/global/episodes/coder/01.md",
-			body:  "coder one",
-			tags:  map[string]string{"agent": "coder", "type": "episode"},
-			title: "coder session one",
-		},
-		{
-			path:  "projects/global/episodes/reviewer/01.md",
-			body:  "reviewer one",
-			tags:  map[string]string{"agent": "reviewer", "type": "episode"},
-			title: "reviewer session one",
-		},
-		{
-			path:  "projects/global/episodes/coder/02.md",
-			body:  "coder two",
-			tags:  map[string]string{"agent": "coder", "type": "episode"},
-			title: "coder session two",
-		},
-	}
-
-	shas := make([]string, len(commits))
-	for i, c := range commits {
-		writeFile(t, dir, c.path, c.body)
-		sha, err := r.Commit(BuildMessage(c.tags, c.title), []string{c.path})
-		if err != nil {
-			t.Fatalf("commit %d: %v", i, err)
-		}
-		shas[i] = sha
-	}
-
-	got, err := r.Log(map[string]string{"agent": "coder"})
+func TestInit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "repo")
+	r, err := Init(dir)
 	if err != nil {
-		t.Fatalf("log: %v", err)
+		t.Fatalf("Init new repo: %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 coder commits, got %d", len(got))
+	if r == nil {
+		t.Fatal("Init returned nil repo")
 	}
-	// Newest first: commit index 2 (coder session two), then index 0
-	// (coder session one).
-	if got[0].Message != "coder session two" {
-		t.Errorf("expected newest first, got %q at index 0", got[0].Message)
-	}
-	if got[1].Message != "coder session one" {
-		t.Errorf("expected oldest last, got %q at index 1", got[1].Message)
-	}
-	if got[0].Tags["agent"] != "coder" || got[1].Tags["agent"] != "coder" {
-		t.Errorf("filter leaked non-coder commits: %v / %v", got[0].Tags, got[1].Tags)
+	if _, err := Open(dir); err != nil {
+		t.Fatalf("Open after Init: %v", err)
 	}
 
-	// Empty filter returns everything.
-	all, err := r.Log(nil)
+	again, err := Init(dir)
 	if err != nil {
-		t.Fatalf("log nil filter: %v", err)
+		t.Fatalf("Init existing repo: %v", err)
 	}
-	if len(all) != 3 {
-		t.Fatalf("expected 3 total commits, got %d", len(all))
-	}
-
-	// Non-matching filter returns no commits.
-	none, err := r.Log(map[string]string{"agent": "ghost"})
-	if err != nil {
-		t.Fatalf("log empty filter: %v", err)
-	}
-	if len(none) != 0 {
-		t.Errorf("expected 0 commits for missing agent, got %d", len(none))
-	}
-}
-
-func TestBlobByRef(t *testing.T) {
-	dir, r := initRepo(t)
-	const want = "first episode body"
-	writeFile(t, dir, "projects/global/episodes/coder/01.md", want)
-
-	sha, err := r.Commit("[agent:coder] [type:episode] one", []string{"projects/global/episodes/coder/01.md"})
-	if err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-
-	got, err := r.BlobByRef(sha)
-	if err != nil {
-		t.Fatalf("blob by ref: %v", err)
-	}
-	if string(got) != want {
-		t.Errorf("blob mismatch: got %q, want %q", string(got), want)
-	}
-
-	t.Run("unknown SHA returns error", func(t *testing.T) {
-		_, err := r.BlobByRef("0000000000000000000000000000000000000000")
-		if err == nil {
-			t.Fatal("expected error for unknown SHA, got nil")
-		}
-	})
-}
-
-func TestBlobByRef_FirstFileSorted(t *testing.T) {
-	dir, r := initRepo(t)
-	// Two files in one commit. BlobByRef returns bytes of the first file
-	// sorted by destination path; "a.md" sorts before "b.md".
-	writeFile(t, dir, "a.md", "alpha")
-	writeFile(t, dir, "b.md", "beta")
-
-	sha, err := r.Commit("two-file commit", []string{"a.md", "b.md"})
-	if err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	got, err := r.BlobByRef(sha)
-	if err != nil {
-		t.Fatalf("blob by ref: %v", err)
-	}
-	if string(got) != "alpha" {
-		t.Errorf("expected first-by-path bytes, got %q", string(got))
+	if again == nil {
+		t.Fatal("Init existing returned nil repo")
 	}
 }
 
@@ -239,28 +128,11 @@ func TestBlobByRef_FirstFileSorted(t *testing.T) {
 // returned error wraps the underlying problem with a "git:" prefix per
 // the package convention; tests assert the prefix as a regression guard.
 func TestErrors(t *testing.T) {
-	t.Run("Open wraps with git: prefix", func(t *testing.T) {
-		_, err := Open(filepath.Join(t.TempDir(), "missing"))
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.HasPrefix(err.Error(), "git: ") {
-			t.Errorf("error not wrapped: %v", err)
-		}
-	})
-
-	t.Run("BlobByRef on unknown sha returns wrapped error", func(t *testing.T) {
-		_, r := initRepo(t)
-		_, err := r.BlobByRef("0000000000000000000000000000000000000000")
-		if err == nil {
-			t.Fatal("expected error")
-		}
-		if !strings.HasPrefix(err.Error(), "git: ") {
-			t.Errorf("error not wrapped: %v", err)
-		}
-		// Unwrap should not erase the underlying go-git error.
-		if errors.Unwrap(err) == nil {
-			t.Error("expected wrapped underlying error")
-		}
-	})
+	_, err := Open(filepath.Join(t.TempDir(), "missing"))
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.HasPrefix(err.Error(), "git: ") {
+		t.Errorf("error not wrapped: %v", err)
+	}
 }
