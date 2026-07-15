@@ -288,7 +288,9 @@ func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 	}
 
 	registry := tools.NewRegistry()
-	tools.RegisterBuiltins(registry)
+	if err := tools.RegisterBuiltins(registry); err != nil {
+		t.Fatalf("RegisterBuiltins: %v", err)
+	}
 	ad := &taskRunnerAdapter{rt: rt, registry: registry}
 
 	_, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "read the file"}})

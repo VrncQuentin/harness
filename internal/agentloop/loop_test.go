@@ -55,9 +55,12 @@ func toolCallTokens(toolName, args string) []inference.Token {
 	}
 }
 
-func newTestEngine(loopCfg config.LoopConfig) *Engine {
+func newTestEngine(t *testing.T, loopCfg config.LoopConfig) *Engine {
+	t.Helper()
 	reg := tools.NewRegistry()
-	tools.RegisterBuiltins(reg)
+	if err := tools.RegisterBuiltins(reg); err != nil {
+		t.Fatalf("RegisterBuiltins: %v", err)
+	}
 	return NewEngine(&mockInferClient{}, reg, loopCfg, tools.Context{}).WithApprovals(
 		approvals.NewEvaluator(approvals.DefaultLayer()),
 	)
@@ -65,7 +68,7 @@ func newTestEngine(loopCfg config.LoopConfig) *Engine {
 
 func TestRejectDoesNotAddSessionRule(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
-	engine := newTestEngine(cfg)
+	engine := newTestEngine(t, cfg)
 
 	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
@@ -111,7 +114,7 @@ func TestRejectDoesNotAddSessionRule(t *testing.T) {
 
 func TestAllowDoesNotAddSessionRule(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
-	engine := newTestEngine(cfg)
+	engine := newTestEngine(t, cfg)
 
 	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
@@ -154,7 +157,7 @@ func TestAllowDoesNotAddSessionRule(t *testing.T) {
 
 func TestAlwaysAddsSessionRule(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
-	engine := newTestEngine(cfg)
+	engine := newTestEngine(t, cfg)
 
 	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
@@ -197,7 +200,7 @@ func TestAlwaysAddsSessionRule(t *testing.T) {
 
 func TestAlwaysForGitStatusDoesNotAllowGitPush(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, ShellExecEnabled: true}
-	engine := newTestEngine(cfg)
+	engine := newTestEngine(t, cfg)
 
 	client := &mockInferClient{tokens: toolCallTokens("shell_exec", `{"command":"git status"}`)}
 	engine.infer = client
@@ -247,7 +250,7 @@ func TestAlwaysForGitStatusDoesNotAllowGitPush(t *testing.T) {
 
 func TestDestructiveShellCmdRequiresApproval(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, ShellExecEnabled: true}
-	engine := newTestEngine(cfg)
+	engine := newTestEngine(t, cfg)
 
 	// Even with a broad shell_exec allow rule, destructive commands should Ask.
 	userLayer := approvals.Layer{
@@ -281,7 +284,9 @@ func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 		ShellExecEnabled: false,
 	}
 	reg := tools.NewRegistry()
-	tools.RegisterBuiltins(reg)
+	if err := tools.RegisterBuiltins(reg); err != nil {
+		t.Fatalf("RegisterBuiltins: %v", err)
+	}
 	engine := NewEngine(&mockInferClient{}, reg, cfg, tools.Context{})
 
 	// isToolEnabled checks config toggles.
@@ -303,7 +308,7 @@ func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 }
 
 func TestUnknownApprovalID(t *testing.T) {
-	engine := newTestEngine(config.LoopConfig{})
+	engine := newTestEngine(t, config.LoopConfig{})
 	err := engine.ApplyApproval("nonexistent", approvals.ApprovalResponse{Decision: approvals.Allowed})
 	if err == nil {
 		t.Error("expected error for unknown approval ID")
@@ -312,7 +317,7 @@ func TestUnknownApprovalID(t *testing.T) {
 
 func TestApprovalWaitTimesOut(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
-	engine := newTestEngine(cfg).WithApprovalTimeout(20 * time.Millisecond)
+	engine := newTestEngine(t, cfg).WithApprovalTimeout(20 * time.Millisecond)
 	engine.infer = &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 
 	evch := make(chan Event, 64)
@@ -342,7 +347,7 @@ func TestApprovalWaitTimesOut(t *testing.T) {
 
 func TestApprovalNeededDeliveryTimesOutWhenEventChannelIsFull(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
-	engine := newTestEngine(cfg).WithApprovalTimeout(20 * time.Millisecond)
+	engine := newTestEngine(t, cfg).WithApprovalTimeout(20 * time.Millisecond)
 	engine.infer = &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 
 	evch := make(chan Event)
@@ -353,7 +358,7 @@ func TestApprovalNeededDeliveryTimesOutWhenEventChannelIsFull(t *testing.T) {
 }
 func TestApprovalNeededEventHasCorrectFields(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
-	engine := newTestEngine(cfg)
+	engine := newTestEngine(t, cfg)
 
 	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
@@ -397,7 +402,7 @@ func TestApprovalNeededEventHasCorrectFields(t *testing.T) {
 
 func TestApprovalDeniedInjectsError(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
-	engine := newTestEngine(cfg)
+	engine := newTestEngine(t, cfg)
 
 	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
@@ -481,7 +486,7 @@ func (f *fakeLoopMetrics) ToolCallErrorRate(tool string, failed bool) error {
 
 func TestEngineRecordsLoopAndToolMetrics(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3}
-	engine := newTestEngine(cfg)
+	engine := newTestEngine(t, cfg)
 	engine.infer = &mockInferClient{tokens: toolCallTokens("file_list", `{"path":"."}`)}
 	metrics := &fakeLoopMetrics{}
 	engine.WithMetrics(metrics)
