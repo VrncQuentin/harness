@@ -359,7 +359,7 @@ func TestAssemble_CtxSizeTrimsAgainstConversationReserve(t *testing.T) {
 	}
 
 	limit := cfg.CtxSize - cfg.ConversationReserve
-	fixed := stats.Rules + stats.User + stats.ProjectRules + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes
+	fixed := stats.Rules + stats.User + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes
 	if fixed+stats.Conversation > limit {
 		t.Errorf("layers+conversation (%d) exceed ctx limit (%d)", fixed+stats.Conversation, limit)
 	}
@@ -417,7 +417,7 @@ func TestAssemble_TotalEqualsSum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
-	want := stats.Rules + stats.User + stats.ProjectRules + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
+	want := stats.Rules + stats.User + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
 	if stats.Total != want {
 		t.Errorf("Total = %d, want sum = %d", stats.Total, want)
 	}
@@ -532,66 +532,56 @@ func TestAssemble_AgentRulesCountedAgainstCtxLimit(t *testing.T) {
 	}
 }
 
-func TestAssemble_ProjectRulesOrdering(t *testing.T) {
+func TestAssemble_ProjectScopedLayersUseActiveProject(t *testing.T) {
 	asm := newProjectAssembler(t, map[string]string{
 		"rules.md":                "GLOBALRULES",
-		"user.md":                 "USERBODY",
+		"user.md":                 "GLOBALUSER",
+		"facts.md":                "GLOBALFACTS",
 		"agents/coder/persona.md": "PERSONABODY",
 	}, map[string]string{
 		"rules.md": "PROJECTRULES",
+		"user.md":  "PROJECTUSER",
+		"facts.md": "PROJECTFACTS",
 	}, baseCfg())
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
 	sys := msgs[0].Content
-	userIdx := strings.Index(sys, "USERBODY")
-	projIdx := strings.Index(sys, "PROJECTRULES")
-	persIdx := strings.Index(sys, "PERSONABODY")
-	if userIdx < 0 || projIdx < 0 || persIdx < 0 {
-		t.Fatalf("layer body missing; user=%d project=%d persona=%d\n%s", userIdx, projIdx, persIdx, sys)
+	for _, want := range []string{"PROJECTRULES", "PROJECTUSER", "PROJECTFACTS", "PERSONABODY"} {
+		if !strings.Contains(sys, want) {
+			t.Errorf("project-scoped layer %q missing from prompt:\n%s", want, sys)
+		}
 	}
-	if userIdx >= projIdx || projIdx >= persIdx {
-		t.Errorf("expected user < project rules < persona; got user=%d project=%d persona=%d", userIdx, projIdx, persIdx)
+	for _, leaked := range []string{"GLOBALRULES", "GLOBALUSER", "GLOBALFACTS"} {
+		if strings.Contains(sys, leaked) {
+			t.Errorf("global project layer %q leaked into active project prompt:\n%s", leaked, sys)
+		}
+	}
+
+	rulesIdx := strings.Index(sys, "PROJECTRULES")
+	userIdx := strings.Index(sys, "PROJECTUSER")
+	personaIdx := strings.Index(sys, "PERSONABODY")
+	factsIdx := strings.Index(sys, "PROJECTFACTS")
+	if rulesIdx < 0 || userIdx < 0 || personaIdx < 0 || factsIdx < 0 {
+		t.Fatalf("layer body missing; rules=%d user=%d persona=%d facts=%d\n%s", rulesIdx, userIdx, personaIdx, factsIdx, sys)
+	}
+	if rulesIdx >= userIdx || userIdx >= personaIdx || personaIdx >= factsIdx {
+		t.Errorf("expected rules < user < persona < facts; got rules=%d user=%d persona=%d facts=%d", rulesIdx, userIdx, personaIdx, factsIdx)
 	}
 }
 
-func TestAssemble_ProjectRulesUseActiveProjectSlug(t *testing.T) {
-	asm := newProjectAssembler(t, map[string]string{
+func TestAssemble_ProjectRulesRequiredFromActiveProject(t *testing.T) {
+	global := writeRepo(t, map[string]string{
 		"rules.md":                "GLOBALRULES",
 		"agents/coder/persona.md": "PERSONA",
-	}, map[string]string{
-		"rules.md": "DTPROJECT",
-	}, baseCfg())
-	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
-	if err != nil {
-		t.Fatalf("Assemble: %v", err)
-	}
-	sys := msgs[0].Content
-	if !strings.Contains(sys, "DTPROJECT") {
-		t.Errorf("expected active project rules, got:\n%s", sys)
-	}
-	if strings.Contains(sys, "GLOBALPROJECT") {
-		t.Errorf("global project rules leaked into dt prompt:\n%s", sys)
-	}
-}
-
-func TestAssemble_ProjectRulesOptionalMissing(t *testing.T) {
-	mem := writeRepo(t, map[string]string{
-		"rules.md":                "RULES",
-		"agents/coder/persona.md": "PERSONA",
 	})
-	asm := newAssembler(t, mem, baseCfg())
-	msgs, stats, err := asm.Assemble(context.Background(), "coder", nil)
-	if err != nil {
-		t.Fatalf("Assemble: %v", err)
-	}
-	sys := msgs[0].Content
-	if strings.Contains(sys, "# Project Rules") {
-		t.Errorf("expected # Project Rules to be absent when file missing; got:\n%s", sys)
-	}
-	if stats.ProjectRules != 0 {
-		t.Errorf("ProjectRules tokens = %d, want 0 when missing", stats.ProjectRules)
+	active := writeRepo(t, nil)
+	reg := agent.NewDiskRegistry(global, func() string { return "coder" }, func(string) error { return nil })
+	asm := NewProjectDiskAssembler(global, active, reg, baseCfg()).WithProjectSlug("dt")
+	_, _, err := asm.Assemble(context.Background(), "coder", nil)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("expected missing active rules.md to be required, got %v", err)
 	}
 }
 
@@ -621,22 +611,24 @@ func TestAssemble_InvalidAgentNameRejected(t *testing.T) {
 	}
 }
 
-func TestAssemble_ProjectRulesStatsAndTotal(t *testing.T) {
+func TestAssemble_ProjectScopedRulesStatsAndTotal(t *testing.T) {
 	asm := newProjectAssembler(t, map[string]string{
-		"rules.md":                "RULES",
-		"user.md":                 "USER",
+		"rules.md":                "GLOBALRULES",
+		"user.md":                 "GLOBALUSER",
 		"agents/coder/persona.md": "PERSONA",
 	}, map[string]string{
 		"rules.md": "PROJECT",
+		"user.md":  "USER",
+		"facts.md": "FACTS",
 	}, baseCfg())
 	_, stats, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
-	if stats.ProjectRules == 0 {
-		t.Errorf("ProjectRules tokens = 0, want > 0")
+	if stats.Rules == 0 || stats.User == 0 || stats.Facts == 0 {
+		t.Errorf("project-scoped stats missing counts: %+v", stats)
 	}
-	want := stats.Rules + stats.User + stats.ProjectRules + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
+	want := stats.Rules + stats.User + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
 	if stats.Total != want {
 		t.Errorf("Total = %d, want sum = %d", stats.Total, want)
 	}
@@ -647,9 +639,7 @@ func TestAssemble_ProjectRulesNotTrimmed(t *testing.T) {
 	cfg.MemoryTokenBudget = 10
 	asm := newProjectAssembler(t, map[string]string{
 		"rules.md":                strings.Repeat("R", 400),
-		"user.md":                 strings.Repeat("U", 400),
 		"agents/coder/persona.md": strings.Repeat("P", 400),
-		"agents/coder/rules.md":   strings.Repeat("A", 400),
 	}, map[string]string{
 		"rules.md": strings.Repeat("P", 400),
 	}, cfg)
@@ -659,8 +649,8 @@ func TestAssemble_ProjectRulesNotTrimmed(t *testing.T) {
 		t.Fatalf("Assemble: %v", err)
 	}
 	sys := msgs[0].Content
-	if !strings.Contains(sys, "# Project Rules") {
-		t.Errorf("mandatory # Project Rules missing when budget pressure is high")
+	if !strings.Contains(sys, "# Rules") {
+		t.Errorf("mandatory # Rules missing when budget pressure is high")
 	}
 }
 
@@ -671,7 +661,7 @@ func TestAssemble_CtxSizeTrimsEpisodesWithProjectRules(t *testing.T) {
 		MemoryTokenBudget:   1000,
 	}
 	asm := newProjectAssembler(t, map[string]string{
-		"rules.md":                "r",
+		"rules.md":                "global",
 		"agents/coder/persona.md": "p",
 	}, map[string]string{
 		"rules.md":             strings.Repeat("p", 400),
@@ -685,8 +675,8 @@ func TestAssemble_CtxSizeTrimsEpisodesWithProjectRules(t *testing.T) {
 	if stats.Episodes != 0 {
 		t.Errorf("expected all episodes trimmed when project rules consume ctx budget; episodes=%d", stats.Episodes)
 	}
-	if stats.ProjectRules == 0 {
-		t.Errorf("expected project rules to be counted; ProjectRules=%d", stats.ProjectRules)
+	if stats.Rules == 0 {
+		t.Errorf("expected project rules to be counted; Rules=%d", stats.Rules)
 	}
 }
 
@@ -733,7 +723,7 @@ func TestAssemble_ProjectAgentReadErrorPropagates(t *testing.T) {
 		"agents/coder/persona.md": "GLOBALPERSONA",
 	})
 	active := errReader{
-		Repo:   writeRepo(t, nil),
+		Repo:   writeRepo(t, map[string]string{"rules.md": "PROJECTRULES"}),
 		failOn: "agents/coder/persona.md",
 	}
 	reg := agent.NewDiskRegistry(global, func() string { return "coder" }, func(string) error { return nil })
@@ -746,16 +736,18 @@ func TestAssemble_ProjectAgentReadErrorPropagates(t *testing.T) {
 		t.Errorf("expected synthetic read error in message, got %v", err)
 	}
 }
+
 func TestAssemble_GlobalAgentFallbackReadErrorPropagates(t *testing.T) {
-	mem := errReader{
+	global := errReader{
 		Repo: writeRepo(t, map[string]string{
 			"rules.md":                "RULES",
 			"agents/coder/persona.md": "GLOBALPERSONA",
 		}),
 		failOn: "agents/coder/persona.md",
 	}
-	reg := agent.NewDiskRegistry(mem, func() string { return "coder" }, func(string) error { return nil })
-	asm := NewDiskAssembler(mem, reg, baseCfg()).WithProjectSlug("dt")
+	active := writeRepo(t, map[string]string{"rules.md": "PROJECTRULES"})
+	reg := agent.NewDiskRegistry(global, func() string { return "coder" }, func(string) error { return nil })
+	asm := NewProjectDiskAssembler(global, active, reg, baseCfg()).WithProjectSlug("dt")
 	_, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err == nil {
 		t.Fatal("expected error from failing global fallback read")
@@ -765,13 +757,14 @@ func TestAssemble_GlobalAgentFallbackReadErrorPropagates(t *testing.T) {
 	}
 }
 
-func TestAssemble_ProjectPersonaOverrideInheritsGlobalRulesNotes(t *testing.T) {
+func TestAssemble_ProjectPersonaOverrideInheritsGlobalDefinitionRulesOnly(t *testing.T) {
 	asm := newProjectAssembler(t, map[string]string{
 		"rules.md":                "RULES",
 		"agents/coder/persona.md": "GLOBALPERSONA",
 		"agents/coder/rules.md":   "GLOBALRULES",
 		"agents/coder/notes.md":   "GLOBALNOTES",
 	}, map[string]string{
+		"rules.md":                "PROJECTRULES",
 		"agents/coder/persona.md": "DTPERSONA",
 	}, baseCfg())
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
@@ -788,8 +781,8 @@ func TestAssemble_ProjectPersonaOverrideInheritsGlobalRulesNotes(t *testing.T) {
 	if !strings.Contains(sys, "GLOBALRULES") {
 		t.Errorf("expected global rules inherited, got:\n%s", sys)
 	}
-	if !strings.Contains(sys, "GLOBALNOTES") {
-		t.Errorf("expected global notes inherited, got:\n%s", sys)
+	if strings.Contains(sys, "GLOBALNOTES") {
+		t.Errorf("global notes leaked into project prompt:\n%s", sys)
 	}
 }
 
@@ -797,6 +790,7 @@ func TestAssemble_ProjectOnlyAgentSuccess(t *testing.T) {
 	asm := newProjectAssembler(t, map[string]string{
 		"rules.md": "RULES",
 	}, map[string]string{
+		"rules.md":                "PROJECTRULES",
 		"agents/coder/persona.md": "DTPERSONA",
 	}, baseCfg())
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)
@@ -811,7 +805,7 @@ func TestAssemble_ProjectOnlyAgentSuccess(t *testing.T) {
 
 func TestAssemble_ProjectOnlyAgentNotLeaking(t *testing.T) {
 	global := writeRepo(t, map[string]string{"rules.md": "RULES"})
-	other := writeRepo(t, nil)
+	other := writeRepo(t, map[string]string{"rules.md": "OTHERRULES"})
 	reg := agent.NewDiskRegistry(global, func() string { return "coder" }, func(string) error { return nil })
 	asm := NewProjectDiskAssembler(global, other, reg, baseCfg()).WithProjectSlug("other")
 	_, _, err := asm.Assemble(context.Background(), "coder", nil)
@@ -829,6 +823,7 @@ func TestAssemble_EmptyProjectRulesSuppressGlobal(t *testing.T) {
 		"agents/coder/persona.md": "PERSONA",
 		"agents/coder/rules.md":   "GLOBALRULES",
 	}, map[string]string{
+		"rules.md":              "PROJECTRULES",
 		"agents/coder/rules.md": "",
 	}, baseCfg())
 	msgs, _, err := asm.Assemble(context.Background(), "coder", nil)

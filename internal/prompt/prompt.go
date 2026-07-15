@@ -54,14 +54,13 @@ const (
 // its file is missing or empty, so these are only written when the
 // layer contributes content.
 const (
-	rulesHeader        = "# Rules"
-	userHeader         = "# User"
-	projectRulesHeader = "# Project Rules"
-	personaHeader      = "# Persona"
-	agentRulesHeader   = "# Agent Rules"
-	factsHeader        = "# Facts"
-	notesHeader        = "# Notes"
-	episodesHeader     = "# Episodes"
+	rulesHeader      = "# Rules"
+	userHeader       = "# User"
+	personaHeader    = "# Persona"
+	agentRulesHeader = "# Agent Rules"
+	factsHeader      = "# Facts"
+	notesHeader      = "# Notes"
+	episodesHeader   = "# Episodes"
 )
 
 // LayerStats reports token counts per layer and the overall total for
@@ -70,7 +69,6 @@ const (
 type LayerStats struct {
 	Rules        int
 	User         int
-	ProjectRules int
 	Persona      int
 	AgentRules   int
 	Facts        int
@@ -113,9 +111,8 @@ func NewDiskAssembler(mem memory.Reader, reg agent.Registry, cfg config.PromptCo
 }
 
 // NewProjectDiskAssembler returns an assembler over two physical layout-v2
-// repos: globalMem provides always-on rules/user/facts and fallback agents,
-// while activeMem provides the active project's rules, agent overrides, and
-// episodes.
+// repos. activeMem provides the active project's prompt layers, notes, and
+// episodes; globalMem remains only the fallback library for agent definitions.
 func NewProjectDiskAssembler(globalMem, activeMem memory.Reader, reg agent.Registry, cfg config.PromptConfig) *DiskAssembler {
 	if activeMem == nil {
 		activeMem = globalMem
@@ -227,7 +224,7 @@ func (a *DiskAssembler) Assemble(ctx context.Context, agentName string, conversa
 	convoTokens := a.countMessages(conversation)
 	stats := a.trim(logger, &layers, convoTokens)
 	stats.Conversation = convoTokens
-	stats.Total = stats.Rules + stats.User + stats.ProjectRules + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
+	stats.Total = stats.Rules + stats.User + stats.Persona + stats.AgentRules + stats.Facts + stats.Notes + stats.Episodes + stats.Conversation
 
 	system := renderSystem(layers)
 	out := make([]inference.Message, 0, len(conversation)+1)
@@ -240,7 +237,6 @@ func (a *DiskAssembler) Assemble(ctx context.Context, agentName string, conversa
 		"agent", agentName,
 		"rules_tokens", stats.Rules,
 		"user_tokens", stats.User,
-		"project_rules_tokens", stats.ProjectRules,
 		"persona_tokens", stats.Persona,
 		"agent_rules_tokens", stats.AgentRules,
 		"facts_tokens", stats.Facts,
@@ -271,7 +267,6 @@ func (a *DiskAssembler) loggerFor(ctx context.Context) *slog.Logger {
 type rawLayers struct {
 	rules             string
 	user              string
-	projectRules      string
 	persona           string
 	agentRules        string
 	facts             string
@@ -294,13 +289,13 @@ type episode struct {
 func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query string) (rawLayers, error) {
 	var lay rawLayers
 
-	rules, err := a.readRequired(a.globalMem, rulesPath)
+	rules, err := a.readRequired(a.activeMem, rulesPath)
 	if err != nil {
 		return rawLayers{}, err
 	}
 	lay.rules = rules
 
-	user, err := a.readOptional(a.globalMem, userPath)
+	user, err := a.readOptional(a.activeMem, userPath)
 	if err != nil {
 		return rawLayers{}, err
 	}
@@ -313,14 +308,6 @@ func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query 
 	if err := project.ValidateSlug(slug); err != nil {
 		return rawLayers{}, fmt.Errorf("prompt: invalid project slug %q: %w", slug, err)
 	}
-	if slug != project.GlobalSlug {
-		projectRules, err := a.readOptional(a.activeMem, rulesPath)
-		if err != nil {
-			return rawLayers{}, err
-		}
-		lay.projectRules = projectRules
-	}
-
 	if agentName != "" {
 		if err := agent.ValidateName(agentName); err != nil {
 			return rawLayers{}, fmt.Errorf("prompt: invalid agent name %q: %w", agentName, err)
@@ -337,7 +324,7 @@ func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query 
 			globalExists = true
 		}
 
-		persona, personaFound, err := a.resolveAgentFile(slug, agentName, "persona.md", globalAgent, globalExists)
+		persona, personaFound, err := a.resolveAgentFile(agentName, "persona.md", globalAgent, globalExists)
 		if err != nil {
 			return rawLayers{}, err
 		}
@@ -346,13 +333,13 @@ func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query 
 		}
 		lay.persona = persona
 
-		agentRules, _, err := a.resolveAgentFile(slug, agentName, "rules.md", globalAgent, globalExists)
+		agentRules, _, err := a.resolveAgentFile(agentName, "rules.md", globalAgent, globalExists)
 		if err != nil {
 			return rawLayers{}, err
 		}
 		lay.agentRules = agentRules
 
-		notes, _, err := a.resolveAgentFile(slug, agentName, "notes.md", globalAgent, globalExists)
+		notes, _, err := a.resolveAgentFile(agentName, "notes.md", globalAgent, globalExists)
 		if err != nil {
 			return rawLayers{}, err
 		}
@@ -366,7 +353,7 @@ func (a *DiskAssembler) loadLayers(ctx context.Context, agentName string, query 
 		lay.episodesBestFirst = bestFirst
 	}
 
-	facts, err := a.readOptional(a.globalMem, factsPath)
+	facts, err := a.readOptional(a.activeMem, factsPath)
 	if err != nil {
 		return rawLayers{}, err
 	}
@@ -465,16 +452,17 @@ func (a *DiskAssembler) readOptional(mem memory.Reader, p string) (string, error
 	return string(b), nil
 }
 
-func (a *DiskAssembler) resolveAgentFile(slug, agentName, fileName string, globalAgent agent.Agent, globalExists bool) (string, bool, error) {
+func (a *DiskAssembler) resolveAgentFile(agentName, fileName string, globalAgent agent.Agent, globalExists bool) (string, bool, error) {
 	projPath := path.Join("agents", agentName, fileName)
-	if slug != project.GlobalSlug {
-		b, err := a.activeMem.Read(projPath)
-		if err == nil {
-			return string(b), true, nil
-		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return "", false, fmt.Errorf("prompt: read project agent file %s: %w", projPath, err)
-		}
+	b, err := a.activeMem.Read(projPath)
+	if err == nil {
+		return string(b), true, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return "", false, fmt.Errorf("prompt: read project agent file %s: %w", projPath, err)
+	}
+	if fileName == "notes.md" {
+		return "", false, nil
 	}
 
 	if globalExists {
@@ -581,7 +569,7 @@ func trimEpisode(lay *rawLayers) episode {
 // totalFixed returns the sum of all layer tokens except conversation,
 // used under the ctx_size guardrail.
 func (a *DiskAssembler) totalFixed(s *LayerStats) int {
-	return s.Rules + s.User + s.ProjectRules + s.Persona + s.AgentRules + s.Facts + s.Notes + s.Episodes
+	return s.Rules + s.User + s.Persona + s.AgentRules + s.Facts + s.Notes + s.Episodes
 }
 
 // statsFor recounts layer tokens from the current raw layers.
@@ -589,7 +577,6 @@ func (a *DiskAssembler) statsFor(lay *rawLayers) LayerStats {
 	var s LayerStats
 	s.Rules = a.tokenizer(lay.rules)
 	s.User = a.tokenizer(lay.user)
-	s.ProjectRules = a.tokenizer(lay.projectRules)
 	s.Persona = a.tokenizer(lay.persona)
 	s.AgentRules = a.tokenizer(lay.agentRules)
 	s.Facts = a.tokenizer(lay.facts)
@@ -607,7 +594,6 @@ func renderSystem(lay rawLayers) string {
 	var b strings.Builder
 	writeSection(&b, rulesHeader, lay.rules)
 	writeSection(&b, userHeader, lay.user)
-	writeSection(&b, projectRulesHeader, lay.projectRules)
 	writeSection(&b, personaHeader, lay.persona)
 	writeSection(&b, agentRulesHeader, lay.agentRules)
 	writeSection(&b, factsHeader, lay.facts)

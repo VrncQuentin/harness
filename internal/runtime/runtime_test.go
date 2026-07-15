@@ -189,6 +189,47 @@ func TestUIAgentRegistryAdapterListTreatsMissingFilesAsEmpty(t *testing.T) {
 	}
 }
 
+func TestUIAgentRegistryAdapterUsesActiveProjectNotes(t *testing.T) {
+	global := newMemoryRepo(t, map[string]string{
+		"agents/coder/persona.md": "global persona",
+		"agents/coder/rules.md":   "global rules",
+		"agents/coder/notes.md":   "global notes",
+	})
+	active := newMemoryRepo(t, map[string]string{
+		"agents/coder/notes.md": "project notes",
+	})
+	reg := agent.NewDiskRegistry(global, func() string { return "coder" }, func(string) error { return nil })
+	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: global, activeMem: active, getProjectSlug: func() string { return "dt" }}
+
+	info, err := ad.Get("coder")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if info.Persona != "global persona" || info.Rules != "global rules" {
+		t.Fatalf("definition fallback changed: %+v", info)
+	}
+	if info.Notes != "project notes" {
+		t.Fatalf("Notes = %q, want project notes", info.Notes)
+	}
+
+	if err := ad.WriteNotes("coder", []byte("new project notes")); err != nil {
+		t.Fatalf("WriteNotes: %v", err)
+	}
+	got, err := active.Read("agents/coder/notes.md")
+	if err != nil {
+		t.Fatalf("read active notes: %v", err)
+	}
+	if string(got) != "new project notes" {
+		t.Fatalf("active notes = %q", string(got))
+	}
+	globalNotes, err := global.Read("agents/coder/notes.md")
+	if err != nil {
+		t.Fatalf("read global notes: %v", err)
+	}
+	if string(globalNotes) != "global notes" {
+		t.Fatalf("global notes changed to %q", string(globalNotes))
+	}
+}
 func TestTaskRunnerApprovalEvaluatorsDoNotShareSessionRules(t *testing.T) {
 	ad := &taskRunnerAdapter{approvalLayers: []approvals.Layer{approvals.DefaultLayer()}}
 
