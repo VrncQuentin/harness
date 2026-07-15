@@ -4,13 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 
-	gogit "github.com/go-git/go-git/v5"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
-	gitw "github.com/vrnc/harness/internal/git"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/project"
@@ -43,18 +40,9 @@ func EnsureProjectMemoryRepo(uiServer *ui.Server, store project.Store, slug stri
 		uiServer.AddStartupError(fmt.Errorf("project %s: %w", slug, err))
 		return false
 	}
-	repo, err := gitw.Init(proj.MemoryRepoPath)
-	if err != nil {
+	if err := memory.EnsureProjectRepo(proj.MemoryRepoPath, slug == project.GlobalSlug); err != nil {
 		uiServer.AddStartupError(fmt.Errorf("project memory repo %s: %w", slug, err))
 		return false
-	}
-	global := slug == project.GlobalSlug
-	if err := memory.CreateMissingProjectRepo(proj.MemoryRepoPath, global); err != nil {
-		uiServer.AddStartupError(fmt.Errorf("project memory repo layout %s: %w", slug, err))
-		return false
-	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(global)); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
-		slog.Warn("project memory repo scaffold commit", "project", slug, "err", err)
 	}
 	return true
 }
