@@ -121,6 +121,28 @@ func TestEnqueue_Full(t *testing.T) {
 	}
 }
 
+func TestEnqueue_WALAppendFailureReleasesDepthReservation(t *testing.T) {
+	walPath := filepath.Join(t.TempDir(), "queue.wal")
+	q := New(1, walPath, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := q.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer q.Stop()
+	if err := q.walFile.Close(); err != nil {
+		t.Fatalf("close WAL: %v", err)
+	}
+
+	err := q.Enqueue(Request{ID: "write-fails", Ctx: context.Background(), Response: make(chan inference.Token, 1)})
+	if err == nil {
+		t.Fatal("expected WAL append error")
+	}
+	if q.Depth() != 0 {
+		t.Fatalf("depth after failed WAL append = %d, want 0", q.Depth())
+	}
+}
+
 func TestDepth(t *testing.T) {
 	q := New(8, "", nil)
 	if q.Depth() != 0 {
