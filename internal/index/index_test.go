@@ -2,6 +2,8 @@ package index
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -78,6 +80,40 @@ func TestIndex_AddDimensionMismatch(t *testing.T) {
 	}
 }
 
+func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vectorsPath := filepath.Join(dir, vectorsFile)
+	if err := os.Mkdir(vectorsPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("bad", [][]float32{{1, 0}}); err == nil {
+		t.Fatal("expected vector append to fail when vectors path is a directory")
+	}
+	if idx.Contains("bad") {
+		t.Fatal("failed add should not remain in in-memory manifest")
+	}
+	if err := os.Remove(vectorsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("good", [][]float32{{0, 1}}); err != nil {
+		t.Fatalf("second Add: %v", err)
+	}
+
+	opened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.Contains("bad") {
+		t.Fatal("failed add was persisted by later successful Add")
+	}
+	if !opened.Contains("good") {
+		t.Fatal("successful add missing from reopened manifest")
+	}
+}
 func TestIndex_SearchDimensionMismatch(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := Create(dir, 4)
