@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"math"
 	"path"
 	"sort"
 	"strings"
@@ -28,6 +27,7 @@ import (
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/reqid"
+	"github.com/vrnc/harness/internal/retrieval"
 )
 
 // ErrAgentRequired is returned by Assemble when called with an empty
@@ -408,21 +408,14 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 		if err == nil && len(vecs) > 0 {
 			results, err := a.idx.Search(vecs[0], len(out)*2)
 			if err == nil && len(results) > 0 {
-				scores := make(map[string]float64, len(results))
-				for _, r := range results {
-					if existing, ok := scores[r.SHA]; !ok || float64(r.Score) > existing {
-						scores[r.SHA] = float64(r.Score)
-					}
-				}
-				n := float64(len(out))
+				semantic := retrieval.BestSemanticScores(results)
+				paths := make([]string, len(out))
 				for i := range out {
-					semScore := scores[extractID(out[i].path)]
-					// Exponential recency decay: newest episode (largest i
-					// in oldest-first ordering) gets 1.0, older episodes
-					// decay toward zero.
-					recScore := expDecay(len(out)-1-i, n)
-					out[i].score = a.cfg.SemanticWeight*semScore +
-						a.cfg.RecencyWeight*recScore
+					paths[i] = out[i].path
+				}
+				scores := retrieval.BlendEpisodeScores(paths, semantic, a.cfg.SemanticWeight, a.cfg.RecencyWeight)
+				for i := range out {
+					out[i].score = scores[out[i].path]
 				}
 				sort.SliceStable(out, func(i, j int) bool {
 					return out[i].score > out[j].score
@@ -641,16 +634,4 @@ func writeSection(b *strings.Builder, header, content string) {
 	b.WriteString(header)
 	b.WriteString("\n\n")
 	b.WriteString(strings.TrimRight(content, "\n"))
-}
-
-func extractID(epPath string) string {
-	base := path.Base(epPath)
-	return strings.TrimSuffix(base, ".md")
-}
-
-// expDecay returns an exponential recency score where distanceFromNewest=0
-// (most recent) gives 1.0 and older episodes decay toward zero. n is the
-// total number of episodes (> 0) used to scale the decay rate.
-func expDecay(distanceFromNewest int, n float64) float64 {
-	return math.Exp(-float64(distanceFromNewest) / n)
 }

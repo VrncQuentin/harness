@@ -25,6 +25,7 @@ import (
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
+	"github.com/vrnc/harness/internal/retrieval"
 	"github.com/vrnc/harness/internal/session"
 	"github.com/vrnc/harness/internal/tools"
 	"github.com/vrnc/harness/internal/ui"
@@ -488,7 +489,7 @@ func (s *indexScorer) ScoreEpisodes(ctx context.Context, _, _ string, query stri
 	}
 
 	for _, p := range episodePaths {
-		id := episodeID(p)
+		id := retrieval.EpisodeID(p)
 		score := out[p]
 		score.Indexed = idx.Contains(id)
 		out[p] = score
@@ -508,20 +509,13 @@ func (s *indexScorer) ScoreEpisodes(ctx context.Context, _, _ string, query stri
 	if err != nil {
 		return out, err
 	}
-	semantic := make(map[string]float64, len(results))
-	for _, r := range results {
-		if existing, ok := semantic[r.SHA]; !ok || float64(r.Score) > existing {
-			semantic[r.SHA] = float64(r.Score)
-		}
-	}
-
+	semantic := retrieval.BestSemanticScores(results)
 	oldestFirst := append([]string(nil), episodePaths...)
 	sort.Strings(oldestFirst)
-	n := float64(len(oldestFirst))
-	for i, p := range oldestFirst {
+	scores := retrieval.BlendEpisodeScores(oldestFirst, semantic, s.cfg.SemanticWeight, s.cfg.RecencyWeight)
+	for _, p := range oldestFirst {
 		score := out[p]
-		score.Score = s.cfg.SemanticWeight*semantic[episodeID(p)] +
-			s.cfg.RecencyWeight*retrievalDecay(len(oldestFirst)-1-i, n)
+		score.Score = scores[p]
 		score.HasScore = true
 		out[p] = score
 	}
@@ -685,14 +679,6 @@ func (rb *indexRebuilder) Rebuild(ctx context.Context) error {
 		rb.onRebuilt(rb.idx)
 	}
 	return nil
-}
-
-func episodeID(epPath string) string {
-	return strings.TrimSuffix(path.Base(epPath), ".md")
-}
-
-func retrievalDecay(distanceFromNewest int, n float64) float64 {
-	return math.Exp(-float64(distanceFromNewest) / n)
 }
 
 // dedupChecker implements ui.DedupChecker by embedding the candidate text and
