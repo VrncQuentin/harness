@@ -22,23 +22,41 @@ Read the architecture doc before writing any code. It defines component boundari
 cmd/
   harness/          ← main entry point, wires everything together
 internal/
+  agent/            ← agent registry (persona/rules/notes definitions)
+  agentloop/        ← native agent turn loop (tool calls, approvals, doom detection)
   api/              ← optional OpenAI-compatible HTTP server
-  embedder/         ← nomic-embed-text sidecar client
-  git/              ← go-git wrapper (memory repo)
+  approvals/        ← layered permission evaluator + destructive-command classifier
+  config/           ← config schema, defaults, validation (no SQL)
+  db/               ← SQLite persistence: config, metrics, projects, migrations
+  embedder/         ← embedding sidecar client
+  git/              ← go-git wrapper (memory repos)
+  home/             ← harness home (~/.harness) resolution
+  index/            ← flat vector index (vectors.bin + manifest.json)
   inference/        ← OpenAI-compatible HTTP client for llama-server
-  memory/           ← memory store: read/write/retrieval
-  metrics/          ← SQLite-backed metrics collection
+  logbuf/           ← in-memory log rings for the UI
+  memory/           ← memory repo access + project repo scaffolding
+  memoryops/        ← semantic-memory operations (embed-on-save, rebuild, dedup, scoring)
+  metrics/          ← typed metrics API + recorder
   proc/             ← process manager (llama-server + embedder)
+  project/          ← project model and store contract
   prompt/           ← layered prompt assembler
-  queue/            ← bounded request queue + WAL
+  queue/            ← bounded in-process request queue
+  reqid/            ← request-id propagation via context
+  retrieval/        ← blended semantic + recency episode scoring
+  runtime/          ← mutable service graph, wiring, config re-apply
   session/          ← session lifecycle
+  tools/            ← tool registry + built-in tools (sandboxed)
   tray/             ← system tray (fyne-io/systray), single-instance
   ui/               ← management web UI (net/http + html/template)
+assets/             ← embedded templates, CSS, htmx
+migrations/         ← embedded SQL schema (single squashed migration)
+pkg/httpclient/     ← shared HTTP client construction
 docs/
   architecture.md
   roadmap.md
-harness.db          ← SQLite database: config (single-row typed table) + metrics history (created on first run)
 ```
+
+`harness.db` (SQLite: config single-row typed table + metrics history + projects) lives under the harness home `~/.harness/`, created on first run. It is machine-local and never committed.
 
 ---
 
@@ -69,8 +87,8 @@ harness.db          ← SQLite database: config (single-row typed table) + metri
 - `systray` must own the main goroutine. Everything else runs in goroutines launched from `cmd/harness/main.go`.
 - The UI server and the API server are on separate ports. Never merge them.
 - **The UI server starts first, always.** It must be up before anything else is attempted. Config loading, memory repo validation, llama-server startup, embedder startup — all of this happens after the UI is serving. If anything fails, it is displayed in the UI as a setup error. The user should never need a terminal to diagnose or fix a problem.
-- There is no CLI. No subcommands. No `init-memory`. The user sets up the memory repo themselves (it is a plain git repo) and points the harness at it via the config editor in the UI.
-- All persistent state (config + metrics) lives in `harness.db` (SQLite, alongside the binary). Each milestone adds its own metrics tables — see `docs/roadmap.md` for what each milestone must instrument.
+- There is no CLI. No subcommands. Project memory repos are created and managed through the `/projects` page: an existing git directory is used as-is, a non-git directory is initialized with `go-git`, and an omitted directory defaults to `~/.harness/projects/<slug>/`.
+- All persistent state (config + metrics + projects) lives in `harness.db` (SQLite, under `~/.harness/`). The schema is a single squashed migration; schema changes edit `migrations/0001_init` in place until first release (delete `harness.db` after editing it — `db.Open` fails fast on a version mismatch).
 - `harness.db` is not committed to git. It is machine-local.
 
 ### UI
@@ -78,13 +96,13 @@ harness.db          ← SQLite database: config (single-row typed table) + metri
 - No JavaScript frameworks. No build step. No `node_modules`.
 - Static assets (CSS, htmx) embedded via `embed.FS` and compiled into the binary.
 - The status page is the first thing the user sees. If there are startup errors, it displays them as a clear checklist: what is wrong, why, and what the user needs to do to fix it. A "Retry" button re-attempts validation without restarting the binary.
-- Error states to handle explicitly in the UI: first run (no config saved yet), `harness.db` cannot be opened, missing or invalid `memory.repo_path`, llama-server binary not found, model file not found, llama-server failed to start, embedder failed to start.
+- Error states to handle explicitly in the UI: first run (no config saved yet), `harness.db` cannot be opened, project memory repo missing or invalid, llama-server binary not found, model file not found, llama-server failed to start, embedder failed to start.
 
 ### Process management
 - `systray` (fyne-io/systray) for the tray icon. It blocks `main()` — all services start before calling `systray.Run()`.
 - Single-instance enforcement via named mutex (Windows) or file lock (Linux).
 - On double-click when already running: do nothing, exit the second instance silently.
-- On Quit from tray: drain queue, flush WAL, commit any pending session, terminate child processes, exit.
+- On Quit from tray: cancel running tasks, flush live sessions (summarize + commit), drain the queue, terminate child processes, exit.
 
 ---
 
@@ -114,7 +132,7 @@ Windows builds need no external development libraries.
 2. Start UI server (port 3000) → always succeeds, browser opens if not already open
 3. Open harness.db → surface error in UI if the database cannot be opened or migrated
 4. Load config row → if the user has never saved, show the first-run CTA and stop here
-5. Validate memory repo path → surface error in UI if missing or not a git repo
+5. Validate project memory repos → surface error in UI if missing or not a git repo
 6. Start llama-server process → surface error in UI if binary missing or startup fails
 7. Start embedder sidecar → surface error in UI if binary missing or startup fails
 8. Begin health check loops for llama-server and embedder
@@ -128,56 +146,33 @@ Steps 3–9 can fail independently. The UI reflects the state of each. A "Retry"
 
 ## Config
 
-Configuration is stored as a single-row typed table (`config`) in `harness.db` next to the binary. There is no on-disk config file — the user edits settings through the `/config` page in the management UI.
+Configuration is stored as a single-row typed table (`config`) in `harness.db` under `~/.harness/`. There is no on-disk config file — the user edits settings through the `/config` page in the management UI.
 
-On first run the row is seeded with defaults (column defaults in the DDL mirror `config.Defaults()`). Until the user saves at least once, `saved_at` is NULL and the status page shows a "Set up your harness" CTA pointing at the config editor.
+On first run the row is seeded from `config.Defaults()`. Until the user saves at least once, `saved_at` is NULL and the status page shows a "Set up your harness" CTA pointing at the config editor.
 
-Required fields (validated on save): model binary, model path, embedder binary, embedder model path, model/embedder/UI ports.
+Required fields (validated on save): model binary, model path, embedder binary, embedder model path, model/embedder/UI/API ports.
 
-Schema lives in [internal/config/config.go](internal/config/config.go). The Go struct is flat per section (Model, Embedder, Memory, UI, API, Prompt, Queue, Metrics); DDL column names are snake_case with the section as prefix (e.g. `model_ctx_size`, `prompt_memory_token_budget`).
+Schema lives in [internal/config/config.go](internal/config/config.go). The Go struct is flat per section (Model, Embedder, Agent, Project, UI, API, Prompt, Queue, Metrics, Log, Loop); DDL column names are snake_case with the section as prefix (e.g. `model_ctx_size`, `prompt_memory_token_budget`).
 
 ---
 
-## Memory repo
+## Project memory repos
 
-A plain git repo the user creates and manages. The harness reads and writes it via `go-git` — no git binary required.
+One plain git repo per project under `~/.harness/projects/<slug>/` (or a user-provided directory), read and written via `go-git` — no git binary required. The `global` project is simply the project that is active by default; it behaves like any other. Prompt memory (`rules.md`, `user.md`, `facts.md`, agent notes, episodes) is always read from the **active** project's repo; the global repo's `agents/` directory additionally serves as the fallback *definition* library (`persona.md`, `rules.md` only — notes never fall back).
 
-Expected structure:
+Per-repo structure:
 ```
-memory/
-  global/                      ← cross-project base content
-    rules.md
-    user.md
-    facts.md
-  agents/                      ← global agents library (definition only)
-    coder/
-      persona.md
-      rules.md
-      notes.md
-  projects/                    ← per-project session/episode/queue/index data
-    global/                    ← system project, default scope
-      sessions.jsonl
-      queue.wal
-      episodes/
-        coder/
-          2026-04-20T14:32.md
-      index/                   ← one entry per indexable tree
-        _episodes/             ← reserved: embeddings of this project's episodes
-          vectors.bin
-          manifest.json
-        <dir-slug>/             ← embeddings of one attached directory
-          vectors.bin
-          manifest.json
-    <slug>/                    ← user-created projects (M3b)
-      rules.md
-      agents/coder/{persona.md, rules.md, notes.md}
-      sessions.jsonl
-      queue.wal
-      episodes/coder/<timestamp>.md
-      index/_episodes/{vectors.bin, manifest.json}
-      index/<dir-slug>/{vectors.bin, manifest.json}
+~/.harness/projects/<slug>/    ← git repo, one per project
+  rules.md                     ← project rules
+  user.md                      ← facts about the user (this project)
+  facts.md                     ← promoted facts (this project)
+  agents/<name>/{persona.md, rules.md, notes.md}
+  sessions.jsonl               ← append-only session log
+  episodes/<agent>/<timestamp>.md
+  index/_episodes/{vectors.bin, manifest.json}
+  artifacts/
 ```
 
 ## Current milestone
 
-Check `docs/roadmap.md`. Start at M1 and do not advance until all acceptance tests pass.
+Check `docs/roadmap.md` for the current milestone and do not advance until all of its acceptance tests pass.
