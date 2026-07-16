@@ -228,6 +228,8 @@ Responsibilities:
 - Perform cosine-similarity flat scans for top-K search.
 - Keep the on-disk format isolated from prompt and memory logic.
 
+Attached code repos are indexed by git state: each attached directory gets its own slot under the project memory repo at `index/<dir-slug>/`, and a new HEAD in one attached repo invalidates only that repo's slot. This keeps multi-repo projects unified without writing runtime memory into any source repo. (Directory-level indexing itself is deferred until directory semantic search becomes a user-facing feature — see the M5 note in the roadmap.)
+
 ### Embedder (`internal/embedder`)
 Runs llama-server as a sidecar process in --embedding mode using the configured embedding model. Same spawn/monitor pattern as the chat llama-server process — consistent failure handling, restart on crash.
 
