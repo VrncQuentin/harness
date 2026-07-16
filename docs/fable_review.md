@@ -280,6 +280,107 @@ and future changes must keep compiling. Recommendations distinguish
 
 ---
 
+## 5. Package responsibilities, boundaries, and internal/ vs pkg/
+
+Method: full import graph via `go list` (production imports only), checked
+against each package's stated responsibility in CLAUDE.md / `docs/architecture.md`.
+
+### 5.1 Overall verdict
+
+The package layout is **good**. 25 packages, every one with a nameable
+single responsibility; the graph is an acyclic layering with `runtime` as the
+sole composition root (imports everything, by design) and `cmd/harness`
+correctly thin (7 imports, wiring only). Leaf packages (`approvals`, `git`,
+`index`, `logbuf`, `metrics`, `project`, `reqid`, `tools`) have zero or
+near-zero internal dependencies. `prompt`'s wide fan-in (9 internal imports)
+is not a smell — assembling layers from every memory source *is* its job.
+The DTO discipline (`ui` defines narrow interfaces, `runtime/adapters.go`
+translates) is the right pattern and mostly respected. Four places break it:
+
+### 5.2 Boundary violations
+
+**5.2.1 `memoryops → ui` — a domain package imports the view layer.**
+`EpisodeScorer.ScoreEpisodes` returns `map[string]ui.RetrievalScore`
+(`internal/memoryops/memoryops.go`). Everywhere else the dependency points
+the other way: `ui` declares the interface, `runtime` adapts the domain type
+into it. Here the semantic-memory package cannot compile without the entire
+UI server package (templates, htmx assets, HTTP handlers). This is the only
+edge in the graph that points from domain toward presentation.
+**Fix:** `memoryops` defines its own `Score` type; either `ui.RetrievalScorer`
+is redeclared to match structurally or a 5-line adapter lives in `runtime`
+like every other one.
+
+**5.2.2 `ui → agentloop` — the DTO discipline is applied inconsistently.**
+`internal/ui/chat.go` documents that the UI "deliberately avoids importing
+inference or queue" and pays for it with the `ChatMessage`/`ChatToken` DTOs.
+Yet `internal/ui/task.go` imports `agentloop` and the `ui.TaskRunner`
+interface returns `<-chan agentloop.Event`, rendering the domain event type
+straight into templates. Either the isolation matters — then task events need
+the same DTO treatment as chat tokens — or it doesn't, and `ChatToken` is
+ceremony. Pick one; the current split means a change to `agentloop.Event`
+silently becomes a UI-template concern.
+
+**5.2.3 `ui → prompt` — an entire assembler for a one-line heuristic.**
+The only use is `prompt.EstimateTokens` (six call sites in
+`internal/ui/memory.go`). That single rune-count heuristic drags `prompt` —
+and transitively `agent`, `embedder`, `index`, `inference`, `retrieval` —
+into the UI's compile closure. **Fix:** move the estimator to a leaf package
+(`internal/memory` is the natural home given what's being counted, or a tiny
+`internal/tokens`), have `prompt` consume it from there.
+
+**5.2.4 `ui` handlers do project-lifecycle orchestration directly.**
+`projects_page.go` calls `memory.EnsureProjectRepo` / `memory.MoveProjectRepo`
+inline, and `activateProject` writes the config row and fires the retry
+callback itself; `status.go` runs `memory.MissingProjectRepoItems` /
+`memory.CreateMissing`. For chat, tasks, sessions, and agents the UI goes
+through runtime-owned interfaces; for project lifecycle the UI *is* the
+controller. It works, but it's the reason `ui` needs write access to
+`memory` and the config store at all. A `ProjectService` interface (wired in
+`runtime` like `ChatRunner`/`TaskRunner`) would make the projects page as
+thin as the chat page and shrink `ui`'s import list by one mutation-capable
+package.
+
+### 5.3 Cohesion notes (minor)
+
+- **`proc`** mixes a fully generic process supervisor with llama/embedder
+  specifics (`LlamaArgs`, `EmbedderArgs`). Combined with finding 1.3: if
+  `LlamaArgs` grows a `config.ModelConfig` parameter, prefer moving both
+  builders into `runtime` (their only caller) over making `proc` import
+  `config` — that keeps `proc` a clean generic package.
+- **`ui/metrics.go`** hand-rolls the Prometheus text exposition format inside
+  the UI package. Wire-format encoding of metrics belongs next to the metrics
+  types (`internal/metrics`); the UI handler would shrink to auth + `Latest()`
+  + write.
+- **`db` computes default memory-repo paths** (`defaultMemoryRepoPath` via
+  `home`). Persistence deciding filesystem defaults is a small responsibility
+  leak; harmless today, but it means path policy lives in two places (`home`
+  and `db`).
+- **`home → project`** is just `project.ValidateSlug` — fine.
+  **`config → project`** (`EffectiveModel` overlay) — fine; the overlay is
+  config logic operating on a project value.
+- **`inference` and `embedder`** are structural twins (client interface +
+  impl + health over `pkg/httpclient`). Acceptable as-is; §4.3's `Health`
+  removal shrinks both.
+
+### 5.4 internal/ vs pkg/
+
+Everything under `internal/` belongs there: this is a binary with no external
+consumers, and `internal/` is the correct default for all of it.
+
+The anomaly is **`pkg/httpclient`** — 44 lines of `http.Client` constructors,
+consumed only by `internal/*`. `pkg/` conventionally signals "importable by
+other modules," a promise nothing here needs and nothing else in the repo
+makes. **Move it to `internal/httpclient`** for consistency (one-line import
+change in four packages), or consciously keep `pkg/` as a "no harness imports"
+purity marker — but then the CLAUDE.md repo map should say so.
+
+Conversely, nothing should be *promoted* to `pkg/` today. `logbuf`, `index`,
+and `retrieval` are the only genuinely generic candidates, and promoting a
+package with zero external consumers is speculation — the same reasoning as
+§4.3's "grow the interface when the caller lands."
+
+---
+
 ## Priorities
 
 If only three things get fixed: **2.1** (delete the dead layout-v1 API and its
@@ -292,3 +393,8 @@ the `inference.Client`/`embedder.Client` interfaces (§4.3) — it deletes dead
 code in three packages and shrinks every test fake — followed by fixing the
 `SortByNewest` drift (§4.2), which is a live behavioral inconsistency, not just
 hygiene.
+
+From the architecture pass, fix **5.2.1** (`memoryops → ui`) first — it is the
+only domain-to-presentation edge in the graph and the cheapest to reverse.
+**5.2.3** (`ui → prompt` for one function) is a close second. The rest of the
+package layout is sound and should be left alone.
