@@ -179,9 +179,116 @@ which the architecture says is not an API surface. Removing them also removes
 
 ---
 
+## 4. Second pass — code that exists only for tests
+
+Method: `golang.org/x/tools/cmd/deadcode ./...` (reachability from `main`) plus
+`deadcode -test` (reachability including tests), then manual grep verification for
+interface methods and struct fields, which RTA-based deadcode cannot flag.
+`deadcode -test` reports nothing — i.e. everything below is kept alive *only* by
+tests, or by nothing at all.
+
+A knob or seam is not automatically bad — but every one of these is an
+unused public surface that fakes must implement, readers must understand,
+and future changes must keep compiling. Recommendations distinguish
+**delete** from **keep, it's a legitimate seam**.
+
+### 4.1 Fully dead — no callers anywhere, not even tests
+
+| Symbol | Location | Note |
+|---|---|---|
+| `DiskAssembler.WithLogger` | `internal/prompt/prompt.go` | Zero callers. The assembler always logs via `slog.Default()`. **Delete** (and the `logger` field defaulting stays). |
+| `Manager.LiveCount` | `internal/session/session.go` | Zero callers. Comment claims "used by … the UI status page" — no longer true. **Delete.** |
+| `ManagerDeps.Now` | `internal/session/session.go` | Never set by production **or** tests; the only consumer is its own defaulting line. Session-ID collision behavior is consequently untested. **Delete**, or keep only if a clock-controlled test is added. |
+| `ManagerDeps.SummarizerTimeout` | `internal/session/session.go` | Never set anywhere. **Delete** the field; keep the package constant. |
+| `Request.ToolChoice` / `CompletionRequest.ToolChoice` | `internal/queue/queue.go`, `internal/inference/inference.go` | Plumbed through queue → `queuedInferClient` → inference body, but no producer ever sets it: the API server does not parse it and the agent loop never sends it. Speculative plumbing. **Delete** until a caller exists. |
+| `ui.ErrTaskQueueFull`, `ui.ErrTaskCancelled` | `internal/ui/task.go` | (Also §2.4.) Never returned or checked. **Delete.** |
+
+### 4.2 Kept alive only by their own tests (deadcode-verified)
+
+- `memory.ExpectedLayout`, `memory.MissingItems`, `memory.ValidateRepo`,
+  `memory.ProjectLayout` — the legacy layout API from §2.1. The ~250 lines in
+  `layout_test.go` covering them are tests of dead code and go with them.
+- `prompt.NewDiskAssembler` — test-convenience constructor
+  (`prompt_test.go`, `session/acceptance_test.go`, `runtime_test.go`);
+  production only uses `NewProjectDiskAssembler`. **Move into a test helper**
+  or inline `NewProjectDiskAssembler(mem, mem, …)` at the three test sites.
+- `session.SortByNewest` — comment says "Used by the resume picker", but
+  `Manager.Records` inlines its own `sort.Slice` **without** the ID
+  tie-breaker. The drift this review warns about has already happened here:
+  the tested sort and the shipped sort differ. **Either** call `SortByNewest`
+  from `Records` (restoring the deterministic tie-break) **or** delete it and
+  its test. Using it is the better fix.
+
+### 4.3 Test-only knobs and interface surface on production types
+
+- **`Health(ctx)` on `inference.Client` and `embedder.Client`** — zero
+  production callers: process health is checked by `proc.Manager` over raw
+  HTTP, never through these clients. The method forces every fake client
+  (~8 test packages) to carry a stub, and `queuedInferClient` in
+  `internal/runtime/adapters.go` exists with a `raw inference.Client` field
+  *solely* to delegate this never-called method. **Delete the method from both
+  interfaces** (keep the impl as a plain method if the /status page ever wants
+  it); `queuedInferClient` loses its `raw` field.
+- **`project.Store.AddDirectory` / `RemoveDirectory`** — no production caller.
+  Directories are only written at project creation (`CreateInput.Directories`)
+  and read via `ListDirectories`; the UI has no post-create directory
+  management endpoints. These two methods widen the very interface whose width
+  causes the §1.8 type-assertion contortions. **Delete from the interface**
+  (keep the DB methods if a /projects directory editor is on the roadmap —
+  but the interface should grow when the caller lands, not before).
+- **`metrics.Store.Query(name, from, to)`** — no production caller (`Latest`
+  and `ApplyRetention` are used). Every metrics fake stubs it for nothing.
+  **Delete from the interface**; keep the DB method if graphing is planned.
+- **`memory.Reader.Exists`** — (also §2.4) interface method with no production
+  caller. **Delete from the interface**; `DirReader` can keep the concrete
+  method for tests.
+- **`agentloop.Engine.WithApprovalTimeout`** — called only from
+  `loop_test.go` to shrink the 5-minute default. Legitimate seam for testing
+  timeout behavior that would otherwise be untestable. **Keep**, but it's
+  worth a comment saying it exists for tests.
+- **`prompt.DiskAssembler.WithTokenizer`** — called only from
+  `prompt_test.go`. Same verdict as `WithApprovalTimeout`: budget-trimming
+  tests need deterministic token counts. **Keep, with an honest comment.**
+- **`proc.ManagerConfig.FailureThreshold` / `FailureWindow`** — production
+  always takes the defaults (5 / 60 s); only `proc_test.go` sets them.
+  Defensible seam for circuit-breaker tests. **Keep** — or wire them to
+  config if the breaker is meant to be operator-tunable, which would make
+  them real.
+- **`tools.Context.HTTPClient`** — production never sets it; `web_search`
+  falls back to a private 10 s-timeout client. Only `tools_test.go` injects.
+  **Keep** (only way to test the tool hermetically), but note that production
+  silently ignoring the field means the fallback client is the *real* client —
+  consider making the fallback the explicit wiring in `RunTask` instead.
+- **`taskRunnerAdapter` direct-inference fallback** —
+  `internal/runtime/adapters.go` `RunTask`: when `ad.q == nil` the loop talks
+  to the inference client directly, with a comment "(useful for testing)".
+  Production always wires the queue (`memory_api.go` constructs the adapter
+  with `q: rt.reqQueue`, which is always non-nil by the time
+  `startMemoryAndAPI` runs). This is a production branch that only tests
+  execute — the kind of path that rots silently. **Make `q` required** (error
+  at construction when nil) and have the runtime tests provide a real queue,
+  or at minimum re-word the comment to admit the branch is test-only.
+
+### 4.4 Not findings (checked and fine)
+
+- `api.Server.handler()` being unexported-but-test-visible — also used by
+  `Start`; genuine shared code.
+- `internal/tray/tray_stub.go` — exists for `!windows && !linux` builds
+  (dev/CI on other platforms), not for tests.
+- `proc.ManagerConfig.HTTPClient` / `CheckPeriod` — production sets both
+  explicitly; tests also use them. Real seams.
+
+---
+
 ## Priorities
 
 If only three things get fixed: **2.1** (delete the dead layout-v1 API and its
 tests), **1.1** (unify agent-file fallback resolution), and **1.3** (make
 `LlamaArgs` take `ModelConfig`). Those remove the largest legacy mass and the two
 duplications most likely to produce a user-visible inconsistency.
+
+From the second pass, the highest-value single change is dropping `Health` from
+the `inference.Client`/`embedder.Client` interfaces (§4.3) — it deletes dead
+code in three packages and shrinks every test fake — followed by fixing the
+`SortByNewest` drift (§4.2), which is a live behavioral inconsistency, not just
+hygiene.
