@@ -315,10 +315,84 @@ like every other one.
 inference or queue" and pays for it with the `ChatMessage`/`ChatToken` DTOs.
 Yet `internal/ui/task.go` imports `agentloop` and the `ui.TaskRunner`
 interface returns `<-chan agentloop.Event`, rendering the domain event type
-straight into templates. Either the isolation matters — then task events need
-the same DTO treatment as chat tokens — or it doesn't, and `ChatToken` is
-ceremony. Pick one; the current split means a change to `agentloop.Event`
-silently becomes a UI-template concern.
+straight into templates. The current split means a change to
+`agentloop.Event` silently becomes a UI-template concern.
+
+**Decision: give task events the same DTO treatment as chat tokens.**
+Design, covering every event the loop emits:
+
+```go
+// internal/ui/task.go — owned by ui, mirrors ChatToken's role.
+
+// TaskEventKind enumerates every event the task stream can carry.
+type TaskEventKind string
+
+const (
+    TaskText           TaskEventKind = "text"
+    TaskToolCall       TaskEventKind = "tool_call"
+    TaskToolResult     TaskEventKind = "tool_result"
+    TaskApprovalNeeded TaskEventKind = "approval_needed"
+    TaskApproval       TaskEventKind = "approval"
+    TaskDone           TaskEventKind = "done"
+    TaskError          TaskEventKind = "error"
+    TaskLimit          TaskEventKind = "limit"
+    TaskDoom           TaskEventKind = "doom_loop"
+    TaskCancelled      TaskEventKind = "cancelled"
+)
+
+// TaskEvent is one rendered-facing loop event. Field names match what
+// task.html already consumes so the templates keep working unchanged.
+type TaskEvent struct {
+    Turn       int
+    Type       TaskEventKind
+    Content    string
+    ToolID     string
+    ToolArgs   string
+    ToolResult string
+    ToolError  string
+    ApprovalID string
+    // Denied is set on Type == TaskApproval when the user rejected the
+    // call. Replaces the current overload where agentloop smuggles the
+    // decision through ToolError == "denied".
+    Denied bool
+}
+
+type TaskRunner interface {
+    RunTask(ctx context.Context, agent, sessionID string,
+        conversation []ChatMessage) (string, <-chan TaskEvent, error)
+    CancelTask(sessionID string) error
+    ApplyApproval(sessionID, approvalID, decision string) error
+}
+```
+
+Mapping (one function in `internal/runtime/adapters.go`, exactly like the
+`ChatToken` translation):
+
+| `agentloop.Event`            | `ui.TaskEvent` |
+|---|---|
+| `Type` (10 `Evt*` constants) | `Type` — 1:1 onto the `Task*` kinds above |
+| `Turn`, `Content`, `ToolID`, `ToolArgs`, `ToolResult`, `ApprovalID` | copied verbatim |
+| `ToolError` on `tool_result` | `ToolError` (a real tool error — kept) |
+| `ToolError == "denied"` on `approval` | `Denied: true`, `ToolError` left empty |
+| `Terminate`                  | **dropped** — the UI never reads it; on every terminal event it merely duplicates `Type` |
+
+Wiring notes:
+
+- The translation slots into the fan-out goroutine `RunTask` already runs
+  (`rawEvch → evch`): the raw channel stays `agentloop.Event` so
+  `recordTaskEvents` (session persistence, a domain concern) keeps consuming
+  domain events; only the channel handed to the UI carries DTOs. No new
+  goroutine.
+- `task.html` needs exactly two edits: the `approval` branch tests
+  `.Denied` instead of `.ToolError`. Every other field reference already
+  matches the DTO's names.
+- `handleTaskEvents`/`streamTaskEvents` switch on `ui.TaskText` instead of
+  `agentloop.EvtText`; the "reliable send" split (text = lossy, everything
+  else = reliable) keys off the same kind.
+- After this, `internal/ui` drops the `agentloop` import entirely — its
+  import list contains no domain-execution package, matching the chat page's
+  contract — and `agentloop.Event` becomes free to evolve (e.g. the
+  `Terminate` field, or richer tool metadata) without touching templates.
 
 **5.2.3 `ui → prompt` — an entire assembler for a one-line heuristic.**
 The only use is `prompt.EstimateTokens` (six call sites in
