@@ -43,7 +43,7 @@ The binary targets llama-server as the inference backend and uses a separate emb
 │         ▼                  │                   ▼        │
 │  ┌──────────────┐          │            ┌─────────────┐ │
 │  │ Agent Loop   │──────────┘            │  Embedder   │ │
-│  │              │                       │  (nomic)   │ │
+│  │              │                       │ (sidecar)  │ │
 │  └──────┬───────┘                       └─────────────┘ │
 │         │                                               │
 │         ▼                                               │
@@ -228,6 +228,8 @@ Responsibilities:
 - Perform cosine-similarity flat scans for top-K search.
 - Keep the on-disk format isolated from prompt and memory logic.
 
+Attached code repos are indexed by git state: each attached directory gets its own slot under the project memory repo at `index/<dir-slug>/`, and a new HEAD in one attached repo invalidates only that repo's slot. This keeps multi-repo projects unified without writing runtime memory into any source repo. (Directory-level indexing itself is deferred until directory semantic search becomes a user-facing feature — see the M5 note in the roadmap.)
+
 ### Embedder (`internal/embedder`)
 Runs llama-server as a sidecar process in --embedding mode using the configured embedding model. Same spawn/monitor pattern as the chat llama-server process — consistent failure handling, restart on crash.
 
@@ -375,7 +377,7 @@ Sections and fields:
 - **api:** `enabled`, `port`
 - **project:** `active_project_slug`, `llama_on_switch`
 - **prompt:** `ctx_size`, `memory_token_budget`, `conversation_reserve`, `recency_n`, `summarizer_prompt`, `semantic_weight`, `recency_weight`, `promotion_dedup_threshold`
-- **queue:** `max_depth` (`wal_path` remains a legacy no-op config column)
+- **queue:** `max_depth`
 - **metrics:** `retention_days`
 - **log:** `ring_max_entries`, `proc_max_lines`
 - **loop:** `max_turns`, `doom_threshold`, `file_read_enabled`, `file_list_enabled`, `file_write_enabled`, `shell_exec_enabled`, `web_search_enabled`

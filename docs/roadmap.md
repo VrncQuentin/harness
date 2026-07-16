@@ -293,7 +293,7 @@ are deferred beyond M7.
 
 ## M9 — Layout V2
 
-**Goal:** move from one configured memory repo to a harness home with one git-backed memory repo per project, while keeping the harness global/resident and preserving SQLite for config, metrics, and runtime state. Full design in [layout-v2.md](layout-v2.md).
+**Goal:** move from one configured memory repo to a harness home with one git-backed memory repo per project, while keeping the harness global/resident and preserving SQLite for config, metrics, and runtime state. The shipped layout is documented in [architecture.md](architecture.md#harness-home-and-memory-repo-layout).
 
 Depends on M3b (projects table, active project slug, attached directories), M5 (project-scoped indexes), and M8 (startup validation and reliable packaging).
 
@@ -307,7 +307,7 @@ Depends on M3b (projects table, active project slug, attached directories), M5 (
 - [x] Legacy migration removed: there were no pre-M9 installs to migrate, so M9 starts directly with layout-v2 project repos
 - [x] UI: create/edit project forms expose memory repo directory choice without adding cwd-driven activation
 
-**Acceptance tests:** see [layout-v2.md](layout-v2.md#acceptance-tests). Highlights:
+**Acceptance tests:**
 
 - [x] First run creates `~/.harness/harness.db` and initializes `~/.harness/projects/global` as a git repo (automated DB/repo setup coverage: `TestOpen_CreatesTablesAndSeedsConfigRow`, `TestEnsureProjectRepoInitializesAndScaffolds`)
 - [ ] Creating a project with no directory creates and initializes `~/.harness/projects/<id>`
@@ -315,8 +315,9 @@ Depends on M3b (projects table, active project slug, attached directories), M5 (
 - [x] Creating a project with an existing git directory uses it without rewriting unrelated files (automated repo setup coverage: `TestEnsureProjectRepoInitializesAndScaffolds`, `TestMoveProjectRepoCopiesWorkingTreeWithoutGitDir`)
 - [ ] Starting the harness never depends on cwd and never activates a project based on the launch directory
 - [ ] One project with two attached code repos writes sessions and episodes to one project memory repo and creates separate index entries for each attached repo
-- [x] Agent resolution falls back from active project agents to `projects/global/agents` per file (automated: `TestAssemble_ProjectPersonaOverrideInheritsGlobalRulesNotes`)
+- [x] Agent persona/rules resolution falls back from active project agents to `projects/global/agents` per file; notes do not fall back (automated: `TestAssemble_ProjectPersonaOverrideInheritsGlobalDefinitionRulesOnly`)
 - [ ] Pipeline discovery reads `.hp` files from attached code repos, not from project memory repos
+- [ ] `harness.db`, logs, and cache files are never committed to any project memory repo
 
 ---
 
