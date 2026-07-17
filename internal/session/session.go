@@ -47,7 +47,7 @@ const (
 // idTimeFormat is the time.Format layout used to mint a session ID.
 // Hyphens replace colons so the same string doubles as a filename on
 // Windows; the trailing Z marks UTC.
-const idTimeFormat = "2006-01-02T15-04-05Z"
+const idTimeFormat = "2006-01-02T15-04-05.000000000Z"
 
 // summarizerTimeout caps how long a single Save waits for the
 // summarizer call to drain. Long enough that a slow first-token does
@@ -153,6 +153,8 @@ type Manager struct {
 	mu          sync.Mutex
 	sessions    map[string]*Session
 	knownIDs    map[string]struct{}
+	issuedIDs   map[string]struct{}
+	saveMu      sync.Mutex
 	deps        ManagerDeps
 	summarizer  *Summarizer
 	projectSlug string
@@ -201,6 +203,7 @@ func NewManager(deps ManagerDeps, projectSlug string) (*Manager, error) {
 	return &Manager{
 		sessions:    make(map[string]*Session),
 		knownIDs:    make(map[string]struct{}),
+		issuedIDs:   make(map[string]struct{}),
 		deps:        deps,
 		summarizer:  NewSummarizer(deps.Inference, deps.SummarizerPrompt, deps.SummarizerTimeout),
 		projectSlug: projectSlug,
@@ -220,7 +223,7 @@ func (m *Manager) Start(agent string) *Session {
 	// Guard against the (extremely unlikely) clock-collision case where
 	// two Starts in the same UTC second want the same ID. Append a
 	// disambiguator so the second session does not clobber the first.
-	if _, exists := m.sessions[id]; exists {
+	if _, exists := m.issuedIDs[id]; exists {
 		base := id
 		for n := 1; ; n++ {
 			candidate := fmt.Sprintf("%s-%d", base, n)
@@ -239,6 +242,7 @@ func (m *Manager) Start(agent string) *Session {
 		Conversation: nil,
 	}
 	m.sessions[id] = s
+	m.issuedIDs[id] = struct{}{}
 	return cloneSession(s)
 }
 
@@ -279,6 +283,7 @@ func (m *Manager) Resume(id string) (*Session, error) {
 	}
 	m.sessions[rec.ID] = s
 	m.knownIDs[rec.ID] = struct{}{}
+	m.issuedIDs[rec.ID] = struct{}{}
 	return cloneSession(s), nil
 }
 
@@ -330,6 +335,8 @@ func (m *Manager) End(id string) {
 // parallel for the same session - this is a deliberate trade-off so the
 // last-wins-by-ID contract holds without a per-session lock.
 func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
+	m.saveMu.Lock()
+	defer m.saveMu.Unlock()
 	m.mu.Lock()
 	s, ok := m.sessions[id]
 	if !ok {
