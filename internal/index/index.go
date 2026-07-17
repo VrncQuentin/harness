@@ -74,12 +74,18 @@ func Open(dir string) (*Index, error) {
 	if err := json.Unmarshal(mf, &idx.manifest); err != nil {
 		return nil, fmt.Errorf("index: parse manifest %s: %w", dir, err)
 	}
+	if err := validateManifest(dir, idx.manifest); err != nil {
+		return nil, err
+	}
 	idx.dim = idx.manifest.Dim
 	return idx, nil
 }
 
 // Create initializes a new index at dir. Existing indices are overwritten.
 func Create(dir string, dim int) (*Index, error) {
+	if dim <= 0 {
+		return nil, fmt.Errorf("index: invalid dimension %d", dim)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("index: mkdir %s: %w", dir, err)
 	}
@@ -90,6 +96,12 @@ func Create(dir string, dim int) (*Index, error) {
 			Dim:    dim,
 			Chunks: nil,
 		},
+	}
+	if err := writeFileAtomic(filepath.Join(dir, vectorsFile), nil, 0o644); err != nil {
+		return nil, fmt.Errorf("index: write vectors %s: %w", dir, err)
+	}
+	if err := idx.writeManifest(); err != nil {
+		return nil, err
 	}
 	return idx, nil
 }
@@ -118,9 +130,14 @@ func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error 
 			break
 		}
 	}
-	offset := idx.currentFileSize()
+	offset, err := idx.vectorFileSize()
+	if err != nil {
+		idx.manifest = previous
+		return err
+	}
 	for _, v := range vectors {
 		if len(v) != idx.dim {
+			idx.manifest = previous
 			return fmt.Errorf("index: dimension mismatch: got %d, want %d", len(v), idx.dim)
 		}
 	}
@@ -133,6 +150,9 @@ func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error 
 	idx.manifest.Count += len(vectors)
 	if err := idx.writeManifest(); err != nil {
 		idx.manifest = previous
+		if truncateErr := idx.truncateVectors(offset); truncateErr != nil {
+			return fmt.Errorf("%w; rollback vectors: %v", err, truncateErr)
+		}
 		return err
 	}
 	return nil
@@ -199,17 +219,34 @@ func (idx *Index) Contains(sha string) bool {
 	return false
 }
 
-// currentFileSize returns the size of vectors.bin, or 0 if it doesn't exist.
-func (idx *Index) currentFileSize() int64 {
+func (idx *Index) vectorFileSize() (int64, error) {
 	info, err := os.Stat(filepath.Join(idx.dir, vectorsFile))
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("index: stat vectors: %w", err)
 	}
-	return info.Size()
+	if info.IsDir() {
+		return 0, fmt.Errorf("index: vectors path is a directory")
+	}
+	return info.Size(), nil
+}
+
+func (idx *Index) truncateVectors(size int64) error {
+	f, err := os.OpenFile(filepath.Join(idx.dir, vectorsFile), os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("index: open vectors for rollback: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := f.Truncate(size); err != nil {
+		return fmt.Errorf("index: truncate vectors: %w", err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("index: sync vectors rollback: %w", err)
+	}
+	return nil
 }
 
 func (idx *Index) appendVectors(vectors [][]float32) error {
-	f, err := os.OpenFile(filepath.Join(idx.dir, vectorsFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(filepath.Join(idx.dir, vectorsFile), os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("index: open vectors for append: %w", err)
 	}
@@ -226,6 +263,9 @@ func (idx *Index) appendVectors(vectors [][]float32) error {
 	if _, err := f.Write(buf); err != nil {
 		return fmt.Errorf("index: write vectors: %w", err)
 	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("index: sync vectors: %w", err)
+	}
 	return nil
 }
 
@@ -234,8 +274,86 @@ func (idx *Index) writeManifest() error {
 	if err != nil {
 		return fmt.Errorf("index: marshal manifest: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(idx.dir, manifestFile), data, 0o644); err != nil {
+	if err := writeFileAtomic(filepath.Join(idx.dir, manifestFile), data, 0o644); err != nil {
 		return fmt.Errorf("index: write manifest: %w", err)
+	}
+	return nil
+}
+
+func validateManifest(dir string, manifest Manifest) error {
+	if manifest.Dim <= 0 {
+		return fmt.Errorf("index: invalid manifest dimension %d in %s", manifest.Dim, dir)
+	}
+	if manifest.Count < 0 {
+		return fmt.Errorf("index: invalid manifest count %d in %s", manifest.Count, dir)
+	}
+	info, err := os.Stat(filepath.Join(dir, vectorsFile))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("index: manifest exists but vectors are missing in %s", dir)
+		}
+		return fmt.Errorf("index: stat vectors %s: %w", dir, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("index: vectors path is a directory in %s", dir)
+	}
+	stride := int64(manifest.Dim * 4)
+	if info.Size()%stride != 0 {
+		return fmt.Errorf("index: vector file size %d is not aligned to dimension %d in %s", info.Size(), manifest.Dim, dir)
+	}
+	count := 0
+	for i, entry := range manifest.Chunks {
+		if entry.SHA == "" {
+			return fmt.Errorf("index: manifest entry %d has empty sha in %s", i, dir)
+		}
+		if entry.Offset < 0 || entry.Length < 0 {
+			return fmt.Errorf("index: manifest entry %d has invalid offset/length in %s", i, dir)
+		}
+		if entry.Offset%stride != 0 {
+			return fmt.Errorf("index: manifest entry %d offset %d is not vector-aligned in %s", i, entry.Offset, dir)
+		}
+		bytes := int64(entry.Length) * stride
+		if entry.Offset+bytes > info.Size() {
+			return fmt.Errorf("index: manifest entry %d extends past vectors file in %s", i, dir)
+		}
+		count += entry.Length
+	}
+	if count != manifest.Count {
+		return fmt.Errorf("index: manifest count %d does not match chunk lengths %d in %s", manifest.Count, count, dir)
+	}
+	return nil
+}
+
+func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			return err
+		}
+		if retryErr := os.Rename(tmpName, path); retryErr != nil {
+			return retryErr
+		}
 	}
 	return nil
 }
