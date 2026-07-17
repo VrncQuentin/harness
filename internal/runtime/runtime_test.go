@@ -49,6 +49,76 @@ func TestNewEventChannelUsesRuntimeBuffer(t *testing.T) {
 	}
 }
 
+func TestEffectiveModelForUsesActiveProjectOverrides(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Model.Binary = "global-llama"
+	cfg.Model.ModelPath = "global.gguf"
+	cfg.Model.CtxSize = 2048
+	cfg.Model.GPULayers = 1
+	cfg.Model.NParallel = 1
+	cfg.Model.Port = 12345
+	cfg.Model.CacheTypeK = "q8_0"
+	cfg.Model.CacheTypeV = "q8_0"
+	cfg.Project.ActiveProjectSlug = "demo"
+
+	projectBinary := "project-llama"
+	projectModel := "project.gguf"
+	projectCtx := 4096
+	projectGPU := 9
+	projectParallel := 3
+	rt := New(cfg, nil, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		"demo": {
+			Slug:           "demo",
+			DisplayName:    "Demo",
+			MemoryRepoPath: t.TempDir(),
+			ModelBinary:    &projectBinary,
+			ModelPath:      &projectModel,
+			ModelCtxSize:   &projectCtx,
+			ModelGPULayers: &projectGPU,
+			ModelNParallel: &projectParallel,
+		},
+	}}
+
+	model := rt.effectiveModelFor(&cfg)
+	if model.Binary != projectBinary || model.ModelPath != projectModel {
+		t.Fatalf("effective binary/model = %q/%q, want project override %q/%q", model.Binary, model.ModelPath, projectBinary, projectModel)
+	}
+	if model.CtxSize != projectCtx || model.GPULayers != projectGPU || model.NParallel != projectParallel {
+		t.Fatalf("effective numeric overrides = ctx %d gpu %d parallel %d", model.CtxSize, model.GPULayers, model.NParallel)
+	}
+	if model.Port != cfg.Model.Port || model.CacheTypeK != cfg.Model.CacheTypeK || model.CacheTypeV != cfg.Model.CacheTypeV {
+		t.Fatalf("effective global-only fields changed unexpectedly: %+v", model)
+	}
+}
+
+func TestLlamaArgsForModelUsesEffectiveModelFields(t *testing.T) {
+	model := config.Defaults().Model
+	model.Binary = "llama-bin"
+	model.ModelPath = "project.gguf"
+	model.CtxSize = 4096
+	model.GPULayers = 7
+	model.NParallel = 2
+	model.Port = 8123
+	model.Verbose = true
+	model.CacheTypeK = "q4_0"
+	model.CacheTypeV = "f16"
+
+	bin, args := llamaArgsForModel(model)
+	if bin != model.Binary {
+		t.Fatalf("binary = %q, want %q", bin, model.Binary)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{model.ModelPath, "4096", "7", "2", "8123", "--verbose", "q4_0", "f16"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("llama args %q missing %q", joined, want)
+		}
+	}
+	if got := llamaHealthURL(model); got != "http://127.0.0.1:8123/health" {
+		t.Fatalf("health URL = %q", got)
+	}
+}
+
 func TestQueueStatsReportsLiveQueueDepthAndCapacity(t *testing.T) {
 	rt := New(config.Defaults(), nil, LogRings{})
 	depth, capacity := rt.QueueStats()
