@@ -92,6 +92,31 @@ func TestEffectiveModelForUsesActiveProjectOverrides(t *testing.T) {
 	}
 }
 
+func TestEffectivePromptForUsesEffectiveModelCtx(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Model.CtxSize = 2048
+	cfg.Prompt.CtxSize = 9999
+	cfg.Project.ActiveProjectSlug = "demo"
+
+	projectCtx := 4096
+	rt := New(cfg, nil, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		"demo": {
+			Slug:           "demo",
+			DisplayName:    "Demo",
+			MemoryRepoPath: t.TempDir(),
+			ModelCtxSize:   &projectCtx,
+		},
+	}}
+
+	promptCfg := rt.effectivePromptFor(&cfg)
+	if promptCfg.CtxSize != projectCtx {
+		t.Fatalf("prompt ctx = %d, want effective model ctx %d", promptCfg.CtxSize, projectCtx)
+	}
+	if promptCfg.MemoryTokenBudget != cfg.Prompt.MemoryTokenBudget {
+		t.Fatalf("prompt config was not otherwise preserved: %+v", promptCfg)
+	}
+}
 func TestLlamaArgsForModelUsesEffectiveModelFields(t *testing.T) {
 	model := config.Defaults().Model
 	model.Binary = "llama-bin"

@@ -59,7 +59,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.globalMem = memory.NewDirReader(roots.globalRoot)
 	rt.activeMem = memory.NewDirReader(roots.activeRoot)
 	rt.agentReg = agent.NewDiskRegistry(rt.globalMem, rt.getActiveAgent, rt.setActiveAgent)
-	rt.assembler = prompt.NewProjectDiskAssembler(rt.globalMem, rt.activeMem, rt.agentReg, rt.cfg.Prompt).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
+	rt.assembler = prompt.NewProjectDiskAssembler(rt.globalMem, rt.activeMem, rt.agentReg, rt.effectivePromptFor(&rt.cfg)).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
 
 	// The project-scoped service owns one index handle for prompt retrieval,
 	// scoring, save hooks, and rebuilding. Missing indexes are created lazily;
