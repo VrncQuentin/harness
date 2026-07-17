@@ -112,31 +112,42 @@ func validatePath(path string, roots []string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("tools: cannot resolve path: %w", err)
 	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		// Path does not exist or cannot be resolved — still validate the
-		// unresolved path against sandbox roots to prevent traversal.
-		for _, root := range roots {
-			clean := filepath.Clean(root)
-			if pathWithinRoot(abs, clean) {
-				return abs, nil
-			}
-		}
-		return "", fmt.Errorf("%w: %s", ErrSandboxViolation, path)
-	}
 	for _, root := range roots {
-		clean := filepath.Clean(root)
-		resolvedRoot, err := filepath.EvalSymlinks(clean)
-		if err != nil {
-			resolvedRoot = clean
+		if strings.TrimSpace(root) == "" {
+			continue
 		}
-		if pathWithinRoot(resolved, resolvedRoot) {
-			return resolved, nil
+		resolvedRoot, err := filepath.EvalSymlinks(filepath.Clean(root))
+		if err != nil {
+			return "", fmt.Errorf("tools: resolve sandbox root %s: %w", root, err)
+		}
+		resolvedAncestor, err := resolveExistingAncestor(abs)
+		if err != nil {
+			continue
+		}
+		if pathWithinRoot(resolvedAncestor, resolvedRoot) {
+			return abs, nil
 		}
 	}
 	return "", fmt.Errorf("%w: %s", ErrSandboxViolation, path)
 }
 
+// resolveExistingAncestor evaluates symlinks on the deepest path component
+// already present on disk. This prevents a lexically in-root missing target
+// below a symlink or junction from escaping its sandbox.
+func resolveExistingAncestor(path string) (string, error) {
+	current := filepath.Clean(path)
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			return resolved, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		current = parent
+	}
+}
 func pathWithinRoot(path, root string) bool {
 	path = filepath.Clean(path)
 	root = filepath.Clean(root)
@@ -278,7 +289,10 @@ func (t *fileWriteTool) Execute(ctx context.Context, c Context, args map[string]
 	if !ok || rawPath == "" {
 		return Result{Error: "file_write: missing or invalid path argument"}
 	}
-	content, _ := args["content"].(string)
+	content, ok := args["content"].(string)
+	if !ok {
+		return Result{Error: "file_write: missing or invalid content argument"}
+	}
 	absPath, err := validatePath(rawPath, c.SandboxRoots)
 	if err != nil {
 		return Result{Error: err.Error()}
@@ -286,10 +300,34 @@ func (t *fileWriteTool) Execute(ctx context.Context, c Context, args map[string]
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return Result{Error: fmt.Sprintf("file_write: create parent directories: %v", err)}
 	}
-	if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+	if _, err := validatePath(absPath, c.SandboxRoots); err != nil {
+		return Result{Error: err.Error()}
+	}
+	if err := writeFileAtomic(absPath, []byte(content)); err != nil {
 		return Result{Error: fmt.Sprintf("file_write: %v", err)}
 	}
 	return Result{Content: fmt.Sprintf("Wrote %d bytes to %s", len(content), absPath)}
+}
+
+func writeFileAtomic(path string, content []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".harness-write-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 type shellExecTool struct{}
