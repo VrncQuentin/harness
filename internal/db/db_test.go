@@ -541,3 +541,40 @@ func TestMetricsStore_RecordWithTags(t *testing.T) {
 		t.Errorf("unexpected tag: %v", pts[0].Tags)
 	}
 }
+
+func TestMetricsStore_ApplyRetentionLeavesPartialHourRawAcrossPasses(t *testing.T) {
+	d := newTestDB(t)
+	store := d.Metrics()
+	now := time.Date(2026, time.July, 17, 10, 30, 0, 0, time.UTC)
+	cutoff := now.AddDate(0, 0, -30)
+	completeHour := cutoff.Truncate(time.Hour).Add(-time.Hour)
+	partialHour := cutoff.Truncate(time.Hour)
+	if _, err := d.sqldb.Exec(
+		`INSERT INTO metrics(name, value, tags, ts) VALUES (?, ?, '', ?), (?, ?, '', ?), (?, ?, '', ?)`,
+		"queue_depth", 10.0, completeHour.Add(5*time.Minute).Unix(),
+		"queue_depth", 20.0, completeHour.Add(20*time.Minute).Unix(),
+		"queue_depth", 99.0, partialHour.Add(10*time.Minute).Unix(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	for pass := 0; pass < 2; pass++ {
+		if err := store.applyRetentionAt(30, now); err != nil {
+			t.Fatalf("retention pass %d: %v", pass+1, err)
+		}
+	}
+	var count int
+	var average float64
+	if err := d.sqldb.QueryRow(`SELECT count, avg_value FROM metrics_hourly WHERE name = ? AND hour_ts = ?`, "queue_depth", completeHour.Unix()).Scan(&count, &average); err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 || average != 15 {
+		t.Fatalf("complete-hour aggregate = count %d average %v", count, average)
+	}
+	var raw int
+	if err := d.sqldb.QueryRow(`SELECT COUNT(*) FROM metrics WHERE ts = ?`, partialHour.Add(10*time.Minute).Unix()).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw != 1 {
+		t.Fatalf("partial-hour row was downsampled early: raw count %d", raw)
+	}
+}
