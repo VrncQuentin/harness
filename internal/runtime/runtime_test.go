@@ -334,6 +334,122 @@ func TestUIAgentRegistryAdapterUsesActiveProjectNotes(t *testing.T) {
 		t.Fatalf("global notes changed to %q", string(globalNotes))
 	}
 }
+func TestUIAgentRegistryAdapterWritesProjectScopedPersonaAndRules(t *testing.T) {
+	global := newMemoryRepo(t, map[string]string{
+		"agents/coder/persona.md": "global persona",
+		"agents/coder/rules.md":   "global rules",
+	})
+	active := newMemoryRepo(t, map[string]string{})
+	reg := agent.NewDiskRegistry(global, func() string { return "coder" }, func(string) error { return nil })
+	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: global, activeMem: active, getProjectSlug: func() string { return "dt" }}
+
+	if err := ad.WritePersona("coder", []byte("project persona")); err != nil {
+		t.Fatalf("WritePersona: %v", err)
+	}
+	if err := ad.WriteRules("coder", []byte("project rules")); err != nil {
+		t.Fatalf("WriteRules: %v", err)
+	}
+
+	projectPersona, err := active.Read("agents/coder/persona.md")
+	if err != nil {
+		t.Fatalf("read project persona: %v", err)
+	}
+	if string(projectPersona) != "project persona" {
+		t.Fatalf("project persona = %q", string(projectPersona))
+	}
+	projectRules, err := active.Read("agents/coder/rules.md")
+	if err != nil {
+		t.Fatalf("read project rules: %v", err)
+	}
+	if string(projectRules) != "project rules" {
+		t.Fatalf("project rules = %q", string(projectRules))
+	}
+	globalPersona, err := global.Read("agents/coder/persona.md")
+	if err != nil {
+		t.Fatalf("read global persona: %v", err)
+	}
+	if string(globalPersona) != "global persona" {
+		t.Fatalf("global persona changed to %q", string(globalPersona))
+	}
+	globalRules, err := global.Read("agents/coder/rules.md")
+	if err != nil {
+		t.Fatalf("read global rules: %v", err)
+	}
+	if string(globalRules) != "global rules" {
+		t.Fatalf("global rules changed to %q", string(globalRules))
+	}
+
+	info, err := ad.Get("coder")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if info.Origin != "extends-global" || info.Persona != "project persona" || info.Rules != "project rules" {
+		t.Fatalf("project override not reflected in UI info: %+v", info)
+	}
+}
+
+func TestUIAgentRegistryAdapterDeletesOnlyProjectAgentInProjectScope(t *testing.T) {
+	global := newMemoryRepo(t, map[string]string{
+		"agents/coder/persona.md": "global persona",
+	})
+	active := newMemoryRepo(t, map[string]string{
+		"agents/coder/persona.md": "project persona",
+		"agents/coder/notes.md":   "project notes",
+	})
+	currentActive := "coder"
+	reg := agent.NewDiskRegistry(global, func() string { return currentActive }, func(name string) error { currentActive = name; return nil })
+	ad := &uiAgentRegistryAdapter{
+		reg:            reg,
+		globalMem:      global,
+		activeMem:      active,
+		getProjectSlug: func() string { return "dt" },
+		setActive:      func(name string) error { currentActive = name; return nil },
+	}
+
+	if err := ad.Delete("coder"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if currentActive != "" {
+		t.Fatalf("active = %q, want cleared", currentActive)
+	}
+	globalPersona, err := global.Read("agents/coder/persona.md")
+	if err != nil {
+		t.Fatalf("global persona missing after project delete: %v", err)
+	}
+	if string(globalPersona) != "global persona" {
+		t.Fatalf("global persona = %q", string(globalPersona))
+	}
+	info, err := ad.Get("coder")
+	if err != nil {
+		t.Fatalf("Get after project delete: %v", err)
+	}
+	if info.Origin != "global" || info.Persona != "global persona" {
+		t.Fatalf("expected fallback to global after project delete, got %+v", info)
+	}
+}
+
+func TestUIAgentRegistryAdapterSetsProjectOnlyAgentActive(t *testing.T) {
+	global := newMemoryRepo(t, map[string]string{})
+	active := newMemoryRepo(t, map[string]string{
+		"agents/local/persona.md": "local persona",
+	})
+	currentActive := ""
+	reg := agent.NewDiskRegistry(global, func() string { return currentActive }, func(name string) error { currentActive = name; return nil })
+	ad := &uiAgentRegistryAdapter{
+		reg:            reg,
+		globalMem:      global,
+		activeMem:      active,
+		getProjectSlug: func() string { return "dt" },
+		setActive:      func(name string) error { currentActive = name; return nil },
+	}
+
+	if err := ad.SetActive("local"); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
+	if currentActive != "local" {
+		t.Fatalf("active = %q, want local", currentActive)
+	}
+}
 func TestTaskRunnerApprovalEvaluatorsDoNotShareSessionRules(t *testing.T) {
 	ad := &taskRunnerAdapter{approvalLayers: []approvals.Layer{approvals.DefaultLayer()}}
 
