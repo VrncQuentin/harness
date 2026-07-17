@@ -79,7 +79,8 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 	agent := strings.TrimSpace(r.FormValue("agent"))
 	sessionID := strings.TrimSpace(r.FormValue("session_id"))
 	streamID := strings.TrimSpace(r.FormValue("stream_id"))
-	conversation := []ChatMessage{{Role: "user", Content: msg}}
+	conversation := s.liveConversationForTask(sessionID)
+	conversation = append(conversation, ChatMessage{Role: "user", Content: msg})
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.taskTmpl.ExecuteTemplate(w, "task-send-fragment", taskSendView{
@@ -98,6 +99,20 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
+func (s *Server) liveConversationForTask(sessionID string) []ChatMessage {
+	if sessionID == "" {
+		return nil
+	}
+	store := s.getSessionStore()
+	if store == nil {
+		return nil
+	}
+	conversation, err := store.LiveConversation(sessionID)
+	if err != nil {
+		return nil
+	}
+	return conversation
+}
 func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent, sessionID, streamID string, conversation []ChatMessage) {
 	newID, evch, err := runner.RunTask(ctx, agent, sessionID, conversation)
 	if err != nil {
