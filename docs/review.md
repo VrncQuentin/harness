@@ -1,4 +1,4 @@
-# SOL review
+# Codebase review
 
 **Reviewed:** 2026-07-16  
 **Scope:** whole repository review of package responsibilities, boundary adherence,
@@ -495,3 +495,55 @@ up with the high-risk gaps above.
 
 This order prevents refactoring from merely relocating the current drift and makes the
 new boundaries enforceable through focused tests.
+
+## Consolidated structural findings
+
+This section retains the additional concrete cleanup findings from the Fable review. They complement the priority findings above; none should be implemented in a way that reintroduces the lifecycle, persistence, or security defects already described.
+
+### Remaining drift-prone copies
+
+- The project-only agent hydration block is repeated in internal/runtime/adapters.go in List and getProjectAgent. It should disappear when the project-aware resolver is extracted.
+- Prompt episode retrieval and memory-page scoring both execute embed, Search, BestSemanticScores, and BlendEpisodeScores. They differ in ordering policy; use one score-episodes operation.
+- cosineSimilarity exists in internal/index using float32 and internal/memoryops using float64. Make the mathematical primitive single-owner.
+- Session writing and UI browsing each define the episodes path, markdown suffix, and agent traversal guards. The episode-layout contract belongs in one package.
+- Runtime, after-save indexing, and rebuilding independently stitch index/_episodes, vectors.bin, and manifest.json. The index package should expose episode-index directory and commit-path helpers.
+- Chat/task SSE handling is a near-clone. The task version has different stall behavior, evidence of drift. Use one parameterized broadcaster/subscriber.
+- In internal/runtime/adapters.go the session mint-or-attach block appears in both chatRunnerAdapter.Run and taskRunnerAdapter.RunTask, and the assistant-flush block appears twice inside the chat token goroutine. Extract one helper for each.
+- Runtime stores projectStore as a directory-only interface then type-asserts it back to project.Store; UI has a similar optional ListDirectories assertion. Store the interface actually required by production.
+- Fact promotion and note append have an identical read, newline-normalize, append, write, commit sequence. The shared operation should live in a memory service.
+- Rebuilder chunks every episode twice; memory handlers duplicate agent-name lists; chat/task duplicate ChatMessage conversion; RetrievalScorer threads unused project/agent arguments. These are safe mechanical cleanups once service ownership is clear.
+- LlamaArgs has same-typed positional arguments at three call sites and duplicate health-URL construction. A typed model-manager configuration prevents swapped values that compile but fail at runtime.
+
+### Legacy and test-only details
+
+- Remove remaining layout-v2 wording in comments; the current term is project memory repo and no v1 alternative remains.
+- Chat save and session resume retain htmx-fragment and raw-JSON branches although shipped assets use htmx and no custom fetch. Remove decodeSaveRequest, chatSaveRequest, and chatSessionResponse if no external API contract needs them.
+- The old layout APIs/tests are dead surface and their removal also eliminates the near-identical MissingItems and MissingProjectRepoItems loops.
+- ui.ErrTaskQueueFull and ui.ErrTaskCancelled have no producer or consumer.
+- Health on inference.Client and embedder.Client has no production caller; proc.Manager owns process health. Removing it removes queuedInferClient.raw and fake-method boilerplate.
+- project.Store.AddDirectory/RemoveDirectory, metrics.Store.Query, and memory.Reader.Exists have no production caller. Keep concrete implementations only if a future feature needs them; do not widen active interfaces preemptively.
+- Request.ToolChoice and CompletionRequest.ToolChoice are plumbed but never produced by API or agent loop. Remove speculative plumbing until tool-choice input exists.
+- NewDiskAssembler is a single-repo compatibility constructor used only in tests. Migrate tests to the project-aware constructor.
+- SortByNewest is tested but Records hand-rolls a different sort without its ID tie-break. Reuse it in Records or delete it and the test.
+- ManagerDeps.Now and ManagerDeps.SummarizerTimeout are never set by production or tests; the only consumer of Now is its own defaulting line. Delete them, or keep Now only if the fixed-clock session-ID collision test recommended above is added.
+- taskRunnerAdapter falls back to direct inference when its queue is nil, a branch production never takes (the runtime always wires the queue). Make the queue required at construction, or mark the branch as test-only.
+- WithApprovalTimeout, WithTokenizer, and process breaker threshold/window are sound deterministic test seams. Keep them with honest comments.
+- tools.Context.HTTPClient is a valid hermetic test seam; production should explicitly wire the fallback client if it is part of the task-runtime contract.
+
+### Boundary refinements
+
+- memoryops imports ui only to return ui.RetrievalScore. Define a domain score type and translate it in runtime.
+- UI chat uses UI-owned DTOs, but UI task exposes agentloop.Event directly to templates. Add UI task-event DTOs and map them in runtime.
+- UI imports prompt solely for EstimateTokens. Move that heuristic to a leaf tokens or memory package.
+- ui/metrics.go serializes Prometheus exposition itself. Move wire-format encoding to metrics.
+- DB decides default memory-repo paths. Path policy belongs in home/config, not persistence.
+- proc mixes generic supervision with model-specific argument construction. Keep proc generic and build typed llama/embedder configuration at the runtime boundary.
+- pkg/httpclient has no external consumer. Rename it internal/httpclient; do not promote other packages to pkg without an actual external consumer.
+
+### Tests to remove or correct
+
+- The test named destructive-tools-disabled checks registration only, not disabled-by-default behavior.
+- One approvals test verifies values just written into a literal and cannot catch a product regression.
+- The config cross-root dedup test creates distinct files and cannot prove deduplication.
+- Two claimed M3 integration tests exercise a memory walk or synthetic closure, not production wiring.
+- Health and non-streaming inference tests should be removed or replaced if the test-only production APIs are removed.
