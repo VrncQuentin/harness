@@ -95,9 +95,13 @@ func (rt *Runtime) ApplyConfig(
 				rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
 			}
 			slog.Info("rebuilding memory and api services")
+			snapshot := rt.snapshotMemoryAndAPI(uiServer)
 			rt.stopMemoryAndAPI(uiServer)
-			rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
-			result.LiveApplied = true
+			if rt.startMemoryAndAPI(ctx, uiServer, metricsStore) {
+				result.LiveApplied = true
+			} else {
+				rt.restoreMemoryAndAPI(uiServer, snapshot)
+			}
 		}
 	}
 

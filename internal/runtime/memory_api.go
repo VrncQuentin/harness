@@ -31,7 +31,7 @@ import (
 //
 // metricsStore may be nil; the session manager simply skips metric
 // emission in that case.
-func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store) {
+func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store) bool {
 	roots, err := rt.resolveProjectRepoRootsForSlug(rt.cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.SetServiceDeps(ui.ServiceDeps{})
@@ -39,20 +39,20 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		if rt.cfg.API.Enabled {
 			uiServer.AddStartupError(errors.New("api server disabled: project memory repos are not valid"))
 		}
-		return
+		return false
 	}
 
 	svcDeps := ui.ServiceDeps{MemoryRepoPath: roots.activeRoot}
 	if err := memory.ValidateProjectRepo(roots.globalRoot, true); err != nil {
 		uiServer.SetServiceDeps(svcDeps)
 		uiServer.AddStartupError(fmt.Errorf("global memory repo: %w", err))
-		return
+		return false
 	}
 	if roots.activeSlug != project.GlobalSlug {
 		if err := memory.ValidateProjectRepo(roots.activeRoot, false); err != nil {
 			uiServer.SetServiceDeps(svcDeps)
 			uiServer.AddStartupError(fmt.Errorf("active memory repo: %w", err))
-			return
+			return false
 		}
 	}
 
@@ -69,7 +69,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	if err != nil {
 		uiServer.SetServiceDeps(svcDeps)
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
-		return
+		return false
 	}
 	embedClient := rt.newEmbedderClient()
 	rt.assembler = rt.assembler.WithBlendedRetrieval(episodeIndex, embedClient)
@@ -138,7 +138,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	if err := tools.RegisterBuiltins(registry); err != nil {
 		uiServer.SetServiceDeps(svcDeps)
 		uiServer.AddStartupError(fmt.Errorf("task tools: %w", err))
-		return
+		return false
 	}
 	rt.loopRegistry = registry
 
@@ -178,6 +178,48 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.taskRunner = taskAdapter
 	svcDeps.TaskRunner = taskAdapter
 	uiServer.SetServiceDeps(svcDeps)
+	return true
+}
+
+type memoryAPISnapshot struct {
+	globalMem    memory.Repo
+	activeMem    memory.Repo
+	agentReg     *agent.DiskRegistry
+	assembler    *prompt.DiskAssembler
+	apiServer    *api.Server
+	gitRepo      *gitw.Repo
+	sessionMgr   *session.Manager
+	loopRegistry *tools.Registry
+	taskRunner   *taskRunnerAdapter
+	serviceDeps  ui.ServiceDeps
+}
+
+func (rt *Runtime) snapshotMemoryAndAPI(uiServer *ui.Server) memoryAPISnapshot {
+	return memoryAPISnapshot{
+		globalMem:    rt.globalMem,
+		activeMem:    rt.activeMem,
+		agentReg:     rt.agentReg,
+		assembler:    rt.assembler,
+		apiServer:    rt.apiServer,
+		gitRepo:      rt.gitRepo,
+		sessionMgr:   rt.SessionManager(),
+		loopRegistry: rt.loopRegistry,
+		taskRunner:   rt.taskRunner,
+		serviceDeps:  uiServer.ServiceDepsSnapshot(),
+	}
+}
+
+func (rt *Runtime) restoreMemoryAndAPI(uiServer *ui.Server, snap memoryAPISnapshot) {
+	rt.globalMem = snap.globalMem
+	rt.activeMem = snap.activeMem
+	rt.agentReg = snap.agentReg
+	rt.assembler = snap.assembler
+	rt.apiServer = snap.apiServer
+	rt.gitRepo = snap.gitRepo
+	rt.setSessionManager(snap.sessionMgr)
+	rt.loopRegistry = snap.loopRegistry
+	rt.taskRunner = snap.taskRunner
+	uiServer.SetServiceDeps(snap.serviceDeps)
 }
 
 type projectRepoRoots struct {
