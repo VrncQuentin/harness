@@ -155,6 +155,35 @@ func (s *ProjectStore) Update(input project.UpdateInput) (project.Project, error
 	return s.Get(input.Slug)
 }
 
+// Delete removes a user-created project and its directory metadata. The global
+// project is reserved and cannot be deleted through this rollback helper.
+func (s *ProjectStore) Delete(slug string) error {
+	if err := project.ValidateCreatableSlug(slug); err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("db: begin delete project %s: %w", slug, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`DELETE FROM project_directories WHERE project_slug = ?`, slug); err != nil {
+		return fmt.Errorf("db: delete project directories %s: %w", slug, err)
+	}
+	res, err := tx.Exec(`DELETE FROM projects WHERE slug = ?`, slug)
+	if err != nil {
+		return fmt.Errorf("db: delete project %s: %w", slug, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return fmt.Errorf("db: delete project rows %s: %w", slug, err)
+	} else if n == 0 {
+		return project.ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: commit delete project %s: %w", slug, err)
+	}
+	return nil
+}
 func (s *ProjectStore) SetHidden(slug string, hidden bool) error {
 	if err := project.ValidateSlug(slug); err != nil {
 		return err

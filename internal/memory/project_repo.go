@@ -8,11 +8,29 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	gogit "github.com/go-git/go-git/v5"
 	gitw "github.com/vrnc/harness/internal/git"
 )
+
+// EnsureProjectRepo initializes a layout-v2 project memory repo and fills in
+// any missing scaffold entries. Existing git repos are opened as-is; missing
+// or non-git directories are initialized through go-git.
+type ProjectRepoManager struct{}
+
+func (ProjectRepoManager) EnsureProjectRepo(root string, global bool) error {
+	return EnsureProjectRepo(root, global)
+}
+
+func (ProjectRepoManager) MoveProjectRepo(src, dst string, global bool) error {
+	return MoveProjectRepo(src, dst, global)
+}
+
+func (ProjectRepoManager) SameProjectRepoPath(a, b string) bool {
+	return SameProjectRepoPath(a, b)
+}
 
 // EnsureProjectRepo initializes a layout-v2 project memory repo and fills in
 // any missing scaffold entries. Existing git repos are opened as-is; missing
@@ -34,7 +52,7 @@ func EnsureProjectRepo(root string, global bool) error {
 // MoveProjectRepo copies one project memory repo to another path, excluding the
 // source .git directory, then initializes and commits the destination layout.
 func MoveProjectRepo(src, dst string, global bool) error {
-	if sameProjectRepoPath(src, dst) {
+	if SameProjectRepoPath(src, dst) {
 		return EnsureProjectRepo(dst, global)
 	}
 	if err := copyTreeWithoutGit(src, dst); err != nil {
@@ -135,11 +153,16 @@ func listRepoFiles(root string) ([]string, error) {
 	return files, err
 }
 
-func sameProjectRepoPath(a, b string) bool {
+// SameProjectRepoPath reports whether two project repo paths identify the same
+// filesystem location using the current OS path case-sensitivity rules.
+func SameProjectRepoPath(a, b string) bool {
 	ac, aerr := filepath.Abs(filepath.Clean(a))
 	bc, berr := filepath.Abs(filepath.Clean(b))
 	if aerr != nil || berr != nil {
 		return filepath.Clean(a) == filepath.Clean(b)
 	}
-	return strings.EqualFold(ac, bc)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(ac, bc)
+	}
+	return ac == bc
 }

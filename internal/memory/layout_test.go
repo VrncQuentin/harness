@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"testing"
 
@@ -413,6 +414,21 @@ func TestEnsureProjectRepoInitializesAndScaffolds(t *testing.T) {
 	}
 }
 
+func TestSameProjectRepoPathUsesOSPathIdentity(t *testing.T) {
+	base := t.TempDir()
+	a := filepath.Join(base, "Repo")
+	b := filepath.Join(base, "repo")
+	got := SameProjectRepoPath(a, b)
+	if runtime.GOOS == "windows" {
+		if !got {
+			t.Fatalf("SameProjectRepoPath(%q, %q) = false on Windows, want true", a, b)
+		}
+		return
+	}
+	if got {
+		t.Fatalf("SameProjectRepoPath(%q, %q) = true on %s, want false", a, b, runtime.GOOS)
+	}
+}
 func TestMoveProjectRepoCopiesWorkingTreeWithoutGitDir(t *testing.T) {
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "src")
