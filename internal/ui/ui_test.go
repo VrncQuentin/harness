@@ -725,10 +725,13 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	form.Set("ui_port", "3000")
 	form.Set("ui_open_on_start", "on")
 	form.Set("api_port", "8080")
+	form.Set("project_llama_on_switch", "keep")
 	form.Set("prompt_ctx_size", "8192")
 	form.Set("prompt_memory_budget", "2048")
 	form.Set("prompt_conversation_reserve", "4096")
 	form.Set("prompt_recency_n", "7")
+	form.Set("prompt_semantic_weight", "0.71")
+	form.Set("prompt_recency_weight", "0.29")
 	form.Set("prompt_promotion_dedup_threshold", "0.83")
 	form.Set("prompt_summarizer_prompt", "summarize the user's intent in one paragraph.")
 	form.Set("queue_max_depth", "8")
@@ -767,11 +770,20 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	if !loaded.Embedder.Verbose {
 		t.Error("expected Embedder.Verbose=true after POST with embed_verbose=on")
 	}
+	if loaded.Project.LlamaOnSwitch != "keep" {
+		t.Errorf("Project.LlamaOnSwitch not persisted: got %q, want keep", loaded.Project.LlamaOnSwitch)
+	}
 	if loaded.Prompt.RecencyN != 7 {
 		t.Errorf("Prompt.RecencyN not persisted: got %d, want 7", loaded.Prompt.RecencyN)
 	}
 	if loaded.Prompt.SummarizerPrompt != "summarize the user's intent in one paragraph." {
 		t.Errorf("Prompt.SummarizerPrompt not persisted: got %q", loaded.Prompt.SummarizerPrompt)
+	}
+	if loaded.Prompt.SemanticWeight != 0.71 {
+		t.Errorf("Prompt.SemanticWeight not persisted: got %v, want 0.71", loaded.Prompt.SemanticWeight)
+	}
+	if loaded.Prompt.RecencyWeight != 0.29 {
+		t.Errorf("Prompt.RecencyWeight not persisted: got %v, want 0.29", loaded.Prompt.RecencyWeight)
 	}
 	if loaded.Prompt.PromotionDedupThreshold != 0.83 {
 		t.Errorf("Prompt.PromotionDedupThreshold not persisted: got %v, want 0.83", loaded.Prompt.PromotionDedupThreshold)
