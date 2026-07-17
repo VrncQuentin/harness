@@ -1,6 +1,8 @@
 package index
 
 import (
+	"errors"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -26,6 +28,94 @@ func TestCosineSimilarity(t *testing.T) {
 				t.Errorf("cosineSimilarity() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIndex_CreatePersistsEmptyIndex(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Create(dir, 2); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open newly created index: %v", err)
+	}
+	results, err := opened.Search([]float32{1, 0}, 5)
+	if err != nil {
+		t.Fatalf("Search empty index: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("empty index results = %+v", results)
+	}
+}
+
+func TestIndex_OpenRejectsManifestWithoutVectors(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, manifestFile), []byte(`{"dim":2,"count":1,"chunks":[{"sha":"sha","offset":0,"length":1}]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Open(dir)
+	if err == nil {
+		t.Fatal("expected missing vectors to be rejected")
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("missing vectors were reported as a missing index: %v", err)
+	}
+}
+
+func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("sha", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(filepath.Join(dir, vectorsFile), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir); err == nil {
+		t.Fatal("expected manifest entry extending past vectors file to be rejected")
+	}
+}
+
+func TestIndex_UpsertManifestFailureRollsBackVectors(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("old", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	vectorsPath := filepath.Join(dir, vectorsFile)
+	before, err := os.Stat(vectorsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(dir, manifestFile)
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(manifestPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestPath, "block"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Upsert("new", "new-content", [][]float32{{0, 1}}); err == nil {
+		t.Fatal("expected manifest write to fail")
+	}
+	after, err := os.Stat(vectorsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != before.Size() {
+		t.Fatalf("vectors size after failed manifest write = %d, want %d", after.Size(), before.Size())
+	}
+	if idx.Contains("new") {
+		t.Fatal("failed upsert remained in memory")
 	}
 }
 
@@ -87,6 +177,9 @@ func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	vectorsPath := filepath.Join(dir, vectorsFile)
+	if err := os.Remove(vectorsPath); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Mkdir(vectorsPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -97,6 +190,9 @@ func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
 		t.Fatal("failed add should not remain in in-memory manifest")
 	}
 	if err := os.Remove(vectorsPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vectorsPath, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := idx.Add("good", [][]float32{{0, 1}}); err != nil {
