@@ -20,6 +20,11 @@ func (rt *Runtime) effectiveModelFor(cfg *config.Config) config.ModelConfig {
 	return config.EffectiveModel(cfg, proj)
 }
 
+func (rt *Runtime) effectivePromptFor(cfg *config.Config) config.PromptConfig {
+	promptCfg := cfg.Prompt
+	promptCfg.CtxSize = rt.effectiveModelFor(cfg).CtxSize
+	return promptCfg
+}
 func llamaArgsForModel(model config.ModelConfig) (string, []string) {
 	return proc.LlamaArgs(
 		model.Binary,
