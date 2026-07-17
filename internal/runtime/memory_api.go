@@ -79,7 +79,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		Index:    episodeIndex,
 	}
 	svcDeps.MemoryStore = rt.activeMem
-	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: rt.agentReg, globalMem: rt.globalMem, activeMem: rt.activeMem, getProjectSlug: rt.getActiveProjectSlug}
+	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: rt.agentReg, globalMem: rt.globalMem, activeMem: rt.activeMem, getProjectSlug: rt.getActiveProjectSlug, setActive: rt.setActiveAgent}
 
 	// Session manager is layered on top of the validated memory repo.
 	// A failure to open the git repo surfaces as a startup error and
