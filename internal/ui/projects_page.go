@@ -355,13 +355,12 @@ func (s *Server) activateProject(slug string) error {
 	if store == nil {
 		return fmt.Errorf("config store not available")
 	}
-	loaded, _, err := store.Load()
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+	targeted, ok := store.(interface{ SetActiveProjectSlug(string) error })
+	if !ok {
+		return fmt.Errorf("config store does not support targeted project updates")
 	}
-	loaded.Project.ActiveProjectSlug = slug
-	if err := store.Save(loaded); err != nil {
-		return fmt.Errorf("save config: %w", err)
+	if err := targeted.SetActiveProjectSlug(slug); err != nil {
+		return fmt.Errorf("set active project: %w", err)
 	}
 	s.state.mu.Lock()
 	s.state.data.ProjectSlug = slug

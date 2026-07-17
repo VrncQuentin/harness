@@ -88,6 +88,11 @@ func (s *stubConfigStore) Save(cfg *config.Config) error {
 	return nil
 }
 
+func (s *stubConfigStore) SetActiveProjectSlug(slug string) error {
+	s.cfg.Project.ActiveProjectSlug = slug
+	return nil
+}
+
 type noopIndexRebuilder struct{}
 
 func (noopIndexRebuilder) Rebuild(context.Context) error { return nil }

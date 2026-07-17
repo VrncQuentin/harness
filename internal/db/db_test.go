@@ -578,3 +578,27 @@ func TestMetricsStore_ApplyRetentionLeavesPartialHourRawAcrossPasses(t *testing.
 		t.Fatalf("partial-hour row was downsampled early: raw count %d", raw)
 	}
 }
+
+func TestConfigStore_SetActiveProjectSlugDoesNotMarkFirstRunComplete(t *testing.T) {
+	d := newTestDB(t)
+	cfg, saved, err := d.Config().Load()
+	if err != nil || saved {
+		t.Fatalf("initial Load = saved %v, err %v", saved, err)
+	}
+	if _, err := d.sqldb.Exec(`INSERT INTO projects(slug, display_name, memory_repo_path, hidden, created_at) VALUES (?, ?, ?, ?, ?)`, "demo", "Demo", "", 0, time.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Config().SetActiveProjectSlug("demo"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, saved, err := d.Config().Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved {
+		t.Fatal("targeted project update marked setup complete")
+	}
+	if loaded.Project.ActiveProjectSlug != "demo" || cfg == nil {
+		t.Fatalf("active project = %q", loaded.Project.ActiveProjectSlug)
+	}
+}
