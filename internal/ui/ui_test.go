@@ -1676,3 +1676,25 @@ func TestHandleMemoryScaffold_NoMissingItemsRedirectsCleanly(t *testing.T) {
 		t.Errorf("expected plain redirect to / when nothing to do, got %q", loc)
 	}
 }
+
+func TestOriginPolicyRejectsCrossOriginMutationsAndEvents(t *testing.T) {
+	s := NewServer(0)
+	called := false
+	h := s.originPolicy(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+	for _, tc := range []struct {
+		method string
+		path   string
+	}{{http.MethodPost, "/config"}, {http.MethodGet, "/events"}} {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.Host = "127.0.0.1:3000"
+		req.Header.Set("Origin", "http://attacker.invalid")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("%s %s status = %d, want 403", tc.method, tc.path, rec.Code)
+		}
+	}
+	if called {
+		t.Fatal("cross-origin request reached handler")
+	}
+}
