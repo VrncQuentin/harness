@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/vrnc/harness/internal/tools"
 )
 
 func TestDefaults(t *testing.T) {
@@ -36,6 +38,11 @@ func TestDefaults(t *testing.T) {
 	}
 	if d.Project.LlamaOnSwitch != "reload" {
 		t.Errorf("expected default Project.LlamaOnSwitch reload, got %q", d.Project.LlamaOnSwitch)
+	}
+	for _, desc := range tools.BuiltinDescriptors() {
+		if got := d.Loop.ToolEnabled(desc.ID); got != desc.DefaultEnabled {
+			t.Errorf("default Loop.ToolEnabled(%q) = %v, want descriptor default %v", desc.ID, got, desc.DefaultEnabled)
+		}
 	}
 }
 

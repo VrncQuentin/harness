@@ -531,20 +531,7 @@ func (e *Engine) emit(ctx context.Context, evch chan<- Event, ev Event) {
 }
 
 func (e *Engine) isToolEnabled(id string) bool {
-	switch id {
-	case "file_read":
-		return e.loopCfg.FileReadEnabled
-	case "file_list":
-		return e.loopCfg.FileListEnabled
-	case "file_write":
-		return e.loopCfg.FileWriteEnabled
-	case "shell_exec":
-		return e.loopCfg.ShellExecEnabled
-	case "web_search":
-		return e.loopCfg.WebSearchEnabled
-	default:
-		return false
-	}
+	return e.loopCfg.ToolEnabled(id)
 }
 
 type accumulatedToolCall struct {

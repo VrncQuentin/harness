@@ -523,8 +523,8 @@ func TestChatCompletions_HeaderAgentPlumbing(t *testing.T) {
 	}
 
 	captured := enq.captureRequest(t)
-	if len(captured.Messages) != 1 || captured.Messages[0].Content != "persona:coder" {
-		t.Errorf("enqueued messages = %+v, want persona:coder", captured.Messages)
+	if len(captured.Completion.Messages) != 1 || captured.Completion.Messages[0].Content != "persona:coder" {
+		t.Errorf("enqueued messages = %+v, want persona:coder", captured.Completion.Messages)
 	}
 }
 
@@ -550,17 +550,52 @@ func TestChatCompletions_ForwardsRequestParams(t *testing.T) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	captured := enq.captureRequest(t)
-	if captured.Model != "qwen-local" {
-		t.Errorf("model = %q, want qwen-local", captured.Model)
+	completion := captured.Completion
+	if completion.Model != "qwen-local" {
+		t.Errorf("model = %q, want qwen-local", completion.Model)
 	}
-	if captured.Temperature != 0.7 {
-		t.Errorf("temperature = %v, want 0.7", captured.Temperature)
+	if completion.Temperature == nil || *completion.Temperature != 0.7 {
+		t.Errorf("temperature = %v, want 0.7", completion.Temperature)
 	}
-	if captured.TopP != 0.9 {
-		t.Errorf("top_p = %v, want 0.9", captured.TopP)
+	if completion.TopP == nil || *completion.TopP != 0.9 {
+		t.Errorf("top_p = %v, want 0.9", completion.TopP)
 	}
-	if captured.MaxTokens != 123 {
-		t.Errorf("max_tokens = %d, want 123", captured.MaxTokens)
+	if completion.MaxTokens == nil || *completion.MaxTokens != 123 {
+		t.Errorf("max_tokens = %v, want 123", completion.MaxTokens)
+	}
+}
+
+func TestChatCompletions_ForwardsExplicitZeroParams(t *testing.T) {
+	asm := &stubAssembler{}
+	enq := newStubEnqueuer([]inference.Token{{Done: true}})
+	ts, cleanup := newTestServer(t, asm, enq)
+	defer cleanup()
+
+	body := bytes.NewBufferString(`{
+		"model":"qwen-local",
+		"stream":true,
+		"temperature":0,
+		"top_p":0,
+		"max_tokens":0,
+		"messages":[{"role":"user","content":"hi"}]
+	}`)
+	resp, err := http.Post(ts.URL+"/v1/chat/completions", "application/json", body)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	captured := enq.captureRequest(t)
+	completion := captured.Completion
+	if completion.Temperature == nil || *completion.Temperature != 0 {
+		t.Errorf("temperature = %v, want explicit 0", completion.Temperature)
+	}
+	if completion.TopP == nil || *completion.TopP != 0 {
+		t.Errorf("top_p = %v, want explicit 0", completion.TopP)
+	}
+	if completion.MaxTokens == nil || *completion.MaxTokens != 0 {
+		t.Errorf("max_tokens = %v, want explicit 0", completion.MaxTokens)
 	}
 }
 
