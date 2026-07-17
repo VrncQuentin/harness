@@ -291,11 +291,13 @@ func (m *Manager) Run(ctx context.Context) {
 			continue
 		}
 
-		backoff = time.Second // reset on successful start
 		m.emit(EventStart, "process started")
 
 		// Health check loop - runs until the process dies or context is cancelled.
-		m.healthLoop(ctx)
+		wasHealthy := m.healthLoop(ctx)
+		if wasHealthy {
+			backoff = time.Second
+		}
 
 		if ctx.Err() != nil {
 			m.stopProcess()
@@ -375,7 +377,8 @@ func (m *Manager) Status() Status {
 
 // healthLoop polls the health endpoint every checkPeriod. Returns when the
 // process exits (cmd.Wait returns) or ctx is cancelled.
-func (m *Manager) healthLoop(ctx context.Context) {
+func (m *Manager) healthLoop(ctx context.Context) bool {
+	wasHealthy := false
 	ticker := time.NewTicker(m.checkPeriod)
 	defer ticker.Stop()
 
@@ -400,7 +403,7 @@ func (m *Manager) healthLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return wasHealthy
 		case <-done:
 			m.mu.Lock()
 			m.running = false
@@ -408,7 +411,7 @@ func (m *Manager) healthLoop(ctx context.Context) {
 			m.mu.Unlock()
 			m.emitExitLine()
 			m.emit(EventStop, "process exited")
-			return
+			return wasHealthy
 		case <-ticker.C:
 			err := m.checkHealth(ctx)
 			switch {
@@ -435,8 +438,9 @@ func (m *Manager) healthLoop(ctx context.Context) {
 				case <-time.After(2 * time.Second):
 				}
 				m.emitExitLine()
-				return
+				return wasHealthy
 			}
+			wasHealthy = true
 			m.markHealthy()
 			m.emit(EventHealthOK, "healthy")
 		}
