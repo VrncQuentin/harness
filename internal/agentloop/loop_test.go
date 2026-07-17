@@ -613,3 +613,25 @@ func TestEngineRecordsLoopAndToolMetrics(t *testing.T) {
 		t.Fatalf("file_list error-rate samples = %v, want [true]", got)
 	}
 }
+
+func TestApplyApprovalClaimsResponseBeforeRememberingRule(t *testing.T) {
+	engine := &Engine{
+		evl: approvals.NewEvaluator(approvals.DefaultLayer()),
+		pending: map[string]chan approvals.ApprovalResponse{
+			"approval-1": make(chan approvals.ApprovalResponse, 1),
+		},
+		pendingRules: map[string]approvals.Rule{
+			"approval-1": {ToolID: "file_write", Decision: approvals.Allowed, Source: "test"},
+		},
+	}
+	if err := engine.ApplyApproval("approval-1", approvals.ApprovalResponse{Decision: approvals.Allowed, Remember: true}); err != nil {
+		t.Fatalf("first ApplyApproval: %v", err)
+	}
+	if err := engine.ApplyApproval("approval-1", approvals.ApprovalResponse{Decision: approvals.Allowed, Remember: true}); err == nil {
+		t.Fatal("duplicate ApplyApproval unexpectedly succeeded")
+	}
+	decision, _ := engine.evl.Evaluate("file_write", "")
+	if decision != approvals.Allowed {
+		t.Fatalf("session rule decision = %v, want allowed", decision)
+	}
+}
