@@ -1,12 +1,13 @@
 package ui
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/vrnc/harness/internal/memory"
 )
 
 // Committer is the minimum surface the UI needs to commit memory repo files.
@@ -76,21 +77,9 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	existing, _ := store.Read("facts.md")
-	var builder strings.Builder
-	builder.Write(existing)
-	if len(existing) > 0 && !bytes.HasSuffix(existing, []byte("\n")) {
-		builder.WriteByte('\n')
-	}
-	builder.WriteString("\n")
-	builder.WriteString(text)
-	builder.WriteString("\n")
-	if err := store.WriteFile("facts.md", []byte(builder.String())); err != nil {
-		http.Error(w, fmt.Sprintf("write facts: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if _, err := c.Commit("[type:fact] promote fact", []string{"facts.md"}); err != nil {
-		http.Error(w, fmt.Sprintf("commit fact: %v", err), http.StatusInternalServerError)
+	svc := memory.PromotionService{Store: store, Committer: c}
+	if err := svc.PromoteFact(text); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/memory?promoted=1", http.StatusSeeOther)
@@ -122,22 +111,9 @@ func (s *Server) handleAppendNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "text is required", http.StatusBadRequest)
 		return
 	}
-	notePath := fmt.Sprintf("agents/%s/notes.md", agent)
-	existing, _ := store.Read(notePath)
-	var builder strings.Builder
-	builder.Write(existing)
-	if len(existing) > 0 && !bytes.HasSuffix(existing, []byte("\n")) {
-		builder.WriteByte('\n')
-	}
-	builder.WriteString("\n")
-	builder.WriteString(text)
-	builder.WriteString("\n")
-	if err := store.WriteFile(notePath, []byte(builder.String())); err != nil {
-		http.Error(w, fmt.Sprintf("write note: %v", err), http.StatusInternalServerError)
-		return
-	}
-	if _, err := c.Commit(fmt.Sprintf("[agent:%s] [type:note] agent note", agent), []string{notePath}); err != nil {
-		http.Error(w, fmt.Sprintf("commit note: %v", err), http.StatusInternalServerError)
+	svc := memory.PromotionService{Store: store, Committer: c}
+	if err := svc.AppendAgentNote(agent, text); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/memory?noted=1&agent="+url.QueryEscape(agent), http.StatusSeeOther)
