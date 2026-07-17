@@ -375,9 +375,19 @@ func TestHandleStatus_OK(t *testing.T) {
 type recordingTaskRunner struct {
 	cancelSession string
 	cancelErr     error
+	agent         string
+	sessionID     string
+	conversation  []ChatMessage
+	ran           chan struct{}
 }
 
-func (r *recordingTaskRunner) RunTask(context.Context, string, string, []ChatMessage) (string, <-chan agentloop.Event, error) {
+func (r *recordingTaskRunner) RunTask(_ context.Context, agent, sessionID string, conversation []ChatMessage) (string, <-chan agentloop.Event, error) {
+	r.agent = agent
+	r.sessionID = sessionID
+	r.conversation = append([]ChatMessage(nil), conversation...)
+	if r.ran != nil {
+		close(r.ran)
+	}
 	ch := make(chan agentloop.Event)
 	close(ch)
 	return "", ch, nil
@@ -479,6 +489,54 @@ func TestBroadcastTaskSSERoutesByStreamID(t *testing.T) {
 	default:
 	}
 }
+
+func TestHandleTaskSendUsesLiveConversationForResume(t *testing.T) {
+	s := NewServer(3000)
+	runner := &recordingTaskRunner{ran: make(chan struct{})}
+	store := &stubSessionStore{liveResult: []ChatMessage{
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "answer"},
+	}}
+	setTaskRunnerForTest(s, runner)
+	setSessionStoreForTest(s, store)
+
+	form := url.Values{
+		"agent":      {"coder"},
+		"session_id": {"task-123"},
+		"stream_id":  {"stream-1"},
+		"message":    {"follow-up"},
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/task/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleTaskSend(rec, req)
+	select {
+	case <-runner.ran:
+	case <-time.After(time.Second):
+		t.Fatal("runner was not invoked")
+	}
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if runner.sessionID != "task-123" || runner.agent != "coder" {
+		t.Fatalf("runner got agent/session = %q/%q", runner.agent, runner.sessionID)
+	}
+	want := []ChatMessage{
+		{Role: "user", Content: "first"},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: "follow-up"},
+	}
+	if len(runner.conversation) != len(want) {
+		t.Fatalf("conversation length = %d, want %d: %+v", len(runner.conversation), len(want), runner.conversation)
+	}
+	for i := range want {
+		if runner.conversation[i] != want[i] {
+			t.Fatalf("conversation[%d] = %+v, want %+v", i, runner.conversation[i], want[i])
+		}
+	}
+}
+
 func TestHandleTaskCancel_Success(t *testing.T) {
 	s := NewServer(3000)
 	runner := &recordingTaskRunner{}
