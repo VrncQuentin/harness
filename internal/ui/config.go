@@ -104,7 +104,11 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 	if cur, _, err := store.Load(); err == nil {
 		base = *cur
 	}
-	cfg := parseConfigForm(r, &base)
+	cfg, parseErrs := parseConfigForm(r, &base)
+	if len(parseErrs) > 0 {
+		s.renderConfig(w, r, configPageData{Config: cfg, ValidationErr: strings.Join(parseErrs, "; ")}, true /* skipStoreLoad */)
+		return
+	}
 
 	if err := config.Validate(cfg); err != nil {
 		s.renderConfig(w, r, configPageData{Config: cfg, ValidationErr: err.Error()}, true /* skipStoreLoad */)
@@ -128,23 +132,19 @@ func (s *Server) saveConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseConfigForm builds a Config from the posted form, overlaying values on
-// base. Numeric fields that are missing or unparseable keep the base value;
-// string fields are always overwritten (an empty required field will surface
-// as a validation error downstream).
-func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
+// base. Blank numeric fields preserve their existing values; malformed numeric
+// fields are reported so the form never silently ignores bad input.
+func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []string) {
 	cfg := *base
+	var parseErrs []string
 
 	cfg.Model.Binary = strings.TrimSpace(r.FormValue("model_binary"))
 	cfg.Model.ModelPath = strings.TrimSpace(r.FormValue("model_path"))
-	cfg.Model.CtxSize = atoiOr(r.FormValue("model_ctx_size"), cfg.Model.CtxSize)
-	cfg.Model.GPULayers = atoiOr(r.FormValue("model_gpu_layers"), cfg.Model.GPULayers)
-	cfg.Model.NParallel = atoiOr(r.FormValue("model_n_parallel"), cfg.Model.NParallel)
-	cfg.Model.Port = atoiOr(r.FormValue("model_port"), cfg.Model.Port)
+	cfg.Model.CtxSize = atoiField(r, "model_ctx_size", "Model context size", cfg.Model.CtxSize, &parseErrs)
+	cfg.Model.GPULayers = atoiField(r, "model_gpu_layers", "Model GPU layers", cfg.Model.GPULayers, &parseErrs)
+	cfg.Model.NParallel = atoiField(r, "model_n_parallel", "Model parallelism", cfg.Model.NParallel, &parseErrs)
+	cfg.Model.Port = atoiField(r, "model_port", "Model port", cfg.Model.Port, &parseErrs)
 	cfg.Model.Verbose = r.FormValue("model_verbose") == "on"
-	// Cache types are a constrained enum (see config.ValidCacheTypes). Treat
-	// missing/blank like numeric fields - keep the base value rather than
-	// snapping to "" and tripping Validate. The select always submits its
-	// current option, so this only matters for partial form posts and tests.
 	if v := strings.TrimSpace(r.FormValue("model_cache_type_k")); v != "" {
 		cfg.Model.CacheTypeK = v
 	}
@@ -154,68 +154,67 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 
 	cfg.Embedder.Binary = strings.TrimSpace(r.FormValue("embed_binary"))
 	cfg.Embedder.ModelPath = strings.TrimSpace(r.FormValue("embed_path"))
-	cfg.Embedder.Port = atoiOr(r.FormValue("embed_port"), cfg.Embedder.Port)
+	cfg.Embedder.Port = atoiField(r, "embed_port", "Embedder port", cfg.Embedder.Port, &parseErrs)
 	cfg.Embedder.Verbose = r.FormValue("embed_verbose") == "on"
-	cfg.UI.Port = atoiOr(r.FormValue("ui_port"), cfg.UI.Port)
+	cfg.UI.Port = atoiField(r, "ui_port", "UI port", cfg.UI.Port, &parseErrs)
 	cfg.UI.OpenOnStart = r.FormValue("ui_open_on_start") == "on"
 
 	cfg.API.Enabled = r.FormValue("api_enabled") == "on"
-	cfg.API.Port = atoiOr(r.FormValue("api_port"), cfg.API.Port)
+	cfg.API.Port = atoiField(r, "api_port", "API port", cfg.API.Port, &parseErrs)
 
 	if v := strings.TrimSpace(r.FormValue("project_llama_on_switch")); v != "" {
 		cfg.Project.LlamaOnSwitch = v
 	}
 
-	cfg.Prompt.CtxSize = atoiOr(r.FormValue("prompt_ctx_size"), cfg.Prompt.CtxSize)
-	cfg.Prompt.MemoryTokenBudget = atoiOr(r.FormValue("prompt_memory_budget"), cfg.Prompt.MemoryTokenBudget)
-	cfg.Prompt.ConversationReserve = atoiOr(r.FormValue("prompt_conversation_reserve"), cfg.Prompt.ConversationReserve)
-	cfg.Prompt.RecencyN = atoiOr(r.FormValue("prompt_recency_n"), cfg.Prompt.RecencyN)
-	cfg.Prompt.SemanticWeight = atofOr(r.FormValue("prompt_semantic_weight"), cfg.Prompt.SemanticWeight)
-	cfg.Prompt.RecencyWeight = atofOr(r.FormValue("prompt_recency_weight"), cfg.Prompt.RecencyWeight)
-	cfg.Prompt.PromotionDedupThreshold = atofOr(r.FormValue("prompt_promotion_dedup_threshold"), cfg.Prompt.PromotionDedupThreshold)
-	// Trim trailing whitespace so an empty textarea (which browsers may
-	// pad with a stray newline) is treated as "use the built-in default"
-	// rather than persisting whitespace.
+	cfg.Prompt.CtxSize = atoiField(r, "prompt_ctx_size", "Prompt context size", cfg.Prompt.CtxSize, &parseErrs)
+	cfg.Prompt.MemoryTokenBudget = atoiField(r, "prompt_memory_budget", "Prompt memory token budget", cfg.Prompt.MemoryTokenBudget, &parseErrs)
+	cfg.Prompt.ConversationReserve = atoiField(r, "prompt_conversation_reserve", "Prompt conversation reserve", cfg.Prompt.ConversationReserve, &parseErrs)
+	cfg.Prompt.RecencyN = atoiField(r, "prompt_recency_n", "Prompt recency N", cfg.Prompt.RecencyN, &parseErrs)
+	cfg.Prompt.SemanticWeight = atofField(r, "prompt_semantic_weight", "Prompt semantic weight", cfg.Prompt.SemanticWeight, &parseErrs)
+	cfg.Prompt.RecencyWeight = atofField(r, "prompt_recency_weight", "Prompt recency weight", cfg.Prompt.RecencyWeight, &parseErrs)
+	cfg.Prompt.PromotionDedupThreshold = atofField(r, "prompt_promotion_dedup_threshold", "Promotion dedup threshold", cfg.Prompt.PromotionDedupThreshold, &parseErrs)
 	cfg.Prompt.SummarizerPrompt = strings.TrimSpace(r.FormValue("prompt_summarizer_prompt"))
 
-	cfg.Queue.MaxDepth = atoiOr(r.FormValue("queue_max_depth"), cfg.Queue.MaxDepth)
+	cfg.Queue.MaxDepth = atoiField(r, "queue_max_depth", "Queue max depth", cfg.Queue.MaxDepth, &parseErrs)
 
-	cfg.Loop.MaxTurns = atoiOr(r.FormValue("loop_max_turns"), cfg.Loop.MaxTurns)
-	cfg.Loop.DoomThreshold = atoiOr(r.FormValue("loop_doom_threshold"), cfg.Loop.DoomThreshold)
+	cfg.Loop.MaxTurns = atoiField(r, "loop_max_turns", "Agent loop max turns", cfg.Loop.MaxTurns, &parseErrs)
+	cfg.Loop.DoomThreshold = atoiField(r, "loop_doom_threshold", "Agent loop doom threshold", cfg.Loop.DoomThreshold, &parseErrs)
 	cfg.Loop.FileReadEnabled = r.FormValue("loop_file_read_enabled") == "on"
 	cfg.Loop.FileListEnabled = r.FormValue("loop_file_list_enabled") == "on"
 	cfg.Loop.FileWriteEnabled = r.FormValue("loop_file_write_enabled") == "on"
 	cfg.Loop.ShellExecEnabled = r.FormValue("loop_shell_exec_enabled") == "on"
 	cfg.Loop.WebSearchEnabled = r.FormValue("loop_web_search_enabled") == "on"
 
-	cfg.Metrics.RetentionDays = atoiOr(r.FormValue("metrics_retention_days"), cfg.Metrics.RetentionDays)
+	cfg.Metrics.RetentionDays = atoiField(r, "metrics_retention_days", "Metrics retention days", cfg.Metrics.RetentionDays, &parseErrs)
 	cfg.Metrics.PrometheusEnabled = r.FormValue("metrics_prometheus_enabled") == "on"
 
-	cfg.Log.RingMaxEntries = atoiOr(r.FormValue("log_ring_max_entries"), cfg.Log.RingMaxEntries)
-	cfg.Log.ProcMaxLines = atoiOr(r.FormValue("log_proc_max_lines"), cfg.Log.ProcMaxLines)
+	cfg.Log.RingMaxEntries = atoiField(r, "log_ring_max_entries", "Harness log entries", cfg.Log.RingMaxEntries, &parseErrs)
+	cfg.Log.ProcMaxLines = atoiField(r, "log_proc_max_lines", "Process log lines", cfg.Log.ProcMaxLines, &parseErrs)
 
-	return &cfg
+	return &cfg, parseErrs
 }
 
-func atoiOr(s string, fallback int) int {
-	s = strings.TrimSpace(s)
+func atoiField(r *http.Request, name, label string, fallback int, errs *[]string) int {
+	s := strings.TrimSpace(r.FormValue(name))
 	if s == "" {
 		return fallback
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil {
+		*errs = append(*errs, label+" must be an integer")
 		return fallback
 	}
 	return n
 }
 
-func atofOr(s string, fallback float64) float64 {
-	s = strings.TrimSpace(s)
+func atofField(r *http.Request, name, label string, fallback float64, errs *[]string) float64 {
+	s := strings.TrimSpace(r.FormValue(name))
 	if s == "" {
 		return fallback
 	}
 	n, err := strconv.ParseFloat(s, 64)
 	if err != nil {
+		*errs = append(*errs, label+" must be a number")
 		return fallback
 	}
 	return n
