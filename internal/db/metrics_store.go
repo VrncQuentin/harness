@@ -82,11 +82,18 @@ func (s *MetricsStore) Latest() ([]metrics.DataPoint, error) {
 // ApplyRetention downsamples raw rows older than retentionDays into hourly
 // aggregates, then deletes those raw rows so harness.db cannot grow forever.
 func (s *MetricsStore) ApplyRetention(retentionDays int) error {
+	return s.applyRetentionAt(retentionDays, time.Now())
+}
+
+func (s *MetricsStore) applyRetentionAt(retentionDays int, now time.Time) error {
 	if retentionDays < 1 {
 		return fmt.Errorf("db: metrics retention days must be >= 1, got %d", retentionDays)
 	}
-	cutoff := time.Now().AddDate(0, 0, -retentionDays).Unix()
-	updatedAt := time.Now().Unix()
+	cutoff := now.AddDate(0, 0, -retentionDays)
+	// Only downsample full hours. The cutoff hour remains raw until its end,
+	// so a later retention pass never overwrites an aggregate with a partial hour.
+	completeCutoff := cutoff.Truncate(time.Hour).Unix()
+	updatedAt := now.Unix()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -121,12 +128,12 @@ func (s *MetricsStore) ApplyRetention(retentionDays int) error {
 			 avg_value = excluded.avg_value,
 			 last_value = excluded.last_value,
 			 updated_at = excluded.updated_at`,
-		cutoff, updatedAt,
+		completeCutoff, updatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("db: downsample metrics: %w", err)
 	}
-	if _, err := tx.Exec(`DELETE FROM metrics WHERE ts < ?`, cutoff); err != nil {
+	if _, err := tx.Exec(`DELETE FROM metrics WHERE ts < ?`, completeCutoff); err != nil {
 		return fmt.Errorf("db: prune metrics: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
