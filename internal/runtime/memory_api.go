@@ -14,7 +14,6 @@ import (
 	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/embedder"
 	gitw "github.com/vrnc/harness/internal/git"
-	"github.com/vrnc/harness/internal/index"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/memoryops"
@@ -62,21 +61,22 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.agentReg = agent.NewDiskRegistry(rt.globalMem, rt.getActiveAgent, rt.setActiveAgent)
 	rt.assembler = prompt.NewProjectDiskAssembler(rt.globalMem, rt.activeMem, rt.agentReg, rt.cfg.Prompt).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
 
-	// Open the episode index for blended retrieval. The UI rebuilder is wired even
-	// when the index is missing so a fresh clone can reconstruct it in-place.
+	// The project-scoped service owns one index handle for prompt retrieval,
+	// scoring, save hooks, and rebuilding. Missing indexes are created lazily;
+	// malformed indexes surface as setup errors instead of being discarded.
 	indexDir := filepath.Join(roots.activeRoot, "index", "_episodes")
-	embedClient := rt.newEmbedderClient()
-	epIdx, err := index.Open(indexDir)
+	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir)
 	if err != nil {
-		slog.Debug("no episode index found, retrieval will use recency only", "dir", indexDir)
-	} else {
-		rt.assembler = rt.assembler.WithBlendedRetrieval(epIdx, embedClient)
+		uiServer.SetServiceDeps(svcDeps)
+		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
+		return
 	}
+	embedClient := rt.newEmbedderClient()
+	rt.assembler = rt.assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 	svcDeps.RetrievalScorer = &memoryops.EpisodeScorer{
-		IndexDir: indexDir,
 		Embedder: embedClient,
 		Config:   rt.cfg.Prompt,
-		Index:    epIdx,
+		Index:    episodeIndex,
 	}
 	svcDeps.MemoryStore = rt.activeMem
 	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: rt.agentReg, globalMem: rt.globalMem, activeMem: rt.activeMem, getProjectSlug: rt.getActiveProjectSlug}
@@ -85,7 +85,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	// A failure to open the git repo surfaces as a startup error and
 	// silently disables save/resume so the rest of the harness stays
 	// usable.
-	sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient)
+	sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient, episodeIndex)
 	rt.setSessionManager(sessionMgr)
 	if sessionAdapter != nil {
 		svcDeps.SessionStore = sessionAdapter
@@ -103,19 +103,13 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
 	svcDeps.IndexRebuilder = &memoryops.EpisodeRebuilder{
-		Mem:      rt.activeMem,
-		Embedder: embedClient,
-		Index:    epIdx,
-		IndexDir: indexDir,
-		Slug:     rt.cfg.Project.ActiveProjectSlug,
-		Repo:     rt.gitRepo,
-		OnRebuilt: func(idx *index.Index) {
-			rt.mu.Lock()
-			if rt.assembler != nil {
-				rt.assembler = rt.assembler.WithBlendedRetrieval(idx, embedClient)
-			}
-			rt.mu.Unlock()
-		},
+		Mem:       rt.activeMem,
+		Embedder:  embedClient,
+		Index:     episodeIndex.Current(),
+		IndexDir:  indexDir,
+		Slug:      rt.cfg.Project.ActiveProjectSlug,
+		Repo:      rt.gitRepo,
+		OnRebuilt: episodeIndex.Replace,
 	}
 	if rt.reqQueue != nil {
 		svcDeps.ChatRunner = &chatRunnerAdapter{
@@ -224,7 +218,7 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 	}, nil
 }
 
-func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client) (*session.Manager, *uiSessionStoreAdapter) {
+func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndexes ...*memoryops.EpisodeIndex) (*session.Manager, *uiSessionStoreAdapter) {
 	repoPath := roots.activeRoot
 	repo, err := gitw.Open(repoPath)
 	if err != nil {
@@ -232,6 +226,18 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		return nil, nil
 	}
 	rt.gitRepo = repo
+
+	var episodeIndex *memoryops.EpisodeIndex
+	if len(episodeIndexes) > 0 {
+		episodeIndex = episodeIndexes[0]
+	}
+	if episodeIndex == nil {
+		episodeIndex, err = memoryops.NewEpisodeIndex(filepath.Join(repoPath, "index", "_episodes"))
+		if err != nil {
+			uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
+			return nil, nil
+		}
+	}
 
 	var rec session.MetricsRecorder
 	if metricsStore != nil {
@@ -247,7 +253,7 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		Metrics:            rec,
 		SummarizerPrompt:   rt.summarizerPromptFn(),
 		ResolveAbsRepoPath: repoPath,
-		AfterSave:          memoryops.AfterSaveEmbed(embedClient, repoPath, rt.gitRepo),
+		AfterSave:          memoryops.AfterSaveEmbed(embedClient, episodeIndex, rt.gitRepo),
 	}, rt.cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))

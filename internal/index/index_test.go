@@ -181,3 +181,36 @@ func TestIndex_Contains(t *testing.T) {
 		t.Error("re-opened: expected sha-abc to be found")
 	}
 }
+
+func TestIndex_UpsertReplacesSourceAndKeepsAgentPathsDistinct(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coder := "episodes/coder/shared"
+	reviewer := "episodes/reviewer/shared"
+	if err := idx.Upsert(coder, "first", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Upsert(reviewer, "first", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Upsert(coder, "second", [][]float32{{-1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := idx.Search([]float32{1, 0}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("got %d results, want 2", len(results))
+	}
+	if results[0].SHA != reviewer {
+		t.Fatalf("resaved source remained searchable: top result = %q, want %q", results[0].SHA, reviewer)
+	}
+	if !idx.Contains(coder) || !idx.Contains(reviewer) {
+		t.Fatal("source-path identities were not retained")
+	}
+}

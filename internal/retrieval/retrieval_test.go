@@ -37,8 +37,8 @@ func TestBlendEpisodeScoresUsesOldestFirstRecency(t *testing.T) {
 }
 
 func TestEpisodeID(t *testing.T) {
-	if got := EpisodeID("projects/global/episodes/coder/abc123.md"); got != "abc123" {
-		t.Fatalf("EpisodeID = %q, want abc123", got)
+	if got := EpisodeID("projects/global/episodes/coder/abc123.md"); got != "projects/global/episodes/coder/abc123" {
+		t.Fatalf("EpisodeID = %q, want projects/global/episodes/coder/abc123", got)
 	}
 }
 
