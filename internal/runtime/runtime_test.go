@@ -145,6 +145,40 @@ func TestRestartCallbacksTolerateMissingManagers(t *testing.T) {
 	rt.RestartEmbedder()
 }
 
+func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	loaded := cfg
+	loaded.Project.ActiveProjectSlug = "missing"
+
+	mem := memory.NewDirReader(root)
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	rt.started = true
+	rt.globalMem = mem
+	rt.activeMem = mem
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	uiServer := ui.NewServer(0)
+	uiServer.SetServiceDeps(ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem})
+
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if result.LiveApplied {
+		t.Fatal("failed memory/API reload should not report live apply")
+	}
+	if rt.globalMem != mem || rt.activeMem != mem {
+		t.Fatal("runtime memory repos were not restored after failed reload")
+	}
+	deps := uiServer.ServiceDepsSnapshot()
+	if deps.MemoryRepoPath != root || deps.MemoryStore != mem {
+		t.Fatalf("UI service deps were not restored: path=%q store=%T", deps.MemoryRepoPath, deps.MemoryStore)
+	}
+}
+
 func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	port := freeTCPPort(t)
 	cfg := config.Defaults()
@@ -831,6 +865,40 @@ func (c *sequenceInferenceClient) Complete(_ context.Context, req inference.Comp
 }
 
 func (c *sequenceInferenceClient) Health(context.Context) error { return nil }
+
+type runtimeConfigStore struct {
+	cfg   *config.Config
+	saved bool
+}
+
+func (s *runtimeConfigStore) Load() (*config.Config, bool, error) {
+	if s.cfg == nil {
+		cfg := config.Defaults()
+		return &cfg, s.saved, nil
+	}
+	cfg := *s.cfg
+	return &cfg, s.saved, nil
+}
+
+func (s *runtimeConfigStore) Save(cfg *config.Config) error {
+	copied := *cfg
+	s.cfg = &copied
+	s.saved = true
+	return nil
+}
+
+func seedRequiredConfigFiles(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	dir := t.TempDir()
+	paths := []*string{&cfg.Model.Binary, &cfg.Model.ModelPath, &cfg.Embedder.Binary, &cfg.Embedder.ModelPath}
+	for i, target := range paths {
+		path := filepath.Join(dir, fmt.Sprintf("required-%d", i))
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		*target = path
+	}
+}
 
 type runtimeProjectStoreStub struct {
 	projects map[string]project.Project
