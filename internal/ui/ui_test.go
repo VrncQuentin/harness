@@ -913,6 +913,45 @@ func TestHandleConfig_GETParsesApplyResultFromQuery(t *testing.T) {
 	}
 }
 
+func TestHandleConfig_POSTRejectsInvalidNumericInput(t *testing.T) {
+	s, store := newServerWithStore(t)
+
+	existing := config.Defaults()
+	existing.Model.Binary = "C:\\existing.exe"
+	existing.Model.ModelPath = "C:\\existing.gguf"
+	existing.Embedder.Binary = "C:\\embed.exe"
+	existing.Embedder.ModelPath = "C:\\embed.gguf"
+	existing.Model.CtxSize = 11111
+	if err := store.Save(&existing); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
+
+	form := url.Values{}
+	form.Set("model_binary", existing.Model.Binary)
+	form.Set("model_path", existing.Model.ModelPath)
+	form.Set("embed_binary", existing.Embedder.Binary)
+	form.Set("embed_path", existing.Embedder.ModelPath)
+	form.Set("model_ctx_size", "not-a-number")
+
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected form re-render 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Model context size must be an integer") {
+		t.Fatalf("expected field parse error, got body:\n%s", rec.Body.String())
+	}
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatalf("load after rejected save: %v", err)
+	}
+	if loaded.Model.CtxSize != 11111 {
+		t.Fatalf("invalid numeric input was saved: ctx size = %d", loaded.Model.CtxSize)
+	}
+}
 func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 	s, store := newServerWithStore(t)
 
