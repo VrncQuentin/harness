@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/vrnc/harness/internal/config"
@@ -79,6 +80,21 @@ func TestOpen_Idempotent(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("expected 1 global project row after reopen, got %d", count)
+	}
+}
+
+func TestBundledMigrationVersionUsesMaxEmbeddedMigration(t *testing.T) {
+	version, err := bundledMigrationVersion(fstest.MapFS{
+		"0001_init.up.sql":        {},
+		"0001_init.down.sql":      {},
+		"0003_add_metrics.up.sql": {},
+		"README.md":               {},
+	}, ".")
+	if err != nil {
+		t.Fatalf("bundledMigrationVersion: %v", err)
+	}
+	if version != 3 {
+		t.Fatalf("version = %d, want max migration version 3", version)
 	}
 }
 

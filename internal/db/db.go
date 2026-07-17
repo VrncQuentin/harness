@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,13 +16,12 @@ import (
 
 	"github.com/golang-migrate/migrate/v4"
 	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
+	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "modernc.org/sqlite" // register the sqlite driver
 
 	"github.com/vrnc/harness/migrations"
 )
-
-const expectedMigrationVersion uint = 1
 
 // DB owns the shared harness SQLite handle and exposes typed stores for each
 // subsystem. Callers open it once in main and pass the sub-stores around.
@@ -133,6 +133,10 @@ func (d *DB) seedGlobalProject() error {
 // runMigrations applies every pending migration from the embedded FS using
 // golang-migrate. Running against a DB that is already up-to-date is a no-op.
 func runMigrations(sqldb *sql.DB) error {
+	bundledVersion, err := bundledMigrationVersion(migrations.FS, ".")
+	if err != nil {
+		return err
+	}
 	src, err := iofs.New(migrations.FS, ".")
 	if err != nil {
 		return fmt.Errorf("db: migrations source: %w", err)
@@ -152,11 +156,37 @@ func runMigrations(sqldb *sql.DB) error {
 	if dirty {
 		return fmt.Errorf("db: migration version %d is dirty; delete harness.db and restart", version)
 	}
-	if err == nil && version > expectedMigrationVersion {
-		return fmt.Errorf("db: migration version %d is newer than bundled schema version %d; delete harness.db and restart", version, expectedMigrationVersion)
+	if err == nil && version > bundledVersion {
+		return fmt.Errorf("db: migration version %d is newer than bundled schema version %d; delete harness.db and restart", version, bundledVersion)
 	}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("db: migrate up: %w", err)
 	}
 	return nil
+}
+func bundledMigrationVersion(fsys fs.FS, dir string) (uint, error) {
+	entries, err := fs.ReadDir(fsys, dir)
+	if err != nil {
+		return 0, fmt.Errorf("db: read bundled migrations: %w", err)
+	}
+	var max uint
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		migration, err := source.Parse(entry.Name())
+		if errors.Is(err, source.ErrParse) {
+			continue
+		}
+		if err != nil {
+			return 0, fmt.Errorf("db: parse bundled migration %s: %w", entry.Name(), err)
+		}
+		if migration.Version > max {
+			max = migration.Version
+		}
+	}
+	if max == 0 {
+		return 0, errors.New("db: no bundled migrations found")
+	}
+	return max, nil
 }
