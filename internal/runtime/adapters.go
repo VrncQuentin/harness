@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
-	"path"
 	"strings"
 	"sync"
 	"time"
@@ -30,200 +28,84 @@ type uiAgentRegistryAdapter struct {
 	globalMem      memory.Repo
 	activeMem      memory.Repo
 	getProjectSlug func() string
+	setActive      func(string) error
 }
 
 func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
-	agents, err := ad.reg.List()
+	agents, err := ad.projectRegistry().List()
 	if err != nil {
 		return nil, err
 	}
-
-	slug := ""
-	if ad.getProjectSlug != nil {
-		slug = ad.getProjectSlug()
-	}
-
-	projectAgents := make(map[string]bool)
-	if slug != "" && slug != project.GlobalSlug {
-		names, err := ad.activeMem.ListDirs("agents")
-		if err == nil {
-			for _, name := range names {
-				if name != "" && name != "." && name != ".." {
-					projectAgents[name] = true
-				}
-			}
-		}
-	}
-
-	out := make([]ui.AgentInfo, 0, len(agents)+len(projectAgents))
-	seen := make(map[string]bool)
+	out := make([]ui.AgentInfo, 0, len(agents))
 	for _, a := range agents {
-		info, err := ad.Get(a.Name)
-		if err != nil {
-			continue
-		}
-		if projectAgents[a.Name] {
-			info.Origin = "extends-global"
-		} else {
-			info.Origin = "global"
-		}
-		out = append(out, info)
-		seen[a.Name] = true
-	}
-
-	// Add project-only agents that have no global counterpart.
-	for name := range projectAgents {
-		if seen[name] {
-			continue
-		}
-		projectPath := path.Join("agents", name)
-		persona, _ := readOptional(ad.activeMem, projectPath+"/persona.md")
-		rules, _ := readOptional(ad.activeMem, projectPath+"/rules.md")
-		notes, _ := readOptional(ad.activeMem, projectPath+"/notes.md")
-		out = append(out, ui.AgentInfo{
-			Name:        name,
-			PersonaPath: projectPath + "/persona.md",
-			Persona:     persona,
-			RulesPath:   projectPath + "/rules.md",
-			Rules:       rules,
-			NotesPath:   projectPath + "/notes.md",
-			Notes:       notes,
-			Origin:      "project-only",
-		})
+		out = append(out, projectAgentInfo(a))
 	}
 	return out, nil
 }
 
 func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
-	a, err := ad.reg.Get(name)
-	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			return ui.AgentInfo{}, err
-		}
-		// Agent might be project-only; try the project path.
-		info, projErr := ad.getProjectAgent(name)
-		if projErr != nil {
-			return ui.AgentInfo{}, err // return original global lookup error
-		}
-		return info, nil
-	}
-	info, err := ad.buildAgentInfo(a)
+	a, err := ad.projectRegistry().Get(name)
 	if err != nil {
 		return ui.AgentInfo{}, err
 	}
-	// Check if this agent is extended by the active project.
-	slug := ""
-	if ad.getProjectSlug != nil {
-		slug = ad.getProjectSlug()
-	}
-	if slug != "" && slug != project.GlobalSlug {
-		projectPersonaPath := path.Join("agents", a.Name, "persona.md")
-		if _, err := ad.activeMem.Read(projectPersonaPath); err == nil {
-			info.Origin = "extends-global"
-			return info, nil
-		}
-	}
-	info.Origin = "global"
-	return info, nil
+	return projectAgentInfo(a), nil
 }
 
-func (ad *uiAgentRegistryAdapter) getProjectAgent(name string) (ui.AgentInfo, error) {
+func (ad *uiAgentRegistryAdapter) projectRegistry() *agent.ProjectRegistry {
 	slug := ""
 	if ad.getProjectSlug != nil {
 		slug = ad.getProjectSlug()
 	}
-	if slug == "" || slug == project.GlobalSlug {
-		return ui.AgentInfo{}, fmt.Errorf("no active project")
+	return &agent.ProjectRegistry{
+		Global:      ad.reg,
+		GlobalMem:   ad.globalMem,
+		ActiveMem:   ad.activeMem,
+		ProjectSlug: slug,
+		GlobalSlug:  project.GlobalSlug,
+		SetActiveFn: ad.setActive,
 	}
-	projectPath := path.Join("agents", name)
-	persona, _ := readOptional(ad.activeMem, projectPath+"/persona.md")
-	rules, _ := readOptional(ad.activeMem, projectPath+"/rules.md")
-	notes, _ := readOptional(ad.activeMem, projectPath+"/notes.md")
-	if persona == "" && rules == "" && notes == "" {
-		return ui.AgentInfo{}, fmt.Errorf("agent %q not found", name)
-	}
+}
+
+func projectAgentInfo(a agent.ProjectAgent) ui.AgentInfo {
 	return ui.AgentInfo{
-		Name:        name,
-		PersonaPath: projectPath + "/persona.md",
-		Persona:     persona,
-		RulesPath:   projectPath + "/rules.md",
-		Rules:       rules,
-		NotesPath:   projectPath + "/notes.md",
-		Notes:       notes,
-		Origin:      "project-only",
-	}, nil
-}
-
-func (ad *uiAgentRegistryAdapter) buildAgentInfo(a agent.Agent) (ui.AgentInfo, error) {
-	info := ui.AgentInfo{
 		Name:        a.Name,
-		PersonaPath: a.PersonaPath,
-		RulesPath:   a.RulesPath,
-		NotesPath:   a.NotesPath,
+		PersonaPath: a.Persona.Path,
+		Persona:     a.Persona.Content,
+		RulesPath:   a.Rules.Path,
+		Rules:       a.Rules.Content,
+		NotesPath:   a.Notes.Path,
+		Notes:       a.Notes.Content,
+		Origin:      a.Origin,
 	}
-	persona, err := readOptional(ad.globalMem, a.PersonaPath)
-	if err != nil {
-		return info, err
-	}
-	info.Persona = persona
-	rules, err := readOptional(ad.globalMem, a.RulesPath)
-	if err != nil {
-		return info, err
-	}
-	info.Rules = rules
-	notes, err := readOptional(ad.activeMem, a.NotesPath)
-	if err != nil {
-		return info, err
-	}
-	info.Notes = notes
-	return info, nil
-}
-
-func readOptional(mem memory.Reader, relPath string) (string, error) {
-	b, err := mem.Read(relPath)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return "", nil
-		}
-		return "", err
-	}
-	return string(b), nil
 }
 
 func (ad *uiAgentRegistryAdapter) Active() string {
-	return ad.reg.Active()
+	return ad.projectRegistry().Active()
 }
 
 func (ad *uiAgentRegistryAdapter) SetActive(name string) error {
-	return ad.reg.SetActive(name)
+	return ad.projectRegistry().SetActive(name)
 }
 
 func (ad *uiAgentRegistryAdapter) Create(name string) error {
-	_, err := ad.reg.Create(name)
+	_, err := ad.projectRegistry().Create(name)
 	return err
 }
 
 func (ad *uiAgentRegistryAdapter) WritePersona(name string, body []byte) error {
-	return ad.reg.WritePersona(name, body)
+	return ad.projectRegistry().WritePersona(name, body)
 }
 
 func (ad *uiAgentRegistryAdapter) WriteRules(name string, body []byte) error {
-	return ad.reg.WriteRules(name, body)
+	return ad.projectRegistry().WriteRules(name, body)
 }
 
 func (ad *uiAgentRegistryAdapter) WriteNotes(name string, body []byte) error {
-	if _, err := ad.Get(name); err != nil {
-		return err
-	}
-	notePath := path.Join("agents", name, "notes.md")
-	if err := ad.activeMem.WriteFile(notePath, body); err != nil {
-		return fmt.Errorf("agent: write project notes %q: %w", name, err)
-	}
-	return nil
+	return ad.projectRegistry().WriteNotes(name, body)
 }
 
 func (ad *uiAgentRegistryAdapter) Delete(name string) error {
-	return ad.reg.Delete(name)
+	return ad.projectRegistry().Delete(name)
 }
 
 var errNoActiveAgent = errors.New("api: no agent specified and no active agent configured (set one in /agents)")
