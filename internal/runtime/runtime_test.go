@@ -656,7 +656,7 @@ func TestIndexRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 		Slug:     "global",
 		OnRebuilt: func(idx *index.Index) {
 			called = true
-			if !idx.Contains("ep1") {
+			if !idx.Contains("episodes/coder/ep1") {
 				t.Errorf("rebuilt index missing ep1")
 			}
 		},
@@ -675,7 +675,7 @@ func TestIndexRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open rebuilt index: %v", err)
 	}
-	if !opened.Contains("ep1") {
+	if !opened.Contains("episodes/coder/ep1") {
 		t.Fatal("rebuilt index does not contain ep1")
 	}
 }

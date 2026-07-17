@@ -28,7 +28,7 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 		Slug:     "global",
 		OnRebuilt: func(idx *index.Index) {
 			called = true
-			if !idx.Contains("ep1") {
+			if !idx.Contains("episodes/coder/ep1") {
 				t.Errorf("rebuilt index missing ep1")
 			}
 		},
@@ -47,7 +47,7 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open rebuilt index: %v", err)
 	}
-	if !opened.Contains("ep1") {
+	if !opened.Contains("episodes/coder/ep1") {
 		t.Fatal("rebuilt index does not contain ep1")
 	}
 }
@@ -65,3 +65,23 @@ func (s stubEmbedder) Embed(_ context.Context, chunks []string) ([][]float32, er
 }
 
 func (s stubEmbedder) Health(context.Context) error { return nil }
+
+func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
+	service, err := NewEpisodeIndex(filepath.Join(t.TempDir(), "index", "_episodes"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := service.Search([]float32{1, 0}, 1); err != nil || len(got) != 0 {
+		t.Fatalf("empty index Search = %v, %v", got, err)
+	}
+	if err := service.Upsert("episodes/coder/one", "content", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	results, err := service.Search([]float32{1, 0}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SHA != "episodes/coder/one" {
+		t.Fatalf("shared service did not expose post-save entry: %+v", results)
+	}
+}

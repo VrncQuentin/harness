@@ -97,7 +97,7 @@ type DiskAssembler struct {
 	projectSlug string
 	logger      *slog.Logger
 	tokenizer   func(string) int
-	idx         *index.Index
+	idx         index.Searcher
 	emb         embedder.Client
 }
 
@@ -160,7 +160,7 @@ func (a *DiskAssembler) WithProjectSlug(slug string) *DiskAssembler {
 // WithBlendedRetrieval returns a shallow copy with semantic retrieval
 // support. When idx and emb are non-nil, loadEpisodes uses the last user
 // message as a query for ANN search, blending similarity with recency.
-func (a *DiskAssembler) WithBlendedRetrieval(idx *index.Index, emb embedder.Client) *DiskAssembler {
+func (a *DiskAssembler) WithBlendedRetrieval(idx index.Searcher, emb embedder.Client) *DiskAssembler {
 	cp := *a
 	cp.idx = idx
 	cp.emb = emb

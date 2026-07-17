@@ -5,14 +5,14 @@ package memoryops
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"math"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/embedder"
@@ -26,9 +26,9 @@ import (
 
 // AfterSaveEmbed returns an AfterSaveFunc that embeds the episode summary and
 // updates the project's _episodes index.
-func AfterSaveEmbed(embedClient embedder.Client, repoPath string, repo *gitw.Repo) session.AfterSaveFunc {
+func AfterSaveEmbed(embedClient embedder.Client, episodeIndex *EpisodeIndex, repo *gitw.Repo) session.AfterSaveFunc {
 	return func(ctx context.Context, result session.SaveResult) error {
-		if embedClient == nil || result.Summary == "" {
+		if embedClient == nil || episodeIndex == nil || result.Summary == "" {
 			return nil
 		}
 		chunks := chunkSummary(result.Summary)
@@ -40,25 +40,8 @@ func AfterSaveEmbed(embedClient embedder.Client, repoPath string, repo *gitw.Rep
 		if err != nil {
 			return fmt.Errorf("embed episode %s: %w", result.ID, err)
 		}
-		if len(vectors) == 0 || len(vectors[0]) == 0 {
-			return nil
-		}
-		indexDir := filepath.Join(repoPath, "index", "_episodes")
-		dim := len(vectors[0])
-
-		idx, err := index.Open(indexDir)
-		if err != nil {
-			idx, err = index.Create(indexDir, dim)
-			if err != nil {
-				return fmt.Errorf("create index %s: %w", indexDir, err)
-			}
-		}
-		if idx.Dim() != dim {
-			return fmt.Errorf("index dimension mismatch: index has %d, got %d", idx.Dim(), dim)
-		}
-
-		if err := idx.Add(result.ID, vectors); err != nil {
-			return fmt.Errorf("add to index %s: %w", indexDir, err)
+		if err := episodeIndex.Upsert(retrieval.EpisodeID(result.EpisodePath), contentHash(result.Summary), vectors); err != nil {
+			return fmt.Errorf("index episode %s: %w", result.EpisodePath, err)
 		}
 
 		if repo != nil {
@@ -76,6 +59,10 @@ func AfterSaveEmbed(embedClient embedder.Client, repoPath string, repo *gitw.Rep
 	}
 }
 
+func contentHash(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
 func chunkSummary(summary string) []string {
 	var chunks []string
 	for _, para := range strings.Split(summary, "\n\n") {
@@ -92,11 +79,9 @@ func chunkSummary(summary string) []string {
 // lazily so the memory browser can show scores immediately after a fresh-clone
 // rebuild creates the index files.
 type EpisodeScorer struct {
-	mu       sync.Mutex
-	IndexDir string
 	Embedder embedder.Client
 	Config   config.PromptConfig
-	Index    *index.Index
+	Index    *EpisodeIndex
 }
 
 func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, _, _ string, query string, episodePaths []string) (map[string]ui.RetrievalScore, error) {
@@ -104,15 +89,14 @@ func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, _, _ string, query st
 	for _, p := range episodePaths {
 		out[p] = ui.RetrievalScore{}
 	}
-	idx, err := s.open()
-	if err != nil {
+	if s.Index == nil {
 		return out, nil
 	}
 
 	for _, p := range episodePaths {
 		id := retrieval.EpisodeID(p)
 		score := out[p]
-		score.Indexed = idx.Contains(id)
+		score.Indexed = s.Index.Contains(id)
 		out[p] = score
 	}
 	if strings.TrimSpace(query) == "" || s.Embedder == nil || len(episodePaths) == 0 {
@@ -126,7 +110,7 @@ func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, _, _ string, query st
 	if len(vecs) == 0 || len(vecs[0]) == 0 {
 		return out, nil
 	}
-	results, err := idx.Search(vecs[0], len(episodePaths)*2)
+	results, err := s.Index.Search(vecs[0], len(episodePaths)*2)
 	if err != nil {
 		return out, err
 	}
@@ -141,20 +125,6 @@ func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, _, _ string, query st
 		out[p] = score
 	}
 	return out, nil
-}
-
-func (s *EpisodeScorer) open() (*index.Index, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.Index != nil {
-		return s.Index, nil
-	}
-	idx, err := index.Open(s.IndexDir)
-	if err != nil {
-		return nil, err
-	}
-	s.Index = idx
-	return idx, nil
 }
 
 // EpisodeRebuilder walks episode files, embeds missing episode IDs, updates the
@@ -197,15 +167,10 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 
 	type pending struct {
 		path    string
-		id      string
 		content string
 	}
 	var work []pending
 	for _, p := range paths {
-		id := strings.TrimSuffix(path.Base(p), ".md")
-		if rb.Index != nil && rb.Index.Contains(id) {
-			continue
-		}
 		body, err := rb.Mem.Read(p)
 		if err != nil {
 			slog.Warn("index rebuild: skip unreadable episode", "path", p, "err", err)
@@ -215,7 +180,7 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		if len(chunks) == 0 {
 			continue
 		}
-		work = append(work, pending{path: p, id: id, content: string(body)})
+		work = append(work, pending{path: p, content: string(body)})
 	}
 
 	if len(work) == 0 {
@@ -265,8 +230,8 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		}
 		epVecs := vectors[offset : offset+n]
 		offset += n
-		if err := rb.Index.Add(w.id, epVecs); err != nil {
-			slog.Warn("index rebuild: add episode", "id", w.id, "err", err)
+		if err := rb.Index.Upsert(retrieval.EpisodeID(w.path), contentHash(w.content), epVecs); err != nil {
+			slog.Warn("index rebuild: add episode", "path", w.path, "err", err)
 		}
 	}
 

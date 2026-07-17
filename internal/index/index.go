@@ -24,9 +24,13 @@ const (
 
 // Entry is one record in the manifest.
 type Entry struct {
-	SHA    string `json:"sha"`
-	Offset int64  `json:"offset"`
-	Length int    `json:"length"`
+	// SHA is the stable result identifier. It is retained for on-disk
+	// compatibility; episode indexes use the repo-relative source path here.
+	SHA         string `json:"sha"`
+	Source      string `json:"source,omitempty"`
+	ContentHash string `json:"content_hash,omitempty"`
+	Offset      int64  `json:"offset"`
+	Length      int    `json:"length"`
 }
 
 // Manifest is the index header mapping content SHAs to vector offsets.
@@ -40,6 +44,11 @@ type Manifest struct {
 type Result struct {
 	SHA   string
 	Score float32
+}
+
+// Searcher is the read-only index surface used by retrieval consumers.
+type Searcher interface {
+	Search(query []float32, k int) ([]Result, error)
 }
 
 // Index manages one vectors.bin + manifest.json pair on disk. Safe for
@@ -88,11 +97,25 @@ func Create(dir string, dim int) (*Index, error) {
 // Add appends vectors for the given SHA. Existing SHAs are idempotent no-ops.
 // The vectors slice must match the index dimension. Safe for concurrent use.
 func (idx *Index) Add(sha string, vectors [][]float32) error {
+	return idx.Upsert(sha, sha, vectors)
+}
+
+// Upsert stores vectors for source. A matching source and content hash is a
+// no-op; changed source content replaces its old vectors. Result identifiers
+// are the source path, which makes equal episode basenames in different agent
+// directories distinct.
+func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	for _, e := range idx.manifest.Chunks {
-		if e.SHA == sha {
-			return nil // already indexed
+	previous := idx.manifest
+	for i, e := range idx.manifest.Chunks {
+		if e.Source == source || (e.Source == "" && e.SHA == source) {
+			if e.ContentHash == contentHash && contentHash != "" {
+				return nil
+			}
+			idx.manifest.Count -= e.Length
+			idx.manifest.Chunks = append(idx.manifest.Chunks[:i], idx.manifest.Chunks[i+1:]...)
+			break
 		}
 	}
 	offset := idx.currentFileSize()
@@ -101,15 +124,15 @@ func (idx *Index) Add(sha string, vectors [][]float32) error {
 			return fmt.Errorf("index: dimension mismatch: got %d, want %d", len(v), idx.dim)
 		}
 	}
-	entry := Entry{SHA: sha, Offset: offset, Length: len(vectors)}
+	entry := Entry{SHA: source, Source: source, ContentHash: contentHash, Offset: offset, Length: len(vectors)}
 	if err := idx.appendVectors(vectors); err != nil {
+		idx.manifest = previous
 		return err
 	}
 	idx.manifest.Chunks = append(idx.manifest.Chunks, entry)
 	idx.manifest.Count += len(vectors)
 	if err := idx.writeManifest(); err != nil {
-		idx.manifest.Chunks = idx.manifest.Chunks[:len(idx.manifest.Chunks)-1]
-		idx.manifest.Count -= len(vectors)
+		idx.manifest = previous
 		return err
 	}
 	return nil
