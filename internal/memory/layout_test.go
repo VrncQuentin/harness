@@ -387,6 +387,31 @@ func TestCreateMissing_NonexistentRoot(t *testing.T) {
 	}
 }
 
+func TestProjectScaffoldServiceCreateMissing(t *testing.T) {
+	root := t.TempDir()
+	service := ProjectScaffoldService{}
+	created, err := service.CreateMissing(root, false)
+	if err != nil {
+		t.Fatalf("CreateMissing: %v", err)
+	}
+	if created == 0 {
+		t.Fatal("CreateMissing created 0 entries, want scaffold files")
+	}
+	missing, err := service.Missing(root, false)
+	if err != nil {
+		t.Fatalf("Missing after CreateMissing: %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("missing after scaffold = %v", missing)
+	}
+	created, err = service.CreateMissing(root, false)
+	if err != nil {
+		t.Fatalf("CreateMissing complete repo: %v", err)
+	}
+	if created != 0 {
+		t.Fatalf("CreateMissing complete repo created %d entries, want 0", created)
+	}
+}
 func TestCreateMissingProjectRepoWritesGitkeep(t *testing.T) {
 	root := t.TempDir()
 	if err := CreateMissingProjectRepo(root, true); err != nil {
