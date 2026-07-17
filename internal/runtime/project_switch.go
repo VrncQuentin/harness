@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/proc"
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/ui"
 )
@@ -79,19 +78,7 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 		}
 	}
 	if rt.llamaMgr != nil {
-		rt.llamaMgr.Reconfigure(func() (string, []string) {
-			return proc.LlamaArgs(
-				dstModel.Binary,
-				dstModel.ModelPath,
-				dstModel.CtxSize,
-				dstModel.GPULayers,
-				dstModel.NParallel,
-				dstModel.Port,
-				dstModel.Verbose,
-				dstModel.CacheTypeK,
-				dstModel.CacheTypeV,
-			)
-		}, fmt.Sprintf("http://127.0.0.1:%d/health", dstModel.Port))
+		rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(dstModel) }, llamaHealthURL(dstModel))
 	}
 
 	uiServer.SetModelMismatch(false, "", "")

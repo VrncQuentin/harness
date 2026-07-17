@@ -48,32 +48,22 @@ func (rt *Runtime) ApplyConfig(
 	defer rt.mu.Unlock()
 
 	old := rt.cfg
+	oldModel := rt.effectiveModelFor(&old)
+	newModel := rt.effectiveModelFor(loaded)
 	rt.cfg = *loaded
 	rt.refreshProjectDirectoryWarnings(uiServer)
 
 	var result ui.ApplyResult
 
 	if !rt.started {
-		slog.Info("starting services", "model_port", loaded.Model.Port, "embed_port", loaded.Embedder.Port)
+		slog.Info("starting services", "model_port", newModel.Port, "embed_port", loaded.Embedder.Port)
 		rt.startServices(ctx, uiServer, events, metricsStore)
 		rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
 		result.LiveApplied = true
 	} else {
-		if old.Model != loaded.Model {
-			slog.Info("reconfiguring llama-server", "old_port", old.Model.Port, "new_port", loaded.Model.Port)
-			rt.llamaMgr.Reconfigure(func() (string, []string) {
-				return proc.LlamaArgs(
-					loaded.Model.Binary,
-					loaded.Model.ModelPath,
-					loaded.Model.CtxSize,
-					loaded.Model.GPULayers,
-					loaded.Model.NParallel,
-					loaded.Model.Port,
-					loaded.Model.Verbose,
-					loaded.Model.CacheTypeK,
-					loaded.Model.CacheTypeV,
-				)
-			}, fmt.Sprintf("http://127.0.0.1:%d/health", loaded.Model.Port))
+		if oldModel != newModel {
+			slog.Info("reconfiguring llama-server", "old_port", oldModel.Port, "new_port", newModel.Port)
+			rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(newModel) }, llamaHealthURL(newModel))
 			result.LiveApplied = true
 		}
 		if old.Embedder != loaded.Embedder {

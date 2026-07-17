@@ -50,8 +50,9 @@ func (rt *Runtime) QueueStats() (int, int) {
 }
 
 func (rt *Runtime) newInferenceClient() inference.Client {
+	model := rt.effectiveModelFor(&rt.cfg)
 	return inference.NewClient(
-		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Model.Port),
+		fmt.Sprintf("http://127.0.0.1:%d", model.Port),
 		httpclient.NewStreaming(),
 	)
 }
@@ -147,23 +148,12 @@ func (rt *Runtime) startServices(
 	metricsStore metrics.Store,
 ) {
 	cfg := &rt.cfg
+	model := rt.effectiveModelFor(cfg)
 
 	rt.llamaMgr = proc.NewManager(proc.ManagerConfig{
-		Name: "llama-server",
-		BuildArgs: func() (string, []string) {
-			return proc.LlamaArgs(
-				cfg.Model.Binary,
-				cfg.Model.ModelPath,
-				cfg.Model.CtxSize,
-				cfg.Model.GPULayers,
-				cfg.Model.NParallel,
-				cfg.Model.Port,
-				cfg.Model.Verbose,
-				cfg.Model.CacheTypeK,
-				cfg.Model.CacheTypeV,
-			)
-		},
-		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Model.Port),
+		Name:        "llama-server",
+		BuildArgs:   func() (string, []string) { return llamaArgsForModel(model) },
+		HealthURL:   llamaHealthURL(model),
 		Events:      events,
 		CheckPeriod: 5 * time.Second,
 		HTTPClient:  httpclient.New(),
