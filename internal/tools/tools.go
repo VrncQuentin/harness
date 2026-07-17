@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -330,6 +331,8 @@ func writeFileAtomic(path string, content []byte) error {
 	return os.Rename(tmpName, path)
 }
 
+const shellOutputLimit = 64 * 1024
+
 type shellExecTool struct{}
 
 var _ Tool = (*shellExecTool)(nil)
@@ -369,13 +372,61 @@ func (t *shellExecTool) Execute(ctx context.Context, c Context, args map[string]
 	name, shellArgs := shellCommand(cmdStr)
 	cmd := exec.CommandContext(timeoutCtx, name, shellArgs...)
 	cmd.Dir = workDir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return Result{Error: fmt.Sprintf("shell_exec: %v\n%s", err, truncateBytes(output, 65536))}
+	output := newCappedOutput(shellOutputLimit)
+	cmd.Stdout = output
+	cmd.Stderr = output
+	if err := cmd.Run(); err != nil {
+		return Result{Error: fmt.Sprintf("shell_exec: %v\n%s", err, output.String())}
 	}
-	return Result{Content: truncateBytes(output, 65536)}
+	return Result{Content: output.String()}
 }
 
+type cappedOutput struct {
+	mu        sync.Mutex
+	buf       []byte
+	limit     int
+	truncated bool
+}
+
+func newCappedOutput(limit int) *cappedOutput {
+	return &cappedOutput{limit: limit}
+}
+
+func (b *cappedOutput) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.limit <= 0 {
+		b.truncated = b.truncated || len(p) > 0
+		return len(p), nil
+	}
+	remaining := b.limit - len(b.buf)
+	if remaining > 0 {
+		if len(p) <= remaining {
+			b.buf = append(b.buf, p...)
+		} else {
+			b.buf = append(b.buf, p[:remaining]...)
+			b.truncated = true
+		}
+	} else if len(p) > 0 {
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+func (b *cappedOutput) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	out := string(b.buf)
+	if b.truncated {
+		if out != "" && !strings.HasSuffix(out, "\n") {
+			out += "\n"
+		}
+		out += "... (output truncated)"
+	}
+	return out
+}
 func shellCommand(command string) (string, []string) {
 	if runtime.GOOS == "windows" {
 		return "cmd.exe", []string{"/d", "/s", "/c", command}
@@ -539,11 +590,4 @@ func fallback(value, def string) string {
 		return def
 	}
 	return value
-}
-
-func truncateBytes(data []byte, max int) string {
-	if len(data) > max {
-		return string(data[:max]) + "\n... (output truncated)"
-	}
-	return string(data)
 }
