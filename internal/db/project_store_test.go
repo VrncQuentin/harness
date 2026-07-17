@@ -116,6 +116,27 @@ func TestProjectStore_CreateRejectsDuplicate(t *testing.T) {
 	}
 }
 
+func TestProjectStore_DeleteRemovesProjectAndDirectories(t *testing.T) {
+	store := newTestDB(t).Projects()
+	if _, err := store.Create(project.CreateInput{
+		Slug:           "demo",
+		DisplayName:    "Demo",
+		MemoryRepoPath: t.TempDir(),
+		Directories:    []string{t.TempDir()},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.Delete("demo"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := store.Get("demo"); !errors.Is(err, project.ErrNotFound) {
+		t.Fatalf("Get after Delete error = %v, want ErrNotFound", err)
+	}
+	dirs, err := store.ListDirectories("demo")
+	if !errors.Is(err, project.ErrNotFound) {
+		t.Fatalf("ListDirectories after Delete = %v, %v; want ErrNotFound", dirs, err)
+	}
+}
 func TestProjectStore_UpdateMutableFields(t *testing.T) {
 	d := newTestDB(t)
 	store := d.Projects()

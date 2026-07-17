@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -237,13 +236,9 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		MemoryRepoPath: strings.TrimSpace(r.FormValue("memory_repo_path")),
 	}
 
-	created, err := store.Create(input)
-	if err != nil {
+	workflow := project.NewWorkflow(store, memory.ProjectRepoManager{})
+	if _, err := workflow.Create(input); err != nil {
 		http.Redirect(w, r, "/projects?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
-		return
-	}
-	if err := memory.EnsureProjectRepo(created.MemoryRepoPath, created.Slug == project.GlobalSlug); err != nil {
-		http.Redirect(w, r, "/projects?error="+url.QueryEscape("project created, but memory repo setup failed: "+err.Error()), http.StatusSeeOther)
 		return
 	}
 	s.refreshProjectNav()
@@ -294,30 +289,8 @@ func (s *Server) handleProjectEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	current, err := store.Get(slug)
-	if err != nil {
-		http.Redirect(w, r, "/projects?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
-		return
-	}
-	if input.MemoryRepoPath != "" && current.MemoryRepoPath != "" && !samePath(input.MemoryRepoPath, current.MemoryRepoPath) {
-		switch r.FormValue("memory_repo_mode") {
-		case "move":
-			if err := memory.MoveProjectRepo(current.MemoryRepoPath, input.MemoryRepoPath, slug == project.GlobalSlug); err != nil {
-				http.Redirect(w, r, "/projects?error="+url.QueryEscape("move memory repo: "+err.Error()), http.StatusSeeOther)
-				return
-			}
-		case "fresh":
-			if err := memory.EnsureProjectRepo(input.MemoryRepoPath, slug == project.GlobalSlug); err != nil {
-				http.Redirect(w, r, "/projects?error="+url.QueryEscape("initialize memory repo: "+err.Error()), http.StatusSeeOther)
-				return
-			}
-		default:
-			http.Redirect(w, r, "/projects?error="+url.QueryEscape("choose whether to move existing memory data or start fresh"), http.StatusSeeOther)
-			return
-		}
-	}
-
-	if _, err := store.Update(input); err != nil {
+	workflow := project.NewWorkflow(store, memory.ProjectRepoManager{})
+	if _, err := workflow.Update(input, r.FormValue("memory_repo_mode")); err != nil {
 		http.Redirect(w, r, "/projects?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
@@ -336,15 +309,6 @@ func sameOrigin(r *http.Request) bool {
 		return false
 	}
 	return strings.EqualFold(u.Host, r.Host)
-}
-
-func samePath(a, b string) bool {
-	ac, aerr := filepath.Abs(filepath.Clean(a))
-	bc, berr := filepath.Abs(filepath.Clean(b))
-	if aerr != nil || berr != nil {
-		return filepath.Clean(a) == filepath.Clean(b)
-	}
-	return strings.EqualFold(ac, bc)
 }
 
 // activateProject saves the active project slug and triggers a config
