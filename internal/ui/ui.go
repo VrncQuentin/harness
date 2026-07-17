@@ -319,6 +319,26 @@ func (s *Server) SetServiceDeps(deps ServiceDeps) {
 	})
 }
 
+// ServiceDepsSnapshot returns the currently published runtime service adapters.
+// Runtime uses it to restore a known-good UI graph if a live reload fails after
+// detaching services.
+func (s *Server) ServiceDepsSnapshot() ServiceDeps {
+	deps := s.depsSnapshot()
+	return ServiceDeps{
+		MemoryRepoPath:          deps.memRepo,
+		AgentRegistry:           deps.agentReg,
+		MemoryStore:             deps.memStore,
+		SessionStore:            deps.sessionStore,
+		Committer:               deps.committer,
+		Dedup:                   deps.dedup,
+		PromotionDedupThreshold: deps.promotionDedupThreshold,
+		RetrievalScorer:         deps.scorer,
+		IndexRebuilder:          deps.rebuilder,
+		ChatRunner:              deps.chatRunner,
+		TaskRunner:              deps.taskRunner,
+	}
+}
+
 // SetRetry installs the callback invoked on /retry and after a successful
 // config save. Safe to call at any time; calls before it is set are no-ops.
 func (s *Server) SetRetry(fn RetryFunc) {
