@@ -191,7 +191,7 @@ func (s *Server) memoryLayoutView() memoryLayoutView {
 	if path == "" {
 		return memoryLayoutView{}
 	}
-	missing, err := memory.MissingProjectRepoItems(path, s.activeProjectIsGlobal())
+	missing, err := memory.ProjectScaffoldService{}.Missing(path, s.activeProjectIsGlobal())
 	if err != nil || len(missing) == 0 {
 		return memoryLayoutView{}
 	}
@@ -298,20 +298,16 @@ func (s *Server) handleMemoryScaffold(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/?scaffold_err="+url.QueryEscape("memory repo path is not configured"), http.StatusSeeOther)
 		return
 	}
-	missing, err := memory.MissingProjectRepoItems(path, s.activeProjectIsGlobal())
+	created, err := memory.ProjectScaffoldService{}.CreateMissing(path, s.activeProjectIsGlobal())
 	if err != nil {
 		http.Redirect(w, r, "/?scaffold_err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
-	if len(missing) == 0 {
+	if created == 0 {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	if err := memory.CreateMissing(path, missing); err != nil {
-		http.Redirect(w, r, "/?scaffold_err="+url.QueryEscape(err.Error()), http.StatusSeeOther)
-		return
-	}
-	target := "/?scaffold_created=" + strconv.Itoa(len(missing))
+	target := "/?scaffold_created=" + strconv.Itoa(created)
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
