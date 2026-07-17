@@ -14,14 +14,8 @@ import (
 
 // Request is a single queued inference request.
 type Request struct {
-	ID          string
-	Model       string
-	Messages    []inference.Message
-	Temperature float64
-	TopP        float64
-	MaxTokens   int
-	Tools       []inference.Tool
-	ToolChoice  any
+	ID         string
+	Completion inference.CompletionRequest
 	// Response is closed after the last token or on error.
 	Response chan<- inference.Token
 	Ctx      context.Context
@@ -202,16 +196,9 @@ func (q *Queue) dispatch(req Request) {
 	}
 
 	started := time.Now()
-	tokenCh, err := client.Complete(req.Ctx, inference.CompletionRequest{
-		Model:       req.Model,
-		Messages:    req.Messages,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		MaxTokens:   req.MaxTokens,
-		Stream:      true,
-		Tools:       req.Tools,
-		ToolChoice:  req.ToolChoice,
-	})
+	completion := req.Completion
+	completion.Stream = true
+	tokenCh, err := client.Complete(req.Ctx, completion)
 	if err != nil {
 		q.send(req.Ctx, req.Response, inference.Token{Err: fmt.Errorf("queue: inference: %w", err)})
 		return

@@ -51,6 +51,55 @@ type Result struct {
 	Error   string
 }
 
+// ApprovalDefault is the built-in approval-layer posture for a tool.
+type ApprovalDefault string
+
+const (
+	ApprovalDefaultAllow ApprovalDefault = "allow"
+	ApprovalDefaultAsk   ApprovalDefault = "ask"
+)
+
+// Descriptor is stable metadata for a registered tool. It is the single source
+// for built-in enablement and approval defaults; callers derive config and
+// policy behavior from these descriptors instead of duplicating tool IDs.
+type Descriptor struct {
+	ID                    string
+	DefaultEnabled        bool
+	DefaultApproval       ApprovalDefault
+	DefaultApprovalSource string
+}
+
+var builtinToolDescriptors = []Descriptor{
+	{ID: "file_read", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
+	{ID: "file_list", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
+	{ID: "file_write", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: writes require approval"},
+	{ID: "shell_exec", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: shell commands require approval"},
+	{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
+}
+
+// BuiltinDescriptors returns the built-in tool descriptors in registration order.
+func BuiltinDescriptors() []Descriptor {
+	out := make([]Descriptor, len(builtinToolDescriptors))
+	copy(out, builtinToolDescriptors)
+	return out
+}
+
+// BuiltinDescriptor returns the descriptor for a built-in tool id.
+func BuiltinDescriptor(id string) (Descriptor, bool) {
+	for _, desc := range builtinToolDescriptors {
+		if desc.ID == id {
+			return desc, true
+		}
+	}
+	return Descriptor{}, false
+}
+
+// BuiltinDefaultEnabled reports the config default for a built-in tool id.
+func BuiltinDefaultEnabled(id string) bool {
+	desc, ok := BuiltinDescriptor(id)
+	return ok && desc.DefaultEnabled
+}
+
 // Tool is a single callable tool registered with the harness.
 type Tool interface {
 	// ID returns the unique tool identifier, used in tool calls from the
@@ -165,13 +214,18 @@ func pathWithinRoot(path, root string) bool {
 // config — they must be explicitly enabled and pass the approval
 // layer before they can execute.
 func RegisterBuiltins(r *Registry) error {
-	for _, t := range []Tool{
-		&fileReadTool{},
-		&fileListTool{},
-		&fileWriteTool{},
-		&shellExecTool{},
-		&webSearchTool{},
-	} {
+	builtins := map[string]Tool{
+		"file_read":  &fileReadTool{},
+		"file_list":  &fileListTool{},
+		"file_write": &fileWriteTool{},
+		"shell_exec": &shellExecTool{},
+		"web_search": &webSearchTool{},
+	}
+	for _, desc := range builtinToolDescriptors {
+		t := builtins[desc.ID]
+		if t == nil {
+			return fmt.Errorf("tools: missing built-in implementation for %q", desc.ID)
+		}
 		if err := r.Register(t); err != nil {
 			return err
 		}

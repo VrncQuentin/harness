@@ -6,6 +6,8 @@ package approvals
 import (
 	"strings"
 	"sync"
+
+	"github.com/vrnc/harness/internal/tools"
 )
 
 // Decision is the outcome of a permission check for a single tool call.
@@ -253,14 +255,25 @@ func shellCommandSegments(command string) []string {
 // destructive tools by default. Agents must opt-in via their persona
 // or the user must configure explicit allows.
 func DefaultLayer() Layer {
-	return Layer{
-		Name: "builtin-defaults",
-		Rules: []Rule{
-			{ToolID: "file_read", Decision: Allowed, Source: "builtin: read-only tools allowed"},
-			{ToolID: "file_list", Decision: Allowed, Source: "builtin: read-only tools allowed"},
-			{ToolID: "file_write", Decision: Ask, Source: "builtin: writes require approval"},
-			{ToolID: "shell_exec", Decision: Ask, Source: "builtin: shell commands require approval"},
-			{ToolID: "web_search", Decision: Ask, Source: "builtin: web search uses the network"},
-		},
+	descriptors := tools.BuiltinDescriptors()
+	rules := make([]Rule, 0, len(descriptors))
+	for _, desc := range descriptors {
+		rules = append(rules, Rule{
+			ToolID:   desc.ID,
+			Decision: defaultDecision(desc.DefaultApproval),
+			Source:   desc.DefaultApprovalSource,
+		})
+	}
+	return Layer{Name: "builtin-defaults", Rules: rules}
+}
+
+func defaultDecision(defaultApproval tools.ApprovalDefault) Decision {
+	switch defaultApproval {
+	case tools.ApprovalDefaultAllow:
+		return Allowed
+	case tools.ApprovalDefaultAsk:
+		return Ask
+	default:
+		return Denied
 	}
 }
