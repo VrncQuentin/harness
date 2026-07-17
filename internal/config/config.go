@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/vrnc/harness/internal/project"
+	"github.com/vrnc/harness/internal/tools"
 )
 
 // Sentinel errors returned by Validate for missing required fields.
@@ -190,6 +191,25 @@ type LoopConfig struct {
 	WebSearchEnabled bool
 }
 
+// ToolEnabled reports whether the named built-in tool is enabled by this
+// config. Unknown tools are disabled.
+func (c LoopConfig) ToolEnabled(id string) bool {
+	switch id {
+	case "file_read":
+		return c.FileReadEnabled
+	case "file_list":
+		return c.FileListEnabled
+	case "file_write":
+		return c.FileWriteEnabled
+	case "shell_exec":
+		return c.ShellExecEnabled
+	case "web_search":
+		return c.WebSearchEnabled
+	default:
+		return false
+	}
+}
+
 // Store persists and retrieves Config. The concrete implementation lives in
 // internal/db; callers accept this interface so they can be tested with
 // in-memory fakes.
@@ -246,11 +266,11 @@ func Defaults() Config {
 		Loop: LoopConfig{
 			MaxTurns:         10,
 			DoomThreshold:    3,
-			FileReadEnabled:  true,
-			FileListEnabled:  true,
-			FileWriteEnabled: false,
-			ShellExecEnabled: false,
-			WebSearchEnabled: false,
+			FileReadEnabled:  tools.BuiltinDefaultEnabled("file_read"),
+			FileListEnabled:  tools.BuiltinDefaultEnabled("file_list"),
+			FileWriteEnabled: tools.BuiltinDefaultEnabled("file_write"),
+			ShellExecEnabled: tools.BuiltinDefaultEnabled("shell_exec"),
+			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),
 		},
 		Project: ProjectConfig{
 			ActiveProjectSlug: "global",

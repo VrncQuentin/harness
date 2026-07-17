@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -111,6 +112,32 @@ func TestRegistry_DuplicateReturnsError(t *testing.T) {
 	}
 	if err := r.Register(&fileReadTool{}); !errors.Is(err, ErrDuplicateTool) {
 		t.Fatalf("Register duplicate error = %v, want ErrDuplicateTool", err)
+	}
+}
+
+func TestBuiltinDescriptorsDefinePolicyMetadata(t *testing.T) {
+	descriptors := BuiltinDescriptors()
+	want := []Descriptor{
+		{ID: "file_read", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
+		{ID: "file_list", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
+		{ID: "file_write", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: writes require approval"},
+		{ID: "shell_exec", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: shell commands require approval"},
+		{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
+	}
+	if !reflect.DeepEqual(descriptors, want) {
+		t.Fatalf("BuiltinDescriptors() = %#v, want %#v", descriptors, want)
+	}
+	for _, desc := range descriptors {
+		got, ok := BuiltinDescriptor(desc.ID)
+		if !ok {
+			t.Fatalf("BuiltinDescriptor(%q) not found", desc.ID)
+		}
+		if got != desc {
+			t.Fatalf("BuiltinDescriptor(%q) = %#v, want %#v", desc.ID, got, desc)
+		}
+		if BuiltinDefaultEnabled(desc.ID) != desc.DefaultEnabled {
+			t.Fatalf("BuiltinDefaultEnabled(%q) = %v, want %v", desc.ID, BuiltinDefaultEnabled(desc.ID), desc.DefaultEnabled)
+		}
 	}
 }
 

@@ -2,6 +2,8 @@ package approvals
 
 import (
 	"testing"
+
+	"github.com/vrnc/harness/internal/tools"
 )
 
 func TestDefaultLayer(t *testing.T) {
@@ -9,24 +11,25 @@ func TestDefaultLayer(t *testing.T) {
 	if layer.Name != "builtin-defaults" {
 		t.Fatalf("unexpected layer name: %s", layer.Name)
 	}
-	seen := make(map[string]int)
-	for _, r := range layer.Rules {
-		seen[r.ToolID]++
+	descriptors := tools.BuiltinDescriptors()
+	if len(layer.Rules) != len(descriptors) {
+		t.Fatalf("default rules = %d, want %d descriptor rules", len(layer.Rules), len(descriptors))
 	}
-	if seen["file_read"] != 1 {
-		t.Errorf("expected file_read rule")
-	}
-	if seen["file_list"] != 1 {
-		t.Errorf("expected file_list rule")
-	}
-	if seen["file_write"] != 1 {
-		t.Errorf("expected file_write rule")
-	}
-	if seen["shell_exec"] != 1 {
-		t.Errorf("expected shell_exec rule")
-	}
-	if seen["web_search"] != 1 {
-		t.Errorf("expected web_search rule")
+	for i, desc := range descriptors {
+		rule := layer.Rules[i]
+		if rule.ToolID != desc.ID {
+			t.Errorf("rule[%d].ToolID = %q, want %q", i, rule.ToolID, desc.ID)
+		}
+		if rule.Source != desc.DefaultApprovalSource {
+			t.Errorf("rule[%d].Source = %q, want %q", i, rule.Source, desc.DefaultApprovalSource)
+		}
+		wantDecision := Ask
+		if desc.DefaultApproval == tools.ApprovalDefaultAllow {
+			wantDecision = Allowed
+		}
+		if rule.Decision != wantDecision {
+			t.Errorf("rule[%d].Decision = %s, want %s", i, rule.Decision, wantDecision)
+		}
 	}
 }
 

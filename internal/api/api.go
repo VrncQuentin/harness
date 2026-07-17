@@ -133,13 +133,8 @@ func (s *Server) handler() http.Handler {
 // chatRequest is the OpenAI-compatible request body. Agent is a harness
 // extension; the X-Harness-Agent header takes precedence if both are set.
 type chatRequest struct {
-	Model       string              `json:"model"`
-	Messages    []inference.Message `json:"messages"`
-	Stream      bool                `json:"stream"`
-	Temperature float64             `json:"temperature,omitempty"`
-	TopP        float64             `json:"top_p,omitempty"`
-	MaxTokens   int                 `json:"max_tokens,omitempty"`
-	Agent       string              `json:"agent,omitempty"`
+	inference.CompletionRequest
+	Agent string `json:"agent,omitempty"`
 }
 
 // apiError is the OpenAI-compatible error envelope.
@@ -245,14 +240,16 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	respCh := make(chan inference.Token, 64)
 
 	qReq := queue.Request{
-		ID:          reqID,
-		Model:       req.Model,
-		Messages:    assembled,
-		Temperature: req.Temperature,
-		TopP:        req.TopP,
-		MaxTokens:   req.MaxTokens,
-		Response:    respCh,
-		Ctx:         ctx,
+		ID: reqID,
+		Completion: inference.CompletionRequest{
+			Model:       req.Model,
+			Messages:    assembled,
+			Temperature: req.Temperature,
+			TopP:        req.TopP,
+			MaxTokens:   req.MaxTokens,
+		},
+		Response: respCh,
+		Ctx:      ctx,
 	}
 
 	if err := s.q.Enqueue(qReq); err != nil {
