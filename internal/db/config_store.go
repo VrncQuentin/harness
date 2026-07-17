@@ -219,6 +219,16 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 	return nil
 }
 
+// SetActiveProjectSlug updates the active-project preference without marking
+// first-run configuration complete. Full setup remains the responsibility of
+// Save after the required model and embedder fields have been validated.
+func (s *ConfigStore) SetActiveProjectSlug(slug string) error {
+	if _, err := s.db.Exec(`UPDATE config SET active_project_slug = ? WHERE id = 1`, slug); err != nil {
+		return fmt.Errorf("db: set active project slug: %w", err)
+	}
+	return nil
+}
+
 func boolInt(b bool) int {
 	if b {
 		return 1
