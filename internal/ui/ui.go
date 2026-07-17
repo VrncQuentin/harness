@@ -544,6 +544,19 @@ func (s *Server) SetFirstRun(v bool) {
 
 // Start begins serving on the configured port in a background goroutine.
 // It returns an error immediately if the listener cannot bind.
+// originPolicy applies the browser boundary once for every state-changing
+// request and for the log-bearing event stream. Requests without Origin are
+// retained for local navigation; cross-origin browser requests are rejected
+// before reaching individual handlers.
+func (s *Server) originPolicy(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if (r.Method == http.MethodPost || r.URL.Path == "/events") && !sameOrigin(r) {
+			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
 func (s *Server) Start(ctx context.Context) error {
 	s.serverCtxMu.Lock()
 	s.serverCtx = ctx
@@ -594,7 +607,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.port),
-		Handler: mux,
+		Handler: s.originPolicy(mux),
 	}
 
 	// Verify we can bind before returning.
