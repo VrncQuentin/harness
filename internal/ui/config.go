@@ -162,10 +162,16 @@ func parseConfigForm(r *http.Request, base *config.Config) *config.Config {
 	cfg.API.Enabled = r.FormValue("api_enabled") == "on"
 	cfg.API.Port = atoiOr(r.FormValue("api_port"), cfg.API.Port)
 
+	if v := strings.TrimSpace(r.FormValue("project_llama_on_switch")); v != "" {
+		cfg.Project.LlamaOnSwitch = v
+	}
+
 	cfg.Prompt.CtxSize = atoiOr(r.FormValue("prompt_ctx_size"), cfg.Prompt.CtxSize)
 	cfg.Prompt.MemoryTokenBudget = atoiOr(r.FormValue("prompt_memory_budget"), cfg.Prompt.MemoryTokenBudget)
 	cfg.Prompt.ConversationReserve = atoiOr(r.FormValue("prompt_conversation_reserve"), cfg.Prompt.ConversationReserve)
 	cfg.Prompt.RecencyN = atoiOr(r.FormValue("prompt_recency_n"), cfg.Prompt.RecencyN)
+	cfg.Prompt.SemanticWeight = atofOr(r.FormValue("prompt_semantic_weight"), cfg.Prompt.SemanticWeight)
+	cfg.Prompt.RecencyWeight = atofOr(r.FormValue("prompt_recency_weight"), cfg.Prompt.RecencyWeight)
 	cfg.Prompt.PromotionDedupThreshold = atofOr(r.FormValue("prompt_promotion_dedup_threshold"), cfg.Prompt.PromotionDedupThreshold)
 	// Trim trailing whitespace so an empty textarea (which browsers may
 	// pad with a stray newline) is treated as "use the built-in default"

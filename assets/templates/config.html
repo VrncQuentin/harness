@@ -167,6 +167,19 @@
       </div>
     </div>
   </fieldset>
+  <fieldset class="cfg-section">
+    <legend>Projects</legend>
+    <div class="fg-row">
+      <div class="fg">
+        <label for="project_llama_on_switch">On project switch</label>
+        <select id="project_llama_on_switch" name="project_llama_on_switch">
+          <option value="reload" {{if eq .Config.Project.LlamaOnSwitch "reload"}}selected{{end}}>Reload llama-server with project overrides</option>
+          <option value="keep" {{if eq .Config.Project.LlamaOnSwitch "keep"}}selected{{end}}>Keep current llama-server process</option>
+        </select>
+        <p class="fg-hint">Controls whether model/embedder runtime settings are reconciled when changing projects.</p>
+      </div>
+    </div>
+  </fieldset>
 
   <fieldset class="cfg-section">
     <legend>Prompt assembly</legend>
@@ -187,6 +200,16 @@
         <label for="prompt_recency_n">Recency N</label>
         <input type="number" id="prompt_recency_n" name="prompt_recency_n" value="{{.Config.Prompt.RecencyN}}" min="0">
         <p class="fg-hint">How many recent episodes to inject. 0 = unlimited (memory budget still applies).</p>
+      </div>
+      <div class="fg">
+        <label for="prompt_semantic_weight">Semantic weight</label>
+        <input type="number" id="prompt_semantic_weight" name="prompt_semantic_weight" value="{{.Config.Prompt.SemanticWeight}}" min="0" step="0.01">
+        <p class="fg-hint">Relative influence of semantic similarity in blended retrieval.</p>
+      </div>
+      <div class="fg">
+        <label for="prompt_recency_weight">Recency weight</label>
+        <input type="number" id="prompt_recency_weight" name="prompt_recency_weight" value="{{.Config.Prompt.RecencyWeight}}" min="0" step="0.01">
+        <p class="fg-hint">Relative influence of episode recency in blended retrieval.</p>
       </div>
       <div class="fg">
         <label for="prompt_promotion_dedup_threshold">Promotion dedup threshold</label>
