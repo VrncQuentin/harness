@@ -134,6 +134,12 @@ func (s *stubMemoryStore) WriteFile(p string, data []byte) error {
 	s.lastWriteData = append([]byte(nil), data...)
 	return nil
 }
+func (s *stubMemoryStore) RemoveAll(p string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.files, p)
+	return nil
+}
 
 func TestHandleMemory_NoStoreShowsCTA(t *testing.T) {
 	s := NewServer(3000)
@@ -365,6 +371,10 @@ func TestHandlePromoteFact_CommitErrorReturns500(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "commit fact") {
 		t.Errorf("expected commit error in body, got %q", rec.Body.String())
 	}
+	store := s.memoryStore().(*stubMemoryStore)
+	if got := store.files["facts.md"]; got != "existing fact\n" {
+		t.Fatalf("facts.md after commit failure = %q", got)
+	}
 }
 
 func TestHandleAppendNote_CommitErrorReturns500(t *testing.T) {
@@ -387,6 +397,10 @@ func TestHandleAppendNote_CommitErrorReturns500(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "commit note") {
 		t.Errorf("expected commit error in body, got %q", rec.Body.String())
+	}
+	store := s.memoryStore().(*stubMemoryStore)
+	if got := store.files["agents/coder/notes.md"]; got != "existing note\n" {
+		t.Fatalf("notes.md after commit failure = %q", got)
 	}
 }
 
