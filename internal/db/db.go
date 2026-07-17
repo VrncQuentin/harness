@@ -152,8 +152,8 @@ func runMigrations(sqldb *sql.DB) error {
 	if dirty {
 		return fmt.Errorf("db: migration version %d is dirty; delete harness.db and restart", version)
 	}
-	if err == nil && version != expectedMigrationVersion {
-		return fmt.Errorf("db: migration version %d does not match bundled schema version %d; delete harness.db and restart", version, expectedMigrationVersion)
+	if err == nil && version > expectedMigrationVersion {
+		return fmt.Errorf("db: migration version %d is newer than bundled schema version %d; delete harness.db and restart", version, expectedMigrationVersion)
 	}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("db: migrate up: %w", err)
