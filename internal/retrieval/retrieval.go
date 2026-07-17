@@ -10,7 +10,7 @@ import (
 
 // EpisodeID returns the content SHA/id used for an episode path in the index.
 func EpisodeID(epPath string) string {
-	return strings.TrimSuffix(path.Base(epPath), ".md")
+	return strings.TrimSuffix(strings.ReplaceAll(epPath, "\\", "/"), ".md")
 }
 
 // BestSemanticScores folds chunk-level index results into one score per
@@ -35,7 +35,14 @@ func BlendEpisodeScores(episodePaths []string, semantic map[string]float64, sema
 		return out
 	}
 	for i, p := range episodePaths {
-		out[p] = semanticWeight*semantic[EpisodeID(p)] +
+		id := EpisodeID(p)
+		semanticScore, ok := semantic[id]
+		if !ok {
+			// Read legacy basename-only manifests during the index identity
+			// migration. Newly written entries always use the full source path.
+			semanticScore = semantic[path.Base(id)]
+		}
+		out[p] = semanticWeight*semanticScore +
 			recencyWeight*Decay(len(episodePaths)-1-i, n)
 	}
 	return out
