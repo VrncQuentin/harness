@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -227,6 +228,64 @@ func TestConfigStore_LoadFreshReturnsDefaultsAndNotConfigured(t *testing.T) {
 	}
 }
 
+func TestConfigStore_RoundTripsAllConfigFields(t *testing.T) {
+	d := newTestDB(t)
+	cfg := config.Defaults()
+	cfg.Model.Binary = "llama-custom"
+	cfg.Model.ModelPath = "model-custom.gguf"
+	cfg.Model.CtxSize = 12345
+	cfg.Model.GPULayers = 12
+	cfg.Model.NParallel = 3
+	cfg.Model.Port = 18081
+	cfg.Model.Verbose = true
+	cfg.Model.CacheTypeK = "q4_0"
+	cfg.Model.CacheTypeV = "q4_1"
+	cfg.Embedder.Binary = "embed-custom"
+	cfg.Embedder.ModelPath = "embed-custom.gguf"
+	cfg.Embedder.Port = 18082
+	cfg.Embedder.Verbose = true
+	cfg.Agent.Active = "coder"
+	cfg.Project.ActiveProjectSlug = "global"
+	cfg.Project.LlamaOnSwitch = "keep"
+	cfg.UI.Port = 13000
+	cfg.UI.OpenOnStart = false
+	cfg.API.Enabled = true
+	cfg.API.Port = 18080
+	cfg.Prompt.CtxSize = 23456
+	cfg.Prompt.MemoryTokenBudget = 3456
+	cfg.Prompt.ConversationReserve = 4567
+	cfg.Prompt.RecencyN = 17
+	cfg.Prompt.SummarizerPrompt = "summarize in one sentence"
+	cfg.Prompt.SemanticWeight = 0.61
+	cfg.Prompt.RecencyWeight = 0.39
+	cfg.Prompt.PromotionDedupThreshold = 0.87
+	cfg.Queue.MaxDepth = 33
+	cfg.Metrics.RetentionDays = 44
+	cfg.Metrics.PrometheusEnabled = true
+	cfg.Log.RingMaxEntries = 555
+	cfg.Log.ProcMaxLines = 666
+	cfg.Loop.MaxTurns = 77
+	cfg.Loop.DoomThreshold = 8
+	cfg.Loop.FileReadEnabled = false
+	cfg.Loop.FileListEnabled = false
+	cfg.Loop.FileWriteEnabled = true
+	cfg.Loop.ShellExecEnabled = true
+	cfg.Loop.WebSearchEnabled = true
+
+	if err := d.Config().Save(&cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, configured, err := d.Config().Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !configured {
+		t.Fatal("configured = false after Save")
+	}
+	if !reflect.DeepEqual(*loaded, cfg) {
+		t.Fatalf("loaded config mismatch:\nwant: %+v\n got: %+v", cfg, *loaded)
+	}
+}
 func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	d := newTestDB(t)
 	store := d.Config()
