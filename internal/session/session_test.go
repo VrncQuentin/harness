@@ -185,7 +185,7 @@ func TestManager_StartMintsValidID(t *testing.T) {
 	if s.ID == "" {
 		t.Fatalf("expected non-empty id")
 	}
-	matched, err := regexp.MatchString(`^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d+)?$`, s.ID)
+	matched, err := regexp.MatchString(`^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{9}Z(-\d+)?$`, s.ID)
 	if err != nil {
 		t.Fatalf("regexp: %v", err)
 	}
@@ -530,5 +530,17 @@ func TestDecodeConversation_StripsBOM(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Content != "hi" {
 		t.Errorf("BOM-prefixed body did not decode: %+v", got)
+	}
+}
+
+func TestManager_StartReservesIDsAfterEnd(t *testing.T) {
+	mgr, _, _, _ := newTestManager(t, newFakeInference(summaryTokens("ok")))
+	fixed := time.Date(2026, time.July, 17, 7, 0, 0, 0, time.UTC)
+	mgr.deps.Now = func() time.Time { return fixed }
+	first := mgr.Start("coder")
+	mgr.End(first.ID)
+	second := mgr.Start("coder")
+	if first.ID == second.ID {
+		t.Fatalf("sequential sessions reused id %q", first.ID)
 	}
 }

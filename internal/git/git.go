@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -32,6 +33,7 @@ const (
 type Repo struct {
 	repo *gogit.Repository
 	path string
+	mu   sync.Mutex
 }
 
 // Open opens an existing git repository at path. It returns a wrapped
@@ -76,6 +78,8 @@ func Init(path string) (*Repo, error) {
 //
 // The returned sha is the new commit's hex SHA.
 func (r *Repo) Commit(msg string, files []string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	wt, err := r.repo.Worktree()
 	if err != nil {
 		return "", fmt.Errorf("git: worktree %s: %w", r.path, err)
