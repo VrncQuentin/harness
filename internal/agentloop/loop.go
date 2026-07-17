@@ -171,21 +171,26 @@ func (e *Engine) ApplyApproval(approvalID string, resp approvals.ApprovalRespons
 	e.pendingMu.Lock()
 	ch, ok := e.pending[approvalID]
 	rule, hasRule := e.pendingRules[approvalID]
-	e.pendingMu.Unlock()
 	if !ok {
+		e.pendingMu.Unlock()
 		return fmt.Errorf("agentloop: unknown approval id %q", approvalID)
 	}
-	// Only add a session rule when the user explicitly chose "always".
+	// Claim the pending approval while holding the lock. Duplicate or late
+	// responses then fail before they can alter session policy.
+	delete(e.pending, approvalID)
+	delete(e.pendingRules, approvalID)
+	select {
+	case ch <- resp:
+		e.pendingMu.Unlock()
+	default:
+		e.pendingMu.Unlock()
+		return fmt.Errorf("agentloop: approval id %q already resolved", approvalID)
+	}
 	if hasRule && resp.Remember {
 		rule.Decision = resp.Decision
 		e.evl.AddSessionRule(rule)
 	}
-	select {
-	case ch <- resp:
-		return nil
-	default:
-		return fmt.Errorf("agentloop: approval id %q already resolved", approvalID)
-	}
+	return nil
 }
 
 // ErrLoopLimitReached is returned when the loop hits MaxTurns.
