@@ -508,6 +508,7 @@ This section retains the additional concrete cleanup findings from the Fable rev
 - Session writing and UI browsing each define the episodes path, markdown suffix, and agent traversal guards. The episode-layout contract belongs in one package.
 - Runtime, after-save indexing, and rebuilding independently stitch index/_episodes, vectors.bin, and manifest.json. The index package should expose episode-index directory and commit-path helpers.
 - Chat/task SSE handling is a near-clone. The task version has different stall behavior, evidence of drift. Use one parameterized broadcaster/subscriber.
+- In internal/runtime/adapters.go the session mint-or-attach block appears in both chatRunnerAdapter.Run and taskRunnerAdapter.RunTask, and the assistant-flush block appears twice inside the chat token goroutine. Extract one helper for each.
 - Runtime stores projectStore as a directory-only interface then type-asserts it back to project.Store; UI has a similar optional ListDirectories assertion. Store the interface actually required by production.
 - Fact promotion and note append have an identical read, newline-normalize, append, write, commit sequence. The shared operation should live in a memory service.
 - Rebuilder chunks every episode twice; memory handlers duplicate agent-name lists; chat/task duplicate ChatMessage conversion; RetrievalScorer threads unused project/agent arguments. These are safe mechanical cleanups once service ownership is clear.
@@ -524,6 +525,8 @@ This section retains the additional concrete cleanup findings from the Fable rev
 - Request.ToolChoice and CompletionRequest.ToolChoice are plumbed but never produced by API or agent loop. Remove speculative plumbing until tool-choice input exists.
 - NewDiskAssembler is a single-repo compatibility constructor used only in tests. Migrate tests to the project-aware constructor.
 - SortByNewest is tested but Records hand-rolls a different sort without its ID tie-break. Reuse it in Records or delete it and the test.
+- ManagerDeps.Now and ManagerDeps.SummarizerTimeout are never set by production or tests; the only consumer of Now is its own defaulting line. Delete them, or keep Now only if the fixed-clock session-ID collision test recommended above is added.
+- taskRunnerAdapter falls back to direct inference when its queue is nil, a branch production never takes (the runtime always wires the queue). Make the queue required at construction, or mark the branch as test-only.
 - WithApprovalTimeout, WithTokenizer, and process breaker threshold/window are sound deterministic test seams. Keep them with honest comments.
 - tools.Context.HTTPClient is a valid hermetic test seam; production should explicitly wire the fallback client if it is part of the task-runtime contract.
 
