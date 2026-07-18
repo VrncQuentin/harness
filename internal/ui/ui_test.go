@@ -726,7 +726,6 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	form.Set("ui_open_on_start", "on")
 	form.Set("api_port", "8080")
 	form.Set("project_llama_on_switch", "keep")
-	form.Set("prompt_ctx_size", "8192")
 	form.Set("prompt_memory_budget", "2048")
 	form.Set("prompt_conversation_reserve", "4096")
 	form.Set("prompt_recency_n", "7")
@@ -959,7 +958,7 @@ func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 	existing := config.Defaults()
 	existing.Model.Binary = "C:\\existing.exe"
 	existing.Model.ModelPath = "C:\\existing.gguf"
-	existing.Model.CtxSize = 11111
+	existing.Model.CtxSize = 20000
 	existing.Model.GPULayers = 42
 	existing.Embedder.Binary = "C:\\eb.exe"
 	existing.Embedder.ModelPath = "C:\\eb.gguf"
@@ -988,8 +987,8 @@ func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load after save: %v", err)
 	}
-	if loaded.Model.CtxSize != 11111 {
-		t.Errorf("expected Model.CtxSize preserved (11111), got %d", loaded.Model.CtxSize)
+	if loaded.Model.CtxSize != 20000 {
+		t.Errorf("expected Model.CtxSize preserved (20000), got %d", loaded.Model.CtxSize)
 	}
 	if loaded.Model.GPULayers != 42 {
 		t.Errorf("expected Model.GPULayers preserved (42), got %d", loaded.Model.GPULayers)

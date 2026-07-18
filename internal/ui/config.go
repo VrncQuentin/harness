@@ -165,8 +165,6 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	if v := strings.TrimSpace(r.FormValue("project_llama_on_switch")); v != "" {
 		cfg.Project.LlamaOnSwitch = v
 	}
-
-	cfg.Prompt.CtxSize = atoiField(r, "prompt_ctx_size", "Prompt context size", cfg.Prompt.CtxSize, &parseErrs)
 	cfg.Prompt.MemoryTokenBudget = atoiField(r, "prompt_memory_budget", "Prompt memory token budget", cfg.Prompt.MemoryTokenBudget, &parseErrs)
 	cfg.Prompt.ConversationReserve = atoiField(r, "prompt_conversation_reserve", "Prompt conversation reserve", cfg.Prompt.ConversationReserve, &parseErrs)
 	cfg.Prompt.RecencyN = atoiField(r, "prompt_recency_n", "Prompt recency N", cfg.Prompt.RecencyN, &parseErrs)
