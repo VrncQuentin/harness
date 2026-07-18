@@ -759,7 +759,7 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	rt.globalMem = mem
 	rt.activeMem = mem
 	rt.agentReg = reg
-	rt.assembler = prompt.NewDiskAssembler(mem, reg, cfg.Prompt).WithProjectSlug("global")
+	rt.assembler = prompt.NewProjectDiskAssembler(mem, mem, reg, cfg.Prompt).WithProjectSlug("global")
 	rt.inferClient = failingInferenceClient{err: fmt.Errorf("direct inference path used")}
 
 	ad := &taskRunnerAdapter{

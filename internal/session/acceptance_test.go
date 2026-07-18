@@ -172,7 +172,7 @@ func TestM3Acceptance_3_RecencyWiring(t *testing.T) {
 	active := "coder"
 	reg := agent.NewDiskRegistry(reader, func() string { return active }, func(name string) error { active = name; return nil })
 	cfg := config.PromptConfig{RecencyN: 5}
-	asm := prompt.NewDiskAssembler(reader, reg, cfg)
+	asm := prompt.NewProjectDiskAssembler(reader, reader, reg, cfg)
 	msgs, stats, err := asm.Assemble(context.Background(), "coder", []inference.Message{
 		{Role: "user", Content: "what is up"},
 	})

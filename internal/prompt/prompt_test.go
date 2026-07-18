@@ -54,7 +54,7 @@ func newAssembler(t *testing.T, mem *memory.DirReader, cfg config.PromptConfig) 
 	t.Helper()
 	active := ""
 	reg := agent.NewDiskRegistry(mem, func() string { return active }, func(n string) error { active = n; return nil })
-	return NewDiskAssembler(mem, reg, cfg)
+	return NewProjectDiskAssembler(mem, mem, reg, cfg)
 }
 
 func newProjectAssembler(t *testing.T, globalFiles, activeFiles map[string]string, cfg config.PromptConfig) *DiskAssembler {
@@ -710,7 +710,7 @@ func TestAssemble_ReadErrorPropagates(t *testing.T) {
 		failOn: "user.md",
 	}
 	reg := agent.NewDiskRegistry(mem, func() string { return "coder" }, func(string) error { return nil })
-	asm := NewDiskAssembler(mem, reg, baseCfg())
+	asm := NewProjectDiskAssembler(mem, mem, reg, baseCfg())
 	_, _, err := asm.Assemble(context.Background(), "coder", nil)
 	if err == nil {
 		t.Fatal("expected error from failing read, got nil")

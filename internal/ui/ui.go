@@ -116,7 +116,7 @@ type uiDeps struct {
 	agentReg AgentRegistry
 	binDir   string
 
-	// memRepo is the active layout-v2 project memory repo path. Empty means
+	// memRepo is the active project memory repo path. Empty means
 	// project memory is not available yet, in which case the status page
 	// suppresses the layout-scaffolding prompt entirely.
 	memRepo  string
