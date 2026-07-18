@@ -198,24 +198,24 @@ func TestValidate(t *testing.T) {
 		{
 			name: "budget plus reserve exceeds ctx",
 			mutate: func(c *Config) {
-				c.Prompt.CtxSize = 4096
+				c.Model.CtxSize = 4096
 				c.Prompt.MemoryTokenBudget = 3000
 				c.Prompt.ConversationReserve = 2000
 			},
-			wantErr: "exceed prompt.ctx_size",
+			wantErr: "exceed model.ctx_size",
 		},
 		{
 			name: "budget plus reserve equals ctx is fine",
 			mutate: func(c *Config) {
-				c.Prompt.CtxSize = 8192
+				c.Model.CtxSize = 8192
 				c.Prompt.MemoryTokenBudget = 4096
 				c.Prompt.ConversationReserve = 4096
 			},
 		},
 		{
-			name: "ctx size zero skips budget check",
+			name: "model ctx size zero skips budget check",
 			mutate: func(c *Config) {
-				c.Prompt.CtxSize = 0
+				c.Model.CtxSize = 0
 				c.Prompt.MemoryTokenBudget = 1000
 				c.Prompt.ConversationReserve = 1000
 			},

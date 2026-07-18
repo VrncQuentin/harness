@@ -251,7 +251,6 @@ func TestConfigStore_RoundTripsAllConfigFields(t *testing.T) {
 	cfg.UI.OpenOnStart = false
 	cfg.API.Enabled = true
 	cfg.API.Port = 18080
-	cfg.Prompt.CtxSize = 23456
 	cfg.Prompt.MemoryTokenBudget = 3456
 	cfg.Prompt.ConversationReserve = 4567
 	cfg.Prompt.RecencyN = 17
