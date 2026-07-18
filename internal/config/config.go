@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/vrnc/harness/internal/project"
+	"github.com/vrnc/harness/internal/summarizerprompt"
 	"github.com/vrnc/harness/internal/tools"
 )
 
@@ -24,17 +25,6 @@ var (
 
 // ValidLlamaOnSwitch values for ProjectConfig.LlamaOnSwitch.
 var ValidLlamaOnSwitch = []string{"keep", "reload"}
-
-// defaultSummarizerPrompt is the system prompt the session summarizer
-// feeds to the model when writing an episode. The user can override it
-// via the /config page; an empty value tells the summarizer to fall back
-// to this string.
-const defaultSummarizerPrompt = `You are summarizing a conversation between a user and an AI agent. Produce a concise third-person summary capturing:
-- the user's goal or question
-- key decisions, code paths, or facts established
-- unresolved questions or follow-ups
-
-Write 3-8 short paragraphs in plain markdown. Do not include the conversation verbatim. Do not address the user directly.`
 
 // Config is the top-level configuration structure for the harness.
 type Config struct {
@@ -247,7 +237,7 @@ func Defaults() Config {
 			MemoryTokenBudget:       6144,
 			ConversationReserve:     8192,
 			RecencyN:                5,
-			SummarizerPrompt:        defaultSummarizerPrompt,
+			SummarizerPrompt:        summarizerprompt.Default,
 			SemanticWeight:          0.5,
 			RecencyWeight:           0.5,
 			PromotionDedupThreshold: 0.95,
