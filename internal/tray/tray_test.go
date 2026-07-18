@@ -36,3 +36,20 @@ func TestTrayIcon_NotEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestOnceFuncInvokesCallbackOnce(t *testing.T) {
+	calls := 0
+	quit := onceFunc(func() { calls++ })
+	quit()
+	quit()
+	quit()
+	if calls != 1 {
+		t.Fatalf("callback calls = %d, want 1", calls)
+	}
+}
+
+func TestOnceFuncAllowsNilCallback(t *testing.T) {
+	quit := onceFunc(nil)
+	quit()
+	quit()
+}
