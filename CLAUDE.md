@@ -50,7 +50,7 @@ internal/
   ui/               ← management web UI (net/http + html/template)
 assets/             ← embedded templates, CSS, htmx
 migrations/         ← embedded SQL schema (single squashed migration)
-pkg/httpclient/     ← shared HTTP client construction
+internal/httpclient/     ← shared HTTP client construction
 docs/
   architecture.md
   roadmap.md
