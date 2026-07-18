@@ -1,6 +1,6 @@
 package memory
 
-// ProjectScaffoldService owns layout-v2 project memory repo scaffold workflows.
+// ProjectScaffoldService owns project memory repo scaffold workflows.
 // UI handlers use it to inspect and create missing canonical files without
 // duplicating the sequence of layout discovery followed by filesystem writes.
 type ProjectScaffoldService struct{}
