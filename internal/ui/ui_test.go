@@ -1672,7 +1672,7 @@ func TestHandleStatus_LayoutPromptShowsMissingItems(t *testing.T) {
 		}
 	}
 	if strings.Contains(body, "projects/global") || strings.Contains(body, "global/rules.md") {
-		t.Errorf("layout-v2 project repo prompt must not render legacy paths, body:\n%s", body)
+		t.Errorf("project memory repo prompt must not render legacy paths, body:\n%s", body)
 	}
 	// The Create button must POST to /memory/scaffold.
 	if !strings.Contains(body, `action="/memory/scaffold"`) {

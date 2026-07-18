@@ -103,14 +103,7 @@ type DiskAssembler struct {
 
 var _ Assembler = (*DiskAssembler)(nil)
 
-// NewDiskAssembler returns an assembler that reads from mem and
-// resolves agents through reg. The prompt config controls the memory
-// token budget and conversation reserve.
-func NewDiskAssembler(mem memory.Reader, reg agent.Registry, cfg config.PromptConfig) *DiskAssembler {
-	return NewProjectDiskAssembler(mem, mem, reg, cfg)
-}
-
-// NewProjectDiskAssembler returns an assembler over two physical layout-v2
+// NewProjectDiskAssembler returns an assembler over two physical project memory
 // repos. activeMem provides the active project's prompt layers, notes, and
 // episodes; globalMem remains only the fallback library for agent definitions.
 func NewProjectDiskAssembler(globalMem, activeMem memory.Reader, reg agent.Registry, cfg config.PromptConfig) *DiskAssembler {
@@ -125,17 +118,6 @@ func NewProjectDiskAssembler(globalMem, activeMem memory.Reader, reg agent.Regis
 		logger:    slog.Default(),
 		tokenizer: defaultTokenize,
 	}
-}
-
-// WithLogger returns a shallow copy with a custom slog.Logger. Passing
-// nil swaps in slog.Default so callers don't have to nil-check.
-func (a *DiskAssembler) WithLogger(l *slog.Logger) *DiskAssembler {
-	cp := *a
-	if l == nil {
-		l = slog.Default()
-	}
-	cp.logger = l
-	return &cp
 }
 
 // WithTokenizer returns a shallow copy with a custom token counter.
