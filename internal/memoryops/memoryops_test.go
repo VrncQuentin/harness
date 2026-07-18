@@ -25,7 +25,6 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 		Mem:      memory.NewDirReader(root),
 		Embedder: stubEmbedder{vec: []float32{1, 0}},
 		IndexDir: indexDir,
-		Slug:     "global",
 		OnRebuilt: func(idx *index.Index) {
 			called = true
 			if !idx.Contains("episodes/coder/ep1") {
