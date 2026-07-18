@@ -23,10 +23,8 @@ type TaskRunner interface {
 }
 
 var (
-	ErrTaskNoAgent   = errors.New("no agent selected — pick one on the /agents page first")
-	ErrTaskQueueFull = errors.New("queue is full — wait for in-flight requests to finish")
-	ErrTaskCancelled = errors.New("task cancelled")
-	ErrTaskNotReady  = errors.New("task runner not available — the harness may still be starting")
+	ErrTaskNoAgent  = errors.New("no agent selected — pick one on the /agents page first")
+	ErrTaskNotReady = errors.New("task runner not available — the harness may still be starting")
 )
 
 func (s *Server) getTaskRunner() TaskRunner {
