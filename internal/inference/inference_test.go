@@ -2,6 +2,7 @@ package inference
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -46,6 +47,39 @@ func TestComplete_Streaming(t *testing.T) {
 	}
 	if content != "Hello world" {
 		t.Errorf("unexpected content: %q", content)
+	}
+}
+
+func TestComplete_ForcesStreamingRequest(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+			t.Fatalf("Accept = %q, want text/event-stream", got)
+		}
+		var req CompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if !req.Stream {
+			t.Fatal("request stream = false, want true")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil)
+	ch, err := c.Complete(context.Background(), CompletionRequest{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Stream:   false,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for tok := range ch {
+		if tok.Err != nil {
+			t.Fatalf("token error: %v", tok.Err)
+		}
 	}
 }
 
@@ -101,51 +135,5 @@ func TestComplete_ContextCancellation(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
-	}
-}
-
-func TestComplete_NonStreamingToolCalls(t *testing.T) {
-	body := `{"choices":[{"message":{"content":"Need a file","tool_calls":[{"id":"call_1","type":"function","function":{"name":"file_read","arguments":"{\"path\":\"README.md\"}"}}]}}]}`
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(body)) //nolint:errcheck
-	}))
-	defer srv.Close()
-
-	c := NewClient(srv.URL, nil)
-	ch, err := c.Complete(context.Background(), CompletionRequest{
-		Messages: []Message{{Role: "user", Content: "read"}},
-		Stream:   false,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var content string
-	var tool *ToolCallDelta
-	var done bool
-	for tok := range ch {
-		if tok.Err != nil {
-			t.Fatalf("token error: %v", tok.Err)
-		}
-		if tok.Content != "" {
-			content += tok.Content
-		}
-		if tok.ToolCallDelta != nil {
-			tool = tok.ToolCallDelta
-		}
-		if tok.Done {
-			done = true
-		}
-	}
-	if content != "Need a file" {
-		t.Fatalf("content = %q", content)
-	}
-	if tool == nil || tool.ID != "call_1" || tool.Name != "file_read" || !strings.Contains(tool.Arguments, "README.md") {
-		t.Fatalf("tool delta not parsed: %#v", tool)
-	}
-	if !done {
-		t.Fatal("expected done token")
 	}
 }
