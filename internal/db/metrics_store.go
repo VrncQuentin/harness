@@ -37,8 +37,8 @@ func (s *MetricsStore) Record(name string, value float64, tags map[string]string
 	return nil
 }
 
-// Query returns data points for name in the half-open interval [from, to).
-func (s *MetricsStore) Query(name string, from, to time.Time) ([]metrics.DataPoint, error) {
+// query returns data points for name in the half-open interval [from, to).
+func (s *MetricsStore) query(name string, from, to time.Time) ([]metrics.DataPoint, error) {
 	rows, err := s.db.Query(
 		`SELECT name, value, tags, ts FROM metrics
 		 WHERE name = ? AND ts >= ? AND ts < ?

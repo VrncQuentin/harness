@@ -531,7 +531,7 @@ func TestMetricsStore_RecordAndQuery(t *testing.T) {
 	}
 	after := time.Now().Add(time.Second)
 
-	pts, err := store.Query("uptime_seconds", before, after)
+	pts, err := store.query("uptime_seconds", before, after)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestMetricsStore_ApplyRetentionDownsamplesAndPrunes(t *testing.T) {
 		t.Fatalf("hourly aggregate = count %d min %v max %v avg %v last %v", count, minValue, maxValue, avgValue, lastValue)
 	}
 
-	pts, err := store.Query("queue_depth", oldHour.Add(-time.Minute), now.Add(time.Minute))
+	pts, err := store.query("queue_depth", oldHour.Add(-time.Minute), now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("Query: %v", err)
 	}
@@ -627,7 +627,7 @@ func TestMetricsStore_LatestUsesHourlyWhenRawWasPruned(t *testing.T) {
 }
 func TestMetricsStore_QueryEmpty(t *testing.T) {
 	d := newTestDB(t)
-	pts, err := d.Metrics().Query("nonexistent", time.Now().Add(-time.Hour), time.Now())
+	pts, err := d.Metrics().query("nonexistent", time.Now().Add(-time.Hour), time.Now())
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestMetricsStore_RecordWithTags(t *testing.T) {
 		t.Fatalf("record with tags: %v", err)
 	}
 
-	pts, err := store.Query("process_health", time.Now().Add(-time.Second), time.Now().Add(time.Second))
+	pts, err := store.query("process_health", time.Now().Add(-time.Second), time.Now().Add(time.Second))
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}

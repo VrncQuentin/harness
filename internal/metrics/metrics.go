@@ -9,7 +9,6 @@ import "time"
 // SQLite implementation lives in internal/db.
 type Store interface {
 	Record(name string, value float64, tags map[string]string) error
-	Query(name string, from, to time.Time) ([]DataPoint, error)
 	Latest() ([]DataPoint, error)
 	ApplyRetention(retentionDays int) error
 }
