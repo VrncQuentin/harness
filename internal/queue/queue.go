@@ -14,7 +14,6 @@ import (
 
 // Request is a single queued inference request.
 type Request struct {
-	ID         string
 	Completion inference.CompletionRequest
 	// Response is closed after the last token or on error.
 	Response chan<- inference.Token
