@@ -107,11 +107,10 @@ func (e *Evaluator) AddSessionRule(r Rule) {
 // permitted. Returns the decision and the matching Rule source for
 // audit trails.
 //
-// For shell_exec, destructive commands (as determined by ClassifyShellCmd)
-// are never auto-allowed by broad/default rules — only an exact-match
-// session rule added via AddSessionRule can bypass Ask. This prevents
-// broad prefix rules like "git" from silently allowing destructive
-// commands like "git push".
+// shell_exec commands are never auto-allowed. The command classifier is
+// intentionally conservative documentation until platform-aware parsing is
+// reliable enough to distinguish safe shell forms from dangerous equivalents.
+// Matching deny rules still deny; every other shell command asks.
 func (e *Evaluator) Evaluate(toolID, commandArg string) (Decision, string) {
 	e.mu.Lock()
 	effectiveLayers := append([]Layer{}, e.layers...)
@@ -124,7 +123,6 @@ func (e *Evaluator) Evaluate(toolID, commandArg string) (Decision, string) {
 	// Last layer with a matching rule wins.
 	best := Ask
 	source := "default: no matching permission rule"
-	fromSession := false
 	for _, layer := range effectiveLayers {
 		for _, rule := range layer.Rules {
 			if !matchRule(rule, toolID, commandArg) {
@@ -132,37 +130,15 @@ func (e *Evaluator) Evaluate(toolID, commandArg string) (Decision, string) {
 			}
 			best = rule.Decision
 			source = rule.Source
-			fromSession = (layer.Name == "session")
 			break // first match in this layer wins
 		}
 	}
 
-	// Destructive-command classification: if the command is destructive,
-	// only an exact-match session rule (stored as the full command string)
-	// can auto-allow it. Broad/default rules always require Ask.
-	if toolID == "shell_exec" && commandArg != "" && ClassifyShellCmd(commandArg) {
+	if toolID == "shell_exec" {
 		if best == Denied {
 			return Denied, source
 		}
-		if fromSession && commandArg != "" {
-			// Check that the session rule is an exact command match,
-			// not just a broad prefix pattern.
-			exactDecision, exactMatch := Ask, false
-			e.mu.Lock()
-			for _, r := range e.session.Rules {
-				if r.ToolID == toolID && r.CommandPattern == commandArg {
-					exactDecision = r.Decision
-					exactMatch = true
-					break
-				}
-			}
-			e.mu.Unlock()
-			if exactMatch {
-				return exactDecision, source
-			}
-		}
-		// Destructive command with no exact session match -> Ask.
-		return Ask, "requires approval: destructive command"
+		return Ask, "requires approval: shell command"
 	}
 
 	return best, source
