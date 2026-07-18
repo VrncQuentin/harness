@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// fakeStore captures Record calls for assertion. Query is unused here.
+// fakeStore captures Record calls for assertion.
 type fakeStore struct {
 	calls []recordCall
 	err   error
@@ -21,10 +21,6 @@ type recordCall struct {
 func (f *fakeStore) Record(name string, value float64, tags map[string]string) error {
 	f.calls = append(f.calls, recordCall{name: name, value: value, tags: tags})
 	return f.err
-}
-
-func (f *fakeStore) Query(string, time.Time, time.Time) ([]DataPoint, error) {
-	return nil, nil
 }
 
 func (f *fakeStore) Latest() ([]DataPoint, error) {
