@@ -34,8 +34,6 @@ func (m *mockInferClient) Complete(ctx context.Context, req inference.Completion
 	return ch, nil
 }
 
-func (m *mockInferClient) Health(ctx context.Context) error { return nil }
-
 type countingSchemaTool struct {
 	schemaCalls int
 }

@@ -25,8 +25,6 @@ func (f *fakeClient) Complete(_ context.Context, _ inference.CompletionRequest) 
 	return ch, nil
 }
 
-func (f *fakeClient) Health(_ context.Context) error { return nil }
-
 func TestEnqueue_And_Dispatch(t *testing.T) {
 	client := &fakeClient{tokens: []string{"hello", " world"}}
 	q := New(8, client)
@@ -317,8 +315,6 @@ func (s *streamClient) Complete(_ context.Context, _ inference.CompletionRequest
 	return s.tokens, nil
 }
 
-func (s *streamClient) Health(_ context.Context) error { return nil }
-
 func TestEnqueue_ClientError(t *testing.T) {
 	errClient := &errInferenceClient{}
 	q := New(8, errClient)
@@ -349,8 +345,6 @@ func (e *errInferenceClient) Complete(_ context.Context, _ inference.CompletionR
 	return nil, errors.New("test error")
 }
 
-func (e *errInferenceClient) Health(_ context.Context) error { return nil }
-
 type captureClient struct {
 	seen chan inference.CompletionRequest
 }
@@ -362,8 +356,6 @@ func (c *captureClient) Complete(_ context.Context, req inference.CompletionRequ
 	close(ch)
 	return ch, nil
 }
-
-func (c *captureClient) Health(_ context.Context) error { return nil }
 
 type fakeQueueMetrics struct {
 	ttft       []time.Duration
@@ -432,8 +424,6 @@ func (d *delayedMetricClient) Complete(ctx context.Context, _ inference.Completi
 	return ch, nil
 }
 
-func (d *delayedMetricClient) Health(context.Context) error { return nil }
-
 func TestDispatch_DoesNotRecordTTFTForEmptyOrErrorOnlyStreams(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -477,5 +467,3 @@ func (c *singleTokenClient) Complete(context.Context, inference.CompletionReques
 	close(ch)
 	return ch, nil
 }
-
-func (c *singleTokenClient) Health(context.Context) error { return nil }

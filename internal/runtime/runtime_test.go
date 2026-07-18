@@ -936,8 +936,6 @@ func (s stubEmbedder) Embed(_ context.Context, chunks []string) ([][]float32, er
 	return out, nil
 }
 
-func (s stubEmbedder) Health(context.Context) error { return nil }
-
 type capturingInferenceClient struct {
 	mu     sync.Mutex
 	tokens []inference.Token
@@ -960,8 +958,6 @@ func (c *capturingInferenceClient) Complete(_ context.Context, req inference.Com
 	return ch, nil
 }
 
-func (c *capturingInferenceClient) Health(context.Context) error { return nil }
-
 type blockingInferenceClient struct {
 	token inference.Token
 }
@@ -975,8 +971,6 @@ func (c blockingInferenceClient) Complete(ctx context.Context, _ inference.Compl
 	}()
 	return ch, nil
 }
-
-func (c blockingInferenceClient) Health(context.Context) error { return nil }
 
 type sequenceInferenceClient struct {
 	mu        sync.Mutex
@@ -1003,8 +997,6 @@ func (c *sequenceInferenceClient) Complete(_ context.Context, req inference.Comp
 	close(ch)
 	return ch, nil
 }
-
-func (c *sequenceInferenceClient) Health(context.Context) error { return nil }
 
 type runtimeConfigStore struct {
 	cfg   *config.Config
@@ -1082,8 +1074,6 @@ type failingInferenceClient struct {
 func (f failingInferenceClient) Complete(context.Context, inference.CompletionRequest) (<-chan inference.Token, error) {
 	return nil, f.err
 }
-
-func (f failingInferenceClient) Health(context.Context) error { return f.err }
 
 func messagesText(msgs []inference.Message) string {
 	var b strings.Builder

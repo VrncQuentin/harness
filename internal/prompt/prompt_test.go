@@ -28,8 +28,6 @@ func (s *stubEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error)
 	return s.vectors, nil
 }
 
-func (s *stubEmbedder) Health(_ context.Context) error { return nil }
-
 var _ embedder.Client = (*stubEmbedder)(nil)
 
 // writeRepo builds a memory repo under t.TempDir() from a map of

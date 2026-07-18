@@ -63,8 +63,6 @@ func (s stubEmbedder) Embed(_ context.Context, chunks []string) ([][]float32, er
 	return out, nil
 }
 
-func (s stubEmbedder) Health(context.Context) error { return nil }
-
 func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
 	service, err := NewEpisodeIndex(filepath.Join(t.TempDir(), "index", "_episodes"))
 	if err != nil {
