@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-
-	"github.com/vrnc/harness/internal/project"
 )
 
 // LayoutItem describes one entry the canonical memory layout requires.
@@ -23,34 +21,7 @@ type LayoutItem struct {
 	Desc string
 }
 
-// ExpectedLayout returns the canonical list of items the memory repo
-// should contain. Project-scoped runtime artifacts (sessions.jsonl and
-// index vectors.bin/manifest.json) are intentionally excluded - each is
-// owned by the subsystem that writes it (session manager, embedder) and gets
-// created on first use under projects/global/.
-// Per-agent definition files under agents/<n>/ are also excluded; agents
-// are created by the user, so the scaffolder only ensures the parent
-// directory exists.
-//
-// Top-level agents/<n>/ holds the global agents library (persona, rules,
-// notes only - definition data). Episodes for the system project live
-// under projects/global/episodes/<agent>/, not under the agents/ tree.
-func ExpectedLayout() []LayoutItem {
-	return []LayoutItem{
-		{Path: "global", Dir: true, Desc: "Global prompt content"},
-		{Path: "global/rules.md", Dir: false, Desc: "Always-on base prompt"},
-		{Path: "global/user.md", Dir: false, Desc: "Hand-authored facts about the user"},
-		{Path: "global/facts.md", Dir: false, Desc: "Promoted cross-agent facts"},
-		{Path: "agents", Dir: true, Desc: "Global agents library (definition only)"},
-		{Path: "projects", Dir: true, Desc: "Per-project session/episode/queue/index data"},
-		{Path: "projects/global", Dir: true, Desc: "System project (default scope)"},
-		{Path: "projects/global/episodes", Dir: true, Desc: "Session episode files for the system project"},
-		{Path: "projects/global/index", Dir: true, Desc: "Semantic search indexes for the system project"},
-		{Path: "projects/global/index/_episodes", Dir: true, Desc: "Embeddings of the system project's episodes"},
-	}
-}
-
-// ExpectedProjectRepoLayout returns the canonical layout for one layout-v2
+// ExpectedProjectRepoLayout returns the canonical layout for one project memory repo
 // project memory repository. Every project owns its prompt memory files; the
 // global project additionally carries the fallback agent-definition library.
 func ExpectedProjectRepoLayout(global bool) []LayoutItem {
@@ -74,7 +45,7 @@ func ExpectedProjectRepoLayout(global bool) []LayoutItem {
 	return append(base, items...)
 }
 
-// MissingProjectRepoItems returns absent layout-v2 entries under root.
+// MissingProjectRepoItems returns absent project memory repo entries under root.
 func MissingProjectRepoItems(root string, global bool) ([]LayoutItem, error) {
 	if root == "" {
 		return nil, errors.New("memory: repo path is empty")
@@ -101,7 +72,7 @@ func MissingProjectRepoItems(root string, global bool) ([]LayoutItem, error) {
 	return missing, nil
 }
 
-// CreateMissingProjectRepo creates missing layout-v2 entries under root.
+// CreateMissingProjectRepo creates missing project memory repo entries under root.
 func CreateMissingProjectRepo(root string, global bool) error {
 	return CreateMissing(root, ExpectedProjectRepoLayout(global))
 }
@@ -122,7 +93,7 @@ func ProjectRepoScaffoldFiles(global bool) []string {
 	return files
 }
 
-// ValidateProjectRepo verifies a single layout-v2 project memory repo.
+// ValidateProjectRepo verifies a single project memory repo.
 func ValidateProjectRepo(root string, global bool) error {
 	if root == "" {
 		return errors.New("memory: project memory repo path is required")
@@ -141,70 +112,6 @@ func ValidateProjectRepo(root string, global bool) error {
 		return fmt.Errorf("memory: project repo layout incomplete: missing %s", layoutPaths(missing))
 	}
 	return nil
-}
-
-// ProjectLayout returns the canonical layout items for a single project
-// identified by slug. Global is the default project, so it has the same
-// project-owned prompt files as user projects.
-func ProjectLayout(slug string) ([]LayoutItem, error) {
-	if err := project.ValidateSlug(slug); err != nil {
-		return nil, fmt.Errorf("memory: invalid project slug %q: %w", slug, err)
-	}
-
-	prefix := "projects/" + slug
-	desc := "User project"
-	if slug == project.GlobalSlug {
-		desc = "System project (default scope)"
-	}
-	return []LayoutItem{
-		{Path: prefix, Dir: true, Desc: desc},
-		{Path: prefix + "/rules.md", Dir: false, Desc: "Project rules"},
-		{Path: prefix + "/user.md", Dir: false, Desc: "Facts about the user for this project"},
-		{Path: prefix + "/facts.md", Dir: false, Desc: "Promoted facts for this project"},
-		{Path: prefix + "/agents", Dir: true, Desc: "Project agent definitions"},
-		{Path: prefix + "/sessions.jsonl", Dir: false, Desc: "Project session history"},
-		{Path: prefix + "/episodes", Dir: true, Desc: "Project episode files"},
-		{Path: prefix + "/index", Dir: true, Desc: "Project semantic search indexes"},
-		{Path: prefix + "/index/_episodes", Dir: true, Desc: "Project episode embeddings"},
-	}, nil
-}
-
-// MissingItems returns the subset of ExpectedLayout that is absent under
-// root. An item present with the wrong kind (file where a directory is
-// expected, or vice versa) is reported as missing so the UI surfaces the
-// mismatch; CreateMissing leaves such conflicts alone rather than
-// destroying user data.
-//
-// If root is empty, does not exist, or is not a directory, MissingItems
-// returns an error so the caller can distinguish "no repo here" from
-// "repo present but incomplete" and avoid scaffolding into the wrong
-// place.
-func MissingItems(root string) ([]LayoutItem, error) {
-	if root == "" {
-		return nil, errors.New("memory: repo path is empty")
-	}
-	if err := validateRootDir(root); err != nil {
-		return nil, err
-	}
-	expected := ExpectedLayout()
-	var missing []LayoutItem
-	for _, item := range expected {
-		abs := filepath.Join(root, filepath.FromSlash(item.Path))
-		st, err := os.Stat(abs)
-		if isMissingLayoutPath(err) {
-			missing = append(missing, item)
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("memory: stat %s: %w", item.Path, err)
-		}
-		if st.IsDir() != item.Dir {
-			// Wrong kind on disk - flag as missing so the UI shows it,
-			// but CreateMissing will skip it (won't delete user data).
-			missing = append(missing, item)
-		}
-	}
-	return missing, nil
 }
 
 // CreateMissing creates each item in items under root. Files are created
@@ -284,30 +191,6 @@ func createGitkeep(absDir, relPath string) error {
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("memory: close gitkeep for %s: %w", relPath, err)
-	}
-	return nil
-}
-
-// ValidateRepo verifies that root is a usable memory repo for prompt assembly
-// and API serving. Unlike MissingItems, missing canonical layout entries are
-// an error here because the API cannot assemble prompts without them.
-func ValidateRepo(root string) error {
-	if root == "" {
-		return errors.New("memory: repo path is required")
-	}
-	if err := validateRootDir(root); err != nil {
-		return err
-	}
-	if err := validateGitDir(root); err != nil {
-		return err
-	}
-
-	missing, err := MissingItems(root)
-	if err != nil {
-		return err
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("memory: repo layout incomplete: missing %s", layoutPaths(missing))
 	}
 	return nil
 }
