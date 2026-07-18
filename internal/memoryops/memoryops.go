@@ -135,7 +135,6 @@ type EpisodeRebuilder struct {
 	Embedder  embedder.Client
 	Index     *index.Index
 	IndexDir  string
-	Slug      string
 	Repo      *gitw.Repo
 	OnRebuilt func(*index.Index)
 }

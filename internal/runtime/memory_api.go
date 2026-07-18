@@ -107,7 +107,6 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		Embedder:  embedClient,
 		Index:     episodeIndex.Current(),
 		IndexDir:  indexDir,
-		Slug:      rt.cfg.Project.ActiveProjectSlug,
 		Repo:      rt.gitRepo,
 		OnRebuilt: episodeIndex.Replace,
 	}
