@@ -162,9 +162,8 @@ type chatSessionResponse struct {
 // partial. It renders the transcript as HTML fragments for htmx-driven
 // resume, replacing the browser's JS transcript rebuild.
 type chatSessionView struct {
-	SessionID    string
-	Messages     []ChatMessage
-	MessagesJSON string
+	SessionID string
+	Messages  []ChatMessage
 }
 
 // handleChatSessionResume hydrates one session's conversation from the
@@ -213,15 +212,9 @@ func (s *Server) handleChatSessionResume(w http.ResponseWriter, r *http.Request)
 	// When driven by htmx, return a server-rendered transcript fragment
 	// so the browser no longer needs JS to rebuild the conversation.
 	if r.Header.Get("HX-Request") == "true" {
-		jsonBytes, err := json.Marshal(msgs)
-		if err != nil {
-			writeChatJSONError(w, http.StatusInternalServerError, "marshal messages: "+err.Error())
-			return
-		}
 		view := chatSessionView{
-			SessionID:    id,
-			Messages:     msgs,
-			MessagesJSON: string(jsonBytes),
+			SessionID: id,
+			Messages:  msgs,
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := s.chatTmpl.ExecuteTemplate(w, "chat-transcript-fragment", view); err != nil {

@@ -112,9 +112,6 @@
 <p class="chat-empty">Send a message to begin.</p>
 {{end}}
 <code id="chat-session-id" hx-swap-oob="true">{{.SessionID}}</code>
-<span id="chat-state" hx-swap-oob="true" hidden
-      data-session-id="{{.SessionID}}"
-      data-messages="{{.MessagesJSON}}"></span>
 {{end}}
 
 {{/* chat-send-fragment is the htmx response fragment for /chat/send.
@@ -142,3 +139,4 @@
 Saved session {{.SessionID}} (seq {{.SaveSeq}}).
 <span id="chat-dirty" hidden></span>
 {{end}}
+
