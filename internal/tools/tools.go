@@ -39,7 +39,6 @@ type Context struct {
 	SandboxRoots   []string
 	SessionID      string
 	CallerIdentity string
-	Ctx            context.Context
 	HTTPClient     *http.Client
 }
 
