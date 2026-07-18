@@ -229,44 +229,6 @@ func (s *ProjectStore) ListDirectories(slug string) ([]project.Directory, error)
 	return out, nil
 }
 
-func (s *ProjectStore) AddDirectory(slug, path string) error {
-	if err := project.ValidateSlug(slug); err != nil {
-		return err
-	}
-	if ok, err := s.projectExists(slug); err != nil {
-		return err
-	} else if !ok {
-		return project.ErrNotFound
-	}
-	if err := validateDirectoryPath(path); err != nil {
-		return err
-	}
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO project_directories(project_slug, path) VALUES(?, ?)`, slug, path)
-	if err != nil {
-		return fmt.Errorf("db: add project directory %s: %w", slug, err)
-	}
-	return nil
-}
-
-func (s *ProjectStore) RemoveDirectory(slug, path string) error {
-	if err := project.ValidateSlug(slug); err != nil {
-		return err
-	}
-	if ok, err := s.projectExists(slug); err != nil {
-		return err
-	} else if !ok {
-		return project.ErrNotFound
-	}
-	if err := validateDirectoryPath(path); err != nil {
-		return err
-	}
-	_, err := s.db.Exec(`DELETE FROM project_directories WHERE project_slug = ? AND path = ?`, slug, path)
-	if err != nil {
-		return fmt.Errorf("db: remove project directory %s: %w", slug, err)
-	}
-	return nil
-}
-
 func (s *ProjectStore) projectExists(slug string) (bool, error) {
 	var exists int
 	if err := s.db.QueryRow(`SELECT 1 FROM projects WHERE slug = ?`, slug).Scan(&exists); err != nil {

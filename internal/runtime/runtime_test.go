@@ -1076,10 +1076,6 @@ func (s *runtimeProjectStoreStub) ListDirectories(slug string) ([]project.Direct
 	return append([]project.Directory(nil), s.dirs[slug]...), nil
 }
 
-func (s *runtimeProjectStoreStub) AddDirectory(string, string) error { return nil }
-
-func (s *runtimeProjectStoreStub) RemoveDirectory(string, string) error { return nil }
-
 type failingInferenceClient struct {
 	err error
 }
