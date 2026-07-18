@@ -27,7 +27,7 @@ func OpenDB(uiServer *ui.Server, path string) (*db.DB, config.Store, metrics.Sto
 	return d, d.Config(), d.Metrics()
 }
 
-// EnsureProjectMemoryRepo initializes and scaffolds one layout-v2 project
+// EnsureProjectMemoryRepo initializes and scaffolds one project memory
 // memory repo. Existing git directories are opened as-is; non-git directories
 // are initialized through go-git.
 func EnsureProjectMemoryRepo(uiServer *ui.Server, store project.Store, slug string) bool {
