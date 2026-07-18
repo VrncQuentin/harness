@@ -237,7 +237,6 @@ Interface:
 ```go
 type Embedder interface {
     Embed(ctx context.Context, chunks []string) ([][]float32, error)
-    Health(ctx context.Context) error
 }
 ```
 

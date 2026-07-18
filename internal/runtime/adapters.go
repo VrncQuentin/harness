@@ -446,8 +446,7 @@ type taskRunnerAdapter struct {
 // bounded in-process channel instead of calling the llama-server inference
 // client directly.
 type queuedInferClient struct {
-	q   *queue.Queue
-	raw inference.Client // fallback for Health()
+	q *queue.Queue
 }
 
 func (c *queuedInferClient) Complete(ctx context.Context, req inference.CompletionRequest) (<-chan inference.Token, error) {
@@ -460,13 +459,6 @@ func (c *queuedInferClient) Complete(ctx context.Context, req inference.Completi
 		return nil, err
 	}
 	return ch, nil
-}
-
-func (c *queuedInferClient) Health(ctx context.Context) error {
-	if c.raw != nil {
-		return c.raw.Health(ctx)
-	}
-	return nil
 }
 
 func (ad *taskRunnerAdapter) newApprovalEvaluator() *approvals.Evaluator {
@@ -526,7 +518,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	// Otherwise fall back to direct inference (useful for testing).
 	var loopClient inference.Client
 	if ad.q != nil {
-		loopClient = &queuedInferClient{q: ad.q, raw: inferClient}
+		loopClient = &queuedInferClient{q: ad.q}
 	} else {
 		loopClient = inferClient
 	}
