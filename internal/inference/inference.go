@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/vrnc/harness/pkg/httpclient"
+	"github.com/vrnc/harness/internal/httpclient"
 )
 
 // Client is the interface for the inference backend.
@@ -111,7 +111,7 @@ type implClient struct {
 
 // NewClient creates a new inference client targeting baseURL
 // (e.g. "http://127.0.0.1:8081"). Pass nil for hc to use the default
-// streaming-optimised client from pkg/httpclient.
+// streaming-optimised client from internal/httpclient.
 func NewClient(baseURL string, hc *http.Client) Client {
 	if hc == nil {
 		hc = httpclient.NewStreaming()

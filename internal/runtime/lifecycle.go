@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/vrnc/harness/internal/embedder"
+	"github.com/vrnc/harness/internal/httpclient"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/metrics"
 	"github.com/vrnc/harness/internal/proc"
 	"github.com/vrnc/harness/internal/queue"
 	"github.com/vrnc/harness/internal/ui"
-	"github.com/vrnc/harness/pkg/httpclient"
 )
 
 // Start brings llama-server, embedder, queue, memory, prompt, and API services
