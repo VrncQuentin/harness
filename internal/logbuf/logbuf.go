@@ -23,14 +23,20 @@ type Entry struct {
 // defaultMaxEntries is the cap used when New is given a non-positive size.
 const defaultMaxEntries = 500
 
+// maxPartialBytes bounds an unterminated log line. Child processes can write
+// arbitrary output without newlines; retaining only the newest chunk keeps the
+// status page useful without allowing unbounded memory growth.
+const maxPartialBytes = 64 * 1024
+
 // Ring is a bounded line-oriented ring buffer. It is safe for concurrent use.
 type Ring struct {
-	mu      sync.Mutex
-	max     int
-	entries []Entry
-	partial []byte
-	subs    map[chan Entry]struct{}
-	now     func() time.Time
+	mu          sync.Mutex
+	max         int
+	entries     []Entry
+	partial     []byte
+	partialTime time.Time
+	subs        map[chan Entry]struct{}
+	now         func() time.Time
 }
 
 // New returns a Ring that retains at most max entries. If max <= 0,
@@ -48,12 +54,18 @@ func New(max int) *Ring {
 
 // Write splits p on newline boundaries, appending each complete line as an
 // Entry. Bytes after the last newline are buffered until the next Write or
-// Snapshot call. It always returns len(p), nil so callers behave like writing
-// to a real sink (and tee writers do not abort on a ring drop).
+// Snapshot call, capped at maxPartialBytes. It always returns len(p), nil so
+// callers behave like writing to a real sink (and tee writers do not abort on a
+// ring drop).
 func (r *Ring) Write(p []byte) (int, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if len(p) > 0 && len(r.partial) == 0 {
+		r.partialTime = r.now()
+	}
 	r.partial = append(r.partial, p...)
-	var pushed []Entry
+
 	for {
 		i := bytes.IndexByte(r.partial, '\n')
 		if i < 0 {
@@ -63,14 +75,14 @@ func (r *Ring) Write(p []byte) (int, error) {
 		r.partial = r.partial[i+1:]
 		e := Entry{Time: r.now(), Line: line}
 		r.appendEntry(e)
-		pushed = append(pushed, e)
+		r.fanoutLocked(e)
+		if len(r.partial) > 0 {
+			r.partialTime = r.now()
+		} else {
+			r.partialTime = time.Time{}
+		}
 	}
-	subs := r.snapshotSubs()
-	r.mu.Unlock()
-
-	for _, e := range pushed {
-		fanout(subs, e)
-	}
+	r.truncatePartialLocked()
 	return len(p), nil
 }
 
@@ -84,7 +96,7 @@ func (r *Ring) Snapshot() []Entry {
 	out = append(out, r.entries...)
 	if len(r.partial) > 0 {
 		out = append(out, Entry{
-			Time: r.now(),
+			Time: r.partialTime,
 			Line: strings.TrimRight(string(r.partial), "\r"),
 		})
 	}
@@ -136,22 +148,19 @@ func (r *Ring) appendEntry(e Entry) {
 	r.entries[r.max-1] = e
 }
 
-// snapshotSubs returns the current subscriber set. Caller must hold r.mu.
-// We copy so the fanout loop runs lock-free, which keeps slow subscribers
-// from blocking writers.
-func (r *Ring) snapshotSubs() []chan Entry {
-	if len(r.subs) == 0 {
-		return nil
+// truncatePartialLocked enforces maxPartialBytes for an unterminated line.
+// Caller must hold r.mu.
+func (r *Ring) truncatePartialLocked() {
+	if len(r.partial) <= maxPartialBytes {
+		return
 	}
-	out := make([]chan Entry, 0, len(r.subs))
-	for ch := range r.subs {
-		out = append(out, ch)
-	}
-	return out
+	drop := len(r.partial) - maxPartialBytes
+	copy(r.partial, r.partial[drop:])
+	r.partial = r.partial[:maxPartialBytes]
 }
 
-func fanout(subs []chan Entry, e Entry) {
-	for _, ch := range subs {
+func (r *Ring) fanoutLocked(e Entry) {
+	for ch := range r.subs {
 		select {
 		case ch <- e:
 		default:
