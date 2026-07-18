@@ -388,6 +388,46 @@ func TestConfigStore_SaveNilRejected(t *testing.T) {
 	}
 }
 
+func TestSQLiteDSN_AddsRequiredPragmas(t *testing.T) {
+	dsn := sqliteDSN(`C:\tmp\harness.db`)
+	for _, want := range []string{"foreign_keys", "busy_timeout", "journal_mode"} {
+		if !hasSQLitePragma(dsn, want) {
+			t.Fatalf("sqliteDSN(%q) missing %s pragma: %s", `C:\tmp\harness.db`, want, dsn)
+		}
+	}
+}
+
+func TestSQLiteDSN_PreservesExistingSpecificPragmas(t *testing.T) {
+	base := `C:\tmp\harness.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(2500)&cache=shared`
+	dsn := sqliteDSN(base)
+	if strings.Count(dsn, "foreign_keys") != 1 {
+		t.Fatalf("foreign_keys pragma duplicated in %s", dsn)
+	}
+	if strings.Count(dsn, "busy_timeout") != 1 {
+		t.Fatalf("busy_timeout pragma duplicated in %s", dsn)
+	}
+	if !hasSQLitePragma(dsn, "journal_mode") {
+		t.Fatalf("journal_mode pragma not appended to %s", dsn)
+	}
+	if !strings.Contains(dsn, "cache=shared") {
+		t.Fatalf("existing query parameter was not preserved: %s", dsn)
+	}
+}
+
+func TestSQLiteDSN_AnyPragmaDoesNotSuppressForeignKeys(t *testing.T) {
+	dsn := sqliteDSN(`C:\tmp\harness.db?_pragma=busy_timeout(2500)`)
+	if !hasSQLitePragma(dsn, "foreign_keys") {
+		t.Fatalf("foreign_keys pragma not added when another _pragma exists: %s", dsn)
+	}
+}
+
+func TestOpen_ConfiguresSingleConnectionPool(t *testing.T) {
+	d := newTestDB(t)
+	if got := d.sqldb.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("MaxOpenConnections = %d, want 1", got)
+	}
+}
+
 func TestSchema_ForeignKeysEnabled(t *testing.T) {
 	d := newTestDB(t)
 

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,10 +36,11 @@ type DB struct {
 // Open opens harness.db at path, applies any pending migrations, and seeds
 // the singleton config row. The returned *DB must be closed via Close.
 func Open(path string) (*DB, error) {
-	sqldb, err := sql.Open("sqlite", foreignKeysDSN(path))
+	sqldb, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("db: open %s: %w", path, err)
 	}
+	configureSQLitePool(sqldb)
 	if err := sqldb.Ping(); err != nil {
 		_ = sqldb.Close()
 		return nil, fmt.Errorf("db: ping %s: %w", path, err)
@@ -75,7 +77,7 @@ func PeekUIPort(path string, fallback int) int {
 		return fallback
 	}
 
-	sqldb, err := sql.Open("sqlite", foreignKeysDSN(path))
+	sqldb, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return fallback
 	}
@@ -91,14 +93,82 @@ func PeekUIPort(path string, fallback int) int {
 	return port
 }
 
+const sqliteBusyTimeoutMS = 5000
+
+var requiredSQLitePragmas = []string{
+	"foreign_keys(1)",
+	fmt.Sprintf("busy_timeout(%d)", sqliteBusyTimeoutMS),
+	"journal_mode(WAL)",
+}
+
+func configureSQLitePool(sqldb *sql.DB) {
+	// harness.db receives concurrent writes from config, metrics, and project
+	// stores. Keep one SQLite connection so writes are serialized deliberately;
+	// busy_timeout still protects against external readers/writers holding locks.
+	sqldb.SetMaxOpenConns(1)
+	sqldb.SetMaxIdleConns(1)
+}
+
+func sqliteDSN(path string) string {
+	dsn := path
+	for _, pragma := range requiredSQLitePragmas {
+		name := sqlitePragmaName(pragma)
+		if hasSQLitePragma(dsn, name) {
+			continue
+		}
+		dsn = appendSQLitePragma(dsn, pragma)
+	}
+	return dsn
+}
+
+// foreignKeysDSN is kept for existing tests/callers; sqliteDSN now owns all
+// required SQLite connection pragmas.
 func foreignKeysDSN(path string) string {
-	if strings.Contains(path, "?_pragma=") || strings.Contains(path, "&_pragma=") {
-		return path
+	return sqliteDSN(path)
+}
+
+func appendSQLitePragma(dsn, pragma string) string {
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
 	}
-	if strings.Contains(path, "?") {
-		return path + "&_pragma=foreign_keys(1)"
+	return dsn + sep + "_pragma=" + url.QueryEscape(pragma)
+}
+
+func hasSQLitePragma(dsn, name string) bool {
+	idx := strings.Index(dsn, "?")
+	if idx < 0 || idx == len(dsn)-1 {
+		return false
 	}
-	return path + "?_pragma=foreign_keys(1)"
+	query := dsn[idx+1:]
+	if hash := strings.Index(query, "#"); hash >= 0 {
+		query = query[:hash]
+	}
+	for _, part := range strings.Split(query, "&") {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok || key != "_pragma" {
+			continue
+		}
+		decoded, err := url.QueryUnescape(value)
+		if err != nil {
+			decoded = value
+		}
+		if sqlitePragmaName(decoded) == name {
+			return true
+		}
+	}
+	return false
+}
+
+func sqlitePragmaName(pragma string) string {
+	pragma = strings.TrimSpace(strings.ToLower(pragma))
+	if name, _, ok := strings.Cut(pragma, "("); ok {
+		return strings.TrimSpace(name)
+	}
+	if name, _, ok := strings.Cut(pragma, "="); ok {
+		return strings.TrimSpace(name)
+	}
+	return pragma
 }
 
 // Close closes the underlying SQLite handle.
