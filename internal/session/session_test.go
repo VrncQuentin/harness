@@ -535,10 +535,18 @@ func TestManager_StartReservesIDsAfterEnd(t *testing.T) {
 	mgr, _, _, _ := newTestManager(t, newFakeInference(summaryTokens("ok")))
 	fixed := time.Date(2026, time.July, 17, 7, 0, 0, 0, time.UTC)
 	mgr.deps.Now = func() time.Time { return fixed }
+
 	first := mgr.Start("coder")
 	mgr.End(first.ID)
 	second := mgr.Start("coder")
-	if first.ID == second.ID {
-		t.Fatalf("sequential sessions reused id %q", first.ID)
+	mgr.End(second.ID)
+	third := mgr.Start("coder")
+
+	seen := map[string]bool{}
+	for _, id := range []string{first.ID, second.ID, third.ID} {
+		if seen[id] {
+			t.Fatalf("sequential sessions reused id %q", id)
+		}
+		seen[id] = true
 	}
 }
