@@ -128,7 +128,7 @@ func TestSortByNewest(t *testing.T) {
 		{ID: "b", SavedAt: now.Add(time.Hour)},
 		{ID: "c", SavedAt: now.Add(-time.Hour)},
 	}
-	SortByNewest(records)
+	sortByNewest(records)
 	if records[0].ID != "b" || records[1].ID != "a" || records[2].ID != "c" {
 		t.Errorf("expected [b,a,c], got [%s,%s,%s]", records[0].ID, records[1].ID, records[2].ID)
 	}
