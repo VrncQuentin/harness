@@ -16,6 +16,7 @@ import (
 	"github.com/vrnc/harness/internal/db"
 	"github.com/vrnc/harness/internal/home"
 	"github.com/vrnc/harness/internal/logbuf"
+	"github.com/vrnc/harness/internal/metrics"
 	harnessruntime "github.com/vrnc/harness/internal/runtime"
 	"github.com/vrnc/harness/internal/tray"
 	"github.com/vrnc/harness/internal/ui"
@@ -39,33 +40,27 @@ func run() error {
 		return nil
 	}
 
-	binDir, err := binaryDir()
-	if err != nil {
-		return fmt.Errorf("cannot determine binary dir: %w", err)
-	}
-
 	// GUI launches on Windows may have no stdout handle; route package-level
 	// stdout writes into stderr so they reach the same logging sink.
 	os.Stdout = os.Stderr
 	logRing, llamaRing, embedRing := configureLogging()
 
-	harnessHome, err := home.Default()
-	if err != nil {
-		return err
+	defaults := config.Defaults()
+	uiPort := defaults.UI.Port
+	var harnessHome, dbPath string
+	var startupErrors []error
+	if resolvedHome, err := home.Default(); err != nil {
+		startupErrors = append(startupErrors, err)
+	} else {
+		harnessHome = resolvedHome
+		dbPath = home.DBPath(harnessHome)
+		uiPort = db.PeekUIPort(dbPath, defaults.UI.Port)
 	}
-	if err := home.Ensure(harnessHome); err != nil {
-		return err
-	}
-
-	slog.Info("harness starting", "binDir", binDir, "home", harnessHome)
+	uiURL := fmt.Sprintf("http://localhost:%d", uiPort)
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 
-	dbPath := home.DBPath(harnessHome)
-	uiPort := db.PeekUIPort(dbPath, config.Defaults().UI.Port)
-	uiURL := fmt.Sprintf("http://localhost:%d", uiPort)
 	uiServer := ui.NewServer(uiPort)
-	uiServer.SetBinDir(binDir)
 	uiServer.SetLogRing(logRing)
 	uiServer.SetLlamaOutputRing(llamaRing)
 	uiServer.SetEmbedOutputRing(embedRing)
@@ -75,9 +70,29 @@ func run() error {
 	}
 	slog.Info("ui server listening", "url", uiURL)
 
-	harnessDB, cfgStore, metricsStore := harnessruntime.OpenDB(uiServer, dbPath)
-	if harnessDB != nil {
-		slog.Info("harness.db opened", "path", dbPath)
+	binDir, err := binaryDir()
+	if err != nil {
+		uiServer.AddStartupError(fmt.Errorf("cannot determine binary dir: %w", err))
+	} else {
+		uiServer.SetBinDir(binDir)
+	}
+	for _, err := range startupErrors {
+		uiServer.AddStartupError(err)
+	}
+
+	var harnessDB *db.DB
+	var cfgStore config.Store
+	var metricsStore metrics.Store
+	if harnessHome != "" {
+		if err := home.Ensure(harnessHome); err != nil {
+			uiServer.AddStartupError(err)
+		} else {
+			slog.Info("harness starting", "binDir", binDir, "home", harnessHome)
+			harnessDB, cfgStore, metricsStore = harnessruntime.OpenDB(uiServer, dbPath)
+			if harnessDB != nil {
+				slog.Info("harness.db opened", "path", dbPath)
+			}
+		}
 	}
 	uiServer.SetConfigStore(cfgStore)
 	uiServer.SetMetricsStore(metricsStore)
