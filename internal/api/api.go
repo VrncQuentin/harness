@@ -246,7 +246,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	respCh := make(chan inference.Token, 64)
 
 	qReq := queue.Request{
-		ID: reqID,
 		Completion: inference.CompletionRequest{
 			Model:       req.Model,
 			Messages:    assembled,

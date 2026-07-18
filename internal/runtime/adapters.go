@@ -201,7 +201,6 @@ func (ad *chatRunnerAdapter) Run(ctx context.Context, agentName, sessionID strin
 
 	respCh := make(chan inference.Token, 64)
 	if err := ad.q.Enqueue(queue.Request{
-		ID: reqID,
 		Completion: inference.CompletionRequest{
 			Messages: assembled,
 		},
@@ -454,7 +453,6 @@ type queuedInferClient struct {
 func (c *queuedInferClient) Complete(ctx context.Context, req inference.CompletionRequest) (<-chan inference.Token, error) {
 	ch := make(chan inference.Token, 64)
 	if err := c.q.Enqueue(queue.Request{
-		ID:         fmt.Sprintf("task-%d", time.Now().UnixNano()),
 		Completion: req,
 		Response:   ch,
 		Ctx:        ctx,

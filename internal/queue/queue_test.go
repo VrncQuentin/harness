@@ -40,7 +40,6 @@ func TestEnqueue_And_Dispatch(t *testing.T) {
 
 	resp := make(chan inference.Token, 16)
 	err := q.Enqueue(Request{
-		ID:         "test-1",
 		Completion: inference.CompletionRequest{Messages: []inference.Message{{Role: "user", Content: "hi"}}},
 		Response:   resp,
 		Ctx:        context.Background(),
@@ -73,7 +72,6 @@ func TestEnqueue_DispatchPreservesTools(t *testing.T) {
 
 	resp := make(chan inference.Token, 4)
 	if err := q.Enqueue(Request{
-		ID: "tool-test",
 		Completion: inference.CompletionRequest{
 			Messages: []inference.Message{{Role: "user", Content: "read"}},
 			Tools: []inference.Tool{{
@@ -112,10 +110,10 @@ func TestEnqueue_Full(t *testing.T) {
 	resp2 := make(chan inference.Token, 4)
 	resp3 := make(chan inference.Token, 4)
 
-	_ = q.Enqueue(Request{ID: "1", Ctx: context.Background(), Response: resp1})
-	_ = q.Enqueue(Request{ID: "2", Ctx: context.Background(), Response: resp2})
+	_ = q.Enqueue(Request{Ctx: context.Background(), Response: resp1})
+	_ = q.Enqueue(Request{Ctx: context.Background(), Response: resp2})
 
-	err := q.Enqueue(Request{ID: "3", Ctx: context.Background(), Response: resp3})
+	err := q.Enqueue(Request{Ctx: context.Background(), Response: resp3})
 	if err != ErrQueueFull {
 		t.Errorf("expected ErrQueueFull, got %v", err)
 	}
@@ -142,7 +140,6 @@ func TestSetClient_Swaps(t *testing.T) {
 
 	resp := make(chan inference.Token, 8)
 	if err := q.Enqueue(Request{
-		ID:         "swap-test",
 		Completion: inference.CompletionRequest{Messages: []inference.Message{{Role: "user", Content: "hi"}}},
 		Response:   resp,
 		Ctx:        context.Background(),
@@ -174,7 +171,6 @@ func TestStop_DrainsAcceptedRequests(t *testing.T) {
 
 	resp := make(chan inference.Token, 4)
 	if err := q.Enqueue(Request{
-		ID:         "drain-test",
 		Completion: inference.CompletionRequest{Messages: []inference.Message{{Role: "user", Content: "hi"}}},
 		Response:   resp,
 		Ctx:        context.Background(),
@@ -204,7 +200,7 @@ func TestStop_DrainsAcceptedRequests(t *testing.T) {
 	if got != "done" {
 		t.Fatalf("drained response = %q, want done", got)
 	}
-	if err := q.Enqueue(Request{ID: "after-stop", Response: make(chan inference.Token, 1), Ctx: context.Background()}); !errors.Is(err, ErrStopped) {
+	if err := q.Enqueue(Request{Response: make(chan inference.Token, 1), Ctx: context.Background()}); !errors.Is(err, ErrStopped) {
 		t.Fatalf("enqueue after Stop = %v, want ErrStopped", err)
 	}
 }
@@ -227,7 +223,6 @@ func TestRestart_AllowsRequestsAfterStop(t *testing.T) {
 
 	resp := make(chan inference.Token, 4)
 	if err := q.Enqueue(Request{
-		ID:         "after-restart",
 		Completion: inference.CompletionRequest{Messages: []inference.Message{{Role: "user", Content: "hi"}}},
 		Response:   resp,
 		Ctx:        context.Background(),
@@ -262,7 +257,6 @@ func TestDispatch_CancelledFullResponseDoesNotWedgeWorker(t *testing.T) {
 	reqCtx, cancelReq := context.WithCancel(context.Background())
 	fullResp := make(chan inference.Token, 1)
 	if err := q.Enqueue(Request{
-		ID:         "cancel-test",
 		Completion: inference.CompletionRequest{Messages: []inference.Message{{Role: "user", Content: "hi"}}},
 		Response:   fullResp,
 		Ctx:        reqCtx,
@@ -292,7 +286,6 @@ func TestDispatch_CancelledFullResponseDoesNotWedgeWorker(t *testing.T) {
 	q.SetClient(&fakeClient{tokens: []string{"next"}})
 	resp := make(chan inference.Token, 4)
 	if err := q.Enqueue(Request{
-		ID:         "next-test",
 		Completion: inference.CompletionRequest{Messages: []inference.Message{{Role: "user", Content: "hi again"}}},
 		Response:   resp,
 		Ctx:        context.Background(),
@@ -339,7 +332,6 @@ func TestEnqueue_ClientError(t *testing.T) {
 
 	resp := make(chan inference.Token, 4)
 	_ = q.Enqueue(Request{
-		ID:         "err-test",
 		Completion: inference.CompletionRequest{Messages: nil},
 		Response:   resp,
 		Ctx:        context.Background(),
@@ -402,7 +394,6 @@ func TestDispatch_RecordsLatencyAndThroughputMetrics(t *testing.T) {
 
 	resp := make(chan inference.Token, 8)
 	if err := q.Enqueue(Request{
-		ID:         "metrics-test",
 		Completion: inference.CompletionRequest{Messages: []inference.Message{{Role: "user", Content: "hi"}}},
 		Response:   resp,
 		Ctx:        context.Background(),
@@ -464,7 +455,7 @@ func TestDispatch_DoesNotRecordTTFTForEmptyOrErrorOnlyStreams(t *testing.T) {
 			defer q.Stop()
 
 			resp := make(chan inference.Token, 4)
-			if err := q.Enqueue(Request{ID: "empty-metrics", Response: resp, Ctx: context.Background()}); err != nil {
+			if err := q.Enqueue(Request{Response: resp, Ctx: context.Background()}); err != nil {
 				t.Fatalf("enqueue: %v", err)
 			}
 			for range resp {

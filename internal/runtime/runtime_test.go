@@ -153,7 +153,7 @@ func TestQueueStatsReportsLiveQueueDepthAndCapacity(t *testing.T) {
 
 	rt.reqQueue = queue.New(3, nil)
 	for _, id := range []string{"one", "two"} {
-		if err := rt.reqQueue.Enqueue(queue.Request{ID: id, Response: make(chan inference.Token, 1), Ctx: context.Background()}); err != nil {
+		if err := rt.reqQueue.Enqueue(queue.Request{Response: make(chan inference.Token, 1), Ctx: context.Background()}); err != nil {
 			t.Fatalf("enqueue %s: %v", id, err)
 		}
 	}
