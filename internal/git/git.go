@@ -1,10 +1,7 @@
-// Package git wraps github.com/go-git/go-git/v5 for the harness memory
-// repo. It exposes a small surface over an already-existing repo: open
-// and commit specific files.
-//
-// The package never initializes or clones a repo. Creating the memory
-// repo is the user's responsibility - see the "Memory repo is never
-// auto-created" decision in docs/architecture.md.
+// Package git wraps github.com/go-git/go-git/v5 for local harness repos.
+// It exposes a small surface to open or initialize a repository and commit
+// specific files. Project memory repos are initialized by the harness through
+// Init; cloning remains outside this package.
 package git
 
 import (

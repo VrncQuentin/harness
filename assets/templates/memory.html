@@ -22,7 +22,7 @@
 {{if .Promoted}}
 <div class="alert alert-ok">
   <div class="alert-head">
-    <h2>Fact promoted to <code>global/facts.md</code></h2>
+    <h2>Fact promoted to <code>facts.md</code></h2>
   </div>
 </div>
 {{end}}
@@ -107,7 +107,7 @@
     <header class="card-head">
       <h3>Promote fact</h3>
     </header>
-    <p class="card-meta">Add a fact to <code>global/facts.md</code>. Promoted facts are injected into every prompt.</p>
+    <p class="card-meta">Add a fact to <code>facts.md</code> in the active project memory repo. Promoted facts are injected into prompts for that project.</p>
     <form method="post" action="/memory/promote">
       <textarea name="text" rows="3" placeholder="A fact you want the agent to always know..." required class="cfg-input" style="width:100%"></textarea>
       <button type="submit" class="btn" style="margin-top:0.5rem">Promote</button>
@@ -170,3 +170,4 @@
   {{end}}
 </li>
 {{end}}
+
