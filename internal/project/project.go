@@ -78,8 +78,6 @@ type Store interface {
 	Update(input UpdateInput) (Project, error)
 	SetHidden(slug string, hidden bool) error
 	ListDirectories(slug string) ([]Directory, error)
-	AddDirectory(slug, path string) error
-	RemoveDirectory(slug, path string) error
 }
 
 func ValidateSlug(slug string) error {
