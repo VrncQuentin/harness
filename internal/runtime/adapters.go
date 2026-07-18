@@ -509,19 +509,10 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		appendUserSide(mgr, id, msgs)
 	}
 
-	inferClient := ad.rt.getInferClient()
-	if inferClient == nil && ad.q == nil {
-		return "", nil, fmt.Errorf("inference client not ready")
+	if ad.q == nil {
+		return "", nil, fmt.Errorf("task queue not ready")
 	}
-
-	// When a Queue is wired, route through it for bounded backpressure.
-	// Otherwise fall back to direct inference (useful for testing).
-	var loopClient inference.Client
-	if ad.q != nil {
-		loopClient = &queuedInferClient{q: ad.q}
-	} else {
-		loopClient = inferClient
-	}
+	loopClient := &queuedInferClient{q: ad.q}
 
 	// Resolve sandbox roots from the active project's directories.
 	var sandboxRoots []string
@@ -786,10 +777,4 @@ func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event)
 		}
 	}
 	flushAssistant()
-}
-
-func (rt *Runtime) getInferClient() inference.Client {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	return rt.inferClient
 }
