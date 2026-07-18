@@ -15,7 +15,7 @@ import (
 	gitw "github.com/vrnc/harness/internal/git"
 )
 
-// EnsureProjectRepo initializes a layout-v2 project memory repo and fills in
+// EnsureProjectRepo initializes a project memory repo and fills in
 // any missing scaffold entries. Existing git repos are opened as-is; missing
 // or non-git directories are initialized through go-git.
 type ProjectRepoManager struct{}
@@ -32,7 +32,7 @@ func (ProjectRepoManager) SameProjectRepoPath(a, b string) bool {
 	return SameProjectRepoPath(a, b)
 }
 
-// EnsureProjectRepo initializes a layout-v2 project memory repo and fills in
+// EnsureProjectRepo initializes a project memory repo and fills in
 // any missing scaffold entries. Existing git repos are opened as-is; missing
 // or non-git directories are initialized through go-git.
 func EnsureProjectRepo(root string, global bool) error {
