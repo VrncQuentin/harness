@@ -55,8 +55,6 @@ func (f *fakeInference) Complete(_ context.Context, _ inference.CompletionReques
 	return ch, nil
 }
 
-func (f *fakeInference) Health(_ context.Context) error { return nil }
-
 func summaryTokens(text string) []inference.Token {
 	return []inference.Token{
 		{Content: text},

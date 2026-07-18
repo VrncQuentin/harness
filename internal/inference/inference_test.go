@@ -10,32 +10,6 @@ import (
 	"testing"
 )
 
-func TestHealth_OK(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" {
-			w.WriteHeader(200)
-		}
-	}))
-	defer srv.Close()
-
-	c := NewClient(srv.URL, nil)
-	if err := c.Health(context.Background()); err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-}
-
-func TestHealth_NotOK(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(503)
-	}))
-	defer srv.Close()
-
-	c := NewClient(srv.URL, nil)
-	if err := c.Health(context.Background()); err == nil {
-		t.Fatal("expected error for 503 response")
-	}
-}
-
 func TestComplete_Streaming(t *testing.T) {
 	sseBody := strings.Join([]string{
 		`data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}`,

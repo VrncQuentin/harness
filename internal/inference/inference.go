@@ -10,7 +10,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/vrnc/harness/pkg/httpclient"
 )
@@ -18,7 +17,6 @@ import (
 // Client is the interface for the inference backend.
 type Client interface {
 	Complete(ctx context.Context, req CompletionRequest) (<-chan Token, error)
-	Health(ctx context.Context) error
 }
 
 // Token is a single streamed token from a completion. Content carries text
@@ -139,28 +137,6 @@ func NewClient(baseURL string, hc *http.Client) Client {
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: hc,
 	}
-}
-
-// Health performs a GET /health and returns nil if the server is up.
-func (c *implClient) Health(ctx context.Context) error {
-	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.baseURL+"/health", http.NoBody)
-	if err != nil {
-		return fmt.Errorf("inference: build health request: %w", err)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("inference: health check: %w", err)
-	}
-	_ = resp.Body.Close()
-
-	if resp.StatusCode < http.StatusOK || resp.StatusCode >= 300 {
-		return fmt.Errorf("inference: health check returned %d", resp.StatusCode)
-	}
-	return nil
 }
 
 // Complete sends a chat completion request and returns a channel of tokens.

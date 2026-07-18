@@ -19,7 +19,6 @@ import (
 // Client calls the embedder sidecar.
 type Client interface {
 	Embed(ctx context.Context, chunks []string) ([][]float32, error)
-	Health(ctx context.Context) error
 }
 
 // implClient implements Client against a base URL.
@@ -108,24 +107,4 @@ func (c *implClient) Embed(ctx context.Context, chunks []string) ([][]float32, e
 		}
 	}
 	return vectors, nil
-}
-
-// Health performs GET /health and returns nil if the sidecar is up.
-func (c *implClient) Health(ctx context.Context) error {
-	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.baseURL+"/health", http.NoBody)
-	if err != nil {
-		return fmt.Errorf("embedder: build health request: %w", err)
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("embedder: health check: %w", err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("embedder: health check returned %d", resp.StatusCode)
-	}
-	return nil
 }

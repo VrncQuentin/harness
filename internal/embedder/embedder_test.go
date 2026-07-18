@@ -105,30 +105,3 @@ func TestEmbedUnexpectedStatusIncludesBody(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
-
-func TestHealthAcceptsAny2xxStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
-			t.Fatalf("path = %s, want /health", r.URL.Path)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	client := NewClient(srv.URL, srv.Client())
-	if err := client.Health(context.Background()); err != nil {
-		t.Fatalf("Health: %v", err)
-	}
-}
-
-func TestHealthRejectsNon2xxStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	client := NewClient(srv.URL, srv.Client())
-	if err := client.Health(context.Background()); err == nil {
-		t.Fatal("expected error")
-	}
-}
