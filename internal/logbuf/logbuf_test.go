@@ -1,6 +1,7 @@
 package logbuf
 
 import (
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -72,6 +73,49 @@ func TestRing_IncludesUnterminatedTail(t *testing.T) {
 	want := []string{"done", "in progress"}
 	if !equalSlices(got, want) {
 		t.Errorf("Snapshot = %v, want %v", got, want)
+	}
+}
+
+func TestRing_UnterminatedTailTimestampIsStable(t *testing.T) {
+	r := New(10)
+	fixedClock(r)
+	writeAll(t, r, "partial")
+	first := r.Snapshot()
+	second := r.Snapshot()
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("snapshot lengths = %d/%d, want 1/1", len(first), len(second))
+	}
+	if !first[0].Time.Equal(second[0].Time) {
+		t.Fatalf("partial timestamp changed between snapshots: %v then %v", first[0].Time, second[0].Time)
+	}
+}
+
+func TestRing_UnterminatedTailIsBounded(t *testing.T) {
+	r := New(10)
+	writeAll(t, r, strings.Repeat("x", maxPartialBytes+128))
+	es := r.Snapshot()
+	if len(es) != 1 {
+		t.Fatalf("Snapshot length = %d, want 1 partial entry", len(es))
+	}
+	if got := len(es[0].Line); got != maxPartialBytes {
+		t.Fatalf("partial line length = %d, want %d", got, maxPartialBytes)
+	}
+}
+
+func TestRing_SubscriberOrderMatchesRingOrder(t *testing.T) {
+	r := New(10)
+	ch := make(chan Entry, 4)
+	cancel := r.Subscribe(ch)
+	defer cancel()
+
+	writeAll(t, r, "a\nb\nc\n")
+	got := drain(ch, 3, time.Second)
+	want := []string{"a", "b", "c"}
+	if !equalSlices(got, want) {
+		t.Errorf("subscriber got %v, want %v", got, want)
+	}
+	if snap := lines(r.Snapshot()); !equalSlices(snap, want) {
+		t.Errorf("snapshot got %v, want %v", snap, want)
 	}
 }
 
