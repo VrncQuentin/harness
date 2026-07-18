@@ -78,31 +78,6 @@ func TestDirReader_ReadRejectsTraversal(t *testing.T) {
 		})
 	}
 }
-
-func TestDirReader_Exists(t *testing.T) {
-	r := newTestRepo(t, map[string]string{
-		"global/rules.md":    "x",
-		"agents/coder/a.txt": "y",
-	})
-
-	tests := []struct {
-		path string
-		want bool
-	}{
-		{"global/rules.md", true},
-		{"agents/coder/a.txt", true},
-		{"global/missing.md", false},
-		{"agents/coder", false}, // directory, not a file
-		{"../outside", false},
-		{"", false},
-	}
-	for _, tc := range tests {
-		if got := r.Exists(tc.path); got != tc.want {
-			t.Errorf("Exists(%q) = %v, want %v", tc.path, got, tc.want)
-		}
-	}
-}
-
 func TestDirReader_Glob(t *testing.T) {
 	r := newTestRepo(t, map[string]string{
 		"agents/coder/episodes/2026-01-01.md": "one",
@@ -283,7 +258,7 @@ func TestDirReader_WriteFileOverwritesAtomic(t *testing.T) {
 	}
 
 	// Confirm the atomic rename did not leave a .harness-* tempfile behind.
-	parent := filepath.Join(r.Root, "agents", "coder")
+	parent := filepath.Join(r.root, "agents", "coder")
 	entries, err := os.ReadDir(parent)
 	if err != nil {
 		t.Fatalf("ReadDir parent: %v", err)
@@ -360,7 +335,7 @@ func TestDirReader_RemoveAllRemovesSubtree(t *testing.T) {
 	if !reflect.DeepEqual(got, []string{"reviewer"}) {
 		t.Errorf("ListDirs after RemoveAll = %v, want [reviewer]", got)
 	}
-	if _, err := os.Stat(filepath.Join(r.Root, "agents", "coder")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(r.root, "agents", "coder")); !os.IsNotExist(err) {
 		t.Errorf("agents/coder still exists: stat err = %v", err)
 	}
 }

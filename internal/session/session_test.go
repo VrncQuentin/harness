@@ -355,7 +355,7 @@ func TestManager_ResumeHydratesConversation(t *testing.T) {
 
 func TestManager_ResumeMissingSidecarErrConversationLost(t *testing.T) {
 	fi := newFakeInference(summaryTokens("yo"))
-	mgr, reader, dir, _ := newTestManager(t, fi)
+	mgr, _, dir, _ := newTestManager(t, fi)
 	s := mgr.Start("coder")
 	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "saved"}); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -371,8 +371,8 @@ func TestManager_ResumeMissingSidecarErrConversationLost(t *testing.T) {
 		t.Fatalf("remove sidecar: %v", err)
 	}
 	// Sanity: the .md is still there.
-	if !reader.Exists("episodes/coder/" + s.ID + ".md") {
-		t.Fatalf("expected episode .md to survive")
+	if _, err := os.Stat(filepath.Join(dir, "episodes", "coder", s.ID+".md")); err != nil {
+		t.Fatalf("expected episode .md to survive: %v", err)
 	}
 
 	if _, err := mgr.Resume(s.ID); !errors.Is(err, ErrConversationLost) {

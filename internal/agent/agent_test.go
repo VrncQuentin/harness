@@ -15,6 +15,11 @@ import (
 // newRepoWithAgents creates a temp memory repo populated with the
 // given files and returns a DirReader rooted at it.
 func newRepoWithAgents(t *testing.T, files map[string]string) *memory.DirReader {
+	mem, _ := newRepoWithAgentsRoot(t, files)
+	return mem
+}
+
+func newRepoWithAgentsRoot(t *testing.T, files map[string]string) (*memory.DirReader, string) {
 	t.Helper()
 	root := t.TempDir()
 	for rel, body := range files {
@@ -26,7 +31,7 @@ func newRepoWithAgents(t *testing.T, files map[string]string) *memory.DirReader 
 			t.Fatalf("WriteFile: %v", err)
 		}
 	}
-	return memory.NewDirReader(root)
+	return memory.NewDirReader(root), root
 }
 
 // activeState is a trivial in-memory stand-in for the active-agent
@@ -463,7 +468,7 @@ func TestDiskRegistry_WriteNotesRejectsEmptyName(t *testing.T) {
 }
 
 func TestDiskRegistry_DeleteRemovesDirAndFiles(t *testing.T) {
-	mem := newRepoWithAgents(t, map[string]string{
+	mem, root := newRepoWithAgentsRoot(t, map[string]string{
 		"agents/coder/persona.md":          "p",
 		"agents/coder/notes.md":            "n",
 		"agents/coder/episodes/2026-01.md": "e",
@@ -489,7 +494,7 @@ func TestDiskRegistry_DeleteRemovesDirAndFiles(t *testing.T) {
 	if !reflect.DeepEqual(list, want) {
 		t.Errorf("List after Delete = %v, want %v", list, want)
 	}
-	if _, err := os.Stat(filepath.Join(mem.Root, "agents", "coder")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "agents", "coder")); !os.IsNotExist(err) {
 		t.Errorf("agents/coder not removed: stat err = %v", err)
 	}
 }
@@ -562,7 +567,7 @@ func TestDiskRegistry_DeleteRejectsInvalidNames(t *testing.T) {
 }
 
 func TestDiskRegistry_DeletePropagatesActiveClearError(t *testing.T) {
-	mem := newRepoWithAgents(t, map[string]string{
+	mem, root := newRepoWithAgentsRoot(t, map[string]string{
 		"agents/coder/persona.md": "c",
 	})
 	st := &activeState{name: "coder"}
@@ -574,7 +579,7 @@ func TestDiskRegistry_DeletePropagatesActiveClearError(t *testing.T) {
 	}
 	// The directory should still exist - we abort before RemoveAll on
 	// a setActive failure so the user can retry without losing data.
-	if _, statErr := os.Stat(filepath.Join(mem.Root, "agents", "coder")); statErr != nil {
+	if _, statErr := os.Stat(filepath.Join(root, "agents", "coder")); statErr != nil {
 		t.Errorf("agents/coder removed despite setActive failure: stat err = %v", statErr)
 	}
 }
