@@ -39,7 +39,6 @@ CREATE TABLE IF NOT EXISTS config (
     ui_open_on_start                 INTEGER NOT NULL,
     api_enabled                      INTEGER NOT NULL,
     api_port                         INTEGER NOT NULL,
-    prompt_ctx_size                  INTEGER NOT NULL,
     prompt_memory_token_budget       INTEGER NOT NULL,
     prompt_conversation_reserve      INTEGER NOT NULL,
     prompt_recency_n                 INTEGER NOT NULL,

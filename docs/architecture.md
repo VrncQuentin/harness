@@ -366,7 +366,7 @@ The shared `harness.db` SQLite file (config + metrics + runtime control state) l
 
 Configuration lives in a single-row typed `config` table inside `harness.db`. There is no on-disk config file — the user edits settings through the `/config` page in the management UI, which writes back to the database.
 
-The schema mirrors the Go `config.Config` struct: one column per field, snake-cased with a section prefix (`model_binary`, `embedder_port`, `prompt_memory_token_budget`, etc.). Column defaults in the DDL mirror `config.Defaults()` in Go so the two stay honest.
+The schema mirrors the persisted fields of the Go `config.Config` struct, snake-cased with a section prefix (`model_binary`, `embedder_port`, `prompt_memory_token_budget`, etc.). Runtime-derived fields such as the effective prompt context size are not stored. Column defaults in the DDL mirror `config.Defaults()` in Go so the two stay honest.
 
 Sections and fields:
 - **model:** `binary`, `model_path`, `ctx_size`, `gpu_layers`, `n_parallel`, `port`, `verbose`, `cache_type_k`, `cache_type_v`
@@ -375,7 +375,7 @@ Sections and fields:
 - **ui:** `port`, `open_on_start`
 - **api:** `enabled`, `port`
 - **project:** `active_project_slug`, `llama_on_switch`
-- **prompt:** `ctx_size`, `memory_token_budget`, `conversation_reserve`, `recency_n`, `summarizer_prompt`, `semantic_weight`, `recency_weight`, `promotion_dedup_threshold`
+- **prompt:** `memory_token_budget`, `conversation_reserve`, `recency_n`, `summarizer_prompt`, `semantic_weight`, `recency_weight`, `promotion_dedup_threshold`
 - **queue:** `max_depth`
 - **metrics:** `retention_days`
 - **log:** `ring_max_entries`, `proc_max_lines`

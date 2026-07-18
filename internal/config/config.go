@@ -110,6 +110,8 @@ type APIConfig struct {
 
 // PromptConfig holds prompt assembly configuration.
 type PromptConfig struct {
+	// CtxSize is derived at runtime from the effective model context size.
+	// It is intentionally not persisted or user-editable.
 	CtxSize             int
 	MemoryTokenBudget   int
 	ConversationReserve int
@@ -233,7 +235,6 @@ func Defaults() Config {
 			Port:    8080,
 		},
 		Prompt: PromptConfig{
-			CtxSize:                 32768,
 			MemoryTokenBudget:       6144,
 			ConversationReserve:     8192,
 			RecencyN:                5,
@@ -333,18 +334,15 @@ func Validate(cfg *Config) error {
 		return err
 	}
 
-	if cfg.Prompt.CtxSize < 0 {
-		return fmt.Errorf("config: prompt.ctx_size must be >= 0, got %d", cfg.Prompt.CtxSize)
-	}
 	if cfg.Prompt.MemoryTokenBudget < 0 {
 		return fmt.Errorf("config: prompt.memory_token_budget must be >= 0, got %d", cfg.Prompt.MemoryTokenBudget)
 	}
 	if cfg.Prompt.ConversationReserve < 0 {
 		return fmt.Errorf("config: prompt.conversation_reserve must be >= 0, got %d", cfg.Prompt.ConversationReserve)
 	}
-	if cfg.Prompt.CtxSize > 0 && cfg.Prompt.MemoryTokenBudget+cfg.Prompt.ConversationReserve > cfg.Prompt.CtxSize {
-		return fmt.Errorf("config: prompt.memory_token_budget (%d) + prompt.conversation_reserve (%d) exceed prompt.ctx_size (%d)",
-			cfg.Prompt.MemoryTokenBudget, cfg.Prompt.ConversationReserve, cfg.Prompt.CtxSize)
+	if cfg.Model.CtxSize > 0 && cfg.Prompt.MemoryTokenBudget+cfg.Prompt.ConversationReserve > cfg.Model.CtxSize {
+		return fmt.Errorf("config: prompt.memory_token_budget (%d) + prompt.conversation_reserve (%d) exceed model.ctx_size (%d)",
+			cfg.Prompt.MemoryTokenBudget, cfg.Prompt.ConversationReserve, cfg.Model.CtxSize)
 	}
 	if cfg.Prompt.RecencyN < 0 {
 		return fmt.Errorf("config: prompt.recency_n must be >= 0 (0 means unlimited), got %d", cfg.Prompt.RecencyN)
