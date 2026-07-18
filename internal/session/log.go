@@ -157,9 +157,9 @@ func LatestPerID(records []Record) []Record {
 	return out
 }
 
-// SortByNewest sorts records by SavedAt descending, ID ascending as a
+// sortByNewest sorts records by SavedAt descending, ID ascending as a
 // stable tie-breaker. Used by the resume picker.
-func SortByNewest(records []Record) {
+func sortByNewest(records []Record) {
 	sort.SliceStable(records, func(i, j int) bool {
 		if !records[i].SavedAt.Equal(records[j].SavedAt) {
 			return records[i].SavedAt.After(records[j].SavedAt)

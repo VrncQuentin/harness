@@ -474,14 +474,6 @@ func (m *Manager) FlushAll(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// LiveCount returns the number of in-memory sessions. Used by tests
-// and by the UI status page.
-func (m *Manager) LiveCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.sessions)
-}
-
 // Records returns the deduped list of saved sessions for the given
 // agent, newest-first by SavedAt. Used by the chat resume picker.
 // An empty slice + nil error means "no sessions yet".
@@ -498,9 +490,7 @@ func (m *Manager) Records(agent string) ([]Record, error) {
 		}
 		out = append(out, r)
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].SavedAt.After(out[j].SavedAt)
-	})
+	sortByNewest(out)
 	return out, nil
 }
 
