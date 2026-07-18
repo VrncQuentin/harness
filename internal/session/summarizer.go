@@ -8,19 +8,8 @@ import (
 	"time"
 
 	"github.com/vrnc/harness/internal/inference"
+	"github.com/vrnc/harness/internal/summarizerprompt"
 )
-
-// fallbackSummarizerPrompt mirrors config.defaultSummarizerPrompt so a
-// user who clears the field in /config still gets a sensible summary.
-// Duplication is deliberate - importing internal/config from session
-// would create a cycle (config does not depend on session today, but
-// runtime wiring imports both). The two strings must stay in sync.
-const fallbackSummarizerPrompt = `You are summarizing a conversation between a user and an AI agent. Produce a concise third-person summary capturing:
-- the user's goal or question
-- key decisions, code paths, or facts established
-- unresolved questions or follow-ups
-
-Write 3-8 short paragraphs in plain markdown. Do not include the conversation verbatim. Do not address the user directly.`
 
 // Summarizer turns a conversation into a markdown summary by issuing a
 // fresh inference call. The call deliberately bypasses the prompt
@@ -67,7 +56,7 @@ func (s *Summarizer) Summarize(ctx context.Context, conversation []inference.Mes
 
 	system := strings.TrimSpace(s.prompt())
 	if system == "" {
-		system = fallbackSummarizerPrompt
+		system = summarizerprompt.Default
 	}
 
 	msgs := make([]inference.Message, 0, len(conversation)+1)
