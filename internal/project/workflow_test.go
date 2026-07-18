@@ -56,8 +56,6 @@ func (s *workflowStore) Delete(slug string) error {
 }
 func (s *workflowStore) SetHidden(string, bool) error                { return nil }
 func (s *workflowStore) ListDirectories(string) ([]Directory, error) { return nil, nil }
-func (s *workflowStore) AddDirectory(string, string) error           { return nil }
-func (s *workflowStore) RemoveDirectory(string, string) error        { return nil }
 
 type workflowRepos struct {
 	ensureErr error

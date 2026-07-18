@@ -234,19 +234,10 @@ func TestProjectStore_HideGlobalRejected(t *testing.T) {
 func TestProjectStore_Directories(t *testing.T) {
 	d := newTestDB(t)
 	store := d.Projects()
-	if _, err := store.Create(project.CreateInput{Slug: "dt", DisplayName: "DT"}); err != nil {
-		t.Fatalf("Create: %v", err)
-	}
 	a := filepath.Join(t.TempDir(), "a")
 	b := filepath.Join(t.TempDir(), "b")
-	if err := store.AddDirectory("dt", b); err != nil {
-		t.Fatalf("AddDirectory b: %v", err)
-	}
-	if err := store.AddDirectory("dt", a); err != nil {
-		t.Fatalf("AddDirectory a: %v", err)
-	}
-	if err := store.AddDirectory("dt", a); err != nil {
-		t.Fatalf("AddDirectory duplicate a: %v", err)
+	if _, err := store.Create(project.CreateInput{Slug: "dt", DisplayName: "DT", Directories: []string{b, a}}); err != nil {
+		t.Fatalf("Create: %v", err)
 	}
 
 	dirs, err := store.ListDirectories("dt")
@@ -256,33 +247,14 @@ func TestProjectStore_Directories(t *testing.T) {
 	if got := directoryPaths(dirs); !reflect.DeepEqual(got, []string{a, b}) {
 		t.Fatalf("directories = %v, want [%s %s]", got, a, b)
 	}
-
-	if err := store.RemoveDirectory("dt", a); err != nil {
-		t.Fatalf("RemoveDirectory a: %v", err)
-	}
-	dirs, err = store.ListDirectories("dt")
-	if err != nil {
-		t.Fatalf("ListDirectories after remove: %v", err)
-	}
-	if got := directoryPaths(dirs); !reflect.DeepEqual(got, []string{b}) {
-		t.Fatalf("directories = %v, want [%s]", got, b)
-	}
 }
 
-func TestProjectStore_DirectoryMethodsRejectMissingProject(t *testing.T) {
+func TestProjectStore_ListDirectoriesRejectsMissingProject(t *testing.T) {
 	d := newTestDB(t)
-	dir := filepath.Join(t.TempDir(), "repo")
-	if err := d.Projects().AddDirectory("missing", dir); !errors.Is(err, project.ErrNotFound) {
-		t.Fatalf("AddDirectory missing project: errors.Is(ErrNotFound)=false, err=%v", err)
-	}
 	if _, err := d.Projects().ListDirectories("missing"); !errors.Is(err, project.ErrNotFound) {
 		t.Fatalf("ListDirectories missing project: errors.Is(ErrNotFound)=false, err=%v", err)
 	}
-	if err := d.Projects().RemoveDirectory("missing", dir); !errors.Is(err, project.ErrNotFound) {
-		t.Fatalf("RemoveDirectory missing project: errors.Is(ErrNotFound)=false, err=%v", err)
-	}
 }
-
 func TestProjectStore_GetMissing(t *testing.T) {
 	d := newTestDB(t)
 	_, err := d.Projects().Get("missing")
