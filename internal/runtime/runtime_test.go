@@ -528,7 +528,7 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	}, rt.ensureInferenceClient(), nil)
 	rt.setSessionManager(mgr)
 
-	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry()}
+	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
 	id, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
@@ -623,7 +623,7 @@ func TestTaskRunnerDoesNotDuplicateSingleMessageOnResume(t *testing.T) {
 		t.Fatalf("seed Append: %v", err)
 	}
 
-	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry()}
+	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
 	_, evch, err := ad.RunTask(context.Background(), "coder", s.ID, []ui.ChatMessage{{Role: "user", Content: "hello"}})
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
@@ -691,7 +691,7 @@ func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 	if err := tools.RegisterBuiltins(registry); err != nil {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
-	ad := &taskRunnerAdapter{rt: rt, registry: registry}
+	ad := &taskRunnerAdapter{rt: rt, registry: registry, q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
 
 	_, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "read the file"}})
 	if err != nil {
@@ -934,6 +934,21 @@ func (s stubEmbedder) Embed(_ context.Context, chunks []string) ([][]float32, er
 		out[i] = append([]float32(nil), s.vec...)
 	}
 	return out, nil
+}
+
+func startRuntimeTestQueue(t *testing.T, client inference.Client) *queue.Queue {
+	t.Helper()
+	q := queue.New(4, client)
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := q.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("queue Start: %v", err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		q.Stop()
+	})
+	return q
 }
 
 type capturingInferenceClient struct {
