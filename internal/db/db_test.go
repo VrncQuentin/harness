@@ -99,6 +99,89 @@ func TestBundledMigrationVersionUsesMaxEmbeddedMigration(t *testing.T) {
 	}
 }
 
+func TestRunMigrations_AcceptsOlderCleanVersion(t *testing.T) {
+	sqldb := openMigrationTestDB(t)
+
+	v1 := fstest.MapFS{
+		"0001_init.up.sql":   {Data: []byte(`CREATE TABLE one (id INTEGER PRIMARY KEY);`)},
+		"0001_init.down.sql": {Data: []byte(`DROP TABLE one;`)},
+	}
+	v2 := fstest.MapFS{
+		"0001_init.up.sql":      {Data: []byte(`CREATE TABLE one (id INTEGER PRIMARY KEY);`)},
+		"0001_init.down.sql":    {Data: []byte(`DROP TABLE one;`)},
+		"0002_add_two.up.sql":   {Data: []byte(`CREATE TABLE two (id INTEGER PRIMARY KEY);`)},
+		"0002_add_two.down.sql": {Data: []byte(`DROP TABLE two;`)},
+	}
+
+	if err := runMigrationsFS(sqldb, v1); err != nil {
+		t.Fatalf("run v1 migrations: %v", err)
+	}
+	if got := migrationVersion(t, sqldb); got != 1 {
+		t.Fatalf("initial migration version = %d, want 1", got)
+	}
+
+	if err := runMigrationsFS(sqldb, v2); err != nil {
+		t.Fatalf("upgrade v1 to v2: %v", err)
+	}
+	if got := migrationVersion(t, sqldb); got != 2 {
+		t.Fatalf("upgraded migration version = %d, want 2", got)
+	}
+	if !tableExists(t, sqldb, "two") {
+		t.Fatal("expected v2 migration to create table two")
+	}
+}
+
+func TestRunMigrations_RejectsDirtyVersion(t *testing.T) {
+	sqldb := openMigrationTestDB(t)
+	v1 := fstest.MapFS{
+		"0001_init.up.sql":   {Data: []byte(`CREATE TABLE one (id INTEGER PRIMARY KEY);`)},
+		"0001_init.down.sql": {Data: []byte(`DROP TABLE one;`)},
+	}
+
+	if err := runMigrationsFS(sqldb, v1); err != nil {
+		t.Fatalf("run v1 migrations: %v", err)
+	}
+	if _, err := sqldb.Exec(`UPDATE schema_migrations SET dirty = ?`, true); err != nil {
+		t.Fatalf("mark migration dirty: %v", err)
+	}
+
+	err := runMigrationsFS(sqldb, v1)
+	if err == nil {
+		t.Fatal("expected dirty migration error")
+	}
+	if !strings.Contains(err.Error(), "dirty") {
+		t.Fatalf("error %q does not mention dirty migration state", err)
+	}
+}
+
+func openMigrationTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "harness.db")
+	sqldb, err := sql.Open("sqlite", sqliteDSN(path))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = sqldb.Close() })
+	return sqldb
+}
+
+func migrationVersion(t *testing.T, sqldb *sql.DB) int {
+	t.Helper()
+	var version int
+	if err := sqldb.QueryRow(`SELECT version FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatalf("read migration version: %v", err)
+	}
+	return version
+}
+
+func tableExists(t *testing.T, sqldb *sql.DB, name string) bool {
+	t.Helper()
+	var count int
+	if err := sqldb.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, name).Scan(&count); err != nil {
+		t.Fatalf("check table %s: %v", name, err)
+	}
+	return count == 1
+}
 func TestOpen_RejectsUnexpectedMigrationVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "harness.db")

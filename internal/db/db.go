@@ -203,11 +203,15 @@ func (d *DB) seedGlobalProject() error {
 // runMigrations applies every pending migration from the embedded FS using
 // golang-migrate. Running against a DB that is already up-to-date is a no-op.
 func runMigrations(sqldb *sql.DB) error {
-	bundledVersion, err := bundledMigrationVersion(migrations.FS, ".")
+	return runMigrationsFS(sqldb, migrations.FS)
+}
+
+func runMigrationsFS(sqldb *sql.DB, fsys fs.FS) error {
+	bundledVersion, err := bundledMigrationVersion(fsys, ".")
 	if err != nil {
 		return err
 	}
-	src, err := iofs.New(migrations.FS, ".")
+	src, err := iofs.New(fsys, ".")
 	if err != nil {
 		return fmt.Errorf("db: migrations source: %w", err)
 	}
@@ -231,6 +235,16 @@ func runMigrations(sqldb *sql.DB) error {
 	}
 	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("db: migrate up: %w", err)
+	}
+	version, dirty, err = m.Version()
+	if err != nil {
+		return fmt.Errorf("db: read final migration version: %w", err)
+	}
+	if dirty {
+		return fmt.Errorf("db: migration version %d is dirty after applying bundled schema; delete harness.db and restart", version)
+	}
+	if version != bundledVersion {
+		return fmt.Errorf("db: migration ended at version %d, want bundled schema version %d; delete harness.db and restart", version, bundledVersion)
 	}
 	return nil
 }
