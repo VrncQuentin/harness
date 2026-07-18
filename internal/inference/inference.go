@@ -82,7 +82,6 @@ type CompletionRequest struct {
 	MaxTokens   *int      `json:"max_tokens,omitempty"`
 	Stream      bool      `json:"stream"`
 	Tools       []Tool    `json:"tools,omitempty"`
-	ToolChoice  any       `json:"tool_choice,omitempty"`
 }
 
 // sseChunk is the JSON structure of a single SSE data line.
