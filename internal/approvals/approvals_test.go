@@ -109,7 +109,7 @@ func TestEvaluator_SessionOverridesConfig(t *testing.T) {
 	}
 }
 
-func TestEvaluator_CommandPatternMatch(t *testing.T) {
+func TestEvaluator_ShellCommandPatternAllowsStillAsk(t *testing.T) {
 	layer := Layer{
 		Name: "user-config",
 		Rules: []Rule{
@@ -120,13 +120,13 @@ func TestEvaluator_CommandPatternMatch(t *testing.T) {
 	eval := NewEvaluator(DefaultLayer(), layer)
 
 	dec, _ := eval.Evaluate("shell_exec", "git status")
-	if dec != Allowed {
-		t.Errorf("git status should be allowed, got %s", dec)
+	if dec != Ask {
+		t.Errorf("git status should still Ask despite allow rule, got %s", dec)
 	}
 
 	dec, _ = eval.Evaluate("shell_exec", "ls -la")
-	if dec != Allowed {
-		t.Errorf("ls should be allowed, got %s", dec)
+	if dec != Ask {
+		t.Errorf("ls should still Ask despite allow rule, got %s", dec)
 	}
 
 	// rm is not matched by any user rule, falls back to Ask
@@ -265,9 +265,9 @@ func TestMatchRule_WildcardTool(t *testing.T) {
 	}
 }
 
-func TestEvaluator_DestructiveCmdRequiresAskEvenWithBroadAllow(t *testing.T) {
+func TestEvaluator_ShellCmdRequiresAskEvenWithBroadAllow(t *testing.T) {
 	// A broad user-config rule allows "git" prefix, but "git push" is
-	// classified as destructive. Without an exact session match it must Ask.
+	// a shell command. Shell commands must Ask even when they look safe.
 	userLayer := Layer{
 		Name: "user-config",
 		Rules: []Rule{
@@ -279,12 +279,12 @@ func TestEvaluator_DestructiveCmdRequiresAskEvenWithBroadAllow(t *testing.T) {
 	if dec != Ask {
 		t.Errorf("destructive git push should Ask even with broad git allow, got %s", dec)
 	}
-	if src != "requires approval: destructive command" {
+	if src != "requires approval: shell command" {
 		t.Errorf("unexpected source: %s", src)
 	}
 }
 
-func TestEvaluator_DestructiveCmdAllowedWithExactSessionMatch(t *testing.T) {
+func TestEvaluator_ShellCmdStillAsksWithExactSessionAllow(t *testing.T) {
 	eval := NewEvaluator(DefaultLayer())
 	eval.AddSessionRule(Rule{
 		ToolID:         "shell_exec",
@@ -293,8 +293,8 @@ func TestEvaluator_DestructiveCmdAllowedWithExactSessionMatch(t *testing.T) {
 		Source:         "session: always allowed",
 	})
 	dec, _ := eval.Evaluate("shell_exec", "git push origin main")
-	if dec != Allowed {
-		t.Errorf("exact session match should allow destructive git push, got %s", dec)
+	if dec != Ask {
+		t.Errorf("exact session allow should still Ask for shell command, got %s", dec)
 	}
 	// A different destructive command still asks.
 	dec, _ = eval.Evaluate("shell_exec", "rm -rf /tmp")
@@ -303,7 +303,7 @@ func TestEvaluator_DestructiveCmdAllowedWithExactSessionMatch(t *testing.T) {
 	}
 }
 
-func TestEvaluator_SafeCmdAllowedByBroadRule(t *testing.T) {
+func TestEvaluator_SafeShellCmdStillAsksWithBroadRule(t *testing.T) {
 	userLayer := Layer{
 		Name: "user-config",
 		Rules: []Rule{
@@ -312,13 +312,13 @@ func TestEvaluator_SafeCmdAllowedByBroadRule(t *testing.T) {
 	}
 	eval := NewEvaluator(DefaultLayer(), userLayer)
 	dec, _ := eval.Evaluate("shell_exec", "git status")
-	if dec != Allowed {
-		t.Errorf("safe git status should be allowed by broad rule, got %s", dec)
+	if dec != Ask {
+		t.Errorf("safe-looking shell command should still Ask by broad rule, got %s", dec)
 	}
 }
 
-func TestEvaluator_DestructiveCwdCommandsNotBypassable(t *testing.T) {
-	// Even with a broad "git" prefix allow, destructive git commands still require approval.
+func TestEvaluator_ShellSessionAllowsNotBypassable(t *testing.T) {
+	// Even with a remembered exact shell allow, shell commands still require approval.
 	eval := NewEvaluator(DefaultLayer())
 	eval.AddSessionRule(Rule{
 		ToolID:         "shell_exec",
@@ -326,12 +326,12 @@ func TestEvaluator_DestructiveCwdCommandsNotBypassable(t *testing.T) {
 		Decision:       Allowed,
 		Source:         "session: always allowed",
 	})
-	// git status is safe and stored as exact match → allowed.
+	// git status is stored as an exact match, but still asks.
 	dec, _ := eval.Evaluate("shell_exec", "git status")
-	if dec != Allowed {
-		t.Errorf("git status should be allowed by exact session rule, got %s", dec)
+	if dec != Ask {
+		t.Errorf("git status should still Ask despite exact session rule, got %s", dec)
 	}
-	// git push does not match the exact pattern → classified destructive → Ask.
+	// git push also asks.
 	dec, _ = eval.Evaluate("shell_exec", "git push origin main")
 	if dec != Ask {
 		t.Errorf("git push should Ask despite git status session rule, got %s", dec)

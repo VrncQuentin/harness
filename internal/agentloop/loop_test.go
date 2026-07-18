@@ -301,10 +301,10 @@ func TestAlwaysForGitStatusDoesNotAllowGitPush(t *testing.T) {
 	for range evch {
 	}
 
-	// git status (safe) should be allowed by the session rule.
+	// git status should still ask despite the remembered session allow.
 	dec, _ := engine.evl.Evaluate("shell_exec", "git status")
-	if dec != approvals.Allowed {
-		t.Errorf("git status should be allowed by exact session match, got %s", dec)
+	if dec != approvals.Ask {
+		t.Errorf("git status should still Ask despite exact session match, got %s", dec)
 	}
 
 	// git push (destructive) should NOT be allowed — classified as destructive
@@ -319,7 +319,7 @@ func TestDestructiveShellCmdRequiresApproval(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, ShellExecEnabled: true}
 	engine := newTestEngine(t, cfg)
 
-	// Even with a broad shell_exec allow rule, destructive commands should Ask.
+	// Even with a broad shell_exec allow rule, shell commands should Ask.
 	userLayer := approvals.Layer{
 		Name: "user-config",
 		Rules: []approvals.Rule{
@@ -334,10 +334,10 @@ func TestDestructiveShellCmdRequiresApproval(t *testing.T) {
 		t.Errorf("rm -rf should Ask even with broad shell allow, got %s", dec)
 	}
 
-	// ls is safe → allowed by broad rule.
+	// ls still asks because all shell commands require approval.
 	dec, _ = engine.evl.Evaluate("shell_exec", "ls")
-	if dec != approvals.Allowed {
-		t.Errorf("ls should be Allowed by broad rule, got %s", dec)
+	if dec != approvals.Ask {
+		t.Errorf("ls should still Ask despite broad shell allow, got %s", dec)
 	}
 }
 
