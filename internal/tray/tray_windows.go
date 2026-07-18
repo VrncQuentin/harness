@@ -45,13 +45,10 @@ func OpenBrowser(url string) {
 
 // Run starts the system tray on Windows.
 func Run(uiURL string, onQuit func()) {
+	quit := onceFunc(onQuit)
 	systray.Run(func() {
-		onReady(uiURL, onQuit)
-	}, func() {
-		if onQuit != nil {
-			onQuit()
-		}
-	})
+		onReady(uiURL, quit)
+	}, quit)
 }
 
 // Quit signals the tray to exit.

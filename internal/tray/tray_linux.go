@@ -4,6 +4,7 @@ package tray
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -40,7 +41,10 @@ func AcquireSingleInstance() (bool, error) {
 
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
-		return false, nil
+		if isLockHeldError(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("tray: lock file: %w", err)
 	}
 
 	_ = f.Truncate(0)
@@ -50,6 +54,9 @@ func AcquireSingleInstance() (bool, error) {
 	return true, nil
 }
 
+func isLockHeldError(err error) bool {
+	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
+}
 func trayIcon() []byte { return iconPNG }
 
 // OpenBrowser opens the default browser to the given URL.
@@ -111,13 +118,10 @@ func Run(uiURL string, onQuit func()) {
 		return
 	}
 
+	quit := onceFunc(onQuit)
 	systray.Run(func() {
-		onReady(uiURL, onQuit)
-	}, func() {
-		if onQuit != nil {
-			onQuit()
-		}
-	})
+		onReady(uiURL, quit)
+	}, quit)
 }
 
 func headless(onQuit func()) {
