@@ -21,10 +21,6 @@ type Reader interface {
 	// that satisfies errors.Is(err, fs.ErrNotExist).
 	Read(relPath string) ([]byte, error)
 
-	// Exists reports whether relPath refers to an existing file. It
-	// returns false for directories, traversal attempts, and stat errors.
-	Exists(relPath string) bool
-
 	// Glob returns relative paths of files matching pattern
 	// (path.Match syntax), sorted lexicographically. Directories are
 	// not included. A missing parent directory yields an empty slice
@@ -81,9 +77,9 @@ type Entry struct {
 // the concrete Reader used in production; tests can use an in-memory fake
 // that implements the same interface.
 type DirReader struct {
-	// Root is the absolute path of the memory repo. It is joined with the
-	// relative paths passed to Read/Exists/Glob.
-	Root string
+	// root is the absolute path of the memory repo. It is joined with the
+	// relative paths passed to Read/Glob and mutation helpers.
+	root string
 }
 
 // Compile-time assertions for the production memory repo interfaces.
@@ -96,7 +92,7 @@ var (
 
 // NewDirReader returns a DirReader rooted at root.
 func NewDirReader(root string) *DirReader {
-	return &DirReader{Root: root}
+	return &DirReader{root: root}
 }
 
 // Read implements Reader.
@@ -112,19 +108,6 @@ func (r *DirReader) Read(relPath string) ([]byte, error) {
 	return b, nil
 }
 
-// Exists implements Reader.
-func (r *DirReader) Exists(relPath string) bool {
-	abs, err := r.resolve(relPath)
-	if err != nil {
-		return false
-	}
-	info, err := os.Stat(abs)
-	if err != nil {
-		return false
-	}
-	return !info.IsDir()
-}
-
 // ListDirs returns direct subdirectories of relPath.
 func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 	if relPath != "" {
@@ -132,7 +115,7 @@ func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 			return nil, err
 		}
 	}
-	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
 	entries, err := os.ReadDir(abs)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -155,7 +138,7 @@ func (r *DirReader) MkdirAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return err
 	}
-	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
 	}
@@ -169,7 +152,7 @@ func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
 	parent := filepath.Dir(abs)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
@@ -208,8 +191,8 @@ func (r *DirReader) RemoveAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
-	abs := filepath.Join(r.Root, filepath.FromSlash(relPath))
-	if abs == r.Root {
+	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
+	if abs == r.root {
 		return fmt.Errorf("memory: remove %s: refusing to remove repo root", relPath)
 	}
 	if err := os.RemoveAll(abs); err != nil {
@@ -228,7 +211,7 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 	// parent does not exist we treat it as an empty set so a bare repo
 	// without any agent episodes folder doesn't error out.
 	dir, file := path.Split(pattern)
-	absDir := filepath.Join(r.Root, filepath.FromSlash(dir))
+	absDir := filepath.Join(r.root, filepath.FromSlash(dir))
 	entries, err := os.ReadDir(absDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -263,7 +246,7 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 			return nil, err
 		}
 	}
-	absRoot := filepath.Join(r.Root, filepath.FromSlash(relPath))
+	absRoot := filepath.Join(r.root, filepath.FromSlash(relPath))
 	var out []Entry
 	err := filepath.WalkDir(absRoot, func(absPath string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -272,7 +255,7 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 		if absPath == absRoot {
 			return nil
 		}
-		rel, err := filepath.Rel(r.Root, absPath)
+		rel, err := filepath.Rel(r.root, absPath)
 		if err != nil {
 			return err
 		}
@@ -313,7 +296,7 @@ func (r *DirReader) resolve(relPath string) (string, error) {
 	if err := checkRel(relPath); err != nil {
 		return "", err
 	}
-	return filepath.Join(r.Root, filepath.FromSlash(relPath)), nil
+	return filepath.Join(r.root, filepath.FromSlash(relPath)), nil
 }
 
 // checkRel rejects empty, absolute, and traversing paths. We work on the
