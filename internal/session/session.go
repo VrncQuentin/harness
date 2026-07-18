@@ -173,7 +173,7 @@ func episodeSidecarPath(agent, id string) string {
 }
 
 // NewManager constructs a Manager from deps. The caller is expected to
-// have already validated the memory repo (memory.ValidateRepo) so the
+// have already validated the project memory repo so the
 // FileWriter/Reader/Committer/Inference references are non-nil.
 func NewManager(deps ManagerDeps, projectSlug string) (*Manager, error) {
 	if deps.Repo == nil {
