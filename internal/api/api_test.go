@@ -230,6 +230,18 @@ func newTestServer(t *testing.T, asm Assembler, q Enqueuer) (*httptest.Server, f
 	return ts, ts.Close
 }
 
+func TestUnexpectedServeError(t *testing.T) {
+	if unexpectedServeError(nil) {
+		t.Fatal("nil serve error should not be unexpected")
+	}
+	if unexpectedServeError(http.ErrServerClosed) {
+		t.Fatal("http.ErrServerClosed should not be unexpected")
+	}
+	if !unexpectedServeError(errors.New("listener failed")) {
+		t.Fatal("ordinary serve error should be unexpected")
+	}
+}
+
 func TestChatCompletions_StreamingHappyPath(t *testing.T) {
 	asm := &stubAssembler{}
 	enq := newStubEnqueuer([]inference.Token{
@@ -329,7 +341,7 @@ func TestChatCompletions_SavesAndEndsAPISessionOnCompletion(t *testing.T) {
 	}
 }
 
-func TestChatCompletions_EndsAPISessionOnTokenErrorWithoutSave(t *testing.T) {
+func TestChatCompletions_SavesPartialAPISessionOnTokenError(t *testing.T) {
 	asm := &stubAssembler{}
 	enq := newStubEnqueuer([]inference.Token{
 		{Content: "partial"},
@@ -349,16 +361,20 @@ func TestChatCompletions_EndsAPISessionOnTokenErrorWithoutSave(t *testing.T) {
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	_, appends, saves, ends := rec.snapshot()
-	if len(saves) != 0 {
-		t.Fatalf("saves = %+v, want none on token error", saves)
+	if len(appends) != 2 {
+		t.Fatalf("appends = %+v, want user and partial assistant", appends)
+	}
+	if appends[0].Role != "user" || appends[1].Role != "assistant" {
+		t.Fatalf("append roles = %+v, want user/assistant", appends)
+	}
+	if appends[1].Content != "partial" {
+		t.Fatalf("assistant append = %q, want partial", appends[1].Content)
+	}
+	if len(saves) != 1 || saves[0] != "sess-1" {
+		t.Fatalf("saves = %+v, want [sess-1] on token error", saves)
 	}
 	if len(ends) != 1 || ends[0] != "sess-1" {
 		t.Fatalf("ends = %+v, want [sess-1]", ends)
-	}
-	for _, append := range appends {
-		if append.Role == "assistant" {
-			t.Fatalf("assistant append on token error: %+v", appends)
-		}
 	}
 }
 func TestChatCompletions_QueueFull(t *testing.T) {

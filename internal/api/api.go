@@ -99,7 +99,9 @@ func (s *Server) Start(ctx context.Context) error {
 	s.httpSrv = srv
 
 	go func() {
-		srv.Serve(ln) //nolint:errcheck
+		if err := srv.Serve(ln); unexpectedServeError(err) {
+			s.logger.Error("api serve failed", slog.Any("err", err))
+		}
 	}()
 
 	go func() {
@@ -108,6 +110,10 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+func unexpectedServeError(err error) bool {
+	return err != nil && !errors.Is(err, http.ErrServerClosed)
 }
 
 // Stop gracefully shuts the server down. Idempotent: safe to call before
@@ -310,11 +316,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // that receives the assistant's joined content as a single Append once
 // the stream ends. Pass a zero-value Session to skip recording.
 func (s *Server) streamTokensWithSession(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, respCh <-chan inference.Token, reqID, modelEcho string, sess Session) {
-	if s.rec != nil && sess.ID != "" {
-		defer s.rec.End(sess.ID)
-	}
 	stopReason := "stop"
 	var assistant strings.Builder
+	if s.rec != nil && sess.ID != "" {
+		defer s.finalizeSession(context.WithoutCancel(ctx), sess, &assistant)
+	}
 	for tok := range respCh {
 		if tok.Err != nil {
 			s.logger.Error("token stream error", slog.String("id", reqID), slog.Any("err", tok.Err))
@@ -362,16 +368,18 @@ func (s *Server) streamTokensWithSession(ctx context.Context, w http.ResponseWri
 	_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
 
-	if s.rec != nil && sess.ID != "" {
-		if assistant.Len() > 0 {
-			if err := s.rec.Append(sess.ID, "assistant", assistant.String()); err != nil {
-				s.logger.Warn("session append (assistant)", slog.Any("err", err))
-			}
-		}
-		if err := s.rec.Save(ctx, sess.ID); err != nil {
-			s.logger.Warn("session save (api)", slog.Any("err", err))
+}
+
+func (s *Server) finalizeSession(ctx context.Context, sess Session, assistant *strings.Builder) {
+	if assistant != nil && assistant.Len() > 0 {
+		if err := s.rec.Append(sess.ID, "assistant", assistant.String()); err != nil {
+			s.logger.Warn("session append (assistant)", slog.Any("err", err))
 		}
 	}
+	if err := s.rec.Save(ctx, sess.ID); err != nil {
+		s.logger.Warn("session save (api)", slog.Any("err", err))
+	}
+	s.rec.End(sess.ID)
 }
 
 // modelsResponse is the /v1/models payload.
