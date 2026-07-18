@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -246,37 +245,8 @@ func TestHandleChatSessionResume_HXRequestReturnsHTMLFragment(t *testing.T) {
 		t.Errorf("fragment missing session-id value")
 	}
 
-	// Hidden state span with data attributes for JS sync.
-	if !strings.Contains(body, `id="chat-state" hx-swap-oob="true"`) {
-		t.Errorf("fragment missing oob chat-state span")
-	}
-	if !strings.Contains(body, `data-session-id`) {
-		t.Errorf("fragment missing data-session-id attribute")
-	}
-	if !strings.Contains(body, `data-messages`) {
-		t.Errorf("fragment missing data-messages attribute")
-	}
-
-	// Verify the messages JSON in the data attribute is parseable.
-	idx := strings.Index(body, `data-messages=`)
-	if idx < 0 {
-		t.Fatal("data-messages attribute not found")
-	}
-	// Extract the value between data-messages=" and the closing ".
-	// The template HTML-escapes the JSON; UnescapeString recovers it.
-	rest := body[idx+len(`data-messages=`):]
-	rest = strings.TrimPrefix(rest, `"`)
-	end := strings.Index(rest, `"`)
-	if end < 0 {
-		t.Fatal("data-messages closing quote not found")
-	}
-	dataVal := html.UnescapeString(rest[:end])
-	var msgs []ChatMessage
-	if err := json.Unmarshal([]byte(dataVal), &msgs); err != nil {
-		t.Fatalf("data-messages JSON not parseable: %v\nvalue: %s", err, dataVal)
-	}
-	if len(msgs) != 2 || msgs[0].Content != "hello" {
-		t.Errorf("data-messages content mismatch: %+v", msgs)
+	if strings.Contains(body, `id="chat-state"`) || strings.Contains(body, `data-messages`) {
+		t.Errorf("fragment should not render hidden chat-state JSON, body:\n%s", body)
 	}
 }
 
