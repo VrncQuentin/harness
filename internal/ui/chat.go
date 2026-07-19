@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -131,12 +130,6 @@ func (s *Server) chatResumeRows(agent string) ([]chatResumeRow, string) {
 		})
 	}
 	return rows, ""
-}
-
-func writeChatJSONError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 func chatTextSSEData(text string) string {
