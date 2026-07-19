@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+
+	"github.com/vrnc/harness/internal/vector"
 )
 
 const (
@@ -185,7 +187,7 @@ func (idx *Index) Search(query []float32, k int) ([]Result, error) {
 		}
 		for i := 0; i < entry.Length; i++ {
 			chunk := vecs[i*idx.dim : (i+1)*idx.dim]
-			score := cosineSimilarity(query, chunk)
+			score := float32(vector.CosineSimilarity(query, chunk))
 			results = append(results, scored{sha: entry.SHA, score: score})
 		}
 	}
@@ -356,18 +358,4 @@ func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
 		}
 	}
 	return nil
-}
-
-// cosineSimilarity returns the cosine similarity between a and b.
-func cosineSimilarity(a, b []float32) float32 {
-	var dot, normA, normB float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		normA += float64(a[i]) * float64(a[i])
-		normB += float64(b[i]) * float64(b[i])
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	return float32(dot / math.Sqrt(normA*normB))
 }
