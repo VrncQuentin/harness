@@ -94,27 +94,23 @@ func TestDetect_FindsModelsInParentOfBinDir(t *testing.T) {
 	}
 }
 
-func TestDetect_DedupesModelsAcrossRoots(t *testing.T) {
-	// If both binDir and parent contain models/ with the same file, Detect
-	// must not return it twice.
+func TestDetectModels_DedupesSameModelAcrossEquivalentRoots(t *testing.T) {
+	// Two configured roots can resolve to the same models directory through
+	// lexical differences. The detector should return the physical model once,
+	// rather than reporting one suggestion per scanned root string.
 	root := t.TempDir()
-	binDir := filepath.Join(root, "dist")
-	for _, d := range []string{binDir, filepath.Join(root, "models"), filepath.Join(binDir, "models")} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", d, err)
-		}
+	modelsDir := filepath.Join(root, "models")
+	if err := os.Mkdir(modelsDir, 0o755); err != nil {
+		t.Fatalf("mkdir models: %v", err)
 	}
-	rootModel := filepath.Join(root, "models", "same.gguf")
-	distModel := filepath.Join(binDir, "models", "dist-only.gguf")
-	for _, p := range []string{rootModel, distModel} {
-		if err := os.WriteFile(p, nil, 0o644); err != nil {
-			t.Fatalf("write: %v", err)
-		}
+	model := filepath.Join(modelsDir, "same.gguf")
+	if err := os.WriteFile(model, nil, 0o644); err != nil {
+		t.Fatalf("write model: %v", err)
 	}
 
-	s := Detect(binDir)
-	if len(s.MainModel) != 2 {
-		t.Errorf("expected 2 main models (one per root, no dupes), got %v", s.MainModel)
+	models := detectModels([]string{root, filepath.Join(root, ".")}, false)
+	if len(models) != 1 || models[0] != model {
+		t.Fatalf("models = %v, want [%s]", models, model)
 	}
 }
 
