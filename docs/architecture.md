@@ -170,7 +170,7 @@ Builds the final context sent to the model. Layers assembled in order:
 8. conversation turns                        — current session history
 ```
 
-> **Layout-v2:** prompt assembly receives two physical repo readers. The active
+> **Project memory repos:** prompt assembly receives two physical repo readers. The active
 > project repo provides prompt memory, notes, and episodes; the global project
 > repo is only the fallback library for agent definition files (`persona.md` and
 > `rules.md`). The global project is otherwise just the default active project.
@@ -325,7 +325,7 @@ Threads a per-request identifier through `context.Context` so API handlers, queu
 
 ## Harness Home And Memory Repo Layout
 
-> **Current layout-v2.** The tree below is the runtime storage layout.
+> **Project memory repo layout.** The tree below is the runtime storage layout.
 
 ```
 ~/.harness/                    ← harness home
@@ -356,7 +356,7 @@ Threads a per-request identifier through `context.Context` so API handlers, queu
 
 Each directory under `~/.harness/projects/` is its own git repo. `harness.db`, logs, and cache files are machine-local and are never committed.
 
-M9 layout-v2 stores each project as a separate memory repo under `~/.harness/projects/` by default, with `global` as a first-class project repo. There were no pre-M9 installs to migrate, so legacy single-repo migration code has been removed. `artifacts/` is project-owned run evidence so prompts and outputs travel with the active project memory repo while operational run state remains in SQLite. Pipeline source specs do not live in memory repos by default; they live in the attached project git repos they operate on, and runs record the source repo commit plus spec hash.
+M9 project memory repos store each project as a separate memory repo under `~/.harness/projects/` by default, with `global` as a first-class project repo. There were no pre-M9 installs to migrate, so legacy single-repo migration code has been removed. `artifacts/` is project-owned run evidence so prompts and outputs travel with the active project memory repo while operational run state remains in SQLite. Pipeline source specs do not live in memory repos by default; they live in the attached project git repos they operate on, and runs record the source repo commit plus spec hash.
 
 The shared `harness.db` SQLite file (config + metrics + runtime control state) lives under `~/.harness/` and is machine-local operational data, not user data.
 
@@ -397,9 +397,9 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **Embedder as sidecar.** Runs a separate llama-server process in embedding mode, keeping Core free of Python dependencies while reusing the same process management pattern as the chat model — uniform failure handling, restart logic, and health checking.
 
-**Single SQLite file for operational state.** Config (single-row typed table), metrics (time-series tables), project identity, and runtime control state share `harness.db` under the harness home after layout-v2. One `*sql.DB` handle is opened in `main` and passed to subsystems — no per-package database connection, no lock contention. The UI reads metrics directly — no separate metrics server. Each milestone adds its own table(s). On restart, history is preserved. Prometheus export (M8) reads from the same database.
+**Single SQLite file for operational state.** Config (single-row typed table), metrics (time-series tables), project identity, and runtime control state share `harness.db` under the harness home with project memory repos. One `*sql.DB` handle is opened in `main` and passed to subsystems — no per-package database connection, no lock contention. The UI reads metrics directly — no separate metrics server. Each milestone adds its own table(s). On restart, history is preserved. Prometheus export (M8) reads from the same database.
 
-**Project memory repos are explicit git repos.** Layout-v2 uses a harness home and explicit project creation flow: provided git directories are used as-is, provided non-git directories are initialized with `go-git`, and omitted directories create `~/.harness/projects/<id>/` with `go-git`. No cwd inference and no terminal-only setup path.
+**Project memory repos are explicit git repos.** The harness uses a harness home and explicit project creation flow: provided git directories are used as-is, provided non-git directories are initialized with `go-git`, and omitted directories create `~/.harness/projects/<id>/` with `go-git`. No cwd inference and no terminal-only setup path.
 
 **Append-only sessions.jsonl.** Never mutate, only append. Trivial crash recovery, full audit log.
 
@@ -411,4 +411,4 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **Approval-gated tools.** M7 registers `file_write` and `shell_exec` but leaves both disabled by default. Enabling them still routes calls through the approvals evaluator, and destructive shell commands require an exact session approval before they can bypass Ask. Web search also remains M7, but must be opt-in and clearly disclosed because it uses the network. File edit/patch, steering/follow-ups, extension hooks, sub-agents, and tool-history retry UI are deferred beyond M7.
 
-**Pipeline DSL staged after layout-v2 and tool permissions.** `.hp` pipelines depend on project memory repos, attached source repos, the native agent loop, and the hardened tool/approval layer because model steps write declared outputs through harness tools and verify/gate commands run as trusted local processes. The DSL is deliberately not part of M4: interactive agent-loop execution comes first, safe write/shell permissions come second, storage layout stabilization comes third, declarative multi-step automation comes after those foundations.
+**Pipeline DSL staged with project memory repos and tool permissions.** `.hp` pipelines depend on project memory repos, attached source repos, the native agent loop, and the hardened tool/approval layer because model steps write declared outputs through harness tools and verify/gate commands run as trusted local processes. The DSL is deliberately not part of M4: interactive agent-loop execution comes first, safe write/shell permissions come second, storage layout stabilization comes third, declarative multi-step automation comes after those foundations.

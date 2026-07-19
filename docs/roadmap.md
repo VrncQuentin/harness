@@ -93,7 +93,7 @@ Depends on M2 (agent registry, layered prompt) and M3 (memory repo, sessions, gi
 
 - A project is identified by an immutable lowercase-dashed `slug` and editable display name. Filesystem paths and DB keys always use the slug.
 - The `global` project is seeded on first run, is always active by default, and cannot be hidden, deleted, or renamed by slug.
-- M3b originally placed project memory under the then-current single memory repo at `projects/<slug>/{rules.md, agents/, sessions.jsonl, episodes/<agent-name>/, index/}`. M9 layout-v2 keeps the same logical project boundaries but stores each project as its own physical git repo under `~/.harness/projects/<slug>/`.
+- M3b originally placed project memory under the then-current single memory repo at `projects/<slug>/{rules.md, agents/, sessions.jsonl, episodes/<agent-name>/, index/}`. M9 project memory repos keep the same logical project boundaries but store each project as its own physical git repo under `~/.harness/projects/<slug>/`.
 - The `global` project is the default active project, not an always-injected base layer. Its `agents/<name>/persona.md` and `agents/<name>/rules.md` files are the fallback agent-definition library for other projects; rules/user/facts/notes/episodes are otherwise project-local.
 - Prompt assembly reads `rules.md`, `user.md`, `facts.md`, notes, and episodes from the active project repo. Agent `persona.md` and `rules.md` resolve per file from the active project repo, falling back to the global agent-definition library; `notes.md` does not fall back.
 - Sessions are bound immutably to their project, append to that project's `sessions.jsonl`, and write episodes to that project's `episodes/<agent-name>/` directory.
@@ -304,7 +304,7 @@ Depends on M3b (projects table, active project slug, attached directories), M5 (
 - [x] GitHub backup flow removed: project creation remains local and dependency-free beyond harness-managed Go code
 - [x] Path resolution: memory, session, queue, index, and artifact paths resolve relative to the active project memory repo instead of a shared memory repo root
 - [x] Prompt layering: active project rules/user/facts/notes/episodes resolve from the active project repo; persona/rules definitions fall back to `projects/global/agents`
-- [x] Legacy migration removed: there were no pre-M9 installs to migrate, so M9 starts directly with layout-v2 project repos
+- [x] Legacy migration removed: there were no pre-M9 installs to migrate, so M9 starts directly with project memory repos
 - [x] UI: create/edit project forms expose memory repo directory choice without adding cwd-driven activation
 
 **Acceptance tests:**
@@ -325,7 +325,7 @@ Depends on M3b (projects table, active project slug, attached directories), M5 (
 
 **Goal:** execute reviewed `.hp` pipeline specs inside the harness using the native agent loop, tool registry, project sandbox, and browser UI.
 
-Depends on M7 (destructive tools, shell execution, approvals, and hardened permissions) and M9 (layout-v2 project memory repos and attached source repo semantics). The DSL contract lives in [DSL.md](DSL.md); the detailed implementation plan and acceptance tests live in [dsl_roadmap.md](dsl_roadmap.md).
+Depends on M7 (destructive tools, shell execution, approvals, and hardened permissions) and M9 (project memory repos and attached source repo semantics). The DSL contract lives in [DSL.md](DSL.md); the detailed implementation plan and acceptance tests live in [dsl_roadmap.md](dsl_roadmap.md).
 
 - [ ] Isolated `internal/dsl` parser, validator, and linter package; editor and dry-run preview for attached-repo `.hp` specs
 - [ ] Runtime execution through `internal/agentloop`, declared artifacts, verify/gate commands, retries, routes, and `lib` calls

@@ -16,7 +16,7 @@ M10 also depends on these earlier foundations:
 - M5 semantic memory: project-scoped indexes and episode retrieval for long-running pipeline steps.
 - M7 permissions: destructive tools, shell execution, approvals, sandbox roots, audit trail, and tool toggles.
 - M8 hardening: full test suite, graceful shutdown, observability, and reliable packaging.
-- M9 layout-v2: one project memory repo per project, global project repo fallback, and attached source repo semantics.
+- M9 project memory repos: one project memory repo per project, global project repo fallback, and attached source repo semantics.
 
 ## Non-Goals
 
