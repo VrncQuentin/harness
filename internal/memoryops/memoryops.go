@@ -175,31 +175,32 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 	type pending struct {
 		path    string
 		content string
+		chunks  []string
 	}
 	var work []pending
+	allChunkCount := 0
 	for _, p := range paths {
 		body, err := rb.Mem.Read(p)
 		if err != nil {
 			slog.Warn("index rebuild: skip unreadable episode", "path", p, "err", err)
 			continue
 		}
-		chunks := chunkSummary(string(body))
+		content := string(body)
+		chunks := chunkSummary(content)
 		if len(chunks) == 0 {
 			continue
 		}
-		work = append(work, pending{path: p, content: string(body)})
+		work = append(work, pending{path: p, content: content, chunks: chunks})
+		allChunkCount += len(chunks)
 	}
 
 	if len(work) == 0 {
 		return nil
 	}
 
-	allChunks := make([]string, 0)
-	chunkCounts := make([]int, len(work))
-	for i, w := range work {
-		chunks := chunkSummary(w.content)
-		allChunks = append(allChunks, chunks...)
-		chunkCounts[i] = len(chunks)
+	allChunks := make([]string, 0, allChunkCount)
+	for _, w := range work {
+		allChunks = append(allChunks, w.chunks...)
 	}
 
 	vectors, err := rb.Embedder.Embed(ctx, allChunks)
@@ -230,8 +231,8 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 	}
 
 	offset := 0
-	for i, w := range work {
-		n := chunkCounts[i]
+	for _, w := range work {
+		n := len(w.chunks)
 		if n == 0 {
 			continue
 		}
