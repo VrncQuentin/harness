@@ -50,7 +50,7 @@ type RetrievalScore struct {
 // RetrievalScorer returns index status and, when a query is supplied, the
 // blended retrieval score for a batch of episode paths.
 type RetrievalScorer interface {
-	ScoreEpisodes(ctx context.Context, projectSlug, agent, query string, episodePaths []string) (map[string]RetrievalScore, error)
+	ScoreEpisodes(ctx context.Context, query string, episodePaths []string) (map[string]RetrievalScore, error)
 }
 
 // IndexRebuilder triggers an idempotent index rebuild for one tree.
@@ -304,7 +304,7 @@ func (s *Server) handleMemoryEpisodes(w http.ResponseWriter, r *http.Request) {
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	scorer := s.retrievalScorer()
-	rows, err := listAgentEpisodes(r.Context(), store, s.activeProjectSlug(), agent, query, scorer)
+	rows, err := listAgentEpisodes(r.Context(), store, agent, query, scorer)
 	if err != nil {
 		http.Error(w, "could not list episodes: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -378,7 +378,7 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	retrieval := RetrievalScore{}
 	if scorer := s.retrievalScorer(); scorer != nil {
-		if scores, serr := scorer.ScoreEpisodes(r.Context(), s.activeProjectSlug(), agent, query, []string{p}); serr == nil {
+		if scores, serr := scorer.ScoreEpisodes(r.Context(), query, []string{p}); serr == nil {
 			retrieval = scores[p]
 		}
 	}
@@ -420,7 +420,7 @@ func validAgentName(name string) bool {
 // chronological order without parsing every filename. A missing agent
 // directory yields an empty slice and no error so the page can render
 // an empty-state hint rather than a 404.
-func listAgentEpisodes(ctx context.Context, store MemoryStore, projectSlug, agent, query string, scorer RetrievalScorer) ([]episodeRow, error) {
+func listAgentEpisodes(ctx context.Context, store MemoryStore, agent, query string, scorer RetrievalScorer) ([]episodeRow, error) {
 	dir := episodesRoot + "/" + agent
 	entries, err := store.Walk(dir)
 	if err != nil {
@@ -456,7 +456,7 @@ func listAgentEpisodes(ctx context.Context, store MemoryStore, projectSlug, agen
 		paths = append(paths, e.Path)
 	}
 	if scorer != nil && len(paths) > 0 {
-		if scores, serr := scorer.ScoreEpisodes(ctx, projectSlug, agent, query, paths); serr == nil {
+		if scores, serr := scorer.ScoreEpisodes(ctx, query, paths); serr == nil {
 			for i := range rows {
 				if score, ok := scores[rows[i].Path]; ok {
 					rows[i].Indexed = score.Indexed
