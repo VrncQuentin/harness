@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -58,11 +57,6 @@ func (s *Server) getSessionStore() SessionStore {
 	return s.depsSnapshot().sessionStore
 }
 
-// chatSaveRequest is the JSON body of POST /chat/save. SessionID is required.
-type chatSaveRequest struct {
-	SessionID string `json:"session_id"`
-}
-
 // chatSaveView is the template data for the chat-save-fragment partial.
 type chatSaveView struct {
 	SessionID string
@@ -74,9 +68,8 @@ type chatSaveView struct {
 // runaway payloads from a misbehaving extension.
 const chatSaveMaxBytes = 8 * 1024
 
-// handleChatSave persists the live session and returns the SaveResult.
-// When driven by htmx (HX-Request header), returns an HTML fragment
-// with a confirmation message instead of JSON.
+// handleChatSave persists the live session and returns an HTML fragment with a
+// confirmation message for the htmx chat page.
 func (s *Server) handleChatSave(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -84,78 +77,34 @@ func (s *Server) handleChatSave(w http.ResponseWriter, r *http.Request) {
 	}
 	store := s.getSessionStore()
 	if store == nil {
-		writeChatJSONError(w, http.StatusServiceUnavailable, "session manager not available")
+		http.Error(w, "session manager not available", http.StatusServiceUnavailable)
 		return
 	}
 
-	isHX := r.Header.Get("HX-Request") == "true"
-	var id string
-	if isHX {
-		r.Body = http.MaxBytesReader(w, r.Body, chatSaveMaxBytes)
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "invalid form", http.StatusBadRequest)
-			return
-		}
-		id = strings.TrimSpace(r.FormValue("session_id"))
-		if id == "" {
-			http.Error(w, "session_id is required", http.StatusBadRequest)
-			return
-		}
-	} else {
-		var ok bool
-		id, ok = decodeSaveRequest(w, r)
-		if !ok {
-			return
-		}
+	r.Body = http.MaxBytesReader(w, r.Body, chatSaveMaxBytes)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	id := strings.TrimSpace(r.FormValue("session_id"))
+	if id == "" {
+		http.Error(w, "session_id is required", http.StatusBadRequest)
+		return
 	}
 
 	res, err := store.Save(r.Context(), id)
 	if err != nil {
-		if isHX {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		writeChatJSONError(w, http.StatusInternalServerError, err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	if isHX {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.chatTmpl.ExecuteTemplate(w, "chat-save-fragment", chatSaveView{
-			SessionID: res.ID,
-			SaveSeq:   res.SaveSeq,
-		}); err != nil {
-			http.Error(w, "template error", http.StatusInternalServerError)
-		}
-		return
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.chatTmpl.ExecuteTemplate(w, "chat-save-fragment", chatSaveView{
+		SessionID: res.ID,
+		SaveSeq:   res.SaveSeq,
+	}); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(res)
-}
-
-// decodeSaveRequest reads the small JSON body and pulls out the
-// session id, writing a 400 on parse failure. Returns the id and true
-// on success.
-func decodeSaveRequest(w http.ResponseWriter, r *http.Request) (string, bool) {
-	r.Body = http.MaxBytesReader(w, r.Body, chatSaveMaxBytes)
-	var req chatSaveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeChatJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return "", false
-	}
-	id := strings.TrimSpace(req.SessionID)
-	if id == "" {
-		writeChatJSONError(w, http.StatusBadRequest, "session_id is required")
-		return "", false
-	}
-	return id, true
-}
-
-// chatSessionResponse is the JSON body of GET /chat/session.
-type chatSessionResponse struct {
-	ID       string        `json:"id"`
-	Agent    string        `json:"agent"`
-	Messages []ChatMessage `json:"messages"`
 }
 
 // chatSessionView is the template data for the chat-transcript-fragment
@@ -166,11 +115,8 @@ type chatSessionView struct {
 	Messages  []ChatMessage
 }
 
-// handleChatSessionResume hydrates one session's conversation from the
-// .json sidecar so the browser can replace its transcript. When the
-// request carries the HX-Request header (htmx), it returns an HTML
-// fragment rendered server-side instead of JSON, moving transcript
-// state ownership to the server.
+// handleChatSessionResume hydrates one session's conversation from the .json
+// sidecar and returns a server-rendered transcript fragment for htmx.
 func (s *Server) handleChatSessionResume(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -178,55 +124,43 @@ func (s *Server) handleChatSessionResume(w http.ResponseWriter, r *http.Request)
 	}
 	store := s.getSessionStore()
 	if store == nil {
-		writeChatJSONError(w, http.StatusServiceUnavailable, "session manager not available")
+		http.Error(w, "session manager not available", http.StatusServiceUnavailable)
 		return
 	}
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
 	agent := strings.TrimSpace(r.URL.Query().Get("agent"))
 	if id == "" || agent == "" {
-		writeChatJSONError(w, http.StatusBadRequest, "id and agent are required")
+		http.Error(w, "id and agent are required", http.StatusBadRequest)
 		return
 	}
 	msgs, err := store.Conversation(agent, id)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrSessionConversationLost):
-			writeChatJSONError(w, http.StatusNotFound, err.Error())
+			http.Error(w, err.Error(), http.StatusNotFound)
 		default:
-			writeChatJSONError(w, http.StatusInternalServerError, err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		return
 	}
 	if err := store.Resume(id); err != nil {
 		switch {
 		case errors.Is(err, ErrSessionConversationLost):
-			writeChatJSONError(w, http.StatusNotFound, err.Error())
+			http.Error(w, err.Error(), http.StatusNotFound)
 		case errors.Is(err, ErrSessionUnknown):
-			writeChatJSONError(w, http.StatusNotFound, err.Error())
+			http.Error(w, err.Error(), http.StatusNotFound)
 		default:
-			writeChatJSONError(w, http.StatusInternalServerError, err.Error())
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 		return
 	}
 
-	// When driven by htmx, return a server-rendered transcript fragment
-	// so the browser no longer needs JS to rebuild the conversation.
-	if r.Header.Get("HX-Request") == "true" {
-		view := chatSessionView{
-			SessionID: id,
-			Messages:  msgs,
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if err := s.chatTmpl.ExecuteTemplate(w, "chat-transcript-fragment", view); err != nil {
-			http.Error(w, "template error", http.StatusInternalServerError)
-		}
-		return
+	view := chatSessionView{
+		SessionID: id,
+		Messages:  msgs,
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(chatSessionResponse{
-		ID:       id,
-		Agent:    agent,
-		Messages: msgs,
-	})
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.chatTmpl.ExecuteTemplate(w, "chat-transcript-fragment", view); err != nil {
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
 }

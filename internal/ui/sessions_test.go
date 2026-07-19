@@ -2,7 +2,6 @@ package ui
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 // stubSessionStore is a test double for the SessionStore interface.
@@ -85,83 +83,6 @@ func (s *stubSessionStore) Resume(id string) error {
 	return s.resumeErr
 }
 
-func TestHandleChatSave_NoStoreReturns503(t *testing.T) {
-	srv := NewServer(0)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(`{"session_id":"x"}`))
-	srv.handleChatSave(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status: want 503, got %d", rec.Code)
-	}
-}
-
-func TestHandleChatSave_HappyPath(t *testing.T) {
-	store := &stubSessionStore{
-		saveRes: SessionSaveResult{
-			ID:          "abc",
-			EpisodePath: "projects/global/episodes/coder/abc.md",
-			Summary:     "all good",
-			SavedAt:     time.Date(2026, 4, 26, 22, 0, 0, 0, time.UTC),
-			SaveSeq:     1,
-		},
-	}
-	srv := NewServer(0)
-	setSessionStoreForTest(srv, store)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(`{"session_id":"abc"}`))
-	srv.handleChatSave(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: want 200, got %d (body %s)", rec.Code, rec.Body.String())
-	}
-	var got SessionSaveResult
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if got.ID != "abc" {
-		t.Errorf("id: want abc, got %q", got.ID)
-	}
-	if store.saveID != "abc" || store.saveCalls != 1 {
-		t.Errorf("store.Save called=%d id=%q", store.saveCalls, store.saveID)
-	}
-}
-
-func TestHandleChatSave_EmptyBodyReturns400(t *testing.T) {
-	srv := NewServer(0)
-	setSessionStoreForTest(srv, &stubSessionStore{})
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(`{}`))
-	srv.handleChatSave(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status: want 400, got %d", rec.Code)
-	}
-}
-
-func TestHandleChatSessionResume_Happy(t *testing.T) {
-	want := []ChatMessage{
-		{Role: "user", Content: "hi"},
-		{Role: "assistant", Content: "hey"},
-	}
-	store := &stubSessionStore{convResult: want}
-	srv := NewServer(0)
-	setSessionStoreForTest(srv, store)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/chat/session?agent=coder&id=abc", nil)
-	srv.handleChatSessionResume(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: want 200, got %d (body %s)", rec.Code, rec.Body.String())
-	}
-	var resp chatSessionResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(resp.Messages) != 2 {
-		t.Errorf("expected 2 messages, got %d", len(resp.Messages))
-	}
-	if store.resumeCalls != 1 {
-		t.Errorf("Resume should be called once, got %d", store.resumeCalls)
-	}
-}
-
 func TestHandleChatSessionResume_ConversationLost404(t *testing.T) {
 	store := &stubSessionStore{convErr: ErrSessionConversationLost}
 	srv := NewServer(0)
@@ -189,20 +110,20 @@ func TestHandleChatSave_StoreErrorIs500(t *testing.T) {
 	store := &stubSessionStore{saveErr: errors.New("boom")}
 	srv := NewServer(0)
 	setSessionStoreForTest(srv, store)
+	form := url.Values{"session_id": {"x"}}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(`{"session_id":"x"}`))
+	req := httptest.NewRequest(http.MethodPost, "/chat/save", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	srv.handleChatSave(rec, req)
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("status: want 500, got %d", rec.Code)
 	}
 }
 
-// TestHandleChatSessionResume_HXRequestReturnsHTMLFragment verifies that
-// when htmx drives the request (HX-Request: true), the response is an
-// HTML fragment with server-rendered message divs, an out-of-band
-// session-id update, and a hidden state span carrying the JSON data for
-// the browser's JS to re-sync its messages array.
-func TestHandleChatSessionResume_HXRequestReturnsHTMLFragment(t *testing.T) {
+// TestHandleChatSessionResume_ReturnsHTMLFragment verifies that the response
+// is an HTML fragment with server-rendered message divs and an out-of-band
+// session-id update.
+func TestHandleChatSessionResume_ReturnsHTMLFragment(t *testing.T) {
 	want := []ChatMessage{
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi there"},
@@ -250,9 +171,9 @@ func TestHandleChatSessionResume_HXRequestReturnsHTMLFragment(t *testing.T) {
 	}
 }
 
-// TestHandleChatSessionResume_HXRequestEmptyConversation verifies the
+// TestHandleChatSessionResume_EmptyConversationFragment verifies the
 // fragment when the conversation has zero messages.
-func TestHandleChatSessionResume_HXRequestEmptyConversation(t *testing.T) {
+func TestHandleChatSessionResume_EmptyConversationFragment(t *testing.T) {
 	store := &stubSessionStore{convResult: nil}
 	srv := NewServer(0)
 	setSessionStoreForTest(srv, store)
@@ -271,39 +192,9 @@ func TestHandleChatSessionResume_HXRequestEmptyConversation(t *testing.T) {
 	}
 }
 
-// TestHandleChatSessionResume_JSONBackwardCompat verifies that without
-// HX-Request, the handler still returns the existing JSON response.
-func TestHandleChatSessionResume_JSONBackwardCompat(t *testing.T) {
-	want := []ChatMessage{
-		{Role: "user", Content: "hi"},
-	}
-	store := &stubSessionStore{convResult: want}
-	srv := NewServer(0)
-	setSessionStoreForTest(srv, store)
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/chat/session?agent=coder&id=abc", nil)
-	// No HX-Request header.
-	srv.handleChatSessionResume(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status: want 200, got %d (body %s)", rec.Code, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
-		t.Errorf("content-type: want application/json, got %q", ct)
-	}
-	var resp chatSessionResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.ID != "abc" || resp.Agent != "coder" || len(resp.Messages) != 1 {
-		t.Errorf("response mismatch: %+v", resp)
-	}
-}
-
-// TestHandleChatSessionResume_HXRequestConversationLost verifies that a
-// 404 conversation-lost error is returned even when HX-Request is set.
-func TestHandleChatSessionResume_HXRequestConversationLost(t *testing.T) {
+// TestHandleChatSessionResume_ConversationLostWithFragmentRequest verifies that a
+// 404 conversation-lost error is returned.
+func TestHandleChatSessionResume_ConversationLostWithFragmentRequest(t *testing.T) {
 	store := &stubSessionStore{convErr: ErrSessionConversationLost}
 	srv := NewServer(0)
 	setSessionStoreForTest(srv, store)
@@ -318,9 +209,9 @@ func TestHandleChatSessionResume_HXRequestConversationLost(t *testing.T) {
 	}
 }
 
-// TestHandleChatSave_HXRequestReturnsHTML verifies the htmx save flow
+// TestHandleChatSave_ReturnsHTML verifies the save flow
 // returns an HTML confirmation fragment.
-func TestHandleChatSave_HXRequestReturnsHTML(t *testing.T) {
+func TestHandleChatSave_ReturnsHTML(t *testing.T) {
 	store := &stubSessionStore{
 		saveRes: SessionSaveResult{
 			ID:      "abc",
@@ -349,9 +240,9 @@ func TestHandleChatSave_HXRequestReturnsHTML(t *testing.T) {
 	}
 }
 
-// TestHandleChatSave_HXRequestMissingIDReturns400 verifies validation
+// TestHandleChatSave_MissingIDReturns400 verifies validation
 // when the form lacks session_id.
-func TestHandleChatSave_HXRequestMissingIDReturns400(t *testing.T) {
+func TestHandleChatSave_MissingIDReturns400(t *testing.T) {
 	srv := NewServer(0)
 	setSessionStoreForTest(srv, &stubSessionStore{})
 
@@ -367,9 +258,9 @@ func TestHandleChatSave_HXRequestMissingIDReturns400(t *testing.T) {
 	}
 }
 
-// TestHandleChatSave_HXRequestNoStoreReturns503 verifies the 503 when
+// TestHandleChatSave_NoStoreReturns503 verifies the 503 when
 // no session store is wired.
-func TestHandleChatSave_HXRequestNoStoreReturns503(t *testing.T) {
+func TestHandleChatSave_NoStoreReturns503(t *testing.T) {
 	srv := NewServer(0)
 
 	form := url.Values{"session_id": {"x"}}
