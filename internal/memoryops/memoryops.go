@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"math"
-	"path"
 	"sort"
 	"strings"
 
@@ -51,9 +50,7 @@ func AfterSaveEmbed(embedClient embedder.Client, episodeIndex *EpisodeIndex, rep
 				map[string]string{"type": "index", "episode_id": result.ID},
 				"update episode index",
 			)
-			relVectors := path.Join("index", "_episodes", "vectors.bin")
-			relManifest := path.Join("index", "_episodes", "manifest.json")
-			if _, err := repo.Commit(msg, []string{relVectors, relManifest}); err != nil {
+			if _, err := repo.Commit(msg, EpisodeIndexCommitPaths()); err != nil {
 				slog.Warn("commit index", "err", err)
 			}
 		}
@@ -240,13 +237,11 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 	}
 
 	if rb.Repo != nil {
-		relVectors := path.Join("index", "_episodes", "vectors.bin")
-		relManifest := path.Join("index", "_episodes", "manifest.json")
 		msg := gitw.BuildMessage(
 			map[string]string{"type": "index-rebuild"},
 			fmt.Sprintf("rebuild episode index: %d new episodes", len(work)),
 		)
-		if _, err := rb.Repo.Commit(msg, []string{relVectors, relManifest}); err != nil {
+		if _, err := rb.Repo.Commit(msg, EpisodeIndexCommitPaths()); err != nil {
 			slog.Warn("index rebuild: commit", "err", err)
 		}
 	}
