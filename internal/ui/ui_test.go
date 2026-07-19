@@ -414,7 +414,7 @@ func TestBroadcastTaskSSEReliableFramesWaitForSubscriber(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		s.broadcastTaskSSE("task-a", "event: task-event\ndata: final\n\n", true)
+		s.broadcastTaskSSE("task-a", "event: task-event\ndata: final\n\n")
 		close(done)
 	}()
 
@@ -444,27 +444,39 @@ func TestBroadcastTaskSSEReliableFramesWaitForSubscriber(t *testing.T) {
 	}
 }
 
-func TestBroadcastTaskSSEDropsTextFramesForSlowSubscriber(t *testing.T) {
+func TestBroadcastTaskSSETextFramesWaitForSubscriber(t *testing.T) {
 	s := NewServer(3000)
 	ch := make(chan string, 1)
 	ch <- "existing"
 	s.taskSSEClients.Store(ch, "task-a")
 	defer s.taskSSEClients.Delete(ch)
 
-	s.broadcastTaskSSE("task-a", "event: task-text\ndata: token\n\n", false)
+	done := make(chan struct{})
+	go func() {
+		s.broadcastTaskSSE("task-a", "event: task-text\ndata: token\n\n")
+		close(done)
+	}()
 
 	select {
-	case got := <-ch:
-		if got != "existing" {
-			t.Fatalf("frame = %q, want prefilled frame", got)
-		}
-	default:
-		t.Fatal("prefilled frame was unexpectedly consumed")
+	case <-done:
+		t.Fatal("task text frame was dropped instead of waiting for delivery")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := <-ch; got != "existing" {
+		t.Fatalf("first frame = %q, want prefilled frame", got)
 	}
 	select {
 	case got := <-ch:
-		t.Fatalf("text frame should have been dropped, got %q", got)
-	default:
+		if !strings.Contains(got, "token") {
+			t.Fatalf("text frame = %q, want token payload", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for task text frame")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("broadcast did not complete after subscriber drained")
 	}
 }
 func TestBroadcastTaskSSERoutesByStreamID(t *testing.T) {
@@ -476,7 +488,7 @@ func TestBroadcastTaskSSERoutesByStreamID(t *testing.T) {
 	defer s.taskSSEClients.Delete(wantCh)
 	defer s.taskSSEClients.Delete(otherCh)
 
-	s.broadcastTaskSSE("task-a", "event: task-event\ndata: final\n\n", true)
+	s.broadcastTaskSSE("task-a", "event: task-event\ndata: final\n\n")
 
 	select {
 	case got := <-wantCh:
