@@ -210,6 +210,22 @@ type memoryEditView struct {
 	SaveErr string
 }
 
+func (s *Server) memoryAgentNames() []string {
+	reg := s.agentRegistry()
+	if reg == nil {
+		return nil
+	}
+	list, err := reg.List()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(list))
+	for _, a := range list {
+		names = append(names, a.Name)
+	}
+	return names
+}
+
 // handleMemory renders the /memory tree (GET only).
 func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/memory" {
@@ -259,13 +275,8 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 			data.DedupScore = 0
 		}
 	}
-	if reg := s.agentRegistry(); reg != nil {
-		if list, err := reg.List(); err == nil {
-			for _, a := range list {
-				data.AgentNames = append(data.AgentNames, a.Name)
-			}
-		}
-	}
+	data.AgentNames = s.memoryAgentNames()
+
 	s.renderMemory(w, data)
 }
 
@@ -304,13 +315,8 @@ func (s *Server) handleMemoryEpisodes(w http.ResponseWriter, r *http.Request) {
 		Query:    query,
 		Episodes: rows,
 	}
-	if reg := s.agentRegistry(); reg != nil {
-		if list, err := reg.List(); err == nil {
-			for _, a := range list {
-				data.AgentNames = append(data.AgentNames, a.Name)
-			}
-		}
-	}
+	data.AgentNames = s.memoryAgentNames()
+
 	s.renderMemoryEpisodes(w, data)
 }
 
