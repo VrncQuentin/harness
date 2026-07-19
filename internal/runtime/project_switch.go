@@ -94,11 +94,7 @@ func (rt *Runtime) resolveProject(slug string) (*project.Project, error) {
 	if rt.projectStore == nil {
 		return nil, fmt.Errorf("project store not available")
 	}
-	ps, ok := rt.projectStore.(project.Store)
-	if !ok {
-		return nil, fmt.Errorf("project store does not implement Get")
-	}
-	proj, err := ps.Get(slug)
+	proj, err := rt.projectStore.Get(slug)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project %q: %w", slug, err)
 	}
