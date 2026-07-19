@@ -4,10 +4,28 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
+	"path/filepath"
 	"sync"
 
 	"github.com/vrnc/harness/internal/index"
 )
+
+const (
+	EpisodeIndexRootRel     = "index/_episodes"
+	EpisodeIndexVectorsRel  = "index/_episodes/vectors.bin"
+	EpisodeIndexManifestRel = "index/_episodes/manifest.json"
+)
+
+// EpisodeIndexDir returns the filesystem path to a project's episode index.
+func EpisodeIndexDir(projectRoot string) string {
+	return filepath.Join(projectRoot, filepath.FromSlash(EpisodeIndexRootRel))
+}
+
+// EpisodeIndexCommitPaths returns repo-relative paths touched by episode index updates.
+func EpisodeIndexCommitPaths() []string {
+	return []string{path.Clean(EpisodeIndexVectorsRel), path.Clean(EpisodeIndexManifestRel)}
+}
 
 // EpisodeIndex owns the synchronized index handle for one project. Every
 // retrieval and mutation path shares this handle, so newly saved episodes are

@@ -19,7 +19,7 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if err := os.WriteFile(episodePath, []byte("episode body"), 0o644); err != nil {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
-	indexDir := filepath.Join(root, "index", "_episodes")
+	indexDir := EpisodeIndexDir(root)
 	called := false
 	rb := &EpisodeRebuilder{
 		Mem:      memory.NewDirReader(root),
@@ -60,7 +60,7 @@ func TestEpisodeRebuilderRejectsCorruptIndex(t *testing.T) {
 	if err := os.WriteFile(episodePath, []byte("episode body"), 0o644); err != nil {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
-	indexDir := filepath.Join(root, "index", "_episodes")
+	indexDir := EpisodeIndexDir(root)
 	if err := os.MkdirAll(indexDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll index dir: %v", err)
 	}
@@ -103,7 +103,7 @@ func (s stubEmbedder) Embed(_ context.Context, chunks []string) ([][]float32, er
 }
 
 func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
-	service, err := NewEpisodeIndex(filepath.Join(t.TempDir(), "index", "_episodes"))
+	service, err := NewEpisodeIndex(EpisodeIndexDir(t.TempDir()))
 	if err != nil {
 		t.Fatal(err)
 	}
