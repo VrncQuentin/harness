@@ -521,16 +521,13 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	loopCfg := ad.rt.cfg.Loop
 	ad.rt.mu.Unlock()
 	if slug != "" && ad.rt.projectStore != nil {
-		if fs, ok := ad.rt.projectStore.(project.Store); ok {
-			dirs, err := fs.ListDirectories(slug)
-			if err == nil {
-				for _, d := range dirs {
-					sandboxRoots = append(sandboxRoots, d.Path)
-				}
+		dirs, err := ad.rt.projectStore.ListDirectories(slug)
+		if err == nil {
+			for _, d := range dirs {
+				sandboxRoots = append(sandboxRoots, d.Path)
 			}
 		}
 	}
-
 	loopCtx, cancelLoop := context.WithCancel(ctx)
 
 	toolCtx := tools.Context{

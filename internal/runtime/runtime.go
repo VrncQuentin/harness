@@ -13,6 +13,7 @@ import (
 	"github.com/vrnc/harness/internal/logbuf"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/proc"
+	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/queue"
 	"github.com/vrnc/harness/internal/session"
@@ -43,7 +44,7 @@ type Runtime struct {
 	cfg          config.Config
 	cfgStore     config.Store
 	logRings     LogRings
-	projectStore projectDirectoryStore
+	projectStore project.Store
 	inferClient  inference.Client
 
 	llamaMgr *proc.Manager
