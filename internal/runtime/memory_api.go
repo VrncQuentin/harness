@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path/filepath"
 	"strings"
 
 	"github.com/vrnc/harness/internal/agent"
@@ -64,7 +63,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	// The project-scoped service owns one index handle for prompt retrieval,
 	// scoring, save hooks, and rebuilding. Missing indexes are created lazily;
 	// malformed indexes surface as setup errors instead of being discarded.
-	indexDir := filepath.Join(roots.activeRoot, "index", "_episodes")
+	indexDir := memoryops.EpisodeIndexDir(roots.activeRoot)
 	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir)
 	if err != nil {
 		uiServer.SetServiceDeps(svcDeps)
@@ -273,7 +272,7 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		episodeIndex = episodeIndexes[0]
 	}
 	if episodeIndex == nil {
-		episodeIndex, err = memoryops.NewEpisodeIndex(filepath.Join(repoPath, "index", "_episodes"))
+		episodeIndex, err = memoryops.NewEpisodeIndex(memoryops.EpisodeIndexDir(repoPath))
 		if err != nil {
 			uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 			return nil, nil
