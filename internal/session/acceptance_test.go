@@ -3,8 +3,6 @@ package session
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -279,13 +277,13 @@ func TestM3Acceptance_5_GarbledLogTolerated(t *testing.T) {
 	}
 }
 
-// TestM3Acceptance_6_UIEpisodeListIntegration is a smoke check that
-// the /memory/episodes handler still finds the episodes the
-// session writer commits. We don't import the ui package directly to
-// keep the dependency graph one-way; instead we exercise the code
-// path through the same paths the UI uses (memory.Walker etc) and
+// TestM3Acceptance_6_EpisodeVisibleToMemoryWalker is a smoke check
+// that the session writer saves episodes at the path the memory browser
+// walker expects. It verifies the file lands where memory.Reader.Walk
+// can find it; real handler rendering lives in internal/ui tests.
+
 // verify the file lands where the handler expects.
-func TestM3Acceptance_6_UIEpisodeListIntegration(t *testing.T) {
+func TestM3Acceptance_6_EpisodeVisibleToMemoryWalker(t *testing.T) {
 	fi := newFakeInference(summaryTokens("UI test summary"))
 	mgr, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
@@ -309,44 +307,6 @@ func TestM3Acceptance_6_UIEpisodeListIntegration(t *testing.T) {
 	}
 	if !foundMD {
 		t.Fatalf("episode .md not found via Walk; entries: %+v", entries)
-	}
-}
-
-// TestM3FullPipelineThroughHTTPHandler is a smoke check that the
-// session save endpoint exposed by handleChatSave wires the manager
-// adapter end-to-end. We mount a tiny http.ServeMux that drives the
-// adapter directly so the test exercises the JSON contract without
-// pulling in the full ui.Server template stack.
-func TestM3FullPipelineThroughHTTPHandler(t *testing.T) {
-	fi := newFakeInference(summaryTokens("http handler summary"))
-	mgr, _ := newAcceptanceManager(t, fi)
-	s := mgr.Start("coder")
-	_ = mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello via http"})
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/save", func(w http.ResponseWriter, r *http.Request) {
-		res, err := mgr.Save(r.Context(), s.ID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		if _, err := fmt.Fprintf(w, `{"id":%q}`, res.ID); err != nil {
-			t.Errorf("write response: %v", err)
-		}
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-	resp, err := http.Post(srv.URL+"/save", "application/json", strings.NewReader(`{}`))
-	if err != nil {
-		t.Fatalf("POST: %v", err)
-	}
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			t.Errorf("close response body: %v", err)
-		}
-	}()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status: %d", resp.StatusCode)
 	}
 }
 
