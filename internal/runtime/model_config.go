@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"fmt"
 	"log/slog"
 
 	"github.com/vrnc/harness/internal/config"
@@ -26,19 +25,32 @@ func (rt *Runtime) effectivePromptFor(cfg *config.Config) config.PromptConfig {
 	return promptCfg
 }
 func llamaArgsForModel(model config.ModelConfig) (string, []string) {
-	return proc.LlamaArgs(
-		model.Binary,
-		model.ModelPath,
-		model.CtxSize,
-		model.GPULayers,
-		model.NParallel,
-		model.Port,
-		model.Verbose,
-		model.CacheTypeK,
-		model.CacheTypeV,
-	)
+	return proc.LlamaArgs(proc.LlamaArgsConfig{
+		Binary:     model.Binary,
+		ModelPath:  model.ModelPath,
+		CtxSize:    model.CtxSize,
+		GPULayers:  model.GPULayers,
+		NParallel:  model.NParallel,
+		Port:       model.Port,
+		Verbose:    model.Verbose,
+		CacheTypeK: model.CacheTypeK,
+		CacheTypeV: model.CacheTypeV,
+	})
 }
 
 func llamaHealthURL(model config.ModelConfig) string {
-	return fmt.Sprintf("http://127.0.0.1:%d/health", model.Port)
+	return proc.HealthURL(model.Port)
+}
+
+func embedderArgsForConfig(embed config.EmbedderConfig) (string, []string) {
+	return proc.EmbedderArgs(proc.EmbedderArgsConfig{
+		Binary:    embed.Binary,
+		ModelPath: embed.ModelPath,
+		Port:      embed.Port,
+		Verbose:   embed.Verbose,
+	})
+}
+
+func embedderHealthURL(embed config.EmbedderConfig) string {
+	return proc.HealthURL(embed.Port)
 }

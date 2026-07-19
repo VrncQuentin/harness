@@ -164,14 +164,9 @@ func (rt *Runtime) startServices(
 	rt.embedMgr = proc.NewManager(proc.ManagerConfig{
 		Name: "embedder",
 		BuildArgs: func() (string, []string) {
-			return proc.EmbedderArgs(
-				cfg.Embedder.Binary,
-				cfg.Embedder.ModelPath,
-				cfg.Embedder.Port,
-				cfg.Embedder.Verbose,
-			)
+			return embedderArgsForConfig(cfg.Embedder)
 		},
-		HealthURL:   fmt.Sprintf("http://127.0.0.1:%d/health", cfg.Embedder.Port),
+		HealthURL:   embedderHealthURL(cfg.Embedder),
 		Events:      events,
 		CheckPeriod: 5 * time.Second,
 		HTTPClient:  httpclient.New(),
