@@ -305,6 +305,42 @@ func TestStreamChatTokens_EscapesBroadcastTokenFrames(t *testing.T) {
 	}
 }
 
+func TestBroadcastChatSSEWaitsForSubscriber(t *testing.T) {
+	s := NewServer(3000)
+	ch := make(chan string, 1)
+	ch <- "existing"
+	s.chatSSEClients.Store(ch, "chat-a")
+	defer s.chatSSEClients.Delete(ch)
+
+	done := make(chan struct{})
+	go func() {
+		s.broadcastChatSSE("chat-a", "event: chat-token\ndata: token\n\n")
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("chat token frame was dropped instead of waiting for delivery")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := <-ch; got != "existing" {
+		t.Fatalf("first frame = %q, want prefilled frame", got)
+	}
+	select {
+	case got := <-ch:
+		if !strings.Contains(got, "token") {
+			t.Fatalf("chat frame = %q, want token payload", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for chat token frame")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("broadcast did not complete after subscriber drained")
+	}
+}
+
 func TestBroadcastChatSSERoutesByStreamID(t *testing.T) {
 	s := NewServer(3000)
 	wantCh := make(chan string, 1)

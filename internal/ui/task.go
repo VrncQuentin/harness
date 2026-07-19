@@ -142,18 +142,18 @@ func (s *Server) liveConversationForTask(sessionID string) []ChatMessage {
 func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent, sessionID, streamID string, conversation []ChatMessage) {
 	newID, evch, err := runner.RunTask(ctx, agent, sessionID, conversation)
 	if err != nil {
-		s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(TaskEvent{Type: TaskEventError, Content: err.Error(), Terminate: TaskEventError})), true)
+		s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(TaskEvent{Type: TaskEventError, Content: err.Error(), Terminate: TaskEventError})))
 		return
 	}
 	if newID != "" && newID != sessionID {
-		s.broadcastTaskSSE(streamID, fmt.Sprintf("event: task-session\ndata: %s\n\n", sseData(fmt.Sprintf(`<input type="hidden" id="task-session-input" name="session_id" hx-swap-oob="true" value="%s">`, newID))), true)
+		s.broadcastTaskSSE(streamID, fmt.Sprintf("event: task-session\ndata: %s\n\n", sseData(fmt.Sprintf(`<input type="hidden" id="task-session-input" name="session_id" hx-swap-oob="true" value="%s">`, newID))))
 	}
 	for ev := range evch {
 		switch ev.Type {
 		case TaskEventText:
-			s.broadcastTaskSSE(streamID, renderTaskSSE("task-text", s.renderTaskText(ev.Content)), false)
+			s.broadcastTaskSSE(streamID, renderTaskSSE("task-text", s.renderTaskText(ev.Content)))
 		default:
-			s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(ev)), true)
+			s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(ev)))
 		}
 	}
 }
@@ -214,7 +214,7 @@ func renderTaskSSE(eventName, html string) string {
 
 const taskSSEReliableSendTimeout = 2 * time.Second
 
-func (s *Server) broadcastTaskSSE(streamID, frame string, reliable bool) {
+func (s *Server) broadcastTaskSSE(streamID, frame string) {
 	s.taskSSEClients.Range(func(key, value any) bool {
 		ch, ok := key.(chan string)
 		if !ok {
@@ -222,13 +222,6 @@ func (s *Server) broadcastTaskSSE(streamID, frame string, reliable bool) {
 		}
 		clientStreamID, _ := value.(string)
 		if streamID != "" && clientStreamID != streamID {
-			return true
-		}
-		if !reliable {
-			select {
-			case ch <- frame:
-			default:
-			}
 			return true
 		}
 		select {
