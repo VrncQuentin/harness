@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"math"
 	"sort"
 	"strings"
 
@@ -23,6 +22,7 @@ import (
 	"github.com/vrnc/harness/internal/retrieval"
 	"github.com/vrnc/harness/internal/session"
 	"github.com/vrnc/harness/internal/ui"
+	"github.com/vrnc/harness/internal/vector"
 )
 
 // AfterSaveEmbed returns an AfterSaveFunc that embeds the episode summary and
@@ -289,7 +289,7 @@ func (dc *DedupChecker) CheckSimilar(ctx context.Context, text string, threshold
 	bestScore := 0.0
 	bestFact := ""
 	for i, v := range vectors[1:] {
-		sim := cosineSimilarity(candidate, v)
+		sim := vector.CosineSimilarity(candidate, v)
 		if sim > bestScore {
 			bestScore = sim
 			bestFact = facts[i]
@@ -317,20 +317,4 @@ func extractFactLines(content string) []string {
 		facts = append(facts, line)
 	}
 	return facts
-}
-
-func cosineSimilarity(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		normA += float64(a[i]) * float64(a[i])
-		normB += float64(b[i]) * float64(b[i])
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
