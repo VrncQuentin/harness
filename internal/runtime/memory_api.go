@@ -32,7 +32,7 @@ type uiRetrievalScorerAdapter struct {
 	scorer episodeScoreService
 }
 
-func (a *uiRetrievalScorerAdapter) ScoreEpisodes(ctx context.Context, _, _, query string, episodePaths []string) (map[string]ui.RetrievalScore, error) {
+func (a *uiRetrievalScorerAdapter) ScoreEpisodes(ctx context.Context, query string, episodePaths []string) (map[string]ui.RetrievalScore, error) {
 	out := make(map[string]ui.RetrievalScore, len(episodePaths))
 	for _, p := range episodePaths {
 		out[p] = ui.RetrievalScore{}
