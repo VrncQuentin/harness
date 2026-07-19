@@ -81,6 +81,32 @@ func TestProjectStore_CreateValidatesAndRoundTrips(t *testing.T) {
 	}
 }
 
+func TestProjectStore_CreateUsesInjectedDefaultMemoryRepoPath(t *testing.T) {
+	d := newTestDB(t)
+	store := d.Projects()
+	defaultRoot := filepath.Join(t.TempDir(), "custom-projects")
+	store.defaultMemoryRepoPath = func(slug string) (string, error) {
+		return filepath.Join(defaultRoot, slug), nil
+	}
+
+	created, err := store.Create(project.CreateInput{Slug: "dt", DisplayName: "DT"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	want := filepath.Join(defaultRoot, "dt")
+	if created.MemoryRepoPath != want {
+		t.Fatalf("MemoryRepoPath = %q, want injected default %q", created.MemoryRepoPath, want)
+	}
+
+	got, err := store.Get("dt")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.MemoryRepoPath != want {
+		t.Fatalf("Get MemoryRepoPath = %q, want %q", got.MemoryRepoPath, want)
+	}
+}
+
 func TestProjectStore_CreateRejectsInvalidInputs(t *testing.T) {
 	d := newTestDB(t)
 	store := d.Projects()

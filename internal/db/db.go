@@ -21,6 +21,7 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	_ "modernc.org/sqlite" // register the sqlite driver
 
+	"github.com/vrnc/harness/internal/home"
 	"github.com/vrnc/harness/migrations"
 )
 
@@ -55,7 +56,12 @@ func Open(path string) (*DB, error) {
 	d := &DB{sqldb: sqldb}
 	d.cfg = &ConfigStore{db: sqldb}
 	d.metrics = &MetricsStore{db: sqldb}
-	d.projects = &ProjectStore{db: sqldb, harnessHome: harnessHome}
+	d.projects = &ProjectStore{
+		db: sqldb,
+		defaultMemoryRepoPath: func(slug string) (string, error) {
+			return home.ProjectRepoPath(harnessHome, slug)
+		},
+	}
 
 	if err := d.seedGlobalProject(); err != nil {
 		_ = sqldb.Close()
@@ -186,14 +192,18 @@ func (d *DB) Metrics() *MetricsStore { return d.metrics }
 func (d *DB) Projects() *ProjectStore { return d.projects }
 
 func (d *DB) seedGlobalProject() error {
-	_, err := d.sqldb.Exec(
+	globalRepoPath, err := d.projects.defaultPathForSlug("global")
+	if err != nil {
+		return err
+	}
+	_, err = d.sqldb.Exec(
 		`INSERT OR IGNORE INTO projects (slug, display_name, memory_repo_path, hidden, created_at) VALUES (?, ?, ?, ?, ?)`,
-		"global", "Global", d.projects.defaultMemoryRepoPath("global"), 0, time.Now().Unix(),
+		"global", "Global", globalRepoPath, 0, time.Now().Unix(),
 	)
 	if err != nil {
 		return fmt.Errorf("db: seed global project: %w", err)
 	}
-	_, err = d.sqldb.Exec(`UPDATE projects SET memory_repo_path = ? WHERE slug = ? AND (memory_repo_path IS NULL OR memory_repo_path = '')`, d.projects.defaultMemoryRepoPath("global"), "global")
+	_, err = d.sqldb.Exec(`UPDATE projects SET memory_repo_path = ? WHERE slug = ? AND (memory_repo_path IS NULL OR memory_repo_path = '')`, globalRepoPath, "global")
 	if err != nil {
 		return fmt.Errorf("db: update global project memory repo: %w", err)
 	}
