@@ -228,8 +228,8 @@ type projectRepoRoots struct {
 }
 
 func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots, error) {
-	store, ok := rt.projectStore.(project.Store)
-	if !ok || store == nil {
+	store := rt.projectStore
+	if store == nil {
 		return projectRepoRoots{}, errors.New("project store not available")
 	}
 	globalProj, err := store.Get(project.GlobalSlug)
