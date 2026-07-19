@@ -21,7 +21,6 @@ import (
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/retrieval"
 	"github.com/vrnc/harness/internal/session"
-	"github.com/vrnc/harness/internal/ui"
 	"github.com/vrnc/harness/internal/vector"
 )
 
@@ -74,19 +73,26 @@ func chunkSummary(summary string) []string {
 	return chunks
 }
 
-// EpisodeScorer implements ui.RetrievalScorer for an episode index. It opens
-// lazily so the memory browser can show scores immediately after a fresh-clone
-// rebuild creates the index files.
+// RetrievalScore is retrieval metadata for one episode.
+type RetrievalScore struct {
+	Indexed  bool
+	Score    float64
+	HasScore bool
+}
+
+// EpisodeScorer scores episode paths against an episode index. It opens
+// lazily so callers can show scores immediately after a fresh-clone rebuild
+// creates the index files.
 type EpisodeScorer struct {
 	Embedder embedder.Client
 	Config   config.PromptConfig
 	Index    *EpisodeIndex
 }
 
-func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, _, _ string, query string, episodePaths []string) (map[string]ui.RetrievalScore, error) {
-	out := make(map[string]ui.RetrievalScore, len(episodePaths))
+func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, query string, episodePaths []string) (map[string]RetrievalScore, error) {
+	out := make(map[string]RetrievalScore, len(episodePaths))
 	for _, p := range episodePaths {
-		out[p] = ui.RetrievalScore{}
+		out[p] = RetrievalScore{}
 	}
 	if s.Index == nil {
 		return out, nil

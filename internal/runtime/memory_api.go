@@ -24,6 +24,36 @@ import (
 	"github.com/vrnc/harness/internal/ui"
 )
 
+type episodeScoreService interface {
+	ScoreEpisodes(ctx context.Context, query string, episodePaths []string) (map[string]memoryops.RetrievalScore, error)
+}
+
+type uiRetrievalScorerAdapter struct {
+	scorer episodeScoreService
+}
+
+func (a *uiRetrievalScorerAdapter) ScoreEpisodes(ctx context.Context, _, _, query string, episodePaths []string) (map[string]ui.RetrievalScore, error) {
+	out := make(map[string]ui.RetrievalScore, len(episodePaths))
+	for _, p := range episodePaths {
+		out[p] = ui.RetrievalScore{}
+	}
+	if a == nil || a.scorer == nil {
+		return out, nil
+	}
+	scores, err := a.scorer.ScoreEpisodes(ctx, query, episodePaths)
+	if err != nil {
+		return out, err
+	}
+	for p, score := range scores {
+		out[p] = ui.RetrievalScore{
+			Indexed:  score.Indexed,
+			Score:    score.Score,
+			HasScore: score.HasScore,
+		}
+	}
+	return out, nil
+}
+
 // startMemoryAndAPI brings up the memory reader, agent registry, prompt
 // assembler, hot-reload watcher, session manager, and API server.
 // Caller must hold rt.mu.
@@ -72,11 +102,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	}
 	embedClient := rt.newEmbedderClient()
 	rt.assembler = rt.assembler.WithBlendedRetrieval(episodeIndex, embedClient)
-	svcDeps.RetrievalScorer = &memoryops.EpisodeScorer{
+	svcDeps.RetrievalScorer = &uiRetrievalScorerAdapter{scorer: &memoryops.EpisodeScorer{
 		Embedder: embedClient,
 		Config:   rt.cfg.Prompt,
 		Index:    episodeIndex,
-	}
+	}}
 	svcDeps.MemoryStore = rt.activeMem
 	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: rt.agentReg, globalMem: rt.globalMem, activeMem: rt.activeMem, getProjectSlug: rt.getActiveProjectSlug, setActive: rt.setActiveAgent}
 
