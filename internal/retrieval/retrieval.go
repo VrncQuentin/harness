@@ -1,12 +1,24 @@
 package retrieval
 
 import (
+	"context"
 	"math"
 	"path"
+	"sort"
 	"strings"
 
 	"github.com/vrnc/harness/internal/index"
 )
+
+// EpisodeEmbedder embeds query text for episode scoring.
+type EpisodeEmbedder interface {
+	Embed(ctx context.Context, chunks []string) ([][]float32, error)
+}
+
+// EpisodeSearcher searches the project episode index.
+type EpisodeSearcher interface {
+	Search(query []float32, k int) ([]index.Result, error)
+}
 
 // EpisodeID returns the content SHA/id used for an episode path in the index.
 func EpisodeID(epPath string) string {
@@ -46,6 +58,33 @@ func BlendEpisodeScores(episodePaths []string, semantic map[string]float64, sema
 			recencyWeight*Decay(len(episodePaths)-1-i, n)
 	}
 	return out
+}
+
+// ScoreEpisodePaths embeds query, searches the episode index, and blends
+// semantic scores with recency. Scores are keyed by the original episode path.
+// The boolean reports whether scoring was applied; false means inputs were not
+// sufficient for semantic retrieval or the index returned no results.
+func ScoreEpisodePaths(ctx context.Context, embedder EpisodeEmbedder, searcher EpisodeSearcher, query string, episodePaths []string, semanticWeight, recencyWeight float64) (map[string]float64, bool, error) {
+	if strings.TrimSpace(query) == "" || embedder == nil || searcher == nil || len(episodePaths) == 0 {
+		return map[string]float64{}, false, nil
+	}
+	vecs, err := embedder.Embed(ctx, []string{query})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(vecs) == 0 || len(vecs[0]) == 0 {
+		return map[string]float64{}, false, nil
+	}
+	results, err := searcher.Search(vecs[0], len(episodePaths)*2)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(results) == 0 {
+		return map[string]float64{}, false, nil
+	}
+	oldestFirst := append([]string(nil), episodePaths...)
+	sort.Strings(oldestFirst)
+	return BlendEpisodeScores(oldestFirst, BestSemanticScores(results), semanticWeight, recencyWeight), true, nil
 }
 
 // Decay returns an exponential recency score where distanceFromNewest=0

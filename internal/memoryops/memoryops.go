@@ -104,26 +104,22 @@ func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, query string, episode
 		score.Indexed = s.Index.Contains(id)
 		out[p] = score
 	}
-	if strings.TrimSpace(query) == "" || s.Embedder == nil || len(episodePaths) == 0 {
-		return out, nil
-	}
-
-	vecs, err := s.Embedder.Embed(ctx, []string{query})
+	scores, scored, err := retrieval.ScoreEpisodePaths(
+		ctx,
+		s.Embedder,
+		s.Index,
+		query,
+		episodePaths,
+		s.Config.SemanticWeight,
+		s.Config.RecencyWeight,
+	)
 	if err != nil {
 		return out, err
 	}
-	if len(vecs) == 0 || len(vecs[0]) == 0 {
+	if !scored {
 		return out, nil
 	}
-	results, err := s.Index.Search(vecs[0], len(episodePaths)*2)
-	if err != nil {
-		return out, err
-	}
-	semantic := retrieval.BestSemanticScores(results)
-	oldestFirst := append([]string(nil), episodePaths...)
-	sort.Strings(oldestFirst)
-	scores := retrieval.BlendEpisodeScores(oldestFirst, semantic, s.Config.SemanticWeight, s.Config.RecencyWeight)
-	for _, p := range oldestFirst {
+	for _, p := range episodePaths {
 		score := out[p]
 		score.Score = scores[p]
 		score.HasScore = true
