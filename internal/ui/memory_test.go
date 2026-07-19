@@ -31,8 +31,6 @@ type stubMemoryStore struct {
 }
 
 type stubRetrievalScorer struct {
-	slug   string
-	agent  string
 	query  string
 	paths  []string
 	scores map[string]RetrievalScore
@@ -68,9 +66,7 @@ func (s *stubCommitter) Commit(msg string, files []string) (string, error) {
 	return "abc123", nil
 }
 
-func (s *stubRetrievalScorer) ScoreEpisodes(_ context.Context, slug, agent, query string, paths []string) (map[string]RetrievalScore, error) {
-	s.slug = slug
-	s.agent = agent
+func (s *stubRetrievalScorer) ScoreEpisodes(_ context.Context, query string, paths []string) (map[string]RetrievalScore, error) {
 	s.query = query
 	s.paths = append([]string(nil), paths...)
 	return s.scores, nil
@@ -752,8 +748,8 @@ func TestHandleMemoryEpisodes_RendersRetrievalScores(t *testing.T) {
 			t.Errorf("episodes body missing %q", want)
 		}
 	}
-	if scorer.slug != "global" || scorer.agent != "coder" || scorer.query != "needle" {
-		t.Errorf("scorer args = slug %q agent %q query %q", scorer.slug, scorer.agent, scorer.query)
+	if scorer.query != "needle" {
+		t.Errorf("scorer query = %q", scorer.query)
 	}
 	if len(scorer.paths) != 1 || scorer.paths[0] != path {
 		t.Errorf("scorer paths = %v, want [%s]", scorer.paths, path)
