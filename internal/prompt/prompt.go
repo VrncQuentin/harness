@@ -17,7 +17,6 @@ import (
 	"path"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/config"
@@ -28,6 +27,7 @@ import (
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/reqid"
 	"github.com/vrnc/harness/internal/retrieval"
+	"github.com/vrnc/harness/internal/tokens"
 )
 
 // ErrAgentRequired is returned by Assemble when called with an empty
@@ -153,15 +153,7 @@ func (a *DiskAssembler) WithBlendedRetrieval(idx index.Searcher, emb embedder.Cl
 // and close enough for budgeting against caps that already carry
 // generous headroom.
 func defaultTokenize(s string) int {
-	return (utf8.RuneCountInString(s) + 3) / 4
-}
-
-// EstimateTokens returns the rune-quarter token estimate for s. It is
-// the same heuristic the assembler uses internally, exposed so other
-// callers (the UI memory page) can show consistent numbers without
-// pulling in a real tokenizer.
-func EstimateTokens(s string) int {
-	return defaultTokenize(s)
+	return tokens.Estimate(s)
 }
 
 // Assemble builds the final message slice for agentName given
