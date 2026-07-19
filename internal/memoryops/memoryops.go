@@ -7,7 +7,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"math"
 	"path"
@@ -141,8 +143,11 @@ type EpisodeRebuilder struct {
 
 func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 	if rb.Index == nil {
-		if idx, err := index.Open(rb.IndexDir); err == nil {
+		idx, err := index.Open(rb.IndexDir)
+		if err == nil {
 			rb.Index = idx
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("index rebuild: open index %s: %w", rb.IndexDir, err)
 		}
 	}
 
