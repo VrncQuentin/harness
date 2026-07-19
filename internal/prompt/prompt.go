@@ -370,25 +370,20 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 
 	// Blended retrieval: semantic similarity + recency.
 	blended := false
-	if a.idx != nil && a.emb != nil && len(out) > 0 && query != "" {
-		vecs, err := a.emb.Embed(ctx, []string{query})
-		if err == nil && len(vecs) > 0 {
-			results, err := a.idx.Search(vecs[0], len(out)*2)
-			if err == nil && len(results) > 0 {
-				semantic := retrieval.BestSemanticScores(results)
-				paths := make([]string, len(out))
-				for i := range out {
-					paths[i] = out[i].path
-				}
-				scores := retrieval.BlendEpisodeScores(paths, semantic, a.cfg.SemanticWeight, a.cfg.RecencyWeight)
-				for i := range out {
-					out[i].score = scores[out[i].path]
-				}
-				sort.SliceStable(out, func(i, j int) bool {
-					return out[i].score > out[j].score
-				})
-				blended = true
+	if len(out) > 0 {
+		paths := make([]string, len(out))
+		for i := range out {
+			paths[i] = out[i].path
+		}
+		scores, scored, err := retrieval.ScoreEpisodePaths(ctx, a.emb, a.idx, query, paths, a.cfg.SemanticWeight, a.cfg.RecencyWeight)
+		if err == nil && scored {
+			for i := range out {
+				out[i].score = scores[out[i].path]
 			}
+			sort.SliceStable(out, func(i, j int) bool {
+				return out[i].score > out[j].score
+			})
+			blended = true
 		}
 	}
 
