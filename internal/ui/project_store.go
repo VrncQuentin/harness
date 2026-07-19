@@ -9,4 +9,5 @@ type ProjectStore interface {
 	Create(input project.CreateInput) (project.Project, error)
 	Update(input project.UpdateInput) (project.Project, error)
 	SetHidden(slug string, hidden bool) error
+	ListDirectories(slug string) ([]project.Directory, error)
 }
