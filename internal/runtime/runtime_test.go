@@ -602,7 +602,7 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	}
 }
 
-func TestTaskRunnerDoesNotDuplicateSingleMessageOnResume(t *testing.T) {
+func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
@@ -622,7 +622,7 @@ func TestTaskRunnerDoesNotDuplicateSingleMessageOnResume(t *testing.T) {
 	}
 
 	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
-	_, evch, err := ad.RunTask(context.Background(), "coder", s.ID, []ui.ChatMessage{{Role: "user", Content: "hello"}})
+	_, evch, err := ad.RunTask(context.Background(), "coder", s.ID, []ui.ChatMessage{{Role: "user", Content: "hello"}, {Role: "user", Content: "follow-up"}})
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
 	}
@@ -633,14 +633,14 @@ func TestTaskRunnerDoesNotDuplicateSingleMessageOnResume(t *testing.T) {
 	if snap == nil {
 		t.Fatal("session snapshot missing")
 	}
-	userTurns := 0
+	userTurns := map[string]int{}
 	for _, msg := range snap.Conversation {
-		if msg.Role == "user" && msg.Content == "hello" {
-			userTurns++
+		if msg.Role == "user" {
+			userTurns[msg.Content]++
 		}
 	}
-	if userTurns != 1 {
-		t.Fatalf("user turn count = %d, want 1; conversation=%+v", userTurns, snap.Conversation)
+	if userTurns["hello"] != 1 || userTurns["follow-up"] != 1 {
+		t.Fatalf("user turns = %#v, want one hello and one follow-up; conversation=%+v", userTurns, snap.Conversation)
 	}
 }
 func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
