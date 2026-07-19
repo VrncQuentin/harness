@@ -202,6 +202,60 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	}
 }
 
+func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config.Config)
+	}{
+		{
+			name: "model port",
+			mutate: func(c *config.Config) {
+				c.Model.Port = 19081
+			},
+		},
+		{
+			name: "embedder port",
+			mutate: func(c *config.Config) {
+				c.Embedder.Port = 19082
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := initRuntimeProjectRepo(t)
+			cfg := config.Defaults()
+			seedRequiredConfigFiles(t, &cfg)
+			cfg.Project.ActiveProjectSlug = project.GlobalSlug
+			loaded := cfg
+			tc.mutate(&loaded)
+
+			rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+			rt.started = true
+			rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+				project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+			}}
+			rt.llamaMgr = proc.NewManager(proc.ManagerConfig{Name: "llama-server"})
+			rt.embedMgr = proc.NewManager(proc.ManagerConfig{Name: "embedder"})
+			rt.inferClient = rt.newInferenceClient()
+			rt.reqQueue = queue.New(cfg.Queue.MaxDepth, rt.inferClient)
+
+			uiServer := ui.NewServer(0)
+			result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+			if !result.LiveApplied {
+				t.Fatal("endpoint-only reload did not report a live apply")
+			}
+			if rt.SessionManager() == nil {
+				t.Fatal("endpoint-only reload did not rebuild the session manager")
+			}
+			deps := uiServer.ServiceDepsSnapshot()
+			if deps.MemoryRepoPath != root || deps.SessionStore == nil || deps.RetrievalScorer == nil || deps.IndexRebuilder == nil {
+				t.Fatalf("endpoint-only reload did not publish rebuilt UI deps: path=%q session=%T scorer=%T rebuilder=%T", deps.MemoryRepoPath, deps.SessionStore, deps.RetrievalScorer, deps.IndexRebuilder)
+			}
+		})
+	}
+}
+
 func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	port := freeTCPPort(t)
 	cfg := config.Defaults()
