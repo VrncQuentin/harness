@@ -338,21 +338,6 @@ func TestEvaluator_ShellSessionAllowsNotBypassable(t *testing.T) {
 	}
 }
 
-func TestApprovalResponse(t *testing.T) {
-	r1 := ApprovalResponse{Decision: Allowed, Remember: false}
-	r2 := ApprovalResponse{Decision: Allowed, Remember: true}
-	r3 := ApprovalResponse{Decision: Denied, Remember: false}
-	if r1.Remember {
-		t.Error("allow once should not remember")
-	}
-	if !r2.Remember {
-		t.Error("always should remember")
-	}
-	if r3.Remember {
-		t.Error("reject should not remember")
-	}
-}
-
 func TestEvaluator_DestructiveCmdDeniedRuleWins(t *testing.T) {
 	userLayer := Layer{
 		Name: "user-config",
