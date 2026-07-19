@@ -235,29 +235,27 @@ func (ad *chatRunnerAdapter) Run(ctx context.Context, agentName, sessionID strin
 				return
 			}
 			if tok.Done || tok.Err != nil {
-				if ad.mgr != nil && id != "" && tok.Err == nil && assistant != "" {
-					if err := ad.mgr.Append(id, inference.Message{
-						Role:    "assistant",
-						Content: assistant,
-					}); err != nil {
-						slog.Warn("session: append assistant turn", "id", id, "err", err)
-					}
+				if tok.Err == nil {
+					appendAssistantContent(ad.mgr, id, assistant, "session: append assistant turn")
 				}
 				return
 			}
 		}
 		// Channel closed without a Done token - capture whatever was
 		// streamed so the save can still confirm partial progress.
-		if ad.mgr != nil && id != "" && assistant != "" {
-			if err := ad.mgr.Append(id, inference.Message{
-				Role:    "assistant",
-				Content: assistant,
-			}); err != nil {
-				slog.Warn("session: append assistant turn (closed)", "id", id, "err", err)
-			}
-		}
+		appendAssistantContent(ad.mgr, id, assistant, "session: append assistant turn (closed)")
+
 	}()
 	return id, out, nil
+}
+
+func appendAssistantContent(mgr *session.Manager, id, content, logMessage string) {
+	if mgr == nil || id == "" || content == "" {
+		return
+	}
+	if err := mgr.Append(id, inference.Message{Role: "assistant", Content: content}); err != nil {
+		slog.Warn(logMessage, "id", id, "err", err)
+	}
 }
 
 // appendUserSide appends the user-side delta of the conversation onto
@@ -708,9 +706,7 @@ func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event)
 		if assistant.Len() == 0 {
 			return
 		}
-		if err := mgr.Append(id, inference.Message{Role: "assistant", Content: assistant.String()}); err != nil {
-			slog.Warn("session: append task assistant turn", "id", id, "err", err)
-		}
+		appendAssistantContent(mgr, id, assistant.String(), "session: append task assistant turn")
 		assistant.Reset()
 	}
 
