@@ -469,7 +469,7 @@ func (ad *taskRunnerAdapter) newApprovalEvaluator() *approvals.Evaluator {
 	return approvals.NewEvaluator(layers...)
 }
 
-func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sessionID string, conversation []ui.ChatMessage) (string, <-chan agentloop.Event, error) {
+func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sessionID string, conversation []ui.ChatMessage) (string, <-chan ui.TaskEvent, error) {
 	if agentName == "" {
 		agentName = ad.rt.getActiveAgent()
 	}
@@ -553,7 +553,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	ad.registerEngine(id, engine, cancelLoop, done)
 
 	rawEvch := make(chan agentloop.Event, 64)
-	evch := make(chan agentloop.Event, 64)
+	evch := make(chan ui.TaskEvent, 64)
 	go func() {
 		if err := engine.Run(loopCtx, assembled, rawEvch); err != nil {
 			slog.Warn("task engine", "err", err)
@@ -572,7 +572,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		for ev := range rawEvch {
 			events = append(events, ev)
 			select {
-			case evch <- ev:
+			case evch <- mapTaskEvent(ev):
 			case <-loopCtx.Done():
 				return
 			}
@@ -687,6 +687,20 @@ func (ad *taskRunnerAdapter) ApplyApproval(sessionID, approvalID, decision strin
 		return fmt.Errorf("task: unknown decision %q", decision)
 	}
 	return engine.ApplyApproval(approvalID, resp)
+}
+
+func mapTaskEvent(ev agentloop.Event) ui.TaskEvent {
+	return ui.TaskEvent{
+		Turn:       ev.Turn,
+		Type:       ev.Type,
+		Content:    ev.Content,
+		ToolID:     ev.ToolID,
+		ToolArgs:   ev.ToolArgs,
+		ToolResult: ev.ToolResult,
+		ToolError:  ev.ToolError,
+		ApprovalID: ev.ApprovalID,
+		Terminate:  ev.Terminate,
+	}
 }
 
 func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event) {

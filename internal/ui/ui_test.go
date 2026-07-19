@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vrnc/harness/internal/agentloop"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/db"
 	"github.com/vrnc/harness/internal/logbuf"
@@ -381,14 +380,14 @@ type recordingTaskRunner struct {
 	ran           chan struct{}
 }
 
-func (r *recordingTaskRunner) RunTask(_ context.Context, agent, sessionID string, conversation []ChatMessage) (string, <-chan agentloop.Event, error) {
+func (r *recordingTaskRunner) RunTask(_ context.Context, agent, sessionID string, conversation []ChatMessage) (string, <-chan TaskEvent, error) {
 	r.agent = agent
 	r.sessionID = sessionID
 	r.conversation = append([]ChatMessage(nil), conversation...)
 	if r.ran != nil {
 		close(r.ran)
 	}
-	ch := make(chan agentloop.Event)
+	ch := make(chan TaskEvent)
 	close(ch)
 	return "", ch, nil
 }
