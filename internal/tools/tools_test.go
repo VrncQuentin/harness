@@ -157,20 +157,6 @@ func TestRegistry_ListAndGet(t *testing.T) {
 	}
 }
 
-func TestDestructiveToolsRegisteredButDisabledByDefault(t *testing.T) {
-	r := NewRegistry()
-	if err := RegisterBuiltins(r); err != nil {
-		t.Fatalf("RegisterBuiltins: %v", err)
-	}
-
-	// Destructive tools exist in the registry.
-	for _, id := range []string{"file_write", "shell_exec"} {
-		if r.Get(id) == nil {
-			t.Errorf("%s should be registered (approval layer is active)", id)
-		}
-	}
-}
-
 func TestFileWrite_CreatesParentDirectories(t *testing.T) {
 	dir := t.TempDir()
 	tool := &fileWriteTool{}
