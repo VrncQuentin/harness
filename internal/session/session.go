@@ -143,7 +143,6 @@ type ManagerDeps struct {
 	SummarizerPrompt   SummarizerPromptFunc
 	AfterSave          AfterSaveFunc
 	Now                func() time.Time // optional; defaults to time.Now
-	SummarizerTimeout  time.Duration    // optional; defaults to summarizerTimeout
 	ResolveAbsRepoPath string           // memory repo root, used for diagnostics only
 }
 
@@ -194,9 +193,6 @@ func NewManager(deps ManagerDeps, projectSlug string) (*Manager, error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	if deps.SummarizerTimeout <= 0 {
-		deps.SummarizerTimeout = summarizerTimeout
-	}
 	if projectSlug == "" {
 		projectSlug = project.GlobalSlug
 	}
@@ -205,7 +201,7 @@ func NewManager(deps ManagerDeps, projectSlug string) (*Manager, error) {
 		knownIDs:    make(map[string]struct{}),
 		issuedIDs:   make(map[string]struct{}),
 		deps:        deps,
-		summarizer:  NewSummarizer(deps.Inference, deps.SummarizerPrompt, deps.SummarizerTimeout),
+		summarizer:  NewSummarizer(deps.Inference, deps.SummarizerPrompt, summarizerTimeout),
 		projectSlug: projectSlug,
 	}, nil
 }
