@@ -51,6 +51,45 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	}
 }
 
+func TestEpisodeRebuilderRejectsCorruptIndex(t *testing.T) {
+	root := t.TempDir()
+	episodePath := filepath.Join(root, "episodes", "coder", "ep1.md")
+	if err := os.MkdirAll(filepath.Dir(episodePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll episode dir: %v", err)
+	}
+	if err := os.WriteFile(episodePath, []byte("episode body"), 0o644); err != nil {
+		t.Fatalf("WriteFile episode: %v", err)
+	}
+	indexDir := filepath.Join(root, "index", "_episodes")
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll index dir: %v", err)
+	}
+	manifestPath := filepath.Join(indexDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"dim":2,`), 0o644); err != nil {
+		t.Fatalf("WriteFile corrupt manifest: %v", err)
+	}
+
+	rb := &EpisodeRebuilder{
+		Mem:      memory.NewDirReader(root),
+		Embedder: stubEmbedder{vec: []float32{1, 0}},
+		IndexDir: indexDir,
+	}
+
+	if err := rb.Rebuild(context.Background()); err == nil {
+		t.Fatal("expected corrupt index error")
+	}
+	got, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("ReadFile manifest: %v", err)
+	}
+	if string(got) != `{"dim":2,` {
+		t.Fatalf("corrupt manifest was overwritten: %q", got)
+	}
+	if rb.Index != nil {
+		t.Fatal("rebuilder retained an index after corrupt open")
+	}
+}
+
 type stubEmbedder struct {
 	vec []float32
 }
