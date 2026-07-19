@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/vrnc/harness/internal/memory"
-	"github.com/vrnc/harness/internal/prompt"
+	"github.com/vrnc/harness/internal/tokens"
 )
 
 // maxMemoryFileBytes caps the size of a file the editor will accept on
@@ -382,7 +382,7 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 		Name:     name,
 		Path:     p,
 		Content:  content,
-		Tokens:   prompt.EstimateTokens(content),
+		Tokens:   tokens.Estimate(content),
 		Query:    query,
 		Indexed:  retrieval.Indexed,
 		Score:    retrieval.Score,
@@ -438,14 +438,14 @@ func listAgentEpisodes(ctx context.Context, store MemoryStore, projectSlug, agen
 			continue
 		}
 		body, rerr := store.Read(e.Path)
-		tokens := 0
+		tokenCount := 0
 		if rerr == nil {
-			tokens = prompt.EstimateTokens(string(body))
+			tokenCount = tokens.Estimate(string(body))
 		}
 		rows = append(rows, episodeRow{
 			Name:   path.Base(e.Path),
 			Path:   e.Path,
-			Tokens: tokens,
+			Tokens: tokenCount,
 		})
 		paths = append(paths, e.Path)
 	}
@@ -540,7 +540,7 @@ func (s *Server) handleMemoryEdit(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		data.Content = string(b)
-		data.Tokens = prompt.EstimateTokens(data.Content)
+		data.Tokens = tokens.Estimate(data.Content)
 	case errors.Is(err, fs.ErrNotExist):
 		data.IsNew = true
 	default:
@@ -601,7 +601,7 @@ func (s *Server) handleMemorySave(w http.ResponseWriter, r *http.Request) {
 			Path:     p,
 			Desc:     desc,
 			Content:  content[:maxMemoryFileBytes],
-			Tokens:   prompt.EstimateTokens(content),
+			Tokens:   tokens.Estimate(content),
 			SaveErr:  "file too large to save (limit 1 MiB)",
 		}
 		w.WriteHeader(http.StatusRequestEntityTooLarge)
@@ -615,7 +615,7 @@ func (s *Server) handleMemorySave(w http.ResponseWriter, r *http.Request) {
 			Path:     p,
 			Desc:     desc,
 			Content:  content,
-			Tokens:   prompt.EstimateTokens(content),
+			Tokens:   tokens.Estimate(content),
 			SaveErr:  err.Error(),
 		}
 		w.WriteHeader(http.StatusInternalServerError)
@@ -686,7 +686,7 @@ func buildMemoryTree(store MemoryStore) ([]*memoryTreeNode, int, error) {
 			b, rerr := store.Read(e.Path)
 			if rerr == nil {
 				node.Content = string(b)
-				node.Tokens = prompt.EstimateTokens(node.Content)
+				node.Tokens = tokens.Estimate(node.Content)
 			}
 		}
 		nodes[e.Path] = node
