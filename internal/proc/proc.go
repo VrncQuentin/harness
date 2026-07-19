@@ -580,26 +580,52 @@ func formatExitLine(name string, code *int) string {
 	return fmt.Sprintf("[harness] %s exited (code %d / 0x%08X)\n", name, *code, uint32(*code))
 }
 
-// LlamaArgs builds the argument slice for llama-server. When verbose is true,
+// LlamaArgsConfig is the typed llama-server process configuration.
+type LlamaArgsConfig struct {
+	Binary     string
+	ModelPath  string
+	CtxSize    int
+	GPULayers  int
+	NParallel  int
+	Port       int
+	Verbose    bool
+	CacheTypeK string
+	CacheTypeV string
+}
+
+// EmbedderArgsConfig is the typed embedder sidecar process configuration.
+type EmbedderArgsConfig struct {
+	Binary    string
+	ModelPath string
+	Port      int
+	Verbose   bool
+}
+
+// HealthURL returns the local llama-server-compatible health endpoint for port.
+func HealthURL(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d/health", port)
+}
+
+// LlamaArgs builds the argument slice for llama-server. When Verbose is true,
 // --verbose is appended so early startup failures (model load, CUDA init,
-// port bind) surface with enough context to diagnose. cacheTypeK/V are
+// port bind) surface with enough context to diagnose. CacheTypeK/V are
 // passed through as --cache-type-k/--cache-type-v; both are required and
 // validated upstream by config.Validate.
-func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int, verbose bool, cacheTypeK, cacheTypeV string) (string, []string) {
+func LlamaArgs(cfg LlamaArgsConfig) (string, []string) {
 	args := []string{
-		"--model", modelPath,
-		"--ctx-size", strconv.Itoa(ctxSize),
-		"--n-gpu-layers", strconv.Itoa(gpuLayers),
-		"--parallel", strconv.Itoa(nParallel),
-		"--port", strconv.Itoa(port),
+		"--model", cfg.ModelPath,
+		"--ctx-size", strconv.Itoa(cfg.CtxSize),
+		"--n-gpu-layers", strconv.Itoa(cfg.GPULayers),
+		"--parallel", strconv.Itoa(cfg.NParallel),
+		"--port", strconv.Itoa(cfg.Port),
 		"--host", "127.0.0.1",
-		"--cache-type-k", cacheTypeK,
-		"--cache-type-v", cacheTypeV,
+		"--cache-type-k", cfg.CacheTypeK,
+		"--cache-type-v", cfg.CacheTypeV,
 	}
-	if verbose {
+	if cfg.Verbose {
 		args = append(args, "--verbose")
 	}
-	return binary, args
+	return cfg.Binary, args
 }
 
 // EmbedderArgs builds the argument slice for the embedder sidecar.
@@ -607,17 +633,17 @@ func LlamaArgs(binary, modelPath string, ctxSize, gpuLayers, nParallel, port int
 // server boots a chat-completion endpoint and /embedding returns 501,
 // which defeats the whole point of running a second process.
 // --n-gpu-layers 0 pins the embedder to CPU+RAM so it never competes with
-// the main model for VRAM. verbose follows the same semantics as LlamaArgs.
-func EmbedderArgs(binary, modelPath string, port int, verbose bool) (string, []string) {
+// the main model for VRAM. Verbose follows the same semantics as LlamaArgs.
+func EmbedderArgs(cfg EmbedderArgsConfig) (string, []string) {
 	args := []string{
-		"--model", modelPath,
+		"--model", cfg.ModelPath,
 		"--embedding",
 		"--n-gpu-layers", "0",
-		"--port", strconv.Itoa(port),
+		"--port", strconv.Itoa(cfg.Port),
 		"--host", "127.0.0.1",
 	}
-	if verbose {
+	if cfg.Verbose {
 		args = append(args, "--verbose")
 	}
-	return binary, args
+	return cfg.Binary, args
 }
