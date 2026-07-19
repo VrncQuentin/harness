@@ -50,6 +50,8 @@ func (rt *Runtime) ApplyConfig(
 	old := rt.cfg
 	oldModel := rt.effectiveModelFor(&old)
 	newModel := rt.effectiveModelFor(loaded)
+	modelEndpointChanged := oldModel.Port != newModel.Port
+	embedderEndpointChanged := old.Embedder.Port != loaded.Embedder.Port
 	rt.cfg = *loaded
 	rt.refreshProjectDirectoryWarnings(uiServer)
 
@@ -73,7 +75,7 @@ func (rt *Runtime) ApplyConfig(
 			}, embedderHealthURL(loaded.Embedder))
 			result.LiveApplied = true
 		}
-		if old.Model.Port != loaded.Model.Port && rt.reqQueue != nil {
+		if modelEndpointChanged && rt.reqQueue != nil {
 			client := rt.newInferenceClient()
 			rt.inferClient = client
 			rt.reqQueue.SetClient(client)
@@ -83,7 +85,9 @@ func (rt *Runtime) ApplyConfig(
 			old.API != loaded.API ||
 			old.Loop != loaded.Loop ||
 			old.Agent.Active != loaded.Agent.Active ||
-			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
+			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug ||
+			modelEndpointChanged ||
+			embedderEndpointChanged {
 			// Project switch: flush current session and optionally
 			// reload llama-server before rebuilding memory services.
 			if old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
