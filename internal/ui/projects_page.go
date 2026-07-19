@@ -366,17 +366,11 @@ func (s *Server) countDirectories(projects []project.Project) map[string]int {
 	}
 	out := map[string]int{}
 	for _, p := range projects {
-		// The UI ProjectStore interface doesn't include ListDirectories.
-		// Use a type assertion to access it, or fall back to 0.
-		if fullStore, ok := store.(interface {
-			ListDirectories(slug string) ([]project.Directory, error)
-		}); ok {
-			dirs, err := fullStore.ListDirectories(p.Slug)
-			if err != nil {
-				continue
-			}
-			out[p.Slug] = len(dirs)
+		dirs, err := store.ListDirectories(p.Slug)
+		if err != nil {
+			continue
 		}
+		out[p.Slug] = len(dirs)
 	}
 	return out
 }
