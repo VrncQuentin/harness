@@ -227,7 +227,7 @@ func (m *Manager) Start(agent string) *Session {
 		base := id
 		for n := 1; ; n++ {
 			candidate := fmt.Sprintf("%s-%d", base, n)
-			if _, busy := m.sessions[candidate]; !busy {
+			if _, issued := m.issuedIDs[candidate]; !issued {
 				id = candidate
 				break
 			}
