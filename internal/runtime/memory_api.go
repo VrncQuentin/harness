@@ -168,7 +168,6 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		uiServer.AddStartupError(fmt.Errorf("task tools: %w", err))
 		return false
 	}
-	rt.loopRegistry = registry
 
 	// Build the permission base layers. Each task engine gets a fresh
 	// evaluator so mutable session approval rules stay scoped to that session.
@@ -210,30 +209,28 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 }
 
 type memoryAPISnapshot struct {
-	globalMem    memory.Repo
-	activeMem    memory.Repo
-	agentReg     *agent.DiskRegistry
-	assembler    *prompt.DiskAssembler
-	apiServer    *api.Server
-	gitRepo      *gitw.Repo
-	sessionMgr   *session.Manager
-	loopRegistry *tools.Registry
-	taskRunner   *taskRunnerAdapter
-	serviceDeps  ui.ServiceDeps
+	globalMem   memory.Repo
+	activeMem   memory.Repo
+	agentReg    *agent.DiskRegistry
+	assembler   *prompt.DiskAssembler
+	apiServer   *api.Server
+	gitRepo     *gitw.Repo
+	sessionMgr  *session.Manager
+	taskRunner  *taskRunnerAdapter
+	serviceDeps ui.ServiceDeps
 }
 
 func (rt *Runtime) snapshotMemoryAndAPI(uiServer *ui.Server) memoryAPISnapshot {
 	return memoryAPISnapshot{
-		globalMem:    rt.globalMem,
-		activeMem:    rt.activeMem,
-		agentReg:     rt.agentReg,
-		assembler:    rt.assembler,
-		apiServer:    rt.apiServer,
-		gitRepo:      rt.gitRepo,
-		sessionMgr:   rt.SessionManager(),
-		loopRegistry: rt.loopRegistry,
-		taskRunner:   rt.taskRunner,
-		serviceDeps:  uiServer.ServiceDepsSnapshot(),
+		globalMem:   rt.globalMem,
+		activeMem:   rt.activeMem,
+		agentReg:    rt.agentReg,
+		assembler:   rt.assembler,
+		apiServer:   rt.apiServer,
+		gitRepo:     rt.gitRepo,
+		sessionMgr:  rt.SessionManager(),
+		taskRunner:  rt.taskRunner,
+		serviceDeps: uiServer.ServiceDepsSnapshot(),
 	}
 }
 
@@ -245,7 +242,6 @@ func (rt *Runtime) restoreMemoryAndAPI(uiServer *ui.Server, snap memoryAPISnapsh
 	rt.apiServer = snap.apiServer
 	rt.gitRepo = snap.gitRepo
 	rt.setSessionManager(snap.sessionMgr)
-	rt.loopRegistry = snap.loopRegistry
 	rt.taskRunner = snap.taskRunner
 	uiServer.SetServiceDeps(snap.serviceDeps)
 }
@@ -380,7 +376,6 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	rt.setSessionManager(nil)
 	uiServer.SetServiceDeps(ui.ServiceDeps{})
 	rt.taskRunner = nil
-	rt.loopRegistry = nil
 }
 
 func (rt *Runtime) getActiveAgent() string {
