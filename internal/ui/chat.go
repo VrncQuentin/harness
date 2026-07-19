@@ -7,6 +7,7 @@ import (
 	"html"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // ChatMessage is a single message in the server-owned chat transcript.
@@ -280,9 +281,12 @@ func (s *Server) handleChatEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+const chatSSEReliableSendTimeout = 2 * time.Second
+
 // broadcastChatSSE sends an SSE frame to matching chat SSE subscribers. The
-// frame must be a complete SSE frame (event + data lines with trailing
-// blank line). Non-blocking; a slow client drops this frame.
+// frame must be a complete SSE frame (event + data lines with trailing blank
+// line). Delivery is bounded so slow clients cannot stall a stream forever, but
+// token frames are not silently dropped under ordinary backpressure.
 func (s *Server) broadcastChatSSE(streamID, frame string) {
 	s.chatSSEClients.Range(func(key, value any) bool {
 		ch, ok := key.(chan string)
@@ -295,7 +299,8 @@ func (s *Server) broadcastChatSSE(streamID, frame string) {
 		}
 		select {
 		case ch <- frame:
-		default:
+		case <-time.After(chatSSEReliableSendTimeout):
+			s.chatSSEClients.Delete(ch)
 		}
 		return true
 	})

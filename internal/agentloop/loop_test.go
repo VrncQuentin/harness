@@ -413,7 +413,7 @@ func TestApprovalWaitTimesOut(t *testing.T) {
 func TestStateEventWaitsForDeliveryWhenChannelIsFull(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3}
 	engine := newTestEngine(t, cfg)
-	engine.infer = &mockInferClient{tokens: []inference.Token{{Content: "dropped text"}, {Done: true}}}
+	engine.infer = &mockInferClient{tokens: []inference.Token{{Content: "delivered text"}, {Done: true}}}
 
 	evch := make(chan Event, 1)
 	evch <- Event{Type: EvtText, Content: "existing"}
@@ -424,7 +424,7 @@ func TestStateEventWaitsForDeliveryWhenChannelIsFull(t *testing.T) {
 
 	select {
 	case err := <-done:
-		t.Fatalf("Run finished before the final event could be delivered: %v", err)
+		t.Fatalf("Run finished before the text event could be delivered: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -432,6 +432,14 @@ func TestStateEventWaitsForDeliveryWhenChannelIsFull(t *testing.T) {
 		t.Fatalf("first event = %+v, want prefilled event", ev)
 	}
 
+	select {
+	case ev := <-evch:
+		if ev.Type != EvtText || ev.Content != "delivered text" {
+			t.Fatalf("event = %+v, want delivered text event", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for text event")
+	}
 	select {
 	case ev := <-evch:
 		if ev.Type != EvtDone {

@@ -517,13 +517,6 @@ func emitApprovalNeeded(ctx context.Context, evch chan<- Event, ev Event, timeou
 	}
 }
 func (e *Engine) emit(ctx context.Context, evch chan<- Event, ev Event) {
-	if ev.Type == EvtText {
-		select {
-		case evch <- ev:
-		default:
-		}
-		return
-	}
 	select {
 	case evch <- ev:
 	case <-ctx.Done():
