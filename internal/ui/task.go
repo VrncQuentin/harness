@@ -8,13 +8,41 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/vrnc/harness/internal/agentloop"
 )
 
 // TaskRunner executes an agent loop and streams events back.
+// TaskEvent is the UI-owned representation of a streamed task event.
+// Runtime maps agent-loop events into this DTO before handing them to UI
+// templates so presentation does not depend on the loop package shape.
+type TaskEvent struct {
+	Turn    int
+	Type    string
+	Content string
+
+	ToolID     string
+	ToolArgs   string
+	ToolResult string
+	ToolError  string
+
+	ApprovalID string
+	Terminate  string
+}
+
+const (
+	TaskEventDone           = "done"
+	TaskEventError          = "error"
+	TaskEventText           = "text"
+	TaskEventToolCall       = "tool_call"
+	TaskEventToolResult     = "tool_result"
+	TaskEventLimit          = "limit"
+	TaskEventDoom           = "doom_loop"
+	TaskEventCancel         = "cancelled"
+	TaskEventApprovalNeeded = "approval_needed"
+	TaskEventApproval       = "approval"
+)
+
 type TaskRunner interface {
-	RunTask(ctx context.Context, agent string, sessionID string, conversation []ChatMessage) (string, <-chan agentloop.Event, error)
+	RunTask(ctx context.Context, agent string, sessionID string, conversation []ChatMessage) (string, <-chan TaskEvent, error)
 	CancelTask(sessionID string) error
 	// ApplyApproval delivers a user decision for a pending approval event.
 	// sessionID identifies the task, approvalID identifies the specific
@@ -114,7 +142,7 @@ func (s *Server) liveConversationForTask(sessionID string) []ChatMessage {
 func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent, sessionID, streamID string, conversation []ChatMessage) {
 	newID, evch, err := runner.RunTask(ctx, agent, sessionID, conversation)
 	if err != nil {
-		s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(agentloop.Event{Type: agentloop.EvtError, Content: err.Error(), Terminate: agentloop.EvtError})), true)
+		s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(TaskEvent{Type: TaskEventError, Content: err.Error(), Terminate: TaskEventError})), true)
 		return
 	}
 	if newID != "" && newID != sessionID {
@@ -122,7 +150,7 @@ func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent,
 	}
 	for ev := range evch {
 		switch ev.Type {
-		case agentloop.EvtText:
+		case TaskEventText:
 			s.broadcastTaskSSE(streamID, renderTaskSSE("task-text", s.renderTaskText(ev.Content)), false)
 		default:
 			s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(ev)), true)
@@ -164,7 +192,7 @@ func (s *Server) handleTaskEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) renderTaskEvent(ev agentloop.Event) string {
+func (s *Server) renderTaskEvent(ev TaskEvent) string {
 	var buf bytes.Buffer
 	if err := s.taskTmpl.ExecuteTemplate(&buf, "task-event-fragment", ev); err != nil {
 		return ""
