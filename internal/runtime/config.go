@@ -69,13 +69,8 @@ func (rt *Runtime) ApplyConfig(
 		if old.Embedder != loaded.Embedder {
 			slog.Info("reconfiguring embedder", "old_port", old.Embedder.Port, "new_port", loaded.Embedder.Port)
 			rt.embedMgr.Reconfigure(func() (string, []string) {
-				return proc.EmbedderArgs(
-					loaded.Embedder.Binary,
-					loaded.Embedder.ModelPath,
-					loaded.Embedder.Port,
-					loaded.Embedder.Verbose,
-				)
-			}, fmt.Sprintf("http://127.0.0.1:%d/health", loaded.Embedder.Port))
+				return embedderArgsForConfig(loaded.Embedder)
+			}, embedderHealthURL(loaded.Embedder))
 			result.LiveApplied = true
 		}
 		if old.Model.Port != loaded.Model.Port && rt.reqQueue != nil {

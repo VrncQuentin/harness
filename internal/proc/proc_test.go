@@ -41,8 +41,13 @@ func TestStatus_InitialState(t *testing.T) {
 	}
 }
 
+func TestHealthURL(t *testing.T) {
+	if got := HealthURL(8123); got != "http://127.0.0.1:8123/health" {
+		t.Fatalf("HealthURL = %q", got)
+	}
+}
 func TestLlamaArgs(t *testing.T) {
-	bin, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081, false, "q8_0", "q8_0")
+	bin, args := LlamaArgs(LlamaArgsConfig{Binary: "/bin/llama-server", ModelPath: "/models/model.gguf", CtxSize: 4096, GPULayers: 10, NParallel: 2, Port: 8081, CacheTypeK: "q8_0", CacheTypeV: "q8_0"})
 	if bin != "/bin/llama-server" {
 		t.Errorf("unexpected binary: %s", bin)
 	}
@@ -61,14 +66,14 @@ func TestLlamaArgs(t *testing.T) {
 }
 
 func TestLlamaArgs_Verbose(t *testing.T) {
-	_, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081, true, "q8_0", "q8_0")
+	_, args := LlamaArgs(LlamaArgsConfig{Binary: "/bin/llama-server", ModelPath: "/models/model.gguf", CtxSize: 4096, GPULayers: 10, NParallel: 2, Port: 8081, Verbose: true, CacheTypeK: "q8_0", CacheTypeV: "q8_0"})
 	if !hasVerbose(args) {
 		t.Errorf("expected --verbose when verbose=true, got %v", args)
 	}
 }
 
 func TestLlamaArgs_CacheTypePassThrough(t *testing.T) {
-	_, args := LlamaArgs("/bin/llama-server", "/models/model.gguf", 4096, 10, 2, 8081, false, "q4_0", "f16")
+	_, args := LlamaArgs(LlamaArgsConfig{Binary: "/bin/llama-server", ModelPath: "/models/model.gguf", CtxSize: 4096, GPULayers: 10, NParallel: 2, Port: 8081, CacheTypeK: "q4_0", CacheTypeV: "f16"})
 	want := map[string]string{
 		"--cache-type-k": "q4_0",
 		"--cache-type-v": "f16",
@@ -90,7 +95,7 @@ func flagValue(args []string, flag string) string {
 }
 
 func TestEmbedderArgs(t *testing.T) {
-	bin, args := EmbedderArgs("/bin/embedder", "/models/embed.gguf", 8082, false)
+	bin, args := EmbedderArgs(EmbedderArgsConfig{Binary: "/bin/embedder", ModelPath: "/models/embed.gguf", Port: 8082})
 	if bin != "/bin/embedder" {
 		t.Errorf("unexpected binary: %s", bin)
 	}
@@ -117,7 +122,7 @@ func TestEmbedderArgs(t *testing.T) {
 }
 
 func TestEmbedderArgs_Verbose(t *testing.T) {
-	_, args := EmbedderArgs("/bin/embedder", "/models/embed.gguf", 8082, true)
+	_, args := EmbedderArgs(EmbedderArgsConfig{Binary: "/bin/embedder", ModelPath: "/models/embed.gguf", Port: 8082, Verbose: true})
 	if !hasVerbose(args) {
 		t.Errorf("expected --verbose when verbose=true, got %v", args)
 	}
