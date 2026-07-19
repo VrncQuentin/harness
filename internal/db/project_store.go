@@ -8,14 +8,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vrnc/harness/internal/home"
 	"github.com/vrnc/harness/internal/project"
 )
 
 // ProjectStore persists project metadata and attached directories.
 type ProjectStore struct {
-	db          *sql.DB
-	harnessHome string
+	db                    *sql.DB
+	defaultMemoryRepoPath func(slug string) (string, error)
 }
 
 var _ project.Store = (*ProjectStore)(nil)
@@ -80,7 +79,11 @@ func (s *ProjectStore) Create(input project.CreateInput) (project.Project, error
 	}
 	input.MemoryRepoPath = strings.TrimSpace(input.MemoryRepoPath)
 	if input.MemoryRepoPath == "" {
-		input.MemoryRepoPath = s.defaultMemoryRepoPath(input.Slug)
+		defaultPath, err := s.defaultPathForSlug(input.Slug)
+		if err != nil {
+			return project.Project{}, err
+		}
+		input.MemoryRepoPath = defaultPath
 	}
 	if err := validateMemoryRepoPath(input.MemoryRepoPath); err != nil {
 		return project.Project{}, err
@@ -132,7 +135,11 @@ func (s *ProjectStore) Update(input project.UpdateInput) (project.Project, error
 	}
 	input.MemoryRepoPath = strings.TrimSpace(input.MemoryRepoPath)
 	if input.MemoryRepoPath == "" {
-		input.MemoryRepoPath = s.defaultMemoryRepoPath(input.Slug)
+		defaultPath, err := s.defaultPathForSlug(input.Slug)
+		if err != nil {
+			return project.Project{}, err
+		}
+		input.MemoryRepoPath = defaultPath
 	}
 	if err := validateMemoryRepoPath(input.MemoryRepoPath); err != nil {
 		return project.Project{}, err
@@ -278,22 +285,30 @@ func scanProject(row projectScanner) (project.Project, error) {
 }
 
 func (s *ProjectStore) withDefaultMemoryRepoPath(p project.Project) project.Project {
-	if strings.TrimSpace(p.MemoryRepoPath) == "" {
-		p.MemoryRepoPath = s.defaultMemoryRepoPath(p.Slug)
+	if strings.TrimSpace(p.MemoryRepoPath) != "" {
+		return p
 	}
+	defaultPath, err := s.defaultPathForSlug(p.Slug)
+	if err != nil {
+		return p
+	}
+	p.MemoryRepoPath = defaultPath
 	return p
 }
 
-func (s *ProjectStore) defaultMemoryRepoPath(slug string) string {
-	root := s.harnessHome
-	if root == "" {
-		root = "."
+func (s *ProjectStore) defaultPathForSlug(slug string) (string, error) {
+	if s.defaultMemoryRepoPath == nil {
+		return "", errors.New("db: default project memory repo path not configured")
 	}
-	repoPath, err := home.ProjectRepoPath(root, slug)
+	defaultPath, err := s.defaultMemoryRepoPath(slug)
 	if err != nil {
-		return filepath.Join(root, "projects", slug)
+		return "", fmt.Errorf("db: default project memory repo path for %s: %w", slug, err)
 	}
-	return repoPath
+	defaultPath = strings.TrimSpace(defaultPath)
+	if defaultPath == "" {
+		return "", fmt.Errorf("db: default project memory repo path for %s is empty", slug)
+	}
+	return defaultPath, nil
 }
 
 func validateDirectoryPath(path string) error {
