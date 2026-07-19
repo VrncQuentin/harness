@@ -17,7 +17,6 @@ import (
 	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/queue"
 	"github.com/vrnc/harness/internal/session"
-	"github.com/vrnc/harness/internal/tools"
 )
 
 // ErrConfigStoreUnavailable is surfaced when the harness DB could not be
@@ -52,16 +51,15 @@ type Runtime struct {
 	reqQueue *queue.Queue
 	started  bool
 
-	globalMem    memory.Repo
-	activeMem    memory.Repo
-	agentReg     *agent.DiskRegistry
-	assembler    *prompt.DiskAssembler
-	apiServer    *api.Server
-	gitRepo      *gitw.Repo
-	sessionMu    sync.RWMutex
-	sessionMg    *session.Manager
-	loopRegistry *tools.Registry
-	taskRunner   *taskRunnerAdapter
+	globalMem  memory.Repo
+	activeMem  memory.Repo
+	agentReg   *agent.DiskRegistry
+	assembler  *prompt.DiskAssembler
+	apiServer  *api.Server
+	gitRepo    *gitw.Repo
+	sessionMu  sync.RWMutex
+	sessionMg  *session.Manager
+	taskRunner *taskRunnerAdapter
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.
