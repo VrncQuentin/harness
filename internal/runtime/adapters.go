@@ -129,6 +129,14 @@ func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, c
 	return msgs, err
 }
 
+func chatMessagesToInference(conversation []ui.ChatMessage) []inference.Message {
+	msgs := make([]inference.Message, len(conversation))
+	for i, m := range conversation {
+		msgs[i] = inference.Message{Role: m.Role, Content: m.Content}
+	}
+	return msgs
+}
+
 // chatRunnerAdapter satisfies ui.ChatRunner against the same assembler +
 // queue used by the API server. It exists so the ui package never imports
 // inference or queue directly: this file translates between the small
@@ -151,10 +159,7 @@ type chatRunnerAdapter struct {
 // pick the right HTTP status without inspecting queue/prompt error
 // types.
 func (ad *chatRunnerAdapter) Run(ctx context.Context, agentName, sessionID string, conversation []ui.ChatMessage) (string, <-chan ui.ChatToken, error) {
-	msgs := make([]inference.Message, len(conversation))
-	for i, m := range conversation {
-		msgs[i] = inference.Message{Role: m.Role, Content: m.Content}
-	}
+	msgs := chatMessagesToInference(conversation)
 
 	// Resolve the active agent up front so the session is bound to the
 	// same value the assembler will use.
@@ -477,10 +482,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		return "", nil, ui.ErrTaskNoAgent
 	}
 
-	msgs := make([]inference.Message, len(conversation))
-	for i, m := range conversation {
-		msgs[i] = inference.Message{Role: m.Role, Content: m.Content}
-	}
+	msgs := chatMessagesToInference(conversation)
 
 	// Route through the Prompt Assembler so the model receives rules,
 	// persona, memory, and episodes — not just raw conversation.
