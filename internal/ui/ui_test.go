@@ -71,6 +71,10 @@ func (s *countingProjectStore) SetHidden(slug string, hidden bool) error {
 	return nil
 }
 
+func (s *countingProjectStore) ListDirectories(string) ([]project.Directory, error) {
+	return nil, nil
+}
+
 type stubConfigStore struct {
 	cfg config.Config
 }
