@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,10 +18,8 @@ import (
 	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	_ "modernc.org/sqlite" // register the sqlite driver
-
-	"github.com/vrnc/harness/internal/home"
 	"github.com/vrnc/harness/migrations"
+	_ "modernc.org/sqlite" // register the sqlite driver
 )
 
 // DB owns the shared harness SQLite handle and exposes typed stores for each
@@ -34,9 +31,17 @@ type DB struct {
 	projects *ProjectStore
 }
 
+// DefaultMemoryRepoPathFunc returns the default project memory repo path for slug.
+// The caller owns path policy; db only persists the resulting value.
+type DefaultMemoryRepoPathFunc func(slug string) (string, error)
+
 // Open opens harness.db at path, applies any pending migrations, and seeds
 // the singleton config row. The returned *DB must be closed via Close.
-func Open(path string) (*DB, error) {
+func Open(path string, defaultMemoryRepoPath DefaultMemoryRepoPathFunc) (*DB, error) {
+	if defaultMemoryRepoPath == nil {
+		return nil, errors.New("db: default memory repo path function is required")
+	}
+
 	sqldb, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		return nil, fmt.Errorf("db: open %s: %w", path, err)
@@ -51,16 +56,12 @@ func Open(path string) (*DB, error) {
 		_ = sqldb.Close()
 		return nil, err
 	}
-
-	harnessHome := filepath.Dir(path)
 	d := &DB{sqldb: sqldb}
 	d.cfg = &ConfigStore{db: sqldb}
 	d.metrics = &MetricsStore{db: sqldb}
 	d.projects = &ProjectStore{
-		db: sqldb,
-		defaultMemoryRepoPath: func(slug string) (string, error) {
-			return home.ProjectRepoPath(harnessHome, slug)
-		},
+		db:                    sqldb,
+		defaultMemoryRepoPath: defaultMemoryRepoPath,
 	}
 
 	if err := d.seedGlobalProject(); err != nil {

@@ -88,7 +88,9 @@ func run() error {
 			uiServer.AddStartupError(err)
 		} else {
 			slog.Info("harness starting", "binDir", binDir, "home", harnessHome)
-			harnessDB, cfgStore, metricsStore = harnessruntime.OpenDB(uiServer, dbPath)
+			harnessDB, cfgStore, metricsStore = harnessruntime.OpenDB(uiServer, dbPath, func(slug string) (string, error) {
+				return home.ProjectRepoPath(harnessHome, slug)
+			})
 			if harnessDB != nil {
 				slog.Info("harness.db opened", "path", dbPath)
 			}
