@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -85,11 +84,11 @@ func (s *ProjectStore) Create(input project.CreateInput) (project.Project, error
 		}
 		input.MemoryRepoPath = defaultPath
 	}
-	if err := validateMemoryRepoPath(input.MemoryRepoPath); err != nil {
+	if err := project.ValidateMemoryRepoPath(input.MemoryRepoPath); err != nil {
 		return project.Project{}, err
 	}
 	for _, dir := range input.Directories {
-		if err := validateDirectoryPath(dir); err != nil {
+		if err := project.ValidateDirectoryPath(dir); err != nil {
 			return project.Project{}, err
 		}
 	}
@@ -141,7 +140,7 @@ func (s *ProjectStore) Update(input project.UpdateInput) (project.Project, error
 		}
 		input.MemoryRepoPath = defaultPath
 	}
-	if err := validateMemoryRepoPath(input.MemoryRepoPath); err != nil {
+	if err := project.ValidateMemoryRepoPath(input.MemoryRepoPath); err != nil {
 		return project.Project{}, err
 	}
 	res, err := s.db.Exec(`UPDATE projects SET
@@ -309,27 +308,6 @@ func (s *ProjectStore) defaultPathForSlug(slug string) (string, error) {
 		return "", fmt.Errorf("db: default project memory repo path for %s is empty", slug)
 	}
 	return defaultPath, nil
-}
-
-func validateDirectoryPath(path string) error {
-	if !isAbsPath(path) {
-		return project.ErrInvalidPath
-	}
-	return nil
-}
-
-func validateMemoryRepoPath(path string) error {
-	if !isAbsPath(path) {
-		return project.ErrMemoryRepo
-	}
-	return nil
-}
-
-func isAbsPath(path string) bool {
-	if filepath.IsAbs(path) {
-		return true
-	}
-	return len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')
 }
 
 func isConstraintError(err error) bool {

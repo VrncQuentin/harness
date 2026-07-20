@@ -46,3 +46,27 @@ func TestValidateCreatableSlugRejectsGlobalWithSpaces(t *testing.T) {
 		t.Fatalf("ValidateCreatableSlug(\" global \"): errors.Is(ErrReservedSlug)=false, err=%v", err)
 	}
 }
+
+func TestValidateDirectoryPath(t *testing.T) {
+	if err := ValidateDirectoryPath(t.TempDir()); err != nil {
+		t.Fatalf("ValidateDirectoryPath(temp dir): %v", err)
+	}
+	if err := ValidateDirectoryPath(`C:\tmp\repo`); err != nil {
+		t.Fatalf("ValidateDirectoryPath(windows abs): %v", err)
+	}
+	if err := ValidateDirectoryPath("relative"); !errors.Is(err, ErrInvalidPath) {
+		t.Fatalf("ValidateDirectoryPath(relative): errors.Is(ErrInvalidPath)=false, err=%v", err)
+	}
+}
+
+func TestValidateMemoryRepoPath(t *testing.T) {
+	if err := ValidateMemoryRepoPath(t.TempDir()); err != nil {
+		t.Fatalf("ValidateMemoryRepoPath(temp dir): %v", err)
+	}
+	if err := ValidateMemoryRepoPath(`C:/tmp/repo`); err != nil {
+		t.Fatalf("ValidateMemoryRepoPath(windows abs): %v", err)
+	}
+	if err := ValidateMemoryRepoPath("relative"); !errors.Is(err, ErrMemoryRepo) {
+		t.Fatalf("ValidateMemoryRepoPath(relative): errors.Is(ErrMemoryRepo)=false, err=%v", err)
+	}
+}
