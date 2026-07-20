@@ -570,12 +570,21 @@ func (s *Server) SetFirstRun(v bool) {
 // before reaching individual handlers.
 func (s *Server) originPolicy(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if (r.Method == http.MethodPost || r.URL.Path == "/events") && !sameOrigin(r) {
+		if (r.Method == http.MethodPost || isProtectedEventStream(r.URL.Path)) && !sameOrigin(r) {
 			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isProtectedEventStream(path string) bool {
+	switch path {
+	case "/events", "/chat/events", "/task/events":
+		return true
+	default:
+		return false
+	}
 }
 func (s *Server) Start(ctx context.Context) error {
 	s.serverCtxMu.Lock()
