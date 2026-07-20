@@ -37,6 +37,22 @@ func TestBlendEpisodeScoresUsesOldestFirstRecency(t *testing.T) {
 	}
 }
 
+func TestBlendEpisodeScoresPrefersFullPathOverLegacyBasename(t *testing.T) {
+	paths := []string{"episodes/coder/shared.md", "episodes/reviewer/shared.md"}
+	semantic := map[string]float64{
+		"episodes/coder/shared":    0.2,
+		"episodes/reviewer/shared": 0.9,
+		"shared":                   0.5,
+	}
+
+	got := BlendEpisodeScores(paths, semantic, 1, 0)
+	if !nearly(got["episodes/coder/shared.md"], 0.2) {
+		t.Fatalf("coder shared score = %v, want full-path score 0.2", got["episodes/coder/shared.md"])
+	}
+	if !nearly(got["episodes/reviewer/shared.md"], 0.9) {
+		t.Fatalf("reviewer shared score = %v, want full-path score 0.9", got["episodes/reviewer/shared.md"])
+	}
+}
 func TestEpisodeID(t *testing.T) {
 	if got := EpisodeID("projects/global/episodes/coder/abc123.md"); got != "projects/global/episodes/coder/abc123" {
 		t.Fatalf("EpisodeID = %q, want projects/global/episodes/coder/abc123", got)
