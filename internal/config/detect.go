@@ -135,15 +135,24 @@ func dedupAbs(paths []string) []string {
 	seen := make(map[string]struct{}, len(paths))
 	out := make([]string, 0, len(paths))
 	for _, p := range paths {
-		abs, err := filepath.Abs(p)
-		if err != nil {
-			abs = p
-		}
-		if _, dup := seen[abs]; dup {
+		abs, key := canonicalPath(p)
+		if _, dup := seen[key]; dup {
 			continue
 		}
-		seen[abs] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, abs)
 	}
 	return out
+}
+
+func canonicalPath(p string) (display string, key string) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		abs = p
+	}
+	physical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs, abs
+	}
+	return abs, physical
 }
