@@ -172,27 +172,10 @@ func (ad *chatRunnerAdapter) Run(ctx context.Context, agentName, sessionID strin
 		return "", nil, ui.ErrChatNoAgent
 	}
 
-	// Mint or attach to a session id so the manager has somewhere to
-	// stash the assistant turn. We append the user-side conversation
-	// (everything but the placeholder assistant we are about to fill in)
-	// before dispatch so a save on the next click captures it even if
-	// the user navigates away mid-stream.
-	id := sessionID
-	if ad.mgr != nil {
-		if id == "" {
-			s := ad.mgr.Start(resolvedAgent)
-			id = s.ID
-		} else if ad.mgr.Snapshot(id) == nil {
-			// The browser pinned an id we don't know - either it was a
-			// resume that never landed in this process, or a stale
-			// reference. Either way, mint a fresh session bound to the
-			// active agent and replay onto it so the conversation is
-			// not silently discarded.
-			s := ad.mgr.Start(resolvedAgent)
-			id = s.ID
-		}
-		appendUserSide(ad.mgr, id, msgs)
-	}
+	// Mint or attach to a session id and replay any user-side delta before
+	// dispatch so a save on the next click captures the turn even if the user
+	// navigates away mid-stream.
+	id := attachSessionTurn(ad.mgr, sessionID, resolvedAgent, msgs)
 
 	reqID := fmt.Sprintf("uichat-%d", time.Now().UnixNano())
 	ctx = reqid.WithID(ctx, reqID)
@@ -250,6 +233,18 @@ func (ad *chatRunnerAdapter) Run(ctx context.Context, agentName, sessionID strin
 	return id, out, nil
 }
 
+func attachSessionTurn(mgr *session.Manager, sessionID, agentName string, msgs []inference.Message) string {
+	id := sessionID
+	if mgr == nil {
+		return id
+	}
+	if id == "" || mgr.Snapshot(id) == nil {
+		s := mgr.Start(agentName)
+		id = s.ID
+	}
+	appendUserSide(mgr, id, msgs)
+	return id
+}
 func appendAssistantContent(mgr *session.Manager, id, content, logMessage string) {
 	if mgr == nil || id == "" || content == "" {
 		return
@@ -496,19 +491,8 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		assembled = msgs
 	}
 
-	// Mint or attach to a session.
 	mgr := ad.rt.SessionManager()
-	id := sessionID
-	if mgr != nil {
-		if id == "" {
-			s := mgr.Start(agentName)
-			id = s.ID
-		} else if mgr.Snapshot(id) == nil {
-			s := mgr.Start(agentName)
-			id = s.ID
-		}
-		appendUserSide(mgr, id, msgs)
-	}
+	id := attachSessionTurn(mgr, sessionID, agentName, msgs)
 
 	if ad.q == nil {
 		return "", nil, fmt.Errorf("task queue not ready")
