@@ -70,8 +70,9 @@
     <p>{{.Content}}</p>
     <p><code>{{.ToolID}}</code></p>
     <pre class="tool-args">{{.ToolArgs}}</pre>
-    <p class="fg-hint">This destructive tool requires your approval before it can execute.</p>
+    <p class="fg-hint">This destructive tool requires your approval before it can execute.{{if eq .ToolID "shell_exec"}} Shell commands are approved one at a time — "always allow" is not offered because every command is reviewed individually.{{end}}</p>
     <div class="approval-actions">
+      {{if ne .ToolID "shell_exec"}}
       <button class="btn btn-primary btn-sm"
         hx-post="/task/approval"
         hx-include="#task-session-input"
@@ -80,6 +81,7 @@
         hx-swap="outerHTML">
         Always Allow
       </button>
+      {{end}}
       <button class="btn btn-primary btn-sm"
         hx-post="/task/approval"
         hx-include="#task-session-input"
