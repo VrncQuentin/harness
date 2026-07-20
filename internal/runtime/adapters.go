@@ -209,6 +209,9 @@ func (ad *chatRunnerAdapter) Run(ctx context.Context, agentName, sessionID strin
 	go func() {
 		defer close(out)
 		var assistant string
+		flushAssistant := func(logMessage string) {
+			appendAssistantContent(ad.mgr, id, assistant, logMessage)
+		}
 		for tok := range respCh {
 			if tok.Content != "" {
 				assistant += tok.Content
@@ -220,15 +223,14 @@ func (ad *chatRunnerAdapter) Run(ctx context.Context, agentName, sessionID strin
 			}
 			if tok.Done || tok.Err != nil {
 				if tok.Err == nil {
-					appendAssistantContent(ad.mgr, id, assistant, "session: append assistant turn")
+					flushAssistant("session: append assistant turn")
 				}
 				return
 			}
 		}
 		// Channel closed without a Done token - capture whatever was
 		// streamed so the save can still confirm partial progress.
-		appendAssistantContent(ad.mgr, id, assistant, "session: append assistant turn (closed)")
-
+		flushAssistant("session: append assistant turn (closed)")
 	}()
 	return id, out, nil
 }
