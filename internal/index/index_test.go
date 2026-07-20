@@ -255,6 +255,29 @@ func TestIndex_Contains(t *testing.T) {
 	}
 }
 
+func TestIndex_ContainsCurrentMatchesSourceAndContentHash(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Upsert("episodes/coder/ep1", "hash-a", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if !idx.ContainsCurrent("episodes/coder/ep1", "hash-a") {
+		t.Fatal("expected source with matching hash to be current")
+	}
+	if idx.ContainsCurrent("episodes/coder/ep1", "hash-b") {
+		t.Fatal("changed content hash should not be current")
+	}
+	if idx.ContainsCurrent("episodes/reviewer/ep1", "hash-a") {
+		t.Fatal("same hash under another source should not be current")
+	}
+	if idx.ContainsCurrent("episodes/coder/ep1", "") {
+		t.Fatal("empty hash should not be current")
+	}
+}
+
 func TestIndex_UpsertReplacesSourceAndKeepsAgentPathsDistinct(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := Create(dir, 2)

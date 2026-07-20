@@ -171,6 +171,7 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 	type pending struct {
 		path    string
 		content string
+		hash    string
 		chunks  []string
 	}
 	var work []pending
@@ -182,11 +183,16 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 			continue
 		}
 		content := string(body)
+		hash := contentHash(content)
+		id := retrieval.EpisodeID(p)
+		if rb.Index != nil && rb.Index.ContainsCurrent(id, hash) {
+			continue
+		}
 		chunks := chunkSummary(content)
 		if len(chunks) == 0 {
 			continue
 		}
-		work = append(work, pending{path: p, content: content, chunks: chunks})
+		work = append(work, pending{path: p, content: content, hash: hash, chunks: chunks})
 		allChunkCount += len(chunks)
 	}
 
@@ -234,7 +240,7 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		}
 		epVecs := vectors[offset : offset+n]
 		offset += n
-		if err := rb.Index.Upsert(retrieval.EpisodeID(w.path), contentHash(w.content), epVecs); err != nil {
+		if err := rb.Index.Upsert(retrieval.EpisodeID(w.path), w.hash, epVecs); err != nil {
 			slog.Warn("index rebuild: add episode", "path", w.path, "err", err)
 		}
 	}
