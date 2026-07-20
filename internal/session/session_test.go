@@ -323,6 +323,53 @@ func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 	}
 }
 
+func TestManager_ConcurrentSavesSerializeSaveSeq(t *testing.T) {
+	fi := newFakeInference(summaryTokens("first concurrent summary"), summaryTokens("second concurrent summary"))
+	mgr, _, dir, _ := newTestManager(t, fi)
+	s := mgr.Start("coder")
+	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "save this safely"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	type saveOutcome struct {
+		seq int
+		err error
+	}
+	out := make(chan saveOutcome, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := mgr.Save(context.Background(), s.ID)
+			out <- saveOutcome{seq: res.SaveSeq, err: err}
+		}()
+	}
+	wg.Wait()
+	close(out)
+
+	seenSeq := map[int]bool{}
+	for got := range out {
+		if got.err != nil {
+			t.Fatalf("Save returned error: %v", got.err)
+		}
+		seenSeq[got.seq] = true
+	}
+	if !seenSeq[1] || !seenSeq[2] || len(seenSeq) != 2 {
+		t.Fatalf("concurrent save seqs = %#v, want exactly 1 and 2", seenSeq)
+	}
+
+	records, err := ReadAll(filepath.Join(dir, "sessions.jsonl"))
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("log records = %d, want 2", len(records))
+	}
+	if records[0].SaveSeq != 1 || records[1].SaveSeq != 2 {
+		t.Fatalf("log save seqs = %d,%d; want 1,2", records[0].SaveSeq, records[1].SaveSeq)
+	}
+}
 func TestManager_ResumeHydratesConversation(t *testing.T) {
 	fi := newFakeInference(summaryTokens("yo"))
 	mgr, _, _, _ := newTestManager(t, fi)
