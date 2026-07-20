@@ -220,7 +220,7 @@ func TestOpen_RejectsUnexpectedMigrationVersion(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	sqldb, err := sql.Open("sqlite", foreignKeysDSN(path))
+	sqldb, err := sql.Open("sqlite", sqliteDSN(path))
 	if err != nil {
 		t.Fatalf("sql.Open: %v", err)
 	}

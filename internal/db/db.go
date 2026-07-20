@@ -128,12 +128,6 @@ func sqliteDSN(path string) string {
 	return dsn
 }
 
-// foreignKeysDSN is kept for existing tests/callers; sqliteDSN now owns all
-// required SQLite connection pragmas.
-func foreignKeysDSN(path string) string {
-	return sqliteDSN(path)
-}
-
 func appendSQLitePragma(dsn, pragma string) string {
 	sep := "?"
 	if strings.Contains(dsn, "?") {
