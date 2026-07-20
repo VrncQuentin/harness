@@ -299,13 +299,14 @@ Pipeline run metrics remain milestone-scoped in the roadmap until the M10 runner
 
 Interface:
 ```go
-type Metrics interface {
-    Record(name string, value float64, tags map[string]string)
-    Query(name string, from, to time.Time) ([]DataPoint, error)
+type Store interface {
+    Record(name string, value float64, tags map[string]string) error
+    Latest() ([]DataPoint, error)
+    ApplyRetention(retentionDays int) error
 }
 ```
 
-The UI reads directly from SQLite to render history charts. An optional Prometheus endpoint (M8) exposes the same data for external scraping.
+The UI reads latest retained samples directly from SQLite. Retention compacts older raw samples into aggregates so `harness.db` does not grow forever. An optional Prometheus endpoint (M8) exposes the latest samples for external scraping.
 
 ### API Server (`internal/api`) — optional
 Thin OpenAI-compatible HTTP server. Enables external clients to send chat completions through the same prompt, queue, inference, and session-recording path.
