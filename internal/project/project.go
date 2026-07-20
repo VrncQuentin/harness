@@ -4,6 +4,7 @@ package project
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -103,4 +104,25 @@ func ValidateDisplayName(displayName string) error {
 		return ErrDisplayName
 	}
 	return nil
+}
+
+func ValidateDirectoryPath(path string) error {
+	if !IsAbsPath(path) {
+		return ErrInvalidPath
+	}
+	return nil
+}
+
+func ValidateMemoryRepoPath(path string) error {
+	if !IsAbsPath(path) {
+		return ErrMemoryRepo
+	}
+	return nil
+}
+
+func IsAbsPath(path string) bool {
+	if filepath.IsAbs(path) {
+		return true
+	}
+	return len(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')
 }
