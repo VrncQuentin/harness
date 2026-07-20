@@ -822,28 +822,48 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	s := mgr.Start("coder")
 
 	recordTaskEvents(mgr, s.ID, []agentloop.Event{
-		{Type: agentloop.EvtApprovalNeeded, ApprovalID: "approval-1", ToolID: "file_write", ToolArgs: `{"path":"x"}`},
-		{Type: agentloop.EvtApproval, ApprovalID: "approval-1", ToolID: "file_write"},
+		{
+			Type:           agentloop.EvtApprovalNeeded,
+			ApprovalID:     "approval-1",
+			ToolID:         "file_write",
+			ToolArgs:       `{"path":"x"}`,
+			ApprovalReason: "builtin: writes require approval",
+		},
+		{
+			Type:             agentloop.EvtApproval,
+			ApprovalID:       "approval-1",
+			ToolID:           "file_write",
+			ApprovalReason:   "builtin: writes require approval",
+			ApprovalDecision: approvals.Allowed.String(),
+			ApprovalScope:    approvals.ApprovalScopeAlways,
+		},
 	})
 
 	snap := mgr.Snapshot(s.ID)
 	if snap == nil {
 		t.Fatal("session snapshot missing")
 	}
-	var approvals []string
+	var approvalMessages []string
 	for _, msg := range snap.Conversation {
 		if msg.Role == "system" && msg.Name == "approval" {
-			approvals = append(approvals, msg.Content)
+			approvalMessages = append(approvalMessages, msg.Content)
 		}
 	}
-	if len(approvals) != 2 {
-		t.Fatalf("approval audit messages = %d, want 2; conversation=%+v", len(approvals), snap.Conversation)
+	if len(approvalMessages) != 2 {
+		t.Fatalf("approval audit messages = %d, want 2; conversation=%+v", len(approvalMessages), snap.Conversation)
 	}
-	if !strings.Contains(approvals[0], "[approval_needed #1]") || !strings.Contains(approvals[1], "[approval #1]") {
-		t.Fatalf("approval audit numbers not paired: %#v", approvals)
+	for _, want := range []string{"[approval_needed #1]", "id=approval-1", "tool=file_write", "reason=\"builtin: writes require approval\"", `args={"path":"x"}`} {
+		if !strings.Contains(approvalMessages[0], want) {
+			t.Fatalf("approval-needed audit missing %q: %#v", want, approvalMessages)
+		}
 	}
-	if strings.Contains(approvals[1], "#2") {
-		t.Fatalf("approval result consumed a new number: %#v", approvals)
+	for _, want := range []string{"[approval #1]", "id=approval-1", "tool=file_write", "decision=" + approvals.Allowed.String(), "scope=" + approvals.ApprovalScopeAlways, "reason=\"builtin: writes require approval\""} {
+		if !strings.Contains(approvalMessages[1], want) {
+			t.Fatalf("approval result audit missing %q: %#v", want, approvalMessages)
+		}
+	}
+	if strings.Contains(approvalMessages[1], "#2") {
+		t.Fatalf("approval result consumed a new number: %#v", approvalMessages)
 	}
 }
 

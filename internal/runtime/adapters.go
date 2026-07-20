@@ -676,25 +676,40 @@ func (ad *taskRunnerAdapter) ApplyApproval(sessionID, approvalID, decision strin
 
 func mapTaskEvent(ev agentloop.Event) ui.TaskEvent {
 	return ui.TaskEvent{
-		Turn:       ev.Turn,
-		Type:       ev.Type,
-		Content:    ev.Content,
-		ToolID:     ev.ToolID,
-		ToolArgs:   ev.ToolArgs,
-		ToolResult: ev.ToolResult,
-		ToolError:  ev.ToolError,
-		ApprovalID: ev.ApprovalID,
-		Terminate:  ev.Terminate,
+		Turn:             ev.Turn,
+		Type:             ev.Type,
+		Content:          ev.Content,
+		ToolID:           ev.ToolID,
+		ToolArgs:         ev.ToolArgs,
+		ToolResult:       ev.ToolResult,
+		ToolError:        ev.ToolError,
+		ApprovalID:       ev.ApprovalID,
+		ApprovalReason:   ev.ApprovalReason,
+		ApprovalDecision: ev.ApprovalDecision,
+		ApprovalScope:    ev.ApprovalScope,
+		Terminate:        ev.Terminate,
 	}
 }
 
-func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event) {
+type taskEventAppender interface {
+	Append(id string, msg inference.Message) error
+}
+
+const (
+	approvalAuditMessageName  = "approval"
+	approvalAuditNeededFormat = "[approval_needed #%d] id=%s tool=%s reason=%q args=%s"
+	approvalAuditResultFormat = "[approval #%d] id=%s tool=%s decision=%s scope=%s reason=%q"
+)
+
+func recordTaskEvents(mgr taskEventAppender, id string, events []agentloop.Event) {
 	var assistant strings.Builder
 	flushAssistant := func() {
-		if assistant.Len() == 0 {
+		if assistant.Len() == 0 || mgr == nil || id == "" {
 			return
 		}
-		appendAssistantContent(mgr, id, assistant.String(), "session: append task assistant turn")
+		if err := mgr.Append(id, inference.Message{Role: "assistant", Content: assistant.String()}); err != nil {
+			slog.Warn("session: append task assistant turn", "id", id, "err", err)
+		}
 		assistant.Reset()
 	}
 
@@ -741,10 +756,10 @@ func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event)
 			if ev.ApprovalID != "" {
 				approvalNumbers[ev.ApprovalID] = seq
 			}
-			trail := fmt.Sprintf("[approval_needed #%d] %s: %s", seq, ev.ToolID, ev.ToolArgs)
+			trail := fmt.Sprintf(approvalAuditNeededFormat, seq, ev.ApprovalID, ev.ToolID, ev.ApprovalReason, ev.ToolArgs)
 			if err := mgr.Append(id, inference.Message{
 				Role:    "system",
-				Name:    "approval",
+				Name:    approvalAuditMessageName,
 				Content: trail,
 			}); err != nil {
 				slog.Warn("session: append approval needed", "id", id, "err", err)
@@ -759,14 +774,21 @@ func recordTaskEvents(mgr *session.Manager, id string, events []agentloop.Event)
 				approvalSeq++
 				seq = approvalSeq
 			}
-			decision := "approved"
-			if ev.ToolError == "denied" {
-				decision = "denied"
+			decision := ev.ApprovalDecision
+			if decision == "" {
+				decision = approvals.Allowed.String()
+				if ev.ToolError == approvals.Denied.String() || ev.ToolError == "denied" {
+					decision = approvals.Denied.String()
+				}
 			}
-			trail := fmt.Sprintf("[approval #%d] %s: %s", seq, ev.ToolID, decision)
+			scope := ev.ApprovalScope
+			if scope == "" {
+				scope = approvals.ApprovalScopeOnce
+			}
+			trail := fmt.Sprintf(approvalAuditResultFormat, seq, ev.ApprovalID, ev.ToolID, decision, scope, ev.ApprovalReason)
 			if err := mgr.Append(id, inference.Message{
 				Role:    "system",
-				Name:    "approval",
+				Name:    approvalAuditMessageName,
 				Content: trail,
 			}); err != nil {
 				slog.Warn("session: append approval result", "id", id, "err", err)
