@@ -143,7 +143,7 @@ Design references: opencode (part-based messages, step counter, doom-loop detect
 - [x] Chat/task surface: first-party browser UI for task input and conversation display; no external chat client needed
 - [x] Loop engine: send conversation to the model, parse the response, dispatch tool calls, inject results, and repeat until stop/limit/cancel
 - [x] `/task` route uses the Prompt Assembler and Queue, so personas/memory apply and model calls are serialized/backpressured
-- [x] Inference client parses OpenAI-style tool calls for streaming and non-streaming chat completion responses; the agent loop currently requests streaming completions
+- [x] Inference client parses OpenAI-style streaming tool-call deltas; the API intentionally rejects non-streaming chat completions until a supported product contract exists
 - [x] Part-based message model: text, tool_call, and tool_result parts are represented for UI display and session replay
 - [x] Tool registry and schema contract: tools declare id, JSON Schema parameters, execute function, and context (active project, sandbox roots, session id, caller identity, cancellation context)
 - [x] Read-only file tools first: `file_read` and `file_list` are enabled by default; destructive tools are disabled by default and gated by M7 approvals
