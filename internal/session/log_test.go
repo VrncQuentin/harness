@@ -121,15 +121,19 @@ func TestLatestPerID(t *testing.T) {
 	}
 }
 
-func TestSortByNewest(t *testing.T) {
+func TestSortByNewestOrdersBySavedAtThenID(t *testing.T) {
 	now := time.Now().UTC()
 	records := []Record{
-		{ID: "a", SavedAt: now},
+		{ID: "c", SavedAt: now},
 		{ID: "b", SavedAt: now.Add(time.Hour)},
-		{ID: "c", SavedAt: now.Add(-time.Hour)},
+		{ID: "a", SavedAt: now},
+		{ID: "d", SavedAt: now.Add(-time.Hour)},
 	}
 	sortByNewest(records)
-	if records[0].ID != "b" || records[1].ID != "a" || records[2].ID != "c" {
-		t.Errorf("expected [b,a,c], got [%s,%s,%s]", records[0].ID, records[1].ID, records[2].ID)
+	want := []string{"b", "a", "c", "d"}
+	for i, id := range want {
+		if records[i].ID != id {
+			t.Fatalf("sort[%d] = %q, want %q; full order = [%s,%s,%s,%s]", i, records[i].ID, id, records[0].ID, records[1].ID, records[2].ID, records[3].ID)
+		}
 	}
 }
