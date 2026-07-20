@@ -24,14 +24,23 @@ import (
 	"github.com/vrnc/harness/internal/vector"
 )
 
-// AfterSaveEmbed returns an AfterSaveFunc that embeds the episode summary and
-// updates the project's _episodes index.
+// AfterSaveEmbed returns an AfterSaveFunc that embeds the saved episode and
+// updates the project's _episodes index. It indexes the rendered episode body
+// (the exact bytes written to disk), so the content hash and chunk boundaries
+// match what an on-disk rebuild computes and an unchanged episode is never
+// re-embedded.
 func AfterSaveEmbed(embedClient embedder.Client, episodeIndex *EpisodeIndex, repo *gitw.Repo) session.AfterSaveFunc {
 	return func(ctx context.Context, result session.SaveResult) error {
-		if embedClient == nil || episodeIndex == nil || result.Summary == "" {
+		if embedClient == nil || episodeIndex == nil {
 			return nil
 		}
-		chunks := chunkSummary(result.Summary)
+		// Fall back to the summary for callers that predate EpisodeBody; the
+		// live Manager always populates the rendered body.
+		indexed := result.EpisodeBody
+		if strings.TrimSpace(indexed) == "" {
+			indexed = result.Summary
+		}
+		chunks := chunkSummary(indexed)
 		if len(chunks) == 0 {
 			return nil
 		}
@@ -40,7 +49,7 @@ func AfterSaveEmbed(embedClient embedder.Client, episodeIndex *EpisodeIndex, rep
 		if err != nil {
 			return fmt.Errorf("embed episode %s: %w", result.ID, err)
 		}
-		if err := episodeIndex.Upsert(retrieval.EpisodeID(result.EpisodePath), contentHash(result.Summary), vectors); err != nil {
+		if err := episodeIndex.Upsert(retrieval.EpisodeID(result.EpisodePath), contentHash(indexed), vectors); err != nil {
 			return fmt.Errorf("index episode %s: %w", result.EpisodePath, err)
 		}
 

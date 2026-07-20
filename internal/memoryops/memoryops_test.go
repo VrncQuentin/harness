@@ -8,6 +8,7 @@ import (
 
 	"github.com/vrnc/harness/internal/index"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/session"
 )
 
 func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
@@ -146,6 +147,56 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 	}
 	if emb.calls != 0 {
 		t.Fatalf("unchanged indexed episode was embedded %d times", emb.calls)
+	}
+}
+
+// TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips guards the save/rebuild
+// identity contract: AfterSaveEmbed must hash and chunk the rendered episode
+// body (the on-disk bytes), not the raw summary. Otherwise a rebuild recomputes
+// a different content hash and re-embeds every already-indexed episode.
+func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
+	root := t.TempDir()
+	body := "# Episode ep1\n\nHello world summary.\n"
+	episodePath := filepath.Join(root, "episodes", "coder", "ep1.md")
+	if err := os.MkdirAll(filepath.Dir(episodePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll episode dir: %v", err)
+	}
+	if err := os.WriteFile(episodePath, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile episode: %v", err)
+	}
+
+	idxService, err := NewEpisodeIndex(EpisodeIndexDir(root))
+	if err != nil {
+		t.Fatalf("NewEpisodeIndex: %v", err)
+	}
+	emb := &countingEmbedder{vec: []float32{1, 0}}
+	hook := AfterSaveEmbed(emb, idxService, nil)
+	res := session.SaveResult{
+		ID:          "ep1",
+		EpisodePath: "episodes/coder/ep1.md",
+		EpisodeBody: body,
+		// A summary that differs from the rendered body: if the hook indexed
+		// this instead, the rebuild below would re-embed and fail the test.
+		Summary: "a divergent summary that must not drive the index hash",
+	}
+	if err := hook(context.Background(), res); err != nil {
+		t.Fatalf("AfterSaveEmbed: %v", err)
+	}
+	if emb.calls != 1 {
+		t.Fatalf("expected exactly one embed at save, got %d", emb.calls)
+	}
+
+	rb := &EpisodeRebuilder{
+		Mem:      memory.NewDirReader(root),
+		Embedder: emb,
+		Index:    idxService.Current(),
+		IndexDir: EpisodeIndexDir(root),
+	}
+	if err := rb.Rebuild(context.Background()); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	if emb.calls != 1 {
+		t.Fatalf("rebuild re-embedded an already-indexed episode: embed calls = %d", emb.calls)
 	}
 }
 
