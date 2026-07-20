@@ -215,7 +215,8 @@ func (rt *Runtime) memoryAPIUnavailable() bool {
 		rt.agentReg == nil ||
 		rt.assembler == nil ||
 		rt.taskRunner == nil ||
-		rt.SessionManager() == nil
+		rt.SessionManager() == nil ||
+		(rt.cfg.API.Enabled && rt.apiServer == nil)
 }
 
 type memoryAPISnapshot struct {
