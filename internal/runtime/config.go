@@ -63,6 +63,7 @@ func (rt *Runtime) ApplyConfig(
 		rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
 		result.LiveApplied = true
 	} else {
+		needsMemoryAPIRetry := rt.memoryAPIUnavailable()
 		if oldModel != newModel {
 			slog.Info("reconfiguring llama-server", "old_port", oldModel.Port, "new_port", newModel.Port)
 			rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(newModel) }, llamaHealthURL(newModel))
@@ -87,7 +88,8 @@ func (rt *Runtime) ApplyConfig(
 			old.Agent.Active != loaded.Agent.Active ||
 			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug ||
 			modelEndpointChanged ||
-			embedderEndpointChanged {
+			embedderEndpointChanged ||
+			needsMemoryAPIRetry {
 			rt.quiesceMemoryAndAPI(ctx)
 			// Project switch optionally reloads llama-server before rebuilding
 			// memory services. Live work has already been quiesced above so it
