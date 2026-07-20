@@ -277,13 +277,10 @@ func TestM3Acceptance_5_GarbledLogTolerated(t *testing.T) {
 	}
 }
 
-// TestM3Acceptance_6_EpisodeVisibleToMemoryWalker is a smoke check
-// that the session writer saves episodes at the path the memory browser
-// walker expects. It verifies the file lands where memory.Reader.Walk
-// can find it; real handler rendering lives in internal/ui tests.
-
-// verify the file lands where the handler expects.
-func TestM3Acceptance_6_EpisodeVisibleToMemoryWalker(t *testing.T) {
+// TestEpisodeVisibleToMemoryWalker is a smoke check that the session writer
+// saves episodes at the path the memory browser walker expects. Real handler
+// rendering coverage lives in internal/ui tests.
+func TestEpisodeVisibleToMemoryWalker(t *testing.T) {
 	fi := newFakeInference(summaryTokens("UI test summary"))
 	mgr, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
