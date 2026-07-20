@@ -22,12 +22,18 @@ import (
 	"github.com/vrnc/harness/internal/project"
 )
 
+func testDefaultMemoryRepoPath(root string) db.DefaultMemoryRepoPathFunc {
+	return func(slug string) (string, error) {
+		return filepath.Join(root, "projects", slug), nil
+	}
+}
+
 // newServerWithStore returns a Server wired to a fresh temp SQLite config store.
 // The store is also returned for assertions.
 func newServerWithStore(t *testing.T) (*Server, config.Store) {
 	t.Helper()
 	dir := t.TempDir()
-	d, err := db.Open(filepath.Join(dir, "harness.db"))
+	d, err := db.Open(filepath.Join(dir, "harness.db"), testDefaultMemoryRepoPath(dir))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
