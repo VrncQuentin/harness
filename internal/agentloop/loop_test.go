@@ -500,6 +500,9 @@ func TestApprovalNeededEventHasCorrectFields(t *testing.T) {
 	if ev.ToolArgs == "" {
 		t.Error("tool_args should not be empty")
 	}
+	if ev.ApprovalReason == "" {
+		t.Error("approval_reason should not be empty")
+	}
 
 	// Cleanup.
 	_ = engine.ApplyApproval(ev.ApprovalID, approvals.ApprovalResponse{
@@ -543,8 +546,17 @@ func TestApprovalDeniedInjectsError(t *testing.T) {
 	// Check that a denied approval event and a tool_result with error appear.
 	var foundApproval, foundError bool
 	for ev := range evch {
-		if ev.Type == EvtApproval && ev.ToolError == "denied" {
+		if ev.Type == EvtApproval && ev.ToolError == approvals.Denied.String() {
 			foundApproval = true
+			if ev.ApprovalDecision != approvals.Denied.String() {
+				t.Errorf("approval decision = %q, want %q", ev.ApprovalDecision, approvals.Denied.String())
+			}
+			if ev.ApprovalScope != approvals.ApprovalScopeOnce {
+				t.Errorf("approval scope = %q, want %q", ev.ApprovalScope, approvals.ApprovalScopeOnce)
+			}
+			if ev.ApprovalReason == "" {
+				t.Error("approval reason should not be empty")
+			}
 		}
 		if ev.Type == EvtToolResult && ev.ToolError != "" {
 			foundError = true
