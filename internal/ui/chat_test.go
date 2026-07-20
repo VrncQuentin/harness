@@ -226,10 +226,14 @@ func TestHandleChatSend_RendersFragment(t *testing.T) {
 		`hello world`,
 		`class="chat-msg is-assistant is-streaming"`,
 		`id="chat-assistant"`,
+		`sse-swap="chat-token-`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("response missing %q", want)
 		}
+	}
+	if strings.Contains(body, `sse-swap="chat-token"`) {
+		t.Fatalf("response kept generic chat-token SSE event: %s", body)
 	}
 }
 
@@ -283,7 +287,7 @@ func TestStreamChatTokens_EscapesBroadcastTokenFrames(t *testing.T) {
 	s.chatSSEClients.Store(ch, "chat-a")
 	defer s.chatSSEClients.Delete(ch)
 
-	s.streamChatTokens(context.Background(), runner, "coder", "", "chat-a", []ChatMessage{{Role: "user", Content: "hi"}})
+	s.streamChatTokens(context.Background(), runner, "coder", "", "chat-a", "chat-token-turn-a", []ChatMessage{{Role: "user", Content: "hi"}})
 
 	var tokenFrame string
 	select {
@@ -292,7 +296,7 @@ func TestStreamChatTokens_EscapesBroadcastTokenFrames(t *testing.T) {
 		t.Fatal("timed out waiting for chat token frame")
 	}
 	for _, want := range []string{
-		"event: chat-token\n",
+		"event: chat-token-turn-a\n",
 		"data: first\n",
 		"data: &lt;second&gt;&amp;\n",
 	} {

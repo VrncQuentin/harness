@@ -79,6 +79,7 @@ type taskSendView struct {
 	UserContent string
 	SessionID   string
 	StreamID    string
+	TextEvent   string
 }
 
 func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +105,7 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 	agent := strings.TrimSpace(r.FormValue("agent"))
 	sessionID := strings.TrimSpace(r.FormValue("session_id"))
 	streamID := strings.TrimSpace(r.FormValue("stream_id"))
+	textEvent := "task-text-" + newEventStreamID()
 	conversation := s.liveConversationForTask(sessionID)
 	conversation = append(conversation, ChatMessage{Role: "user", Content: msg})
 
@@ -112,6 +114,7 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 		UserContent: msg,
 		SessionID:   sessionID,
 		StreamID:    streamID,
+		TextEvent:   textEvent,
 	}); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
@@ -120,7 +123,7 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(s.asyncContext())
 	go func() {
 		defer cancel()
-		s.streamTaskEvents(ctx, runner, agent, sessionID, streamID, conversation)
+		s.streamTaskEvents(ctx, runner, agent, sessionID, streamID, textEvent, conversation)
 	}()
 }
 
@@ -138,7 +141,7 @@ func (s *Server) liveConversationForTask(sessionID string) []ChatMessage {
 	}
 	return conversation
 }
-func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent, sessionID, streamID string, conversation []ChatMessage) {
+func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent, sessionID, streamID, textEvent string, conversation []ChatMessage) {
 	newID, evch, err := runner.RunTask(ctx, agent, sessionID, conversation)
 	if err != nil {
 		s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(TaskEvent{Type: TaskEventError, Content: err.Error(), Terminate: TaskEventError})))
@@ -150,7 +153,7 @@ func (s *Server) streamTaskEvents(ctx context.Context, runner TaskRunner, agent,
 	for ev := range evch {
 		switch ev.Type {
 		case TaskEventText:
-			s.broadcastTaskSSE(streamID, renderTaskSSE("task-text", s.renderTaskText(ev.Content)))
+			s.broadcastTaskSSE(streamID, renderTaskSSE(textEvent, s.renderTaskText(ev.Content)))
 		default:
 			s.broadcastTaskSSE(streamID, renderTaskSSE("task-event", s.renderTaskEvent(ev)))
 		}
