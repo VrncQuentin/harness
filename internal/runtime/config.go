@@ -88,8 +88,10 @@ func (rt *Runtime) ApplyConfig(
 			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug ||
 			modelEndpointChanged ||
 			embedderEndpointChanged {
-			// Project switch: flush current session and optionally
-			// reload llama-server before rebuilding memory services.
+			rt.quiesceMemoryAndAPI(ctx)
+			// Project switch optionally reloads llama-server before rebuilding
+			// memory services. Live work has already been quiesced above so it
+			// is committed under the previous project manager.
 			if old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
 				rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
 			}
