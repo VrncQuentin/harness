@@ -13,7 +13,8 @@ import (
 
 func newServerWithMetricsStore(t *testing.T) (*Server, *db.DB) {
 	t.Helper()
-	d, err := db.Open(filepath.Join(t.TempDir(), "harness.db"))
+	dir := t.TempDir()
+	d, err := db.Open(filepath.Join(dir, "harness.db"), testDefaultMemoryRepoPath(dir))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

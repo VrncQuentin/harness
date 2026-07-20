@@ -17,8 +17,8 @@ import (
 // OpenDB opens harness.db (running migrations + seed) and returns the handle
 // plus the typed sub-stores. Any failure is surfaced to the UI as a startup
 // error; the returned handle and stores may be nil, which callers must handle.
-func OpenDB(uiServer *ui.Server, path string) (*db.DB, config.Store, metrics.Store) {
-	d, err := db.Open(path)
+func OpenDB(uiServer *ui.Server, path string, defaultMemoryRepoPath db.DefaultMemoryRepoPathFunc) (*db.DB, config.Store, metrics.Store) {
+	d, err := db.Open(path, defaultMemoryRepoPath)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("harness.db: %w", err))
 		return nil, nil, nil

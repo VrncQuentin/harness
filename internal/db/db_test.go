@@ -10,13 +10,20 @@ import (
 	"time"
 
 	"github.com/vrnc/harness/internal/config"
+	"github.com/vrnc/harness/internal/project"
 )
+
+func testDefaultMemoryRepoPath(root string) DefaultMemoryRepoPathFunc {
+	return func(slug string) (string, error) {
+		return filepath.Join(root, "projects", slug), nil
+	}
+}
 
 // newTestDB opens a fresh harness.db in a temp dir and registers cleanup.
 func newTestDB(t *testing.T) *DB {
 	t.Helper()
 	dir := t.TempDir()
-	d, err := Open(filepath.Join(dir, "harness.db"))
+	d, err := Open(filepath.Join(dir, "harness.db"), testDefaultMemoryRepoPath(dir))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -51,11 +58,30 @@ func TestOpen_CreatesTablesAndSeedsConfigRow(t *testing.T) {
 	}
 }
 
+func TestOpen_SeedsGlobalProjectWithInjectedDefaultMemoryRepoPath(t *testing.T) {
+	dir := t.TempDir()
+	want := filepath.Join(dir, "custom-memory", project.GlobalSlug)
+	d, err := Open(filepath.Join(dir, "harness.db"), func(slug string) (string, error) {
+		return filepath.Join(dir, "custom-memory", slug), nil
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+
+	proj, err := d.Projects().Get(project.GlobalSlug)
+	if err != nil {
+		t.Fatalf("get global project: %v", err)
+	}
+	if proj.MemoryRepoPath != want {
+		t.Fatalf("global memory repo path = %q, want injected path %q", proj.MemoryRepoPath, want)
+	}
+}
 func TestOpen_Idempotent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "harness.db")
 
-	d1, err := Open(path)
+	d1, err := Open(path, testDefaultMemoryRepoPath(dir))
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
@@ -63,7 +89,7 @@ func TestOpen_Idempotent(t *testing.T) {
 		t.Fatalf("first Close: %v", err)
 	}
 
-	d2, err := Open(path)
+	d2, err := Open(path, testDefaultMemoryRepoPath(dir))
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
 	}
@@ -186,7 +212,7 @@ func TestOpen_RejectsUnexpectedMigrationVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "harness.db")
 
-	d, err := Open(path)
+	d, err := Open(path, testDefaultMemoryRepoPath(dir))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -205,7 +231,7 @@ func TestOpen_RejectsUnexpectedMigrationVersion(t *testing.T) {
 		t.Fatalf("sql Close: %v", err)
 	}
 
-	_, err = Open(path)
+	_, err = Open(path, testDefaultMemoryRepoPath(dir))
 	if err == nil {
 		t.Fatal("expected migration version mismatch error")
 	}
@@ -224,7 +250,7 @@ func TestPeekUIPort(t *testing.T) {
 		t.Fatalf("missing DB port = %d, want fallback 3000", got)
 	}
 
-	d, err := Open(path)
+	d, err := Open(path, testDefaultMemoryRepoPath(dir))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
