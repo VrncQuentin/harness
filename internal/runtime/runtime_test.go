@@ -256,6 +256,73 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 	}
 }
 
+func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Agent.Active = "coder"
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+
+	client := &blockingThenSummaryClient{
+		taskToken: inference.Token{Content: "partial answer"},
+		summary:   "saved partial task",
+	}
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt.inferClient = client
+	rt.reqQueue = startRuntimeTestQueue(t, client)
+
+	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: project.GlobalSlug,
+	}, client, nil)
+	rt.setSessionManager(mgr)
+	rt.taskRunner = &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: rt.reqQueue}
+
+	sessionID, evch, err := rt.taskRunner.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	select {
+	case ev, ok := <-evch:
+		if !ok {
+			t.Fatal("task event channel closed before text")
+		}
+		if ev.Type != agentloop.EvtText || ev.Content != "partial answer" {
+			t.Fatalf("first task event = %+v, want partial text", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for partial task text")
+	}
+
+	result := rt.ApplyConfig(context.Background(), ui.NewServer(0), NewEventChannel(), nil)
+	if !result.LiveApplied {
+		t.Fatal("reload did not report live apply")
+	}
+	for range evch {
+	}
+
+	snap := mgr.Snapshot(sessionID)
+	if snap == nil {
+		t.Fatal("old session snapshot missing after reload")
+	}
+	if !conversationContains(snap.Conversation, "assistant", "partial answer") {
+		t.Fatalf("partial assistant text was not recorded before reload flush: %+v", snap.Conversation)
+	}
+	records, err := mgr.Records("coder")
+	if err != nil {
+		t.Fatalf("Records: %v", err)
+	}
+	if len(records) == 0 || records[0].ID != sessionID {
+		t.Fatalf("flushed records = %+v, want saved session %s", records, sessionID)
+	}
+}
 func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	port := freeTCPPort(t)
 	cfg := config.Defaults()
@@ -1038,6 +1105,45 @@ func (c *capturingInferenceClient) Complete(_ context.Context, req inference.Com
 	for _, tok := range tokens {
 		ch <- tok
 	}
+	close(ch)
+	return ch, nil
+}
+
+func conversationContains(msgs []inference.Message, role, content string) bool {
+	for _, msg := range msgs {
+		if msg.Role == role && msg.Content == content {
+			return true
+		}
+	}
+	return false
+}
+
+type blockingThenSummaryClient struct {
+	mu        sync.Mutex
+	calls     int
+	taskToken inference.Token
+	summary   string
+}
+
+func (c *blockingThenSummaryClient) Complete(ctx context.Context, _ inference.CompletionRequest) (<-chan inference.Token, error) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	taskToken := c.taskToken
+	summary := c.summary
+	c.mu.Unlock()
+
+	ch := make(chan inference.Token, 2)
+	if call == 1 {
+		go func() {
+			defer close(ch)
+			ch <- taskToken
+			<-ctx.Done()
+		}()
+		return ch, nil
+	}
+	ch <- inference.Token{Content: summary}
+	ch <- inference.Token{Done: true}
 	close(ch)
 	return ch, nil
 }

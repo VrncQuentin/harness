@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/agentloop"
@@ -358,11 +359,38 @@ func (rt *Runtime) SessionManager() *session.Manager {
 	return rt.sessionMg
 }
 
-// stopMemoryAndAPI tears down memory, sessions, task, and API services. Caller must hold rt.mu.
-//
-// The session manager has no goroutines to stop - FlushAll is invoked
-// from runtime.Stop() to persist live sessions on shutdown. Resetting
-// the field here means a subsequent restart sees a fresh manager.
+// quiesceMemoryAndAPI cancels active task loops and flushes live sessions before
+// a memory/API rebuild drops the current adapters. Caller must hold rt.mu on
+// entry; the method releases it while waiting so session summarization can read
+// live config through summarizerPromptFn without deadlocking.
+func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context) {
+	tasks := rt.taskRunner
+	mgr := rt.SessionManager()
+	if tasks == nil && mgr == nil {
+		return
+	}
+
+	rt.mu.Unlock()
+	if tasks != nil {
+		cancelCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := tasks.CancelAll(cancelCtx); err != nil {
+			slog.Warn("runtime reload: task loop shutdown wait", "err", err)
+		}
+		cancel()
+	}
+	if mgr != nil {
+		flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := mgr.FlushAll(flushCtx); err != nil {
+			slog.Warn("runtime reload: session flush", "err", err)
+		}
+		cancel()
+	}
+	rt.mu.Lock()
+}
+
+// stopMemoryAndAPI tears down memory, sessions, task, and API services. Caller
+// must hold rt.mu and should call quiesceMemoryAndAPI first when replacing live
+// services during reload.
 func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	if rt.apiServer != nil {
 		rt.apiServer.Stop()
