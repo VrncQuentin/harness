@@ -114,6 +114,27 @@ func TestDetectModels_DedupesSameModelAcrossEquivalentRoots(t *testing.T) {
 	}
 }
 
+func TestDetectModels_DedupesSameModelAcrossSymlinkedRoots(t *testing.T) {
+	root := t.TempDir()
+	modelsDir := filepath.Join(root, "models")
+	if err := os.Mkdir(modelsDir, 0o755); err != nil {
+		t.Fatalf("mkdir models: %v", err)
+	}
+	model := filepath.Join(modelsDir, "same.gguf")
+	if err := os.WriteFile(model, nil, 0o644); err != nil {
+		t.Fatalf("write model: %v", err)
+	}
+
+	linkRoot := filepath.Join(t.TempDir(), "linked-root")
+	if err := os.Symlink(root, linkRoot); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	models := detectModels([]string{root, linkRoot}, false)
+	if len(models) != 1 || models[0] != model {
+		t.Fatalf("models = %v, want [%s]", models, model)
+	}
+}
 func TestDetect_FindsLlamaBinaryNextToBinary(t *testing.T) {
 	dir := t.TempDir()
 	exe := "llama-server"
