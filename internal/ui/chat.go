@@ -144,6 +144,7 @@ type chatSendView struct {
 	SessionID   string
 	Agent       string
 	StreamID    string
+	TokenEvent  string
 }
 
 // chatSendMaxBytes caps the form body. A single message plus small
@@ -175,6 +176,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	agent := strings.TrimSpace(r.FormValue("agent"))
 	sessionID := strings.TrimSpace(r.FormValue("session_id"))
 	streamID := strings.TrimSpace(r.FormValue("stream_id"))
+	tokenEvent := "chat-token-" + newEventStreamID()
 
 	var conversation []ChatMessage
 	if sessionID != "" {
@@ -192,6 +194,7 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		SessionID:   sessionID,
 		Agent:       agent,
 		StreamID:    streamID,
+		TokenEvent:  tokenEvent,
 	}); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
@@ -203,14 +206,14 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithCancel(s.asyncContext())
 		go func() {
 			defer cancel()
-			s.streamChatTokens(ctx, runner, agent, sessionID, streamID, conversation)
+			s.streamChatTokens(ctx, runner, agent, sessionID, streamID, tokenEvent, conversation)
 		}()
 	}
 }
 
 // streamChatTokens runs the chat runner in a goroutine and broadcasts
 // tokens, done, and error events to the chat SSE subscribers.
-func (s *Server) streamChatTokens(ctx context.Context, runner ChatRunner, agent, sessionID, streamID string, conversation []ChatMessage) {
+func (s *Server) streamChatTokens(ctx context.Context, runner ChatRunner, agent, sessionID, streamID, tokenEvent string, conversation []ChatMessage) {
 	newID, tokens, err := runner.Run(ctx, agent, sessionID, conversation)
 	if err != nil {
 		s.broadcastChatSSE(streamID, fmt.Sprintf("event: chat-error\ndata: %s\n\n", sseData(err.Error())))
@@ -229,7 +232,7 @@ func (s *Server) streamChatTokens(ctx context.Context, runner ChatRunner, agent,
 			return
 		}
 		if tok.Content != "" {
-			s.broadcastChatSSE(streamID, fmt.Sprintf("event: chat-token\ndata: %s\n\n", chatTextSSEData(tok.Content)))
+			s.broadcastChatSSE(streamID, fmt.Sprintf("event: %s\ndata: %s\n\n", tokenEvent, chatTextSSEData(tok.Content)))
 		}
 	}
 	s.broadcastChatSSE(streamID, "event: chat-done\ndata: \n\n")

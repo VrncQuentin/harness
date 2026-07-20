@@ -124,7 +124,7 @@
 </div>
 <div class="chat-msg is-assistant is-streaming" id="chat-assistant">
   <span class="chat-msg-role">assistant</span>
-  <span class="chat-msg-body" sse-swap="chat-token" hx-swap="beforeend"></span>
+  <span class="chat-msg-body" sse-swap="{{.TokenEvent}}" hx-swap="beforeend"></span>
 </div>
 <code id="chat-session-id" hx-swap-oob="true">{{.SessionID}}</code>
 <input type="hidden" id="chat-session-input" name="session_id" hx-swap-oob="true" value="{{.SessionID}}">

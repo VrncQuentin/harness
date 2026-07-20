@@ -540,6 +540,13 @@ func TestHandleTaskSendUsesLiveConversationForResume(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `sse-swap="task-text-`) {
+		t.Fatalf("task response missing turn-specific text SSE event: %s", body)
+	}
+	if strings.Contains(body, `sse-swap="task-text"`) {
+		t.Fatalf("task response kept generic task-text SSE event: %s", body)
+	}
 	if runner.sessionID != "task-123" || runner.agent != "coder" {
 		t.Fatalf("runner got agent/session = %q/%q", runner.agent, runner.sessionID)
 	}
