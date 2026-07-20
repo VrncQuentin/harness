@@ -1825,7 +1825,12 @@ func TestOriginPolicyRejectsCrossOriginMutationsAndEvents(t *testing.T) {
 	for _, tc := range []struct {
 		method string
 		path   string
-	}{{http.MethodPost, "/config"}, {http.MethodGet, "/events"}} {
+	}{
+		{http.MethodPost, "/config"},
+		{http.MethodGet, "/events"},
+		{http.MethodGet, "/chat/events"},
+		{http.MethodGet, "/task/events"},
+	} {
 		req := httptest.NewRequest(tc.method, tc.path, nil)
 		req.Host = "127.0.0.1:3000"
 		req.Header.Set("Origin", "http://attacker.invalid")
