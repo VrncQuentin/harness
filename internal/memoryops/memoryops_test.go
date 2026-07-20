@@ -102,6 +102,53 @@ func (s stubEmbedder) Embed(_ context.Context, chunks []string) ([][]float32, er
 	return out, nil
 }
 
+type countingEmbedder struct {
+	vec   []float32
+	calls int
+}
+
+func (c *countingEmbedder) Embed(_ context.Context, chunks []string) ([][]float32, error) {
+	c.calls++
+	out := make([][]float32, len(chunks))
+	for i := range out {
+		out[i] = append([]float32(nil), c.vec...)
+	}
+	return out, nil
+}
+
+func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
+	root := t.TempDir()
+	episodePath := filepath.Join(root, "episodes", "coder", "ep1.md")
+	if err := os.MkdirAll(filepath.Dir(episodePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll episode dir: %v", err)
+	}
+	if err := os.WriteFile(episodePath, []byte("episode body"), 0o644); err != nil {
+		t.Fatalf("WriteFile episode: %v", err)
+	}
+	indexDir := EpisodeIndexDir(root)
+	idx, err := index.Create(indexDir, 2)
+	if err != nil {
+		t.Fatalf("Create index: %v", err)
+	}
+	if err := idx.Upsert("episodes/coder/ep1", contentHash("episode body"), [][]float32{{1, 0}}); err != nil {
+		t.Fatalf("seed index: %v", err)
+	}
+
+	emb := &countingEmbedder{vec: []float32{1, 0}}
+	rb := &EpisodeRebuilder{
+		Mem:      memory.NewDirReader(root),
+		Embedder: emb,
+		Index:    idx,
+		IndexDir: indexDir,
+	}
+	if err := rb.Rebuild(context.Background()); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	if emb.calls != 0 {
+		t.Fatalf("unchanged indexed episode was embedded %d times", emb.calls)
+	}
+}
+
 func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
 	service, err := NewEpisodeIndex(EpisodeIndexDir(t.TempDir()))
 	if err != nil {

@@ -221,6 +221,23 @@ func (idx *Index) Contains(sha string) bool {
 	return false
 }
 
+// ContainsCurrent reports whether source is present with the supplied content
+// hash. Empty hashes never match: callers should provide a real content digest
+// before using this as a rebuild skip check.
+func (idx *Index) ContainsCurrent(source, contentHash string) bool {
+	if contentHash == "" {
+		return false
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	for _, e := range idx.manifest.Chunks {
+		if (e.Source == source || (e.Source == "" && e.SHA == source)) && e.ContentHash == contentHash {
+			return true
+		}
+	}
+	return false
+}
+
 func (idx *Index) vectorFileSize() (int64, error) {
 	info, err := os.Stat(filepath.Join(idx.dir, vectorsFile))
 	if err != nil {
