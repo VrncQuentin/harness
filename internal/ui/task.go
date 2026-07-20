@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // TaskRunner executes an agent loop and streams events back.
@@ -210,27 +209,6 @@ func (s *Server) renderTaskText(content string) string {
 
 func renderTaskSSE(eventName, html string) string {
 	return fmt.Sprintf("event: %s\ndata: %s\n\n", eventName, sseData(html))
-}
-
-const taskSSEReliableSendTimeout = 2 * time.Second
-
-func (s *Server) broadcastTaskSSE(streamID, frame string) {
-	s.taskSSEClients.Range(func(key, value any) bool {
-		ch, ok := key.(chan string)
-		if !ok {
-			return true
-		}
-		clientStreamID, _ := value.(string)
-		if streamID != "" && clientStreamID != streamID {
-			return true
-		}
-		select {
-		case ch <- frame:
-		case <-time.After(taskSSEReliableSendTimeout):
-			s.taskSSEClients.Delete(ch)
-		}
-		return true
-	})
 }
 
 // taskView is the template context for the /task page.
