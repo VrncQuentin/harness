@@ -264,6 +264,31 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	}
 }
 
+func TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	uiServer := ui.NewServer(0)
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		t.Fatal("retry did not report live apply after rebuilding missing memory services")
+	}
+	if rt.SessionManager() == nil || rt.taskRunner == nil || rt.assembler == nil {
+		t.Fatalf("memory/API graph was not rebuilt: session=%T task=%T assembler=%T", rt.SessionManager(), rt.taskRunner, rt.assembler)
+	}
+	deps := uiServer.ServiceDepsSnapshot()
+	if deps.MemoryRepoPath != root || deps.SessionStore == nil || deps.TaskRunner == nil {
+		t.Fatalf("rebuilt UI deps missing: path=%q session=%T task=%T", deps.MemoryRepoPath, deps.SessionStore, deps.TaskRunner)
+	}
+}
 func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 	tests := []struct {
 		name   string

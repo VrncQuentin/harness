@@ -209,6 +209,15 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	return true
 }
 
+func (rt *Runtime) memoryAPIUnavailable() bool {
+	return rt.globalMem == nil ||
+		rt.activeMem == nil ||
+		rt.agentReg == nil ||
+		rt.assembler == nil ||
+		rt.taskRunner == nil ||
+		rt.SessionManager() == nil
+}
+
 type memoryAPISnapshot struct {
 	globalMem   memory.Repo
 	activeMem   memory.Repo
