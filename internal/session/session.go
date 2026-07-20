@@ -90,6 +90,10 @@ type SaveResult struct {
 	SidecarPath string
 	CommitSHA   string
 	Summary     string
+	// EpisodeBody is the exact rendered markdown written to EpisodePath.
+	// Indexing consumers hash and chunk this, not Summary, so save-time
+	// embedding and a later on-disk rebuild agree on episode identity.
+	EpisodeBody string
 	SavedAt     time.Time
 	SaveSeq     int
 }
@@ -428,6 +432,7 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		SidecarPath: sidecarPath,
 		CommitSHA:   sha,
 		Summary:     summary,
+		EpisodeBody: body,
 		SavedAt:     now,
 		SaveSeq:     saveSeq,
 	}
