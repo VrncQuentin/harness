@@ -697,6 +697,54 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 		t.Fatalf("user turns = %#v, want one hello and one follow-up; conversation=%+v", userTurns, snap.Conversation)
 	}
 }
+func TestTaskRunnerWiresHTTPClientIntoToolContext(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Agent.Active = "coder"
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.Loop.WebSearchEnabled = true
+
+	client := &sequenceInferenceClient{sequences: [][]inference.Token{
+		{
+			{ToolCallDelta: &inference.ToolCallDelta{
+				Index:     0,
+				ID:        "call-1",
+				Name:      "web_search",
+				Arguments: `{"query":"local harness"}`,
+			}},
+			{Done: true},
+		},
+		{
+			{Content: "done"},
+			{Done: true},
+		},
+	}}
+
+	rt := New(cfg, nil, LogRings{})
+	rt.inferClient = client
+
+	probe := &httpClientProbeTool{}
+	registry := tools.NewRegistry()
+	if err := registry.Register(probe); err != nil {
+		t.Fatalf("Register probe tool: %v", err)
+	}
+	ad := &taskRunnerAdapter{rt: rt, registry: registry, q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
+
+	_, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "search"}})
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	for range evch {
+	}
+
+	probe.mu.Lock()
+	defer probe.mu.Unlock()
+	if !probe.called {
+		t.Fatal("probe tool was not called")
+	}
+	if !probe.sawHTTPClient {
+		t.Fatal("tool context HTTPClient was nil")
+	}
+}
 func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 	root := t.TempDir()
 	secretPath := filepath.Join(root, "secret.txt")
@@ -948,6 +996,28 @@ func startRuntimeTestQueue(t *testing.T, client inference.Client) *queue.Queue {
 		q.Stop()
 	})
 	return q
+}
+
+type httpClientProbeTool struct {
+	mu            sync.Mutex
+	called        bool
+	sawHTTPClient bool
+}
+
+func (t *httpClientProbeTool) ID() string { return "web_search" }
+
+func (t *httpClientProbeTool) Description() string { return "probe web search tool context" }
+
+func (t *httpClientProbeTool) Schema() map[string]any {
+	return map[string]any{"type": "object"}
+}
+
+func (t *httpClientProbeTool) Execute(_ context.Context, c tools.Context, _ map[string]any) tools.Result {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.called = true
+	t.sawHTTPClient = c.HTTPClient != nil
+	return tools.Result{Content: "ok"}
 }
 
 type capturingInferenceClient struct {

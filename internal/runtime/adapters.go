@@ -13,6 +13,7 @@ import (
 	"github.com/vrnc/harness/internal/agentloop"
 	"github.com/vrnc/harness/internal/api"
 	"github.com/vrnc/harness/internal/approvals"
+	"github.com/vrnc/harness/internal/httpclient"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/project"
@@ -535,6 +536,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		SandboxRoots:   sandboxRoots,
 		SessionID:      id,
 		CallerIdentity: "agent:" + agentName,
+		HTTPClient:     httpclient.New(),
 	}
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
