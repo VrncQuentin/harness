@@ -4,31 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/ui"
 )
 
-// handleProjectSwitch flushes the active session (so it is committed under
-// the old project) and optionally reloads llama-server when the active
-// project changes. The caller must hold rt.mu on entry; the method
-// temporarily releases it during session flush to avoid deadlock with the
-// summarizer's config accessor (summarizerPromptFn acquires rt.mu).
+// handleProjectSwitch optionally reloads llama-server when the active project
+// changes. The caller must hold rt.mu on entry and quiesce live memory/API work
+// before calling so sessions are committed under the previous project manager.
 func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server, oldConfig, newConfig *config.Config) {
 	llamaPolicy := rt.cfg.Project.LlamaOnSwitch
-
-	if mgr := rt.SessionManager(); mgr != nil {
-		rt.mu.Unlock()
-		flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := mgr.FlushAll(flushCtx)
-		cancel()
-		rt.mu.Lock()
-		if err != nil {
-			slog.Warn("project switch: session flush", "err", err)
-		}
-	}
 
 	if llamaPolicy != "reload" {
 		slog.Info("project switch: keeping current llama-server (llama_on_switch=keep)")
