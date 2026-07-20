@@ -77,11 +77,11 @@ func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 	return mgr, root
 }
 
-// TestM3Acceptance_1_EpisodeFileAndCommit covers:
+// TestEpisodeFileAndCommit covers:
 //
 //	"Complete a session → episode file appears at
 //	 episodes/<agent>/<timestamp>.md, committed to git"
-func TestM3Acceptance_1_EpisodeFileAndCommit(t *testing.T) {
+func TestEpisodeFileAndCommit(t *testing.T) {
 	fi := newFakeInference(summaryTokens("first sessions summary"))
 	mgr, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
@@ -106,10 +106,10 @@ func TestM3Acceptance_1_EpisodeFileAndCommit(t *testing.T) {
 	}
 }
 
-// TestM3Acceptance_2_CommitMessageRegex covers:
+// TestEpisodeCommitMessageFormat covers:
 //
 //	"Episode commit message matches format [agent:x] [type:episode] ..."
-func TestM3Acceptance_2_CommitMessageRegex(t *testing.T) {
+func TestEpisodeCommitMessageFormat(t *testing.T) {
 	fi := newFakeInference(summaryTokens("user wants summary regex"))
 	mgr, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
@@ -137,14 +137,14 @@ func TestM3Acceptance_2_CommitMessageRegex(t *testing.T) {
 	}
 }
 
-// TestM3Acceptance_3_RecencyWiring covers:
+// TestSavedEpisodeVisibleToPromptRecency covers:
 //
 //	"Start a new session → previous episode content appears in the
 //	 assembled prompt"
 //
 // Glue test: drives the real prompt.DiskAssembler against a real
 // committed episode and asserts the summary lands in the system message.
-func TestM3Acceptance_3_RecencyWiring(t *testing.T) {
+func TestSavedEpisodeVisibleToPromptRecency(t *testing.T) {
 	fi := newFakeInference(
 		summaryTokens("FIRST_EPISODE_BODY: covered the failover plan"),
 		summaryTokens("SECOND_EPISODE_BODY: discussed the rollback procedure"),
@@ -191,11 +191,11 @@ func TestM3Acceptance_3_RecencyWiring(t *testing.T) {
 	}
 }
 
-// TestM3Acceptance_4_TenSessions covers:
+// TestTenSessionsCreateTenEpisodeCommits covers:
 //
 //	"Complete 10 sessions → all 10 episode files present in git log,
 //	 sessions.jsonl has 10 entries"
-func TestM3Acceptance_4_TenSessions(t *testing.T) {
+func TestTenSessionsCreateTenEpisodeCommits(t *testing.T) {
 	scripts := make([][]inference.Token, 0, 10)
 	for i := range 10 {
 		scripts = append(scripts, summaryTokens(fmt.Sprintf("summary %d", i)))
@@ -245,11 +245,11 @@ func TestM3Acceptance_4_TenSessions(t *testing.T) {
 	}
 }
 
-// TestM3Acceptance_5_GarbledLogTolerated covers:
+// TestGarbledSessionLogIsTolerated covers:
 //
 //	"Corrupt sessions.jsonl by appending garbage →
 //	 harness starts without crashing, logs a warning"
-func TestM3Acceptance_5_GarbledLogTolerated(t *testing.T) {
+func TestGarbledSessionLogIsTolerated(t *testing.T) {
 	fi := newFakeInference(summaryTokens("clean record"))
 	mgr, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
@@ -307,11 +307,11 @@ func TestEpisodeVisibleToMemoryWalker(t *testing.T) {
 	}
 }
 
-// TestM3SidecarMissingResumeError verifies the same condition the UI
+// TestSidecarMissingResumeError verifies the same condition the UI
 // surfaces when the .json sidecar is absent (e.g. fresh clone). The
 // session manager returns ErrConversationLost; the UI wraps it in
 // ErrSessionConversationLost. We check the manager half here.
-func TestM3SidecarMissingResumeError(t *testing.T) {
+func TestSidecarMissingResumeError(t *testing.T) {
 	fi := newFakeInference(summaryTokens("clean"))
 	mgr, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
