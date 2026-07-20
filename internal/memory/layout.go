@@ -21,9 +21,9 @@ type LayoutItem struct {
 	Desc string
 }
 
-// ExpectedProjectRepoLayout returns the canonical layout for one project memory repo
-// project memory repository. Every project owns its prompt memory files; the
-// global project additionally carries the fallback agent-definition library.
+// ExpectedProjectRepoLayout returns the canonical layout for one project memory
+// repo. Every project owns its prompt memory files; the global project
+// additionally carries the fallback agent-definition library.
 func ExpectedProjectRepoLayout(global bool) []LayoutItem {
 	items := []LayoutItem{
 		{Path: "sessions.jsonl", Dir: false, Desc: "Project session history"},

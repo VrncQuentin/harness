@@ -14,7 +14,7 @@ func TestCreateMissing_All(t *testing.T) {
 		t.Fatalf("CreateMissing: %v", err)
 	}
 
-	// Re-check: after scaffolding everything, MissingItems must be empty.
+	// Re-check: after scaffolding everything, MissingProjectRepoItems must be empty.
 	missing, err := MissingProjectRepoItems(root, false)
 	if err != nil {
 		t.Fatalf("MissingProjectRepoItems after scaffold: %v", err)
