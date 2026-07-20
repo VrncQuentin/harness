@@ -194,7 +194,7 @@ implemented when directory-level semantic search becomes a user-facing feature.
 - [ ] Complete a session -> the active project repo's `index/_episodes/{vectors.bin, manifest.json}` is updated and committed
 - [x] Ask a question referencing content from session N-10 -> that episode is retrieved despite not being the most recent (automated blended scoring coverage: `TestAssemble_BlendedRetrievalKeepsTopN`, `TestAssemble_BlendedRetrievalTrimDropsLowestScore`)
 - [ ] Ask a question with no relevant past sessions -> retrieval returns empty gracefully, no crash
-- [x] Run index rebuild on a fresh clone of the memory repo -> episode index is reconstructed (automated: `TestEpisodeRebuilderCreatesMissingEpisodeIndex`, `TestIndexRebuilderCreatesMissingEpisodeIndex`)
+- [x] Run index rebuild on a fresh clone of the memory repo -> episode index is reconstructed (automated: `TestEpisodeRebuilderCreatesMissingEpisodeIndex`)
 - [x] Set `semantic_weight = 0` -> retrieval falls back to pure recency, top-K matches last N episodes exactly (automated: `TestAssemble_BlendedRecencyUsesExponentialDecay`)
 - [x] Set `recency_weight = 0` -> retrieval is pure semantic, oldest relevant episode can appear in top-K (automated: `TestAssemble_BlendedRetrievalTrimDropsLowestScore`, `TestAssemble_BlendedRetrievalUsesBestChunkScore`)
 - [x] UI memory browser -> shows blended score next to each retrieved episode (automated: `TestHandleMemoryEpisodes_RendersRetrievalScores`)
