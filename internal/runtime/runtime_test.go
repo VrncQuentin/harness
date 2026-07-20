@@ -289,6 +289,43 @@ func TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange(t *testing.T
 		t.Fatalf("rebuilt UI deps missing: path=%q session=%T task=%T", deps.MemoryRepoPath, deps.SessionStore, deps.TaskRunner)
 	}
 }
+func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.API.Enabled = false
+	cfg.API.Port = freeTCPPort(t)
+	store := &runtimeConfigStore{cfg: &cfg, saved: true}
+
+	rt := New(cfg, store, LogRings{})
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, rt.newInferenceClient())
+	uiServer := ui.NewServer(0)
+	if ok := rt.startMemoryAndAPI(context.Background(), uiServer, nil); !ok {
+		t.Fatal("initial memory service setup failed")
+	}
+	if rt.apiServer != nil {
+		t.Fatal("api server started while API was disabled")
+	}
+
+	loaded := cfg
+	loaded.API.Enabled = true
+	rt.cfg.API.Enabled = true
+	store.cfg = &loaded
+
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		t.Fatal("retry did not report live apply after starting missing API server")
+	}
+	if rt.apiServer == nil {
+		t.Fatal("API server was not retried when enabled but absent")
+	}
+	t.Cleanup(rt.apiServer.Stop)
+}
 func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 	tests := []struct {
 		name   string
