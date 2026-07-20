@@ -330,10 +330,12 @@ func (m *Manager) End(id string) {
 // SaveResult lets the caller (UI handler) confirm to the browser that
 // the episode landed.
 //
-// Save is the only mutating path that holds the manager mutex while
-// performing I/O. Callers should not assume two saves can run in
-// parallel for the same session - this is a deliberate trade-off so the
-// last-wins-by-ID contract holds without a per-session lock.
+// Save is serialized by a manager-wide save lock (saveMu): only one save
+// runs at a time across all sessions, so summarization, artifact writes,
+// the git commit, the sessions.jsonl append, and the after-save hook never
+// interleave. The short manager mutex (mu) is taken only to read the live
+// session and later to bump saveSeq/knownIDs; it is released for the
+// duration of the I/O so Append and Snapshot stay responsive mid-save.
 func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 	m.saveMu.Lock()
 	defer m.saveMu.Unlock()
