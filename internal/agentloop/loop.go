@@ -36,6 +36,12 @@ type Event struct {
 
 	// ApprovalID links an approval-needed event to its response.
 	ApprovalID string `json:"approval_id,omitempty"`
+	// ApprovalReason records the policy source/reason for audit trails.
+	ApprovalReason string `json:"approval_reason,omitempty"`
+	// ApprovalDecision records the applied decision: allowed or denied.
+	ApprovalDecision string `json:"approval_decision,omitempty"`
+	// ApprovalScope records whether an approval was one-time or remembered.
+	ApprovalScope string `json:"approval_scope,omitempty"`
 
 	// Terminate is the reason the loop stopped, set on the final event.
 	Terminate string `json:"terminate,omitempty"`
@@ -349,12 +355,6 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 				switch decision {
 				case approvals.Denied:
 					res = tools.Result{Error: fmt.Sprintf("tool %q denied by permission policy", tc.Function.Name)}
-					e.emit(ctx, evch, Event{
-						Turn:      turns,
-						Type:      EvtApproval,
-						ToolID:    tc.Function.Name,
-						ToolError: "denied",
-					})
 				case approvals.Allowed, approvals.Ask:
 					start := time.Now()
 					res = tool.Execute(ctx, e.toolCtx, args)
@@ -456,12 +456,13 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 	// dropped, the caller cannot render an approval card and the loop cannot
 	// make progress. Wait for delivery, but still bound the wait.
 	if err := emitApprovalNeeded(ctx, evch, Event{
-		Turn:       turn,
-		Type:       EvtApprovalNeeded,
-		ToolID:     toolID,
-		ToolArgs:   jsonString(args),
-		ApprovalID: approvalID,
-		Content:    fmt.Sprintf("%s requires approval (%s)", toolID, src),
+		Turn:           turn,
+		Type:           EvtApprovalNeeded,
+		ToolID:         toolID,
+		ToolArgs:       jsonString(args),
+		ApprovalID:     approvalID,
+		ApprovalReason: src,
+		Content:        fmt.Sprintf("%s requires approval (%s)", toolID, src),
 	}, timeout); err != nil {
 		return approvals.Denied, err
 	}
@@ -476,20 +477,30 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 		return approvals.Denied, ErrApprovalTimeout
 	case resp := <-ch:
 		slog.Debug("approval resolved", "tool", toolID, "id", approvalID, "decision", resp.Decision, "remember", resp.Remember)
+		scope := approvals.ApprovalScopeOnce
+		if resp.Remember {
+			scope = approvals.ApprovalScopeAlways
+		}
 		if resp.Decision == approvals.Denied {
 			e.emit(ctx, evch, Event{
-				Turn:       turn,
-				Type:       EvtApproval,
-				ToolID:     toolID,
-				ToolError:  "denied",
-				ApprovalID: approvalID,
+				Turn:             turn,
+				Type:             EvtApproval,
+				ToolID:           toolID,
+				ToolError:        approvals.Denied.String(),
+				ApprovalID:       approvalID,
+				ApprovalReason:   src,
+				ApprovalDecision: resp.Decision.String(),
+				ApprovalScope:    scope,
 			})
 		} else {
 			e.emit(ctx, evch, Event{
-				Turn:       turn,
-				Type:       EvtApproval,
-				ToolID:     toolID,
-				ApprovalID: approvalID,
+				Turn:             turn,
+				Type:             EvtApproval,
+				ToolID:           toolID,
+				ApprovalID:       approvalID,
+				ApprovalReason:   src,
+				ApprovalDecision: resp.Decision.String(),
+				ApprovalScope:    scope,
 			})
 		}
 		return resp.Decision, nil

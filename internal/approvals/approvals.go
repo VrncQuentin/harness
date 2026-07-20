@@ -23,6 +23,13 @@ const (
 	Ask
 )
 
+const (
+	// ApprovalScopeOnce records a one-time approval decision.
+	ApprovalScopeOnce = "once"
+	// ApprovalScopeAlways records a remembered session approval decision.
+	ApprovalScopeAlways = "always"
+)
+
 // String returns a compact representation for audit trails.
 func (d Decision) String() string {
 	switch d {

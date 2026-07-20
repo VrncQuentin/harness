@@ -23,8 +23,11 @@ type TaskEvent struct {
 	ToolResult string
 	ToolError  string
 
-	ApprovalID string
-	Terminate  string
+	ApprovalID       string
+	ApprovalReason   string
+	ApprovalDecision string
+	ApprovalScope    string
+	Terminate        string
 }
 
 const (
