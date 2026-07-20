@@ -142,6 +142,68 @@ func TestLlamaArgsForModelUsesEffectiveModelFields(t *testing.T) {
 	}
 }
 
+func TestEmbedderArgsForConfig(t *testing.T) {
+	embed := config.Defaults().Embedder
+	embed.Binary = "embed-bin"
+	embed.ModelPath = "embed.gguf"
+	embed.Port = 8124
+	embed.Verbose = true
+
+	bin, args := embedderArgsForConfig(embed)
+	if bin != embed.Binary {
+		t.Fatalf("binary = %q, want %q", bin, embed.Binary)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{embed.ModelPath, "--embedding", "--n-gpu-layers 0", "8124", "--verbose"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("embedder args %q missing %q", joined, want)
+		}
+	}
+	if got := embedderHealthURL(embed); got != "http://127.0.0.1:8124/health" {
+		t.Fatalf("health URL = %q", got)
+	}
+}
+
+func TestModelProcessArgBuildersKeepCacheAndVerbosity(t *testing.T) {
+	model := config.Defaults().Model
+	model.Binary = "llama-bin"
+	model.ModelPath = "project.gguf"
+	model.CtxSize = 4096
+	model.GPULayers = 7
+	model.NParallel = 2
+	model.Port = 8123
+	model.Verbose = false
+	model.CacheTypeK = "q4_0"
+	model.CacheTypeV = "f16"
+
+	_, args := llamaArgsForModel(model)
+	if hasRuntimeVerbose(args) {
+		t.Fatalf("--verbose must not appear when verbose=false: %v", args)
+	}
+	for flag, want := range map[string]string{"--cache-type-k": "q4_0", "--cache-type-v": "f16"} {
+		if got := runtimeFlagValue(args, flag); got != want {
+			t.Fatalf("%s = %q, want %q (args=%v)", flag, got, want, args)
+		}
+	}
+}
+
+func runtimeFlagValue(args []string, flag string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func hasRuntimeVerbose(args []string) bool {
+	for _, a := range args {
+		if a == "--verbose" {
+			return true
+		}
+	}
+	return false
+}
 func TestQueueStatsReportsLiveQueueDepthAndCapacity(t *testing.T) {
 	rt := New(config.Defaults(), nil, LogRings{})
 	depth, capacity := rt.QueueStats()

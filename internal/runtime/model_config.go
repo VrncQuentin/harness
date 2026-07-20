@@ -1,10 +1,11 @@
 package runtime
 
 import (
+	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/proc"
 )
 
 func (rt *Runtime) effectiveModelFor(cfg *config.Config) config.ModelConfig {
@@ -24,33 +25,46 @@ func (rt *Runtime) effectivePromptFor(cfg *config.Config) config.PromptConfig {
 	promptCfg.CtxSize = rt.effectiveModelFor(cfg).CtxSize
 	return promptCfg
 }
+
 func llamaArgsForModel(model config.ModelConfig) (string, []string) {
-	return proc.LlamaArgs(proc.LlamaArgsConfig{
-		Binary:     model.Binary,
-		ModelPath:  model.ModelPath,
-		CtxSize:    model.CtxSize,
-		GPULayers:  model.GPULayers,
-		NParallel:  model.NParallel,
-		Port:       model.Port,
-		Verbose:    model.Verbose,
-		CacheTypeK: model.CacheTypeK,
-		CacheTypeV: model.CacheTypeV,
-	})
+	args := []string{
+		"--model", model.ModelPath,
+		"--ctx-size", strconv.Itoa(model.CtxSize),
+		"--n-gpu-layers", strconv.Itoa(model.GPULayers),
+		"--parallel", strconv.Itoa(model.NParallel),
+		"--port", strconv.Itoa(model.Port),
+		"--host", "127.0.0.1",
+		"--cache-type-k", model.CacheTypeK,
+		"--cache-type-v", model.CacheTypeV,
+	}
+	if model.Verbose {
+		args = append(args, "--verbose")
+	}
+	return model.Binary, args
 }
 
 func llamaHealthURL(model config.ModelConfig) string {
-	return proc.HealthURL(model.Port)
+	return localHealthURL(model.Port)
 }
 
 func embedderArgsForConfig(embed config.EmbedderConfig) (string, []string) {
-	return proc.EmbedderArgs(proc.EmbedderArgsConfig{
-		Binary:    embed.Binary,
-		ModelPath: embed.ModelPath,
-		Port:      embed.Port,
-		Verbose:   embed.Verbose,
-	})
+	args := []string{
+		"--model", embed.ModelPath,
+		"--embedding",
+		"--n-gpu-layers", "0",
+		"--port", strconv.Itoa(embed.Port),
+		"--host", "127.0.0.1",
+	}
+	if embed.Verbose {
+		args = append(args, "--verbose")
+	}
+	return embed.Binary, args
 }
 
 func embedderHealthURL(embed config.EmbedderConfig) string {
-	return proc.HealthURL(embed.Port)
+	return localHealthURL(embed.Port)
+}
+
+func localHealthURL(port int) string {
+	return fmt.Sprintf("http://127.0.0.1:%d/health", port)
 }

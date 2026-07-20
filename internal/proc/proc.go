@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -578,72 +577,4 @@ func formatExitLine(name string, code *int) string {
 		return fmt.Sprintf("[harness] %s exited (exit code unavailable)\n", name)
 	}
 	return fmt.Sprintf("[harness] %s exited (code %d / 0x%08X)\n", name, *code, uint32(*code))
-}
-
-// LlamaArgsConfig is the typed llama-server process configuration.
-type LlamaArgsConfig struct {
-	Binary     string
-	ModelPath  string
-	CtxSize    int
-	GPULayers  int
-	NParallel  int
-	Port       int
-	Verbose    bool
-	CacheTypeK string
-	CacheTypeV string
-}
-
-// EmbedderArgsConfig is the typed embedder sidecar process configuration.
-type EmbedderArgsConfig struct {
-	Binary    string
-	ModelPath string
-	Port      int
-	Verbose   bool
-}
-
-// HealthURL returns the local llama-server-compatible health endpoint for port.
-func HealthURL(port int) string {
-	return fmt.Sprintf("http://127.0.0.1:%d/health", port)
-}
-
-// LlamaArgs builds the argument slice for llama-server. When Verbose is true,
-// --verbose is appended so early startup failures (model load, CUDA init,
-// port bind) surface with enough context to diagnose. CacheTypeK/V are
-// passed through as --cache-type-k/--cache-type-v; both are required and
-// validated upstream by config.Validate.
-func LlamaArgs(cfg LlamaArgsConfig) (string, []string) {
-	args := []string{
-		"--model", cfg.ModelPath,
-		"--ctx-size", strconv.Itoa(cfg.CtxSize),
-		"--n-gpu-layers", strconv.Itoa(cfg.GPULayers),
-		"--parallel", strconv.Itoa(cfg.NParallel),
-		"--port", strconv.Itoa(cfg.Port),
-		"--host", "127.0.0.1",
-		"--cache-type-k", cfg.CacheTypeK,
-		"--cache-type-v", cfg.CacheTypeV,
-	}
-	if cfg.Verbose {
-		args = append(args, "--verbose")
-	}
-	return cfg.Binary, args
-}
-
-// EmbedderArgs builds the argument slice for the embedder sidecar.
-// --embedding switches llama-server into embedding mode; without it the
-// server boots a chat-completion endpoint and /embedding returns 501,
-// which defeats the whole point of running a second process.
-// --n-gpu-layers 0 pins the embedder to CPU+RAM so it never competes with
-// the main model for VRAM. Verbose follows the same semantics as LlamaArgs.
-func EmbedderArgs(cfg EmbedderArgsConfig) (string, []string) {
-	args := []string{
-		"--model", cfg.ModelPath,
-		"--embedding",
-		"--n-gpu-layers", "0",
-		"--port", strconv.Itoa(cfg.Port),
-		"--host", "127.0.0.1",
-	}
-	if cfg.Verbose {
-		args = append(args, "--verbose")
-	}
-	return cfg.Binary, args
 }
