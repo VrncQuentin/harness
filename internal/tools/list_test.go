@@ -15,7 +15,7 @@ func TestFileList_WithinSandbox(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(dir, "sub"), 0o755)
 
 	tool := &fileListTool{}
-	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{"path": dir})
+	res := tool.Execute(context.TODO(), CallInfo{SandboxRoots: []string{dir}}, map[string]any{"path": dir})
 	if res.Error != "" {
 		t.Fatalf("unexpected error: %s", res.Error)
 	}
@@ -30,7 +30,7 @@ func TestFileList_WithinSandbox(t *testing.T) {
 func TestFileList_OutsideSandbox(t *testing.T) {
 	dir := t.TempDir()
 	tool := &fileListTool{}
-	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{"path": "/etc"})
+	res := tool.Execute(context.TODO(), CallInfo{SandboxRoots: []string{dir}}, map[string]any{"path": "/etc"})
 	if !strings.Contains(res.Error, "sandbox") {
 		t.Fatalf("expected sandbox error, got %q", res.Error)
 	}

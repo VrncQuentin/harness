@@ -30,7 +30,7 @@ func (t *fileListTool) Schema() map[string]any {
 	}
 }
 
-func (t *fileListTool) Execute(ctx context.Context, c Context, args map[string]any) Result {
+func (t *fileListTool) Execute(ctx context.Context, c CallInfo, args map[string]any) Result {
 	rawPath, ok := args["path"].(string)
 	if !ok || rawPath == "" {
 		return Result{Error: "file_list: missing or invalid path argument"}

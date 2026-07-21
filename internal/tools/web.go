@@ -36,7 +36,7 @@ func (t *webSearchTool) Schema() map[string]any {
 	}
 }
 
-func (t *webSearchTool) Execute(ctx context.Context, c Context, args map[string]any) Result {
+func (t *webSearchTool) Execute(ctx context.Context, c CallInfo, args map[string]any) Result {
 	query, ok := args["query"].(string)
 	query = strings.TrimSpace(query)
 	if !ok || query == "" {

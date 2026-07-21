@@ -517,7 +517,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	}
 	loopCtx, cancelLoop := context.WithCancel(ctx)
 
-	toolCtx := tools.Context{
+	toolCtx := tools.CallInfo{
 		ProjectSlug:    slug,
 		SandboxRoots:   sandboxRoots,
 		SessionID:      id,

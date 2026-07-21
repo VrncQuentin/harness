@@ -1223,7 +1223,7 @@ func (t *httpClientProbeTool) Schema() map[string]any {
 	return map[string]any{"type": "object"}
 }
 
-func (t *httpClientProbeTool) Execute(_ context.Context, c tools.Context, _ map[string]any) tools.Result {
+func (t *httpClientProbeTool) Execute(_ context.Context, c tools.CallInfo, _ map[string]any) tools.Result {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.called = true

@@ -30,7 +30,7 @@ func (t *shellExecTool) Schema() map[string]any {
 	}
 }
 
-func (t *shellExecTool) Execute(ctx context.Context, c Context, args map[string]any) Result {
+func (t *shellExecTool) Execute(ctx context.Context, c CallInfo, args map[string]any) Result {
 	cmdStr, ok := args["command"].(string)
 	if !ok || cmdStr == "" {
 		return Result{Error: "shell_exec: missing or invalid command argument"}
