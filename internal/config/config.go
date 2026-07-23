@@ -172,6 +172,10 @@ type LoopConfig struct {
 	FileReadEnabled bool
 	// FileListEnabled toggles the file_list tool.
 	FileListEnabled bool
+	// AstMapEnabled toggles the ast_map tool (parser-backed file outline).
+	AstMapEnabled bool
+	// AstFindEnabled toggles the ast_find tool (symbol/content locate).
+	AstFindEnabled bool
 	// FileWriteEnabled toggles the file_write tool. Off by default; requires
 	// the approval layer before it can be enabled safely.
 	FileWriteEnabled bool
@@ -191,6 +195,10 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.FileReadEnabled
 	case "file_list":
 		return c.FileListEnabled
+	case "ast_map":
+		return c.AstMapEnabled
+	case "ast_find":
+		return c.AstFindEnabled
 	case "file_write":
 		return c.FileWriteEnabled
 	case "shell_exec":
@@ -259,6 +267,8 @@ func Defaults() Config {
 			DoomThreshold:    3,
 			FileReadEnabled:  tools.BuiltinDefaultEnabled("file_read"),
 			FileListEnabled:  tools.BuiltinDefaultEnabled("file_list"),
+			AstMapEnabled:    tools.BuiltinDefaultEnabled("ast_map"),
+			AstFindEnabled:   tools.BuiltinDefaultEnabled("ast_find"),
 			FileWriteEnabled: tools.BuiltinDefaultEnabled("file_write"),
 			ShellExecEnabled: tools.BuiltinDefaultEnabled("shell_exec"),
 			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),
