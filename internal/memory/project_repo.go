@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"strings"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	gitw "github.com/vrnc/harness/internal/git"
 )
 

@@ -1,4 +1,4 @@
-// Package git wraps github.com/go-git/go-git/v5 for local harness repos.
+// Package git wraps github.com/go-git/go-git/v6 for local harness repos.
 // It exposes a small surface to open or initialize a repository and commit
 // specific files. Project memory repos are initialized by the harness through
 // Init; cloning remains outside this package.
@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 // defaultAuthorName and defaultAuthorEmail are used when the repo's git
