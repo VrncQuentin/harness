@@ -11,7 +11,7 @@ import (
 func TestShellExec_EmptySandboxRoots(t *testing.T) {
 	tool := &shellExecTool{}
 	// Empty slice.
-	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{}}, map[string]any{"command": "ls"})
+	res := tool.Execute(context.TODO(), CallInfo{SandboxRoots: []string{}}, map[string]any{"command": "ls"})
 	if res.Error == "" {
 		t.Fatal("expected error for empty sandbox roots, got none")
 	}
@@ -23,7 +23,7 @@ func TestShellExec_EmptySandboxRoots(t *testing.T) {
 func TestShellExec_BlankSandboxRoot(t *testing.T) {
 	tool := &shellExecTool{}
 	// Slice with one empty string.
-	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{""}}, map[string]any{"command": "ls"})
+	res := tool.Execute(context.TODO(), CallInfo{SandboxRoots: []string{""}}, map[string]any{"command": "ls"})
 	if res.Error == "" {
 		t.Fatal("expected error for blank sandbox root, got none")
 	}
@@ -36,7 +36,7 @@ func TestShellExec_DirValidatedLikeFileTools(t *testing.T) {
 	dir := t.TempDir()
 	tool := &shellExecTool{}
 	// Valid sandbox root → command runs.
-	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{"command": "echo hello"})
+	res := tool.Execute(context.TODO(), CallInfo{SandboxRoots: []string{dir}}, map[string]any{"command": "echo hello"})
 	if res.Error != "" {
 		t.Fatalf("unexpected error: %s", res.Error)
 	}
@@ -52,7 +52,7 @@ func TestShellExec_OutputIsCappedWhileCommandCompletes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		command = "call " + command
 	}
-	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{"command": command})
+	res := tool.Execute(context.TODO(), CallInfo{SandboxRoots: []string{dir}}, map[string]any{"command": command})
 	if res.Error != "" {
 		t.Fatalf("unexpected error: %s", res.Error)
 	}

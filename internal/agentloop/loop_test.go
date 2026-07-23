@@ -47,7 +47,7 @@ func (t *countingSchemaTool) Schema() map[string]any {
 		"properties": map[string]any{},
 	}
 }
-func (t *countingSchemaTool) Execute(context.Context, tools.Context, map[string]any) tools.Result {
+func (t *countingSchemaTool) Execute(context.Context, tools.CallInfo, map[string]any) tools.Result {
 	return tools.Result{Content: "ok"}
 }
 
@@ -77,7 +77,7 @@ func newTestEngine(t *testing.T, loopCfg config.LoopConfig) *Engine {
 	if err := tools.RegisterBuiltins(reg); err != nil {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
-	return NewEngine(&mockInferClient{}, reg, loopCfg, tools.Context{}).WithApprovals(
+	return NewEngine(&mockInferClient{}, reg, loopCfg, tools.CallInfo{}).WithApprovals(
 		approvals.NewEvaluator(approvals.DefaultLayer()),
 	)
 }
@@ -92,7 +92,7 @@ func TestEngineCachesToolSchemasAcrossTurns(t *testing.T) {
 		&mockInferClient{tokens: toolCallTokens("file_list", `{"path":"."}`)},
 		reg,
 		config.LoopConfig{MaxTurns: 3, DoomThreshold: 10, FileListEnabled: true},
-		tools.Context{},
+		tools.CallInfo{},
 	)
 	if tool.schemaCalls != 1 {
 		t.Fatalf("NewEngine called Schema() %d times, want 1", tool.schemaCalls)
@@ -352,7 +352,7 @@ func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 	if err := tools.RegisterBuiltins(reg); err != nil {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
-	engine := NewEngine(&mockInferClient{}, reg, cfg, tools.Context{})
+	engine := NewEngine(&mockInferClient{}, reg, cfg, tools.CallInfo{})
 
 	// isToolEnabled checks config toggles.
 	if engine.isToolEnabled("file_write") {

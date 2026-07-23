@@ -26,7 +26,7 @@ func (t *fileWriteTool) Schema() map[string]any {
 	}
 }
 
-func (t *fileWriteTool) Execute(ctx context.Context, c Context, args map[string]any) Result {
+func (t *fileWriteTool) Execute(ctx context.Context, c CallInfo, args map[string]any) Result {
 	rawPath, ok := args["path"].(string)
 	if !ok || rawPath == "" {
 		return Result{Error: "file_write: missing or invalid path argument"}
