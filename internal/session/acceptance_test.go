@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
+	gogit "github.com/go-git/go-git/v6"
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/config"
 	"github.com/vrnc/harness/internal/git"
