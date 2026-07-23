@@ -43,6 +43,11 @@ type Event struct {
 	// ApprovalScope records whether an approval was one-time or remembered.
 	ApprovalScope string `json:"approval_scope,omitempty"`
 
+	// Origin records the C3 provenance class of the event's content:
+	// "extraction" for parser-backed tool output, "inference" for
+	// model-generated text. Empty means unclassified.
+	Origin string `json:"origin,omitempty"`
+
 	// Terminate is the reason the loop stopped, set on the final event.
 	Terminate string `json:"terminate,omitempty"`
 }
@@ -258,7 +263,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 			}
 			if tok.Content != "" {
 				assistantText.WriteString(tok.Content)
-				e.emit(ctx, evch, Event{Turn: turns, Type: EvtText, Content: tok.Content})
+				e.emit(ctx, evch, Event{Turn: turns, Type: EvtText, Content: tok.Content, Origin: string(tools.OriginInference)})
 			}
 			if tok.ToolCallDelta != nil {
 				slot, err := resolveSlot(&toolCallSlots, tok.ToolCallDelta.Index)
@@ -374,6 +379,7 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 				ToolID:     tc.Function.Name,
 				ToolResult: res.Content,
 				ToolError:  res.Error,
+				Origin:     string(res.Origin),
 			})
 
 			// Inject tool result into conversation.

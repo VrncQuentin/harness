@@ -687,6 +687,7 @@ func mapTaskEvent(ev agentloop.Event) ui.TaskEvent {
 		ApprovalReason:   ev.ApprovalReason,
 		ApprovalDecision: ev.ApprovalDecision,
 		ApprovalScope:    ev.ApprovalScope,
+		Origin:           ev.Origin,
 		Terminate:        ev.Terminate,
 	}
 }

@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS config (
     loop_doom_threshold              INTEGER NOT NULL,
     loop_file_read_enabled           INTEGER NOT NULL,
     loop_file_list_enabled           INTEGER NOT NULL,
+    loop_ast_map_enabled             INTEGER NOT NULL,
+    loop_ast_find_enabled            INTEGER NOT NULL,
     loop_file_write_enabled          INTEGER NOT NULL,
     loop_shell_exec_enabled          INTEGER NOT NULL,
     loop_web_search_enabled          INTEGER NOT NULL,

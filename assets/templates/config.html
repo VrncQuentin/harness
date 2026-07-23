@@ -260,6 +260,20 @@
     <div class="fg-row">
       <div class="fg">
         <label class="checkbox">
+          <input type="checkbox" id="loop_ast_map_enabled" name="loop_ast_map_enabled" {{if .Config.Loop.AstMapEnabled}}checked{{end}}>
+          <span>Enable <code>ast_map</code></span>
+        </label>
+      </div>
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="loop_ast_find_enabled" name="loop_ast_find_enabled" {{if .Config.Loop.AstFindEnabled}}checked{{end}}>
+          <span>Enable <code>ast_find</code></span>
+        </label>
+      </div>
+    </div>
+    <div class="fg-row">
+      <div class="fg">
+        <label class="checkbox">
           <input type="checkbox" id="loop_file_write_enabled" name="loop_file_write_enabled" {{if .Config.Loop.FileWriteEnabled}}checked{{end}}>
           <span>Enable <code>file_write</code></span>
         </label>
