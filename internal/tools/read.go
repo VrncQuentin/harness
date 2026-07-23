@@ -29,7 +29,7 @@ func (t *fileReadTool) Schema() map[string]any {
 	}
 }
 
-func (t *fileReadTool) Execute(ctx context.Context, c Context, args map[string]any) Result {
+func (t *fileReadTool) Execute(ctx context.Context, c CallInfo, args map[string]any) Result {
 	rawPath, ok := args["path"].(string)
 	if !ok || rawPath == "" {
 		return Result{Error: "file_read: missing or invalid path argument"}

@@ -83,7 +83,7 @@ type Engine struct {
 	registry    *tools.Registry
 	toolSchemas []registeredToolSchema
 	loopCfg     config.LoopConfig
-	toolCtx     tools.Context
+	toolCtx     tools.CallInfo
 	metrics     MetricsRecorder
 
 	approvalTimeout time.Duration
@@ -108,7 +108,7 @@ func NewEngine(
 	infer inference.Client,
 	registry *tools.Registry,
 	loopCfg config.LoopConfig,
-	toolCtx tools.Context,
+	toolCtx tools.CallInfo,
 ) *Engine {
 	return &Engine{
 		infer:           infer,

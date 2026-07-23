@@ -20,11 +20,11 @@ var ErrDuplicateTool = errors.New("tools: duplicate id")
 // exist.
 var ErrPathNotFound = errors.New("tools: path not found")
 
-// Context provides the active project context available to every tool call.
+// CallInfo provides the active project context available to every tool call.
 // CallerIdentity records who or what requested the tool (e.g. "agent:coder",
 // "api", "pipeline:deploy"). SessionID pins the call to the owning session
 // for audit trails and episode recording.
-type Context struct {
+type CallInfo struct {
 	ProjectSlug    string
 	SandboxRoots   []string
 	SessionID      string
@@ -98,8 +98,8 @@ type Tool interface {
 	// serializable map.
 	Schema() map[string]any
 	// Execute runs the tool with the given arguments (JSON-decoded by the
-	// caller) under the given context. Cancellation is propagated via ctx.
-	Execute(ctx context.Context, ctx2 Context, args map[string]any) Result
+	// caller) under the given call info. Cancellation is propagated via ctx.
+	Execute(ctx context.Context, call CallInfo, args map[string]any) Result
 	// Description returns a short human-readable description for the
 	// model's tool choice head.
 	Description() string

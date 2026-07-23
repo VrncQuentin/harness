@@ -14,7 +14,7 @@ func TestFileWrite_CreatesParentDirectories(t *testing.T) {
 	dir := t.TempDir()
 	tool := &fileWriteTool{}
 	path := filepath.Join(dir, "nested", "notes", "todo.txt")
-	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{
+	res := tool.Execute(context.TODO(), CallInfo{SandboxRoots: []string{dir}}, map[string]any{
 		"path":    path,
 		"content": "hello",
 	})
@@ -37,7 +37,7 @@ func TestFileWrite_ParentOverFileFails(t *testing.T) {
 		t.Fatalf("WriteFile parent: %v", err)
 	}
 	tool := &fileWriteTool{}
-	res := tool.Execute(context.TODO(), Context{SandboxRoots: []string{dir}}, map[string]any{
+	res := tool.Execute(context.TODO(), CallInfo{SandboxRoots: []string{dir}}, map[string]any{
 		"path":    filepath.Join(parent, "child.txt"),
 		"content": "hello",
 	})
@@ -52,7 +52,7 @@ func TestFileWrite_RejectsMissingContentWithoutTruncating(t *testing.T) {
 	if err := os.WriteFile(path, []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res := (&fileWriteTool{}).Execute(context.Background(), Context{SandboxRoots: []string{dir}}, map[string]any{"path": path})
+	res := (&fileWriteTool{}).Execute(context.Background(), CallInfo{SandboxRoots: []string{dir}}, map[string]any{"path": path})
 	if !strings.Contains(res.Error, "content") {
 		t.Fatalf("missing content error = %q", res.Error)
 	}
@@ -76,7 +76,7 @@ func TestFileWrite_RejectsSymlinkedParentOutsideSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(link, "written.txt")
-	res := (&fileWriteTool{}).Execute(context.Background(), Context{SandboxRoots: []string{root}}, map[string]any{"path": path, "content": "blocked"})
+	res := (&fileWriteTool{}).Execute(context.Background(), CallInfo{SandboxRoots: []string{root}}, map[string]any{"path": path, "content": "blocked"})
 	if !strings.Contains(res.Error, "sandbox") {
 		t.Fatalf("symlink write error = %q", res.Error)
 	}

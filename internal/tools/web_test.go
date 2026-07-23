@@ -55,7 +55,7 @@ func TestWebSearch_ExecuteDisclosesNetworkUse(t *testing.T) {
 			Header: make(http.Header),
 		}, nil
 	})}
-	res := tool.Execute(context.TODO(), Context{HTTPClient: client}, map[string]any{"query": "local harness"})
+	res := tool.Execute(context.TODO(), CallInfo{HTTPClient: client}, map[string]any{"query": "local harness"})
 	if res.Error != "" {
 		t.Fatalf("unexpected error: %s", res.Error)
 	}
