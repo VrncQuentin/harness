@@ -8,22 +8,23 @@ The language contract lives in [DSL.md](DSL.md). This document is the implementa
 
 ## Position In The Main Roadmap
 
-DSL runtime support is M10. It depends on M7 because pipeline model steps write declared outputs through harness tools, and `verify` / `gate` commands run as trusted local processes. Safe file writes, shell execution, approvals, and hardened project sandboxing must exist before pipeline automation is allowed to drive them.
+DSL runtime support is M11. It depends on M7 because pipeline model steps write declared outputs through harness tools, and `verify` / `gate` commands run as trusted local processes. Safe file writes, shell execution, approvals, and hardened project sandboxing must exist before pipeline automation is allowed to drive them.
 
-M10 also depends on these earlier foundations:
+M11 also depends on these earlier foundations:
 - M3b projects: active project slug, project-owned memory layout, project directories, and project-scoped agent resolution.
 - M4 native agent loop: part-based messages, cancellation, tool-call dispatch, loop limits, and UI-visible run events.
 - M5 semantic memory: project-scoped indexes and episode retrieval for long-running pipeline steps.
 - M7 permissions: destructive tools, shell execution, approvals, sandbox roots, audit trail, and tool toggles.
 - M8 hardening: full test suite, graceful shutdown, observability, and reliable packaging.
 - M9 project memory repos: one project memory repo per project, global project repo fallback, and attached source repo semantics.
+- M10 tool surface: the tool ids and contracts the runner binds tool calls against ([tool_roadmap.md](tool_roadmap.md)).
 
 ## Non-Goals
 
 - Do not implement DSL runtime before the interactive native agent loop is stable.
 - Do not add roadmap concepts to the DSL. A runner can bind roadmap items to pipeline params, but `.hp` specs do not know about milestones, tickets, or item advancement.
 - Do not add a JSON intermediate format. The grammar in `DSL.md` remains the source of truth.
-- Do not add speculative constructs such as route guards, parallel execution, generated sub-libraries, schemas on `json`, or per-step timeouts in M10.
+- Do not add speculative constructs such as route guards, parallel execution, generated sub-libraries, schemas on `json`, or per-step timeouts in M11.
 - Do not bypass the harness tool/approval layer. Model-written outputs are normal tool writes into declared artifact paths.
 - Do not store source `.hp` specs in the memory repo by default. Specs live with the project/code repos whose scripts, tests, and paths they orchestrate.
 
@@ -52,7 +53,7 @@ Rules:
 - `internal/dsl` must not import `internal/pipeline`, `internal/ui`, `internal/memory`, `internal/agentloop`, `internal/tools`, `internal/config`, or database packages.
 - `internal/dsl` returns typed ASTs, diagnostics, linter warnings, and a validated spec graph. It does not execute commands, open model sessions, write artifacts, or touch SQLite.
 - `internal/pipeline` owns all harness integration: project directory discovery, source repo metadata, run state, artifacts, verify/gate command execution, agent-loop calls, UI events, and metrics.
-- Experimental code in `internal/dsl/x` must not be imported by production packages. Promote or delete it before M10 is accepted.
+- Experimental code in `internal/dsl/x` must not be imported by production packages. Promote or delete it before M11 is accepted.
 - Public-ish names in `internal/dsl` should be boring and stable enough to survive extraction into a standalone module later.
 
 ## Source And Artifact Layout
@@ -70,7 +71,7 @@ Source specs live in the active project's attached git directories:
     ...
 ```
 
-The `pipelines/` convention keeps `.hp` files reviewed alongside the code, tests, and scripts they invoke. M10 discovery scans each configured project directory for `pipelines/**/*.hp`. A later iteration may add configurable pipeline roots or a shared template library, but the default execution source is the attached repo, not memory.
+The `pipelines/` convention keeps `.hp` files reviewed alongside the code, tests, and scripts they invoke. M11 discovery scans each configured project directory for `pipelines/**/*.hp`. A later iteration may add configurable pipeline roots or a shared template library, but the default execution source is the attached repo, not memory.
 
 Run artifacts live under the active project memory repo so the harness can preserve prompts, transcripts, command logs, and output evidence independently of the source repo working tree:
 
@@ -110,7 +111,7 @@ Rules:
 
 ## SQLite State
 
-M10 adds tables for durable run control and resume. Exact DDL can change during implementation, but the model should preserve these records.
+M11 adds tables for durable run control and resume. Exact DDL can change during implementation, but the model should preserve these records.
 
 `pipeline_runs`:
 - `id` stable run id.
@@ -433,7 +434,7 @@ Failed, rejected, or surfaced runs can export a minimal repro bundle containing:
 
 ## Observability
 
-M10 metrics:
+M11 metrics:
 - `pipeline_runs`
 - `pipeline_step_attempts`
 - `pipeline_rejects`
@@ -457,7 +458,7 @@ Log lines must carry run id, project slug, pipeline path, step name, cycle, and 
 
 ## Security And Safety
 
-M10 must preserve these invariants:
+M11 must preserve these invariants:
 - Specs are data, not executable scripts.
 - Verify/gate commands are explicit argv arrays and visible in preview.
 - Model writes go through declared artifact paths and harness tools.
@@ -541,7 +542,7 @@ M10 must preserve these invariants:
 - Add cancellation propagation.
 - Add graceful shutdown behavior.
 - Add crash recovery reconciliation.
-- Add M10 metrics.
+- Add M11 metrics.
 - Add logs/SSE events for pipeline lifecycle.
 
 ## Acceptance Tests
@@ -580,7 +581,7 @@ M10 must preserve these invariants:
 - [ ] The UI run graph shows current step, cycle, attempts, supplied agent, reject count, and matched route history.
 - [ ] The UI artifact browser shows rendered prompt, resolved bindings, supplied agent, transcript, outputs, extra files, command logs, and consumed-cycle records.
 - [ ] A surfaced run can export a minimal repro bundle with spec SHA, rendered prompt, agent args, consumed hashes, output hashes, and command tail.
-- [ ] M10 metrics record run count, step attempts, rejects, surfaces, verify/gate duration, and artifact bytes.
+- [ ] M11 metrics record run count, step attempts, rejects, surfaces, verify/gate duration, and artifact bytes.
 
 ## Open Decisions
 
