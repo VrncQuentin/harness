@@ -45,6 +45,7 @@ func (s *ConfigStore) seed() error {
 			active_project_slug, project_llama_on_switch,
 			loop_max_turns, loop_doom_threshold,
 			loop_file_read_enabled, loop_file_list_enabled,
+			loop_ast_map_enabled, loop_ast_find_enabled,
 			loop_file_write_enabled, loop_shell_exec_enabled,
 			loop_web_search_enabled
 	) VALUES (
@@ -58,7 +59,7 @@ func (s *ConfigStore) seed() error {
 		?, ?, ?, ?,
 		?, ?, ?, ?,
 		?, ?, ?, ?,
-		?, ?, ?
+		?, ?, ?, ?, ?
 	)`,
 		d.Model.Binary, d.Model.ModelPath, d.Model.CtxSize, d.Model.GPULayers,
 		d.Model.NParallel, d.Model.Port, boolInt(d.Model.Verbose),
@@ -77,6 +78,7 @@ func (s *ConfigStore) seed() error {
 		d.Project.ActiveProjectSlug, d.Project.LlamaOnSwitch,
 		d.Loop.MaxTurns, d.Loop.DoomThreshold,
 		boolInt(d.Loop.FileReadEnabled), boolInt(d.Loop.FileListEnabled),
+		boolInt(d.Loop.AstMapEnabled), boolInt(d.Loop.AstFindEnabled),
 		boolInt(d.Loop.FileWriteEnabled), boolInt(d.Loop.ShellExecEnabled),
 		boolInt(d.Loop.WebSearchEnabled),
 	)
@@ -108,6 +110,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 			active_project_slug, project_llama_on_switch,
 			loop_max_turns, loop_doom_threshold,
 			loop_file_read_enabled, loop_file_list_enabled,
+			loop_ast_map_enabled, loop_ast_find_enabled,
 			loop_file_write_enabled, loop_shell_exec_enabled,
 			loop_web_search_enabled,
 			saved_at
@@ -122,6 +125,8 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		savedAt           sql.NullInt64
 		fileRead          int
 		fileList          int
+		astMap            int
+		astFind           int
 		fileWrite         int
 		shellExec         int
 		webSearch         int
@@ -145,6 +150,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		&cfg.Project.ActiveProjectSlug, &cfg.Project.LlamaOnSwitch,
 		&cfg.Loop.MaxTurns, &cfg.Loop.DoomThreshold,
 		&fileRead, &fileList,
+		&astMap, &astFind,
 		&fileWrite, &shellExec, &webSearch,
 		&savedAt,
 	)
@@ -157,6 +163,8 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	cfg.API.Enabled = apiEnabled != 0
 	cfg.Loop.FileReadEnabled = fileRead != 0
 	cfg.Loop.FileListEnabled = fileList != 0
+	cfg.Loop.AstMapEnabled = astMap != 0
+	cfg.Loop.AstFindEnabled = astFind != 0
 	cfg.Loop.FileWriteEnabled = fileWrite != 0
 	cfg.Loop.ShellExecEnabled = shellExec != 0
 	cfg.Loop.WebSearchEnabled = webSearch != 0
@@ -188,6 +196,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			active_project_slug = ?, project_llama_on_switch = ?,
 			loop_max_turns = ?, loop_doom_threshold = ?,
 			loop_file_read_enabled = ?, loop_file_list_enabled = ?,
+			loop_ast_map_enabled = ?, loop_ast_find_enabled = ?,
 			loop_file_write_enabled = ?, loop_shell_exec_enabled = ?,
 			loop_web_search_enabled = ?,
 			saved_at = ?
@@ -209,6 +218,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 		cfg.Project.ActiveProjectSlug, cfg.Project.LlamaOnSwitch,
 		cfg.Loop.MaxTurns, cfg.Loop.DoomThreshold,
 		boolInt(cfg.Loop.FileReadEnabled), boolInt(cfg.Loop.FileListEnabled),
+		boolInt(cfg.Loop.AstMapEnabled), boolInt(cfg.Loop.AstFindEnabled),
 		boolInt(cfg.Loop.FileWriteEnabled), boolInt(cfg.Loop.ShellExecEnabled),
 		boolInt(cfg.Loop.WebSearchEnabled),
 		time.Now().Unix(),

@@ -27,7 +27,10 @@ type TaskEvent struct {
 	ApprovalReason   string
 	ApprovalDecision string
 	ApprovalScope    string
-	Terminate        string
+	// Origin is the C3 provenance class of the event content:
+	// "extraction" for parser-backed tool output, "inference" for model text.
+	Origin    string
+	Terminate string
 }
 
 const (

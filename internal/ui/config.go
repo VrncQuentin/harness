@@ -179,6 +179,8 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	cfg.Loop.DoomThreshold = atoiField(r, "loop_doom_threshold", "Agent loop doom threshold", cfg.Loop.DoomThreshold, &parseErrs)
 	cfg.Loop.FileReadEnabled = r.FormValue("loop_file_read_enabled") == "on"
 	cfg.Loop.FileListEnabled = r.FormValue("loop_file_list_enabled") == "on"
+	cfg.Loop.AstMapEnabled = r.FormValue("loop_ast_map_enabled") == "on"
+	cfg.Loop.AstFindEnabled = r.FormValue("loop_ast_find_enabled") == "on"
 	cfg.Loop.FileWriteEnabled = r.FormValue("loop_file_write_enabled") == "on"
 	cfg.Loop.ShellExecEnabled = r.FormValue("loop_shell_exec_enabled") == "on"
 	cfg.Loop.WebSearchEnabled = r.FormValue("loop_web_search_enabled") == "on"
