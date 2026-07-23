@@ -21,6 +21,8 @@ func TestBuiltinDescriptorsDefinePolicyMetadata(t *testing.T) {
 	want := []Descriptor{
 		{ID: "file_read", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 		{ID: "file_list", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
+		{ID: "ast_map", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
+		{ID: "ast_find", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 		{ID: "file_write", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: writes require approval"},
 		{ID: "shell_exec", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: shell commands require approval"},
 		{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
@@ -48,10 +50,10 @@ func TestRegistry_ListAndGet(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	all := r.List()
-	if len(all) != 5 {
-		t.Fatalf("expected 5 tools, got %d", len(all))
+	if len(all) != 7 {
+		t.Fatalf("expected 7 tools, got %d", len(all))
 	}
-	for _, id := range []string{"file_read", "file_list", "file_write", "shell_exec", "web_search"} {
+	for _, id := range []string{"file_read", "file_list", "ast_map", "ast_find", "file_write", "shell_exec", "web_search"} {
 		if r.Get(id) == nil {
 			t.Errorf("%s not found", id)
 		}

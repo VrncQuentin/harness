@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/vrnc/harness/internal/parser"
 )
 
 // ErrSandboxViolation is returned when a file tool tries to access a path
@@ -32,12 +34,29 @@ type CallInfo struct {
 	HTTPClient     *http.Client
 }
 
+// OriginClass records where content came from, per the C3 contract:
+// parser-backed tool output is extraction-class by construction, while
+// model-generated content is inference-class. The tool layer records the
+// class so downstream consumers (session records, the future memory layer)
+// never have to guess.
+type OriginClass string
+
+const (
+	// OriginExtraction marks deterministic, parser-backed output.
+	OriginExtraction OriginClass = "extraction"
+	// OriginInference marks model-generated content.
+	OriginInference OriginClass = "inference"
+)
+
 // Result is the outcome of a tool execution. Error is set for tool-level
 // failures (missing file, sandbox violation); Content is the successful
 // output. Both are injected into the conversation for the model to see.
+// Origin is set by tools whose output has a provenance class by
+// construction; empty means unclassified.
 type Result struct {
 	Content string
 	Error   string
+	Origin  OriginClass
 }
 
 // ApprovalDefault is the built-in approval-layer posture for a tool.
@@ -61,6 +80,8 @@ type Descriptor struct {
 var builtinToolDescriptors = []Descriptor{
 	{ID: "file_read", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 	{ID: "file_list", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
+	{ID: "ast_map", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
+	{ID: "ast_find", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 	{ID: "file_write", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: writes require approval"},
 	{ID: "shell_exec", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: shell commands require approval"},
 	{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
@@ -150,9 +171,15 @@ func (r *Registry) List() []Tool {
 // config — they must be explicitly enabled and pass the approval
 // layer before they can execute.
 func RegisterBuiltins(r *Registry) error {
+	parsers, err := parser.NewRegistry(parser.NewGoFrontEnd())
+	if err != nil {
+		return fmt.Errorf("tools: parser front-ends: %w", err)
+	}
 	builtins := map[string]Tool{
 		"file_read":  &fileReadTool{},
 		"file_list":  &fileListTool{},
+		"ast_map":    &astMapTool{parsers: parsers},
+		"ast_find":   &astFindTool{parsers: parsers},
 		"file_write": &fileWriteTool{},
 		"shell_exec": &shellExecTool{},
 		"web_search": &webSearchTool{},
