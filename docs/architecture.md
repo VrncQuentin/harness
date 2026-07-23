@@ -62,7 +62,7 @@ The binary targets llama-server as the inference backend and uses a separate emb
 └──────────────────────┘
 ```
 
-The browser UI is the primary chat/task surface and, once M10 lands, the primary pipeline execution surface. The optional OpenAI-compatible API server remains available for external clients, but first-party agent-loop and pipeline execution stay inside the harness.
+The browser UI is the primary chat/task surface and, once M11 lands, the primary pipeline execution surface. The optional OpenAI-compatible API server remains available for external clients, but first-party agent-loop and pipeline execution stay inside the harness.
 
 ---
 
@@ -142,7 +142,7 @@ Responsibilities:
 - Classify destructive shell commands so broad rules cannot silently allow them; exact session approvals are required to bypass Ask for a destructive command.
 - Return audit-friendly decision sources for UI/session history.
 
-### Pipeline Runner (`internal/pipeline`) — planned M10
+### Pipeline Runner (`internal/pipeline`) — planned M11
 Owns parsing, validation, and execution of Harness Pipeline DSL specs (`.hp`). The language contract is documented in [DSL.md](DSL.md). Specs are declarative workflow files stored with the attached project git repos they operate on; the runner executes them through the same first-party agent loop, tool registry, queue, inference client, memory store, and UI event stream used by interactive tasks.
 
 Language implementation is isolated under `internal/dsl` (`parser/`, `validate/`, `linter/`, `source/`, and core AST/diagnostic types) so it can be extracted later. `internal/dsl` does not import harness runtime packages; `internal/pipeline` is the harness-specific adapter.
@@ -295,7 +295,7 @@ Currently recorded metric names:
 - `tool_call_error_count`
 - `tool_call_error_rate`
 
-Pipeline run metrics remain milestone-scoped in the roadmap until the M10 runner lands.
+Pipeline run metrics remain milestone-scoped in the roadmap until the M11 runner lands.
 
 Interface:
 ```go

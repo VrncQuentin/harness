@@ -125,7 +125,7 @@ Tiered by reversibility. The tier determines the gate.
 Each tool is atomic. Compound sequences (merge → return to main → delete branch) are not
 collapsed into single tools: a compound tool with an irreversible step in the middle has
 no correct return value for partial failure. Sequencing belongs above the tool layer —
-in M10's DSL runner once it can call tools, and until then in the agent loop under
+in M11's DSL runner once it can call tools, and until then in the agent loop under
 per-step gates.
 
 ### Repo scoping [T]
