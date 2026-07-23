@@ -321,12 +321,25 @@ Depends on M3b (projects table, active project slug, attached directories), M5 (
 
 ---
 
-## M10 — Pipeline DSL
+## M10 — Tool Surface
+
+**Goal:** replace the flat file/shell tool surface with a parser-backed, provenance-tagged tool layer plus governor-side result transforms.
+
+Depends on M7 (approvals and the existing tool layer) and M9 (project memory repos and the projects table backing the memory-repo scope predicate). The full contract, phase contents, naming rules, and design decisions live in [tool_roadmap.md](tool_roadmap.md).
+
+- [ ] M10.1 — auditable edit loop: `ast_map`, `ast_find`, `read` (replaces `file_read`), `edit` (replaces `file_write`), tier-1 git tools, B1 skeletonizer, B3 tee-on-failure, C3 origin-class slice; D3 labeled query set begins
+- [ ] M10.2 — execution, compression, local VC writes: `exec` (replaces `shell_exec`), `go_test`, `go_lint`, tier-2 git tools shipping together with the memory-repo scope predicate and ref-SHA/reflog undo, B2 output folder, B5 token gate
+- [ ] M10.3 — retrieval instrumentation: `memory_query` trace emission and the D3 harness against the present two-signal blend
+- [ ] M10.4 — external VC: `git_push`, `gh_pr_create`, `gh_pr_merge` behind proposal return types; `gh_pr_wait` blocking read of PR CI state; GitHub token from environment only
+
+---
+
+## M11 — Pipeline DSL
 
 **Goal:** execute reviewed `.hp` pipeline specs inside the harness using the native agent loop, tool registry, project sandbox, and browser UI.
 
-Depends on M7 (destructive tools, shell execution, approvals, and hardened permissions) and M9 (project memory repos and attached source repo semantics). The DSL contract lives in [DSL.md](DSL.md); the detailed implementation plan and acceptance tests live in [dsl_roadmap.md](dsl_roadmap.md).
+Depends on M7 (destructive tools, shell execution, approvals, and hardened permissions), M9 (project memory repos and attached source repo semantics), and M10 (the tool surface the runner binds tool calls against). The DSL contract lives in [DSL.md](DSL.md); the detailed implementation plan and acceptance tests live in [dsl_roadmap.md](dsl_roadmap.md).
 
 - [ ] Isolated `internal/dsl` parser, validator, and linter package; editor and dry-run preview for attached-repo `.hp` specs
 - [ ] Runtime execution through `internal/agentloop`, declared artifacts, verify/gate commands, retries, routes, and `lib` calls
-- [ ] Durable SQLite run state, project-memory-repo artifacts, UI run graph, surfacing/resume controls, and M10 metrics
+- [ ] Durable SQLite run state, project-memory-repo artifacts, UI run graph, surfacing/resume controls, and M11 metrics
