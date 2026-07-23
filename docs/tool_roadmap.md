@@ -118,7 +118,7 @@ Tiered by reversibility. The tier determines the gate.
 
 | Tier | Tools | Treatment |
 |---|---|---|
-| Read | `git_status`, `git_diff`, `git_log` | Agent-callable, no gate. High-value B2 folder targets. |
+| Read | `git_status`, `git_diff`, `git_log`, `gh_pr_wait` | Agent-callable, no gate. High-value B2 folder targets. |
 | Local write | `git_commit`, `git_branch`, `git_checkout` | Agent-callable, scope-checked, gated. Undo via recorded ref SHA. |
 | External | `git_push`, `gh_pr_create`, `gh_pr_merge` | Never autonomous. Emits a proposal for human approval; the approval requirement is enforced by the tool's return type, not by policy. |
 
@@ -127,6 +127,19 @@ collapsed into single tools: a compound tool with an irreversible step in the mi
 no correct return value for partial failure. Sequencing belongs above the tool layer —
 in M11's DSL runner once it can call tools, and until then in the agent loop under
 per-step gates.
+
+#### `gh_pr_wait` [T]
+
+Blocks until the given PR's CI reaches a terminal state, then returns
+`{green, red, timed_out}`; red carries the failing check names and log handles
+(B3-style locators) so the model can react without scraping. Read-only — tier-1
+treatment, no gate — but network-using (Checks API polled with backoff under the loop's
+cancellation context), so it is disclosed like `web_search`. Two guards keep a blocking
+tool honest inside an agent loop: a configurable wait ceiling so it cannot outlive the
+task, and an expected-blocking flag in its schema so loop watchdogs distinguish a
+legitimate long wait from a hung tool. It closes the tier-3 workflow as the only
+non-proposal step in it: `gh_pr_create` (proposal) → `gh_pr_wait` → `gh_pr_merge`
+(proposal).
 
 ### Repo scoping [T]
 
@@ -274,7 +287,8 @@ Continue D3 labels.
 requires no memory schema change.
 
 **M10.4 — external VC**
-`git_push`, `gh_pr_create`, `gh_pr_merge` behind the proposal-return-type gate. GitHub
+`git_push`, `gh_pr_create`, `gh_pr_merge` behind the proposal-return-type gate, plus
+`gh_pr_wait` closing the create → wait-green → merge workflow. GitHub
 token from environment variable only — never persisted, never in config, never rendered
 by `/config`, never in model context. D1 lands here or after M11, whichever the failure
 volume justifies.

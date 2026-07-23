@@ -330,7 +330,7 @@ Depends on M7 (approvals and the existing tool layer) and M9 (project memory rep
 - [ ] M10.1 — auditable edit loop: `ast_map`, `ast_find`, `read` (replaces `file_read`), `edit` (replaces `file_write`), tier-1 git tools, B1 skeletonizer, B3 tee-on-failure, C3 origin-class slice; D3 labeled query set begins
 - [ ] M10.2 — execution, compression, local VC writes: `exec` (replaces `shell_exec`), `go_test`, `go_lint`, tier-2 git tools shipping together with the memory-repo scope predicate and ref-SHA/reflog undo, B2 output folder, B5 token gate
 - [ ] M10.3 — retrieval instrumentation: `memory_query` trace emission and the D3 harness against the present two-signal blend
-- [ ] M10.4 — external VC: `git_push`, `gh_pr_create`, `gh_pr_merge` behind proposal return types; GitHub token from environment only
+- [ ] M10.4 — external VC: `git_push`, `gh_pr_create`, `gh_pr_merge` behind proposal return types; `gh_pr_wait` blocking read of PR CI state; GitHub token from environment only
 
 ---
 
