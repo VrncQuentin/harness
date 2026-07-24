@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS config (
     loop_git_branch_enabled          INTEGER NOT NULL,
     loop_git_checkout_enabled        INTEGER NOT NULL,
     loop_web_search_enabled          INTEGER NOT NULL,
+    loop_memory_query_enabled        INTEGER NOT NULL,
     saved_at                         INTEGER
 );
 
