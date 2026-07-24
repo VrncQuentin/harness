@@ -8,10 +8,10 @@ import (
 
 func TestRegistry_DuplicateReturnsError(t *testing.T) {
 	r := NewRegistry()
-	if err := r.Register(&fileReadTool{}); err != nil {
+	if err := r.Register(&readTool{}); err != nil {
 		t.Fatalf("Register first tool: %v", err)
 	}
-	if err := r.Register(&fileReadTool{}); !errors.Is(err, ErrDuplicateTool) {
+	if err := r.Register(&readTool{}); !errors.Is(err, ErrDuplicateTool) {
 		t.Fatalf("Register duplicate error = %v, want ErrDuplicateTool", err)
 	}
 }
@@ -19,7 +19,7 @@ func TestRegistry_DuplicateReturnsError(t *testing.T) {
 func TestBuiltinDescriptorsDefinePolicyMetadata(t *testing.T) {
 	descriptors := BuiltinDescriptors()
 	want := []Descriptor{
-		{ID: "file_read", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
+		{ID: "read", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 		{ID: "file_list", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 		{ID: "ast_map", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 		{ID: "ast_find", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
@@ -53,7 +53,7 @@ func TestRegistry_ListAndGet(t *testing.T) {
 	if len(all) != 7 {
 		t.Fatalf("expected 7 tools, got %d", len(all))
 	}
-	for _, id := range []string{"file_read", "file_list", "ast_map", "ast_find", "file_write", "shell_exec", "web_search"} {
+	for _, id := range []string{"read", "file_list", "ast_map", "ast_find", "file_write", "shell_exec", "web_search"} {
 		if r.Get(id) == nil {
 			t.Errorf("%s not found", id)
 		}

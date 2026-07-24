@@ -129,7 +129,7 @@ Defines the local tool surface available to the agent loop.
 Responsibilities:
 - Register tools by id, JSON Schema parameters, description, and execute function.
 - Pass a typed context to each tool: active project slug, sandbox roots, session id, caller identity, and cancellation context.
-- `file_read` and `file_list` are read-only tools and reject paths outside active project directories.
+- `read` (range- and locator-addressed, M10.1 replacement for `file_read`) and `file_list` are read-only tools and reject paths outside active project directories.
 - `ast_map` and `ast_find` (M10.1) are parser-backed read-only tools: deterministic outlines and symbol/content locates that return stable locators (`path:start-end`) plus content hashes. Their output is extraction-class provenance by construction (C3 M10-slice) and the tool layer records the origin class on results.
 - `file_write` and `shell_exec` are registered for M7, but disabled by default in config and approval-gated before execution.
 - Web search remains M7 scope as an opt-in tool with explicit network-use disclosure; steering queues, extension hooks, sub-agents, and tool-history retry UI are deferred beyond M7.
@@ -390,7 +390,7 @@ Sections and fields:
 - **queue:** `max_depth`
 - **metrics:** `retention_days`
 - **log:** `ring_max_entries`, `proc_max_lines`
-- **loop:** `max_turns`, `doom_threshold`, `file_read_enabled`, `file_list_enabled`, `ast_map_enabled`, `ast_find_enabled`, `file_write_enabled`, `shell_exec_enabled`, `web_search_enabled`
+- **loop:** `max_turns`, `doom_threshold`, `read_enabled`, `file_list_enabled`, `ast_map_enabled`, `ast_find_enabled`, `file_write_enabled`, `shell_exec_enabled`, `web_search_enabled`
 
 First run: the row is seeded with defaults and `saved_at` is NULL. The status page shows a "Set up your harness" CTA until the user saves at least once. Changes to `ui.port`, model/embedder binaries, and ports take effect on the next harness restart; everything else is reloaded when the retry callback fires.
 

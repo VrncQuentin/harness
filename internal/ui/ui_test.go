@@ -764,7 +764,7 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	form.Set("queue_max_depth", "8")
 	form.Set("loop_max_turns", "12")
 	form.Set("loop_doom_threshold", "4")
-	form.Set("loop_file_read_enabled", "on")
+	form.Set("loop_read_enabled", "on")
 	form.Set("loop_web_search_enabled", "on")
 	form.Set("metrics_retention_days", "30")
 	form.Set("metrics_prometheus_enabled", "on")
@@ -821,8 +821,8 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	if loaded.Loop.DoomThreshold != 4 {
 		t.Errorf("Loop.DoomThreshold not persisted: got %d, want 4", loaded.Loop.DoomThreshold)
 	}
-	if !loaded.Loop.FileReadEnabled {
-		t.Error("expected Loop.FileReadEnabled=true after POST with loop_file_read_enabled=on")
+	if !loaded.Loop.ReadEnabled {
+		t.Error("expected Loop.ReadEnabled=true after POST with loop_read_enabled=on")
 	}
 	if loaded.Loop.FileListEnabled {
 		t.Error("expected Loop.FileListEnabled=false after POST without loop_file_list_enabled")
