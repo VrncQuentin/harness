@@ -285,7 +285,7 @@ func Defaults() Config {
 			GitDiffEnabled:   tools.BuiltinDefaultEnabled("git_diff"),
 			GitLogEnabled:    tools.BuiltinDefaultEnabled("git_log"),
 			EditEnabled:      tools.BuiltinDefaultEnabled("edit"),
-			ExecEnabled: tools.BuiltinDefaultEnabled("exec"),
+			ExecEnabled:      tools.BuiltinDefaultEnabled("exec"),
 			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),
 		},
 		Project: ProjectConfig{

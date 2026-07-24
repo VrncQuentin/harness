@@ -87,7 +87,9 @@ func TestExec_DenyFilter_RecursiveDelete(t *testing.T) {
 func TestExec_DenyFilter_AllowsSafeRm(t *testing.T) {
 	dir := t.TempDir()
 	tmp, _ := os.CreateTemp(dir, "exec_deny_test_*.txt")
-	tmp.Close()
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
 	tool := &execTool{}
 	res := tool.Execute(context.TODO(), CallInfo{SandboxRoots: []string{dir}},
 		map[string]any{"cmd": []any{"rm", tmp.Name()}})

@@ -140,7 +140,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		gitDiff           int
 		gitLog            int
 		editEnabled       int
-		execEnabled         int
+		execEnabled       int
 		webSearch         int
 		prometheusEnabled int
 	)

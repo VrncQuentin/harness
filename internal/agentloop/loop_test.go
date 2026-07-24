@@ -341,12 +341,12 @@ func TestDestructiveShellCmdRequiresApproval(t *testing.T) {
 
 func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 	cfg := config.LoopConfig{
-		MaxTurns:         2,
-		DoomThreshold:    3,
-		ReadEnabled:      true,
-		FileListEnabled:  true,
-		EditEnabled:      false,
-		ExecEnabled: false,
+		MaxTurns:        2,
+		DoomThreshold:   3,
+		ReadEnabled:     true,
+		FileListEnabled: true,
+		EditEnabled:     false,
+		ExecEnabled:     false,
 	}
 	reg := tools.NewRegistry()
 	if err := tools.RegisterBuiltins(reg); err != nil {
