@@ -40,6 +40,10 @@ type CallInfo struct {
 	SessionID       string
 	CallerIdentity  string
 	HTTPClient      *http.Client
+	// GHTokenFn reads GITHUB_TOKEN from the environment at call time.
+	// The token is never stored — only the function is held so the value
+	// is never in model context or persisted state.
+	GHTokenFn func() string
 	// MemoryQuery runs scored retrieval against the active project's episodes.
 	// Injected by the runtime; nil when the embedder is not running.
 	MemoryQuery func(ctx context.Context, query string, k int) ([]MemoryHit, error)
@@ -64,10 +68,16 @@ const (
 // output. Both are injected into the conversation for the model to see.
 // Origin is set by tools whose output has a provenance class by
 // construction; empty means unclassified.
+//
+// Proposal marks tier-3 external tools (git_push, gh_pr_create,
+// gh_pr_merge) whose execution merely returns a description of the action
+// for human approval — no actual side effect occurred. The model must relay
+// the proposal rather than proceeding as if the action was taken.
 type Result struct {
-	Content string
-	Error   string
-	Origin  OriginClass
+	Content  string
+	Error    string
+	Origin   OriginClass
+	Proposal bool
 }
 
 // ApprovalDefault is the built-in approval-layer posture for a tool.
@@ -105,6 +115,10 @@ var builtinToolDescriptors = []Descriptor{
 	{ID: "git_checkout", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_checkout switches branches"},
 	{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
 	{ID: "memory_query", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only retrieval"},
+	{ID: "git_push", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: proposal-return — no side effect until human executes"},
+	{ID: "gh_pr_create", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: proposal-return — no side effect until human executes"},
+	{ID: "gh_pr_merge", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: proposal-return — no side effect until human executes"},
+	{ID: "gh_pr_wait", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only CI poller"},
 }
 
 // BuiltinDescriptors returns the built-in tool descriptors in registration order.
@@ -212,6 +226,10 @@ func RegisterBuiltins(r *Registry) error {
 		"git_checkout": &gitCheckoutTool{},
 		"web_search":   &webSearchTool{},
 		"memory_query": &memoryQueryTool{},
+		"git_push":     &gitPushTool{},
+		"gh_pr_create": &ghPRCreateTool{},
+		"gh_pr_merge":  &ghPRMergeTool{},
+		"gh_pr_wait":   &ghPRWaitTool{},
 	}
 	for _, desc := range builtinToolDescriptors {
 		t := builtins[desc.ID]
