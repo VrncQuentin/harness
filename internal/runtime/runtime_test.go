@@ -728,15 +728,15 @@ func TestTaskRunnerApprovalEvaluatorsDoNotShareSessionRules(t *testing.T) {
 	}
 
 	first.AddSessionRule(approvals.Rule{
-		ToolID:   "file_write",
+		ToolID:   "edit",
 		Decision: approvals.Allowed,
 		Source:   "session: always allowed",
 	})
 
-	if got, _ := first.Evaluate("file_write", ""); got != approvals.Allowed {
+	if got, _ := first.Evaluate("edit", ""); got != approvals.Allowed {
 		t.Fatalf("first evaluator decision = %v, want Allowed", got)
 	}
-	if got, _ := second.Evaluate("file_write", ""); got != approvals.Ask {
+	if got, _ := second.Evaluate("edit", ""); got != approvals.Ask {
 		t.Fatalf("second evaluator decision = %v, want Ask without first session rule", got)
 	}
 }
@@ -825,15 +825,15 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 		{
 			Type:           agentloop.EvtApprovalNeeded,
 			ApprovalID:     "approval-1",
-			ToolID:         "file_write",
+			ToolID:         "edit",
 			ToolArgs:       `{"path":"x"}`,
-			ApprovalReason: "builtin: writes require approval",
+			ApprovalReason: "builtin: edits require approval",
 		},
 		{
 			Type:             agentloop.EvtApproval,
 			ApprovalID:       "approval-1",
-			ToolID:           "file_write",
-			ApprovalReason:   "builtin: writes require approval",
+			ToolID:           "edit",
+			ApprovalReason:   "builtin: edits require approval",
 			ApprovalDecision: approvals.Allowed.String(),
 			ApprovalScope:    approvals.ApprovalScopeAlways,
 		},
@@ -852,12 +852,12 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	if len(approvalMessages) != 2 {
 		t.Fatalf("approval audit messages = %d, want 2; conversation=%+v", len(approvalMessages), snap.Conversation)
 	}
-	for _, want := range []string{"[approval_needed #1]", "id=approval-1", "tool=file_write", "reason=\"builtin: writes require approval\"", `args={"path":"x"}`} {
+	for _, want := range []string{"[approval_needed #1]", "id=approval-1", "tool=edit", "reason=\"builtin: edits require approval\"", `args={"path":"x"}`} {
 		if !strings.Contains(approvalMessages[0], want) {
 			t.Fatalf("approval-needed audit missing %q: %#v", want, approvalMessages)
 		}
 	}
-	for _, want := range []string{"[approval #1]", "id=approval-1", "tool=file_write", "decision=" + approvals.Allowed.String(), "scope=" + approvals.ApprovalScopeAlways, "reason=\"builtin: writes require approval\""} {
+	for _, want := range []string{"[approval #1]", "id=approval-1", "tool=edit", "decision=" + approvals.Allowed.String(), "scope=" + approvals.ApprovalScopeAlways, "reason=\"builtin: edits require approval\""} {
 		if !strings.Contains(approvalMessages[1], want) {
 			t.Fatalf("approval result audit missing %q: %#v", want, approvalMessages)
 		}

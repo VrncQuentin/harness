@@ -176,9 +176,9 @@ type LoopConfig struct {
 	AstMapEnabled bool
 	// AstFindEnabled toggles the ast_find tool (symbol/content locate).
 	AstFindEnabled bool
-	// FileWriteEnabled toggles the file_write tool. Off by default; requires
-	// the approval layer before it can be enabled safely.
-	FileWriteEnabled bool
+	// EditEnabled toggles the edit tool. Off by default; requires the
+	// approval layer before it can be enabled safely.
+	EditEnabled bool
 	// ShellExecEnabled toggles the shell_exec tool. Off by default; requires
 	// the approval layer before it can be enabled safely.
 	ShellExecEnabled bool
@@ -199,8 +199,8 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.AstMapEnabled
 	case "ast_find":
 		return c.AstFindEnabled
-	case "file_write":
-		return c.FileWriteEnabled
+	case "edit":
+		return c.EditEnabled
 	case "shell_exec":
 		return c.ShellExecEnabled
 	case "web_search":
@@ -269,7 +269,7 @@ func Defaults() Config {
 			FileListEnabled:  tools.BuiltinDefaultEnabled("file_list"),
 			AstMapEnabled:    tools.BuiltinDefaultEnabled("ast_map"),
 			AstFindEnabled:   tools.BuiltinDefaultEnabled("ast_find"),
-			FileWriteEnabled: tools.BuiltinDefaultEnabled("file_write"),
+			EditEnabled:      tools.BuiltinDefaultEnabled("edit"),
 			ShellExecEnabled: tools.BuiltinDefaultEnabled("shell_exec"),
 			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),
 		},

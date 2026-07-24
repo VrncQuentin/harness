@@ -57,7 +57,7 @@ type ApprovalResponse struct {
 // command arguments (for shell_exec). The decision applies when the rule
 // is the best match within its layer.
 type Rule struct {
-	// ToolID is the tool this rule applies to (e.g. "file_write",
+	// ToolID is the tool this rule applies to (e.g. "edit",
 	// "shell_exec", or "*" for any tool).
 	ToolID string
 	// CommandPattern is an optional prefix or wildcard pattern matched
