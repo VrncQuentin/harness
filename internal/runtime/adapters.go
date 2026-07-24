@@ -474,9 +474,9 @@ func (ad *taskRunnerAdapter) newApprovalEvaluator() *approvals.Evaluator {
 	return approvals.NewEvaluator(layers...)
 }
 
-// memoryQueryFn returns a MemoryQuery closure for the given context, or nil when
-// the episode scorer is not available.
-func (ad *taskRunnerAdapter) memoryQueryFn(ctx context.Context) func(context.Context, string, int) ([]tools.MemoryHit, error) {
+// memoryQueryFn returns a MemoryQuery closure, or nil when the episode scorer
+// is not available.
+func (ad *taskRunnerAdapter) memoryQueryFn() func(context.Context, string, int) ([]tools.MemoryHit, error) {
 	if ad.memScorer == nil {
 		return nil
 	}
@@ -609,7 +609,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		SessionID:       id,
 		CallerIdentity:  "agent:" + agentName,
 		HTTPClient:      httpclient.New(),
-		MemoryQuery:     ad.memoryQueryFn(loopCtx),
+		MemoryQuery:     ad.memoryQueryFn(),
 	}
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)

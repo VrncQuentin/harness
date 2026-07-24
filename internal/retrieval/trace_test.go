@@ -43,8 +43,8 @@ func TestNDJSONSinkWritesRow(t *testing.T) {
 	}
 
 	sink.Emit(RetrievalTrace{
-		QueryID:     "ab12ef34",
-		EpisodePath: "episodes/agent/2025-01-01.md",
+		QueryID:      "ab12ef34",
+		EpisodePath:  "episodes/agent/2025-01-01.md",
 		BlendedScore: 0.75,
 		Ts:           now,
 	})
@@ -57,7 +57,7 @@ func TestNDJSONSinkWritesRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open trace file: %v", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var row RetrievalTrace
 	if err := json.NewDecoder(bufio.NewReader(f)).Decode(&row); err != nil {
@@ -90,7 +90,7 @@ func TestNDJSONSinkMultipleRowsSameDay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	sc := bufio.NewScanner(f)
 	count := 0

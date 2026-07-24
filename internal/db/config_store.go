@@ -163,10 +163,10 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		goLint            int
 		gitCommit         int
 		gitBranch         int
-		gitCheckout        int
-		webSearch          int
-		memoryQuery        int
-		prometheusEnabled  int
+		gitCheckout       int
+		webSearch         int
+		memoryQuery       int
+		prometheusEnabled int
 	)
 	err := row.Scan(
 		&cfg.Model.Binary, &cfg.Model.ModelPath, &cfg.Model.CtxSize, &cfg.Model.GPULayers,
@@ -215,7 +215,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	cfg.Loop.GitCommitEnabled = gitCommit != 0
 	cfg.Loop.GitBranchEnabled = gitBranch != 0
 	cfg.Loop.GitCheckoutEnabled = gitCheckout != 0
-	cfg.Loop.WebSearchEnabled   = webSearch != 0
+	cfg.Loop.WebSearchEnabled = webSearch != 0
 	cfg.Loop.MemoryQueryEnabled = memoryQuery != 0
 	cfg.Metrics.PrometheusEnabled = prometheusEnabled != 0
 	return &cfg, savedAt.Valid, nil

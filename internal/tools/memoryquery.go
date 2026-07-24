@@ -79,12 +79,3 @@ func (t *memoryQueryTool) Execute(ctx context.Context, c CallInfo, args map[stri
 	}
 	return Result{Content: strings.TrimSpace(sb.String()), Origin: OriginExtraction}
 }
-
-// excerpt returns the first n runes of s, appending "…" if truncated.
-func excerpt(s string, n int) string {
-	runes := []rune(strings.TrimSpace(s))
-	if len(runes) <= n {
-		return string(runes)
-	}
-	return string(runes[:n]) + "…"
-}

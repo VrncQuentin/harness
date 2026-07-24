@@ -57,7 +57,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("open queries: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	var queries []queryRecord
 	sc := bufio.NewScanner(f)
