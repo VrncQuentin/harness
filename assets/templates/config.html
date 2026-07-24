@@ -350,8 +350,32 @@
           <span>Enable <code>memory_query</code> (requires embedder)</span>
         </label>
       </div>
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="loop_git_push_enabled" name="loop_git_push_enabled" {{if .Config.Loop.GitPushEnabled}}checked{{end}}>
+          <span>Enable <code>git_push</code> (proposal-return)</span>
+        </label>
+      </div>
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="loop_gh_pr_create_enabled" name="loop_gh_pr_create_enabled" {{if .Config.Loop.GHPRCreateEnabled}}checked{{end}}>
+          <span>Enable <code>gh_pr_create</code> (proposal-return)</span>
+        </label>
+      </div>
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="loop_gh_pr_merge_enabled" name="loop_gh_pr_merge_enabled" {{if .Config.Loop.GHPRMergeEnabled}}checked{{end}}>
+          <span>Enable <code>gh_pr_merge</code> (proposal-return)</span>
+        </label>
+      </div>
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="loop_gh_pr_wait_enabled" name="loop_gh_pr_wait_enabled" {{if .Config.Loop.GHPRWaitEnabled}}checked{{end}}>
+          <span>Enable <code>gh_pr_wait</code> (CI poller — requires GITHUB_TOKEN)</span>
+        </label>
+      </div>
     </div>
-    <p class="fg-hint">Destructive tools (<code>edit</code>, <code>exec</code>, <code>go_test</code>, <code>go_lint</code>, <code>git_commit</code>, <code>git_branch</code>, <code>git_checkout</code>, <code>web_search</code>) are protected by the approval layer. They default to disabled. Git write tools are scope-checked against project memory repos. Web search sends the query over the network. <code>memory_query</code> requires the embedder to be running and the episode index to be populated.</p>
+    <p class="fg-hint">Destructive tools (<code>edit</code>, <code>exec</code>, <code>go_test</code>, <code>go_lint</code>, <code>git_commit</code>, <code>git_branch</code>, <code>git_checkout</code>, <code>web_search</code>) are protected by the approval layer. They default to disabled. Git write tools are scope-checked against project memory repos. Proposal-return tools (<code>git_push</code>, <code>gh_pr_create</code>, <code>gh_pr_merge</code>) emit proposals only — no side effect until the human executes the command. <code>gh_pr_wait</code> reads GITHUB_TOKEN from the environment and polls the GitHub Checks API.</p>
   </fieldset>
 
   <fieldset class="cfg-section">
