@@ -160,6 +160,46 @@ func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err 
 	return startHash.String(), preOpSHA, nil
 }
 
+// Checkout switches to an existing local branch named name.
+// It returns (preOpBranch, preOpSHA, err) where preOpBranch is the short
+// branch name before checkout and preOpSHA is the HEAD SHA (both empty for
+// repos with no commits). Reflog entries are appended to the target branch.
+func (r *Repo) Checkout(name string) (preOpBranch, preOpSHA string, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Snapshot pre-op state.
+	if head, herr := r.repo.Head(); herr == nil {
+		preOpSHA = head.Hash().String()
+		preOpBranch = head.Name().Short()
+	}
+
+	wt, wtErr := r.repo.Worktree()
+	if wtErr != nil {
+		return "", "", fmt.Errorf("git: worktree %s: %w", r.path, wtErr)
+	}
+	refName := plumbing.NewBranchReferenceName(name)
+	if coErr := wt.Checkout(&gogit.CheckoutOptions{Branch: refName}); coErr != nil {
+		return "", "", fmt.Errorf("git: checkout %s: %w", name, coErr)
+	}
+
+	// Append reflog to the checked-out branch.
+	if rls, ok := r.repo.Storer.(storer.ReflogStorer); ok {
+		if head, herr := r.repo.Head(); herr == nil {
+			now := time.Now()
+			n, e := r.authorIdentity()
+			_ = rls.AppendReflog(refName, &reflog.Entry{
+				OldHash:   plumbing.NewHash(preOpSHA),
+				NewHash:   head.Hash(),
+				Committer: reflog.Signature{Name: n, Email: e, When: now},
+				Message:   "checkout: moving from " + preOpBranch + " to " + name,
+			})
+		}
+	}
+
+	return preOpBranch, preOpSHA, nil
+}
+
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return s[:i]
