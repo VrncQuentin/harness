@@ -186,6 +186,7 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	cfg.Loop.GitLogEnabled = r.FormValue("loop_git_log_enabled") == "on"
 	cfg.Loop.EditEnabled = r.FormValue("loop_edit_enabled") == "on"
 	cfg.Loop.ExecEnabled = r.FormValue("loop_exec_enabled") == "on"
+	cfg.Loop.GoTestEnabled = r.FormValue("loop_go_test_enabled") == "on"
 	cfg.Loop.WebSearchEnabled = r.FormValue("loop_web_search_enabled") == "on"
 
 	cfg.Metrics.RetentionDays = atoiField(r, "metrics_retention_days", "Metrics retention days", cfg.Metrics.RetentionDays, &parseErrs)
