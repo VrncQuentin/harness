@@ -82,6 +82,13 @@ type MetricsRecorder interface {
 	ToolCallErrorRate(string, bool) error
 }
 
+// Governor applies governor-side transforms (B1, B3) to raw tool results
+// before they are injected into the conversation. The interface is satisfied
+// by *governor.Governor and allows the loop to be tested with a fake.
+type Governor interface {
+	Apply(ctx context.Context, toolID string, args map[string]any, res tools.Result, query string) tools.Result
+}
+
 // Engine orchestrates the agent loop.
 type Engine struct {
 	infer       inference.Client
@@ -96,6 +103,10 @@ type Engine struct {
 	// evl is the optional permission evaluator. When nil, no approval
 	// checks are performed and tools dispatch immediately.
 	evl *approvals.Evaluator
+
+	// gov is the optional governor that transforms tool results (B1, B3)
+	// before they are injected into the conversation. Nil means no transforms.
+	gov Governor
 
 	// pending guards the approval routing map and counter.
 	pendingMu sync.Mutex
@@ -156,6 +167,13 @@ func buildToolSchemas(registry *tools.Registry) []registeredToolSchema {
 // default), no approval checks are performed. Call before Run().
 func (e *Engine) WithApprovals(evl *approvals.Evaluator) *Engine {
 	e.evl = evl
+	return e
+}
+
+// WithGovernor installs an optional governor that applies B1/B3 transforms to
+// tool results before context injection. Call before Run().
+func (e *Engine) WithGovernor(g Governor) *Engine {
+	e.gov = g
 	return e
 }
 
@@ -363,6 +381,9 @@ func (e *Engine) Run(ctx context.Context, messages []inference.Message, evch cha
 				case approvals.Allowed, approvals.Ask:
 					start := time.Now()
 					res = tool.Execute(ctx, e.toolCtx, args)
+					if e.gov != nil {
+						res = e.gov.Apply(ctx, tc.Function.Name, args, res, activeQuery(messages))
+					}
 					slog.Info("tool executed",
 						"tool", tc.Function.Name,
 						"duration_ms", time.Since(start).Milliseconds(),
@@ -601,4 +622,15 @@ func (e *Engine) recordToolCall(tool string, failed bool) {
 	if failed {
 		_ = e.metrics.ToolCallError(tool)
 	}
+}
+
+// activeQuery returns the text of the most recent user message, used by the
+// governor's B1 transform to score symbol relevance.
+func activeQuery(messages []inference.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
 }
