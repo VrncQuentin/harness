@@ -188,6 +188,9 @@ type LoopConfig struct {
 	// ExecEnabled toggles the exec tool. Off by default; requires
 	// the approval layer before it can be enabled safely.
 	ExecEnabled bool
+	// GoTestEnabled toggles the go_test tool. Off by default; runs the test
+	// suite which executes code.
+	GoTestEnabled bool
 	// WebSearchEnabled toggles the web_search tool. Off by default because it
 	// sends the user's query over the network.
 	WebSearchEnabled bool
@@ -215,6 +218,8 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.EditEnabled
 	case "exec":
 		return c.ExecEnabled
+	case "go_test":
+		return c.GoTestEnabled
 	case "web_search":
 		return c.WebSearchEnabled
 	default:
@@ -286,6 +291,7 @@ func Defaults() Config {
 			GitLogEnabled:    tools.BuiltinDefaultEnabled("git_log"),
 			EditEnabled:      tools.BuiltinDefaultEnabled("edit"),
 			ExecEnabled:      tools.BuiltinDefaultEnabled("exec"),
+			GoTestEnabled:    tools.BuiltinDefaultEnabled("go_test"),
 			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),
 		},
 		Project: ProjectConfig{

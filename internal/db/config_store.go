@@ -50,6 +50,7 @@ func (s *ConfigStore) seed() error {
 			loop_git_diff_enabled,
 			loop_git_log_enabled,
 			loop_edit_enabled, loop_exec_enabled,
+			loop_go_test_enabled,
 			loop_web_search_enabled
 	) VALUES (
 		1,
@@ -62,7 +63,7 @@ func (s *ConfigStore) seed() error {
 		?, ?, ?, ?,
 		?, ?, ?, ?,
 		?, ?, ?, ?,
-		?, ?, ?, ?, ?, ?, ?, ?
+		?, ?, ?, ?, ?, ?, ?, ?, ?
 	)`,
 		d.Model.Binary, d.Model.ModelPath, d.Model.CtxSize, d.Model.GPULayers,
 		d.Model.NParallel, d.Model.Port, boolInt(d.Model.Verbose),
@@ -86,6 +87,7 @@ func (s *ConfigStore) seed() error {
 		boolInt(d.Loop.GitDiffEnabled),
 		boolInt(d.Loop.GitLogEnabled),
 		boolInt(d.Loop.EditEnabled), boolInt(d.Loop.ExecEnabled),
+		boolInt(d.Loop.GoTestEnabled),
 		boolInt(d.Loop.WebSearchEnabled),
 	)
 	if err != nil {
@@ -121,6 +123,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 			loop_git_diff_enabled,
 			loop_git_log_enabled,
 			loop_edit_enabled, loop_exec_enabled,
+			loop_go_test_enabled,
 			loop_web_search_enabled,
 			saved_at
 		FROM config WHERE id = 1`)
@@ -141,6 +144,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		gitLog            int
 		editEnabled       int
 		execEnabled       int
+		goTest            int
 		webSearch         int
 		prometheusEnabled int
 	)
@@ -166,7 +170,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		&gitStatus,
 		&gitDiff,
 		&gitLog,
-		&editEnabled, &execEnabled, &webSearch,
+		&editEnabled, &execEnabled, &goTest, &webSearch,
 		&savedAt,
 	)
 	if err != nil {
@@ -185,6 +189,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	cfg.Loop.GitLogEnabled = gitLog != 0
 	cfg.Loop.EditEnabled = editEnabled != 0
 	cfg.Loop.ExecEnabled = execEnabled != 0
+	cfg.Loop.GoTestEnabled = goTest != 0
 	cfg.Loop.WebSearchEnabled = webSearch != 0
 	cfg.Metrics.PrometheusEnabled = prometheusEnabled != 0
 	return &cfg, savedAt.Valid, nil
@@ -219,6 +224,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			loop_git_diff_enabled = ?,
 			loop_git_log_enabled = ?,
 			loop_edit_enabled = ?, loop_exec_enabled = ?,
+			loop_go_test_enabled = ?,
 			loop_web_search_enabled = ?,
 			saved_at = ?
 		WHERE id = 1`,
@@ -244,6 +250,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 		boolInt(cfg.Loop.GitDiffEnabled),
 		boolInt(cfg.Loop.GitLogEnabled),
 		boolInt(cfg.Loop.EditEnabled), boolInt(cfg.Loop.ExecEnabled),
+		boolInt(cfg.Loop.GoTestEnabled),
 		boolInt(cfg.Loop.WebSearchEnabled),
 		time.Now().Unix(),
 	)
