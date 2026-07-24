@@ -264,10 +264,10 @@ func TestAlwaysAddsSessionRule(t *testing.T) {
 }
 
 func TestAlwaysForGitStatusDoesNotAllowGitPush(t *testing.T) {
-	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, ShellExecEnabled: true}
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, ExecEnabled: true}
 	engine := newTestEngine(t, cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("shell_exec", `{"command":"git status"}`)}
+	client := &mockInferClient{tokens: toolCallTokens("exec", `{"cmd":["git","status"]}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -300,40 +300,40 @@ func TestAlwaysForGitStatusDoesNotAllowGitPush(t *testing.T) {
 	}
 
 	// git status should still ask despite the remembered session allow.
-	dec, _ := engine.evl.Evaluate("shell_exec", "git status")
+	dec, _ := engine.evl.Evaluate("exec", "git status")
 	if dec != approvals.Ask {
 		t.Errorf("git status should still Ask despite exact session match, got %s", dec)
 	}
 
 	// git push (destructive) should NOT be allowed — classified as destructive
 	// and requires an exact match, which doesn't exist.
-	dec, _ = engine.evl.Evaluate("shell_exec", "git push origin main")
+	dec, _ = engine.evl.Evaluate("exec", "git push origin main")
 	if dec != approvals.Ask {
 		t.Errorf("git push should still Ask (destructive, no exact match), got %s", dec)
 	}
 }
 
 func TestDestructiveShellCmdRequiresApproval(t *testing.T) {
-	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, ShellExecEnabled: true}
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, ExecEnabled: true}
 	engine := newTestEngine(t, cfg)
 
-	// Even with a broad shell_exec allow rule, shell commands should Ask.
+	// Even with a broad exec allow rule, shell commands should Ask.
 	userLayer := approvals.Layer{
 		Name: "user-config",
 		Rules: []approvals.Rule{
-			{ToolID: "shell_exec", Decision: approvals.Allowed, Source: "user: shell allowed"},
+			{ToolID: "exec", Decision: approvals.Allowed, Source: "user: shell allowed"},
 		},
 	}
 	engine.evl = approvals.NewEvaluator(approvals.DefaultLayer(), userLayer)
 
 	// rm is destructive → must Ask even with broad allow.
-	dec, _ := engine.evl.Evaluate("shell_exec", "rm -rf /tmp/test")
+	dec, _ := engine.evl.Evaluate("exec", "rm -rf /tmp/test")
 	if dec != approvals.Ask {
 		t.Errorf("rm -rf should Ask even with broad shell allow, got %s", dec)
 	}
 
 	// ls still asks because all shell commands require approval.
-	dec, _ = engine.evl.Evaluate("shell_exec", "ls")
+	dec, _ = engine.evl.Evaluate("exec", "ls")
 	if dec != approvals.Ask {
 		t.Errorf("ls should still Ask despite broad shell allow, got %s", dec)
 	}
@@ -346,7 +346,7 @@ func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 		ReadEnabled:      true,
 		FileListEnabled:  true,
 		EditEnabled:      false,
-		ShellExecEnabled: false,
+		ExecEnabled: false,
 	}
 	reg := tools.NewRegistry()
 	if err := tools.RegisterBuiltins(reg); err != nil {
@@ -358,8 +358,8 @@ func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 	if engine.isToolEnabled("edit") {
 		t.Error("edit should be disabled")
 	}
-	if engine.isToolEnabled("shell_exec") {
-		t.Error("shell_exec should be disabled")
+	if engine.isToolEnabled("exec") {
+		t.Error("exec should be disabled")
 	}
 	if engine.isToolEnabled("web_search") {
 		t.Error("web_search should be disabled")

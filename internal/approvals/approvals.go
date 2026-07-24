@@ -54,14 +54,14 @@ type ApprovalResponse struct {
 }
 
 // Rule is a single permission entry. It matches on tool id and optional
-// command arguments (for shell_exec). The decision applies when the rule
+// command arguments (for exec). The decision applies when the rule
 // is the best match within its layer.
 type Rule struct {
 	// ToolID is the tool this rule applies to (e.g. "edit",
-	// "shell_exec", or "*" for any tool).
+	// "exec", or "*" for any tool).
 	ToolID string
 	// CommandPattern is an optional prefix or wildcard pattern matched
-	// against shell_exec command strings. Empty means "any command".
+	// against exec command strings. Empty means "any command".
 	CommandPattern string
 	// Decision is the outcome when this rule is the best match.
 	Decision Decision
@@ -110,11 +110,11 @@ func (e *Evaluator) AddSessionRule(r Rule) {
 	e.session.Rules = append(e.session.Rules, r)
 }
 
-// Evaluate checks whether toolID with commandArg (for shell_exec) is
+// Evaluate checks whether toolID with commandArg (for exec) is
 // permitted. Returns the decision and the matching Rule source for
 // audit trails.
 //
-// shell_exec commands are never auto-allowed. The command classifier is
+// exec commands are never auto-allowed. The command classifier is
 // intentionally conservative documentation until platform-aware parsing is
 // reliable enough to distinguish safe shell forms from dangerous equivalents.
 // Matching deny rules still deny; every other shell command asks.
@@ -141,7 +141,7 @@ func (e *Evaluator) Evaluate(toolID, commandArg string) (Decision, string) {
 		}
 	}
 
-	if toolID == "shell_exec" {
+	if toolID == "exec" {
 		if best == Denied {
 			return Denied, source
 		}
@@ -160,8 +160,8 @@ func matchRule(r Rule, toolID, commandArg string) bool {
 	if r.CommandPattern == "" {
 		return true
 	}
-	if toolID != "shell_exec" {
-		return r.ToolID == "shell_exec"
+	if toolID != "exec" {
+		return r.ToolID == "exec"
 	}
 	return strings.HasPrefix(commandArg, r.CommandPattern) || commandArg == r.CommandPattern
 }

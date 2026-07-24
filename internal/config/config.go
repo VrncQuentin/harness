@@ -185,9 +185,9 @@ type LoopConfig struct {
 	// EditEnabled toggles the edit tool. Off by default; requires the
 	// approval layer before it can be enabled safely.
 	EditEnabled bool
-	// ShellExecEnabled toggles the shell_exec tool. Off by default; requires
+	// ExecEnabled toggles the exec tool. Off by default; requires
 	// the approval layer before it can be enabled safely.
-	ShellExecEnabled bool
+	ExecEnabled bool
 	// WebSearchEnabled toggles the web_search tool. Off by default because it
 	// sends the user's query over the network.
 	WebSearchEnabled bool
@@ -213,8 +213,8 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.GitLogEnabled
 	case "edit":
 		return c.EditEnabled
-	case "shell_exec":
-		return c.ShellExecEnabled
+	case "exec":
+		return c.ExecEnabled
 	case "web_search":
 		return c.WebSearchEnabled
 	default:
@@ -285,7 +285,7 @@ func Defaults() Config {
 			GitDiffEnabled:   tools.BuiltinDefaultEnabled("git_diff"),
 			GitLogEnabled:    tools.BuiltinDefaultEnabled("git_log"),
 			EditEnabled:      tools.BuiltinDefaultEnabled("edit"),
-			ShellExecEnabled: tools.BuiltinDefaultEnabled("shell_exec"),
+			ExecEnabled: tools.BuiltinDefaultEnabled("exec"),
 			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),
 		},
 		Project: ProjectConfig{

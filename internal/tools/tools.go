@@ -86,7 +86,7 @@ var builtinToolDescriptors = []Descriptor{
 	{ID: "git_diff", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 	{ID: "git_log", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 	{ID: "edit", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: edits require approval"},
-	{ID: "shell_exec", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: shell commands require approval"},
+	{ID: "exec", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: exec commands require approval"},
 	{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
 }
 
@@ -170,7 +170,7 @@ func (r *Registry) List() []Tool {
 
 // RegisterBuiltins registers the built-in tools on r. Read-only tools
 // (read, file_list, ast_map, ast_find) are always registered. Destructive tools
-// (edit, shell_exec) are registered but disabled by default in
+// (edit, exec) are registered but disabled by default in
 // config — they must be explicitly enabled and pass the approval
 // layer before they can execute.
 func RegisterBuiltins(r *Registry) error {
@@ -187,7 +187,7 @@ func RegisterBuiltins(r *Registry) error {
 		"git_diff":   &gitDiffTool{},
 		"git_log":    &gitLogTool{},
 		"edit":       &editTool{parsers: parsers},
-		"shell_exec": &shellExecTool{},
+		"exec":       &execTool{},
 		"web_search": &webSearchTool{},
 	}
 	for _, desc := range builtinToolDescriptors {
