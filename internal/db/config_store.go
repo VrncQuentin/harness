@@ -47,6 +47,7 @@ func (s *ConfigStore) seed() error {
 			loop_read_enabled, loop_file_list_enabled,
 			loop_ast_map_enabled, loop_ast_find_enabled,
 			loop_git_status_enabled,
+			loop_git_diff_enabled,
 			loop_edit_enabled, loop_shell_exec_enabled,
 			loop_web_search_enabled
 	) VALUES (
@@ -60,7 +61,7 @@ func (s *ConfigStore) seed() error {
 		?, ?, ?, ?,
 		?, ?, ?, ?,
 		?, ?, ?, ?,
-		?, ?, ?, ?, ?, ?
+		?, ?, ?, ?, ?, ?, ?
 	)`,
 		d.Model.Binary, d.Model.ModelPath, d.Model.CtxSize, d.Model.GPULayers,
 		d.Model.NParallel, d.Model.Port, boolInt(d.Model.Verbose),
@@ -81,6 +82,7 @@ func (s *ConfigStore) seed() error {
 		boolInt(d.Loop.ReadEnabled), boolInt(d.Loop.FileListEnabled),
 		boolInt(d.Loop.AstMapEnabled), boolInt(d.Loop.AstFindEnabled),
 		boolInt(d.Loop.GitStatusEnabled),
+		boolInt(d.Loop.GitDiffEnabled),
 		boolInt(d.Loop.EditEnabled), boolInt(d.Loop.ShellExecEnabled),
 		boolInt(d.Loop.WebSearchEnabled),
 	)
@@ -114,6 +116,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 			loop_read_enabled, loop_file_list_enabled,
 			loop_ast_map_enabled, loop_ast_find_enabled,
 			loop_git_status_enabled,
+			loop_git_diff_enabled,
 			loop_edit_enabled, loop_shell_exec_enabled,
 			loop_web_search_enabled,
 			saved_at
@@ -131,6 +134,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		astMap            int
 		astFind           int
 		gitStatus         int
+		gitDiff           int
 		editEnabled       int
 		shellExec         int
 		webSearch         int
@@ -156,6 +160,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		&readEnabled, &fileList,
 		&astMap, &astFind,
 		&gitStatus,
+		&gitDiff,
 		&editEnabled, &shellExec, &webSearch,
 		&savedAt,
 	)
@@ -171,6 +176,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	cfg.Loop.AstMapEnabled = astMap != 0
 	cfg.Loop.AstFindEnabled = astFind != 0
 	cfg.Loop.GitStatusEnabled = gitStatus != 0
+	cfg.Loop.GitDiffEnabled = gitDiff != 0
 	cfg.Loop.EditEnabled = editEnabled != 0
 	cfg.Loop.ShellExecEnabled = shellExec != 0
 	cfg.Loop.WebSearchEnabled = webSearch != 0
@@ -204,6 +210,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			loop_read_enabled = ?, loop_file_list_enabled = ?,
 			loop_ast_map_enabled = ?, loop_ast_find_enabled = ?,
 			loop_git_status_enabled = ?,
+			loop_git_diff_enabled = ?,
 			loop_edit_enabled = ?, loop_shell_exec_enabled = ?,
 			loop_web_search_enabled = ?,
 			saved_at = ?
@@ -227,6 +234,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 		boolInt(cfg.Loop.ReadEnabled), boolInt(cfg.Loop.FileListEnabled),
 		boolInt(cfg.Loop.AstMapEnabled), boolInt(cfg.Loop.AstFindEnabled),
 		boolInt(cfg.Loop.GitStatusEnabled),
+		boolInt(cfg.Loop.GitDiffEnabled),
 		boolInt(cfg.Loop.EditEnabled), boolInt(cfg.Loop.ShellExecEnabled),
 		boolInt(cfg.Loop.WebSearchEnabled),
 		time.Now().Unix(),

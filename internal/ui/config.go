@@ -182,6 +182,7 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	cfg.Loop.AstMapEnabled = r.FormValue("loop_ast_map_enabled") == "on"
 	cfg.Loop.AstFindEnabled = r.FormValue("loop_ast_find_enabled") == "on"
 	cfg.Loop.GitStatusEnabled = r.FormValue("loop_git_status_enabled") == "on"
+	cfg.Loop.GitDiffEnabled = r.FormValue("loop_git_diff_enabled") == "on"
 	cfg.Loop.EditEnabled = r.FormValue("loop_edit_enabled") == "on"
 	cfg.Loop.ShellExecEnabled = r.FormValue("loop_shell_exec_enabled") == "on"
 	cfg.Loop.WebSearchEnabled = r.FormValue("loop_web_search_enabled") == "on"
