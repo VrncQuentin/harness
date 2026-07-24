@@ -314,12 +314,20 @@
       </div>
       <div class="fg">
         <label class="checkbox">
+          <input type="checkbox" id="loop_go_lint_enabled" name="loop_go_lint_enabled" {{if .Config.Loop.GoLintEnabled}}checked{{end}}>
+          <span>Enable <code>go_lint</code></span>
+        </label>
+      </div>
+    </div>
+    <div class="fg-row">
+      <div class="fg">
+        <label class="checkbox">
           <input type="checkbox" id="loop_web_search_enabled" name="loop_web_search_enabled" {{if .Config.Loop.WebSearchEnabled}}checked{{end}}>
           <span>Enable <code>web_search</code></span>
         </label>
       </div>
     </div>
-    <p class="fg-hint">Destructive tools (<code>edit</code>, <code>exec</code>, <code>go_test</code>, <code>web_search</code>) are protected by the approval layer. They default to disabled. Web search sends the query over the network.</p>
+    <p class="fg-hint">Destructive tools (<code>edit</code>, <code>exec</code>, <code>go_test</code>, <code>go_lint</code>, <code>web_search</code>) are protected by the approval layer. They default to disabled. Web search sends the query over the network.</p>
   </fieldset>
 
   <fieldset class="cfg-section">
