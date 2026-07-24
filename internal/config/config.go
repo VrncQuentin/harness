@@ -176,6 +176,8 @@ type LoopConfig struct {
 	AstMapEnabled bool
 	// AstFindEnabled toggles the ast_find tool (symbol/content locate).
 	AstFindEnabled bool
+	// GitStatusEnabled toggles the git_status tool (worktree status, read-only).
+	GitStatusEnabled bool
 	// EditEnabled toggles the edit tool. Off by default; requires the
 	// approval layer before it can be enabled safely.
 	EditEnabled bool
@@ -199,6 +201,8 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.AstMapEnabled
 	case "ast_find":
 		return c.AstFindEnabled
+	case "git_status":
+		return c.GitStatusEnabled
 	case "edit":
 		return c.EditEnabled
 	case "shell_exec":
@@ -269,6 +273,7 @@ func Defaults() Config {
 			FileListEnabled:  tools.BuiltinDefaultEnabled("file_list"),
 			AstMapEnabled:    tools.BuiltinDefaultEnabled("ast_map"),
 			AstFindEnabled:   tools.BuiltinDefaultEnabled("ast_find"),
+			GitStatusEnabled: tools.BuiltinDefaultEnabled("git_status"),
 			EditEnabled:      tools.BuiltinDefaultEnabled("edit"),
 			ShellExecEnabled: tools.BuiltinDefaultEnabled("shell_exec"),
 			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),

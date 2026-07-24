@@ -274,6 +274,14 @@
     <div class="fg-row">
       <div class="fg">
         <label class="checkbox">
+          <input type="checkbox" id="loop_git_status_enabled" name="loop_git_status_enabled" {{if .Config.Loop.GitStatusEnabled}}checked{{end}}>
+          <span>Enable <code>git_status</code></span>
+        </label>
+      </div>
+    </div>
+    <div class="fg-row">
+      <div class="fg">
+        <label class="checkbox">
           <input type="checkbox" id="loop_edit_enabled" name="loop_edit_enabled" {{if .Config.Loop.EditEnabled}}checked{{end}}>
           <span>Enable <code>edit</code></span>
         </label>
