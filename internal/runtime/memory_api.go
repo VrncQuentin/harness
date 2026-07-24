@@ -203,6 +203,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			ToolID: "go_test", Decision: approvals.Denied, Source: "user: go_test disabled in config",
 		})
 	}
+	if !loopCfg.GoLintEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
+			ToolID: "go_lint", Decision: approvals.Denied, Source: "user: go_lint disabled in config",
+		})
+	}
 	if !loopCfg.WebSearchEnabled {
 		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
 			ToolID: "web_search", Decision: approvals.Denied, Source: "user: web_search disabled in config",

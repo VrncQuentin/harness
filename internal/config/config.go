@@ -191,6 +191,9 @@ type LoopConfig struct {
 	// GoTestEnabled toggles the go_test tool. Off by default; runs the test
 	// suite which executes code.
 	GoTestEnabled bool
+	// GoLintEnabled toggles the go_lint tool. Off by default; requires
+	// golangci-lint to be installed.
+	GoLintEnabled bool
 	// WebSearchEnabled toggles the web_search tool. Off by default because it
 	// sends the user's query over the network.
 	WebSearchEnabled bool
@@ -220,6 +223,8 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.ExecEnabled
 	case "go_test":
 		return c.GoTestEnabled
+	case "go_lint":
+		return c.GoLintEnabled
 	case "web_search":
 		return c.WebSearchEnabled
 	default:
@@ -292,6 +297,7 @@ func Defaults() Config {
 			EditEnabled:      tools.BuiltinDefaultEnabled("edit"),
 			ExecEnabled:      tools.BuiltinDefaultEnabled("exec"),
 			GoTestEnabled:    tools.BuiltinDefaultEnabled("go_test"),
+			GoLintEnabled:    tools.BuiltinDefaultEnabled("go_lint"),
 			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),
 		},
 		Project: ProjectConfig{
