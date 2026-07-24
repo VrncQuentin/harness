@@ -109,6 +109,57 @@ func (r *Repo) WorkspaceCommit(msg string) (newSHA, preOpSHA string, err error) 
 	return newSHA, preOpSHA, nil
 }
 
+// CreateBranch creates a local branch named name starting at startPoint
+// (a branch name, tag, or commit SHA). If startPoint is empty HEAD is used.
+// It returns (sha, preOpSHA, err) where sha is the SHA the branch was created
+// at, and preOpSHA is the HEAD SHA at call time (for the caller to record).
+// A reflog entry is appended to the new branch's reflog.
+func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Record HEAD SHA for pre-op tracking.
+	if head, herr := r.repo.Head(); herr == nil {
+		preOpSHA = head.Hash().String()
+	}
+
+	// Resolve the starting commit.
+	var startHash plumbing.Hash
+	if startPoint == "" {
+		head, herr := r.repo.Head()
+		if herr != nil {
+			return "", "", fmt.Errorf("git: branch %s: resolve HEAD: %w", name, herr)
+		}
+		startHash = head.Hash()
+	} else {
+		h, herr := r.repo.ResolveRevision(plumbing.Revision(startPoint))
+		if herr != nil {
+			return "", "", fmt.Errorf("git: branch %s: resolve %q: %w", name, startPoint, herr)
+		}
+		startHash = *h
+	}
+
+	refName := plumbing.NewBranchReferenceName(name)
+	ref := plumbing.NewHashReference(refName, startHash)
+	if err := r.repo.Storer.SetReference(ref); err != nil {
+		return "", "", fmt.Errorf("git: branch %s: set ref: %w", name, err)
+	}
+
+	// Append reflog for the new branch.
+	if rls, ok := r.repo.Storer.(storer.ReflogStorer); ok {
+		now := time.Now()
+		n, e := r.authorIdentity()
+		_ = rls.AppendReflog(refName, &reflog.Entry{
+			OldHash:   plumbing.ZeroHash,
+			NewHash:   startHash,
+			Committer: reflog.Signature{Name: n, Email: e, When: now},
+			Message:   "branch: Created from " + startPoint,
+		})
+	}
+
+	return startHash.String(), preOpSHA, nil
+}
+
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return s[:i]
