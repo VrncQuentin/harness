@@ -6,8 +6,15 @@
 //     files, keeping full bodies for spans relevant to the active task and
 //     emitting only signatures for the rest.
 //
+//   - B2: tool-output folder — per-tool content cap with head/tail elision for
+//     high-volume toolchain tools (exec, go_test, go_lint, git_diff, git_log).
+//
 //   - B3: tee-on-failure — spills large error outputs to disk and injects a
 //     compact handle into the conversation so the model can reference them.
+//
+//   - B5: token gate — reverter guard applied after each transform using the
+//     same rune-quarter heuristic as prompt budgeting; auto-reverts any
+//     transform that increases the token count.
 package governor
 
 import (
@@ -20,11 +27,12 @@ import (
 	"github.com/vrnc/harness/internal/tools"
 )
 
-// Governor applies governor-side transforms (B1, B3) to raw tool results.
-// Construct with New; zero value is safe and acts as a no-op.
+// Governor applies governor-side transforms (B1, B2, B3, B5) to raw tool
+// results. Construct with New; zero value is safe and acts as a no-op.
 type Governor struct {
-	parsers  *parser.Registry
-	cacheDir string // ~/.harness/cache/toolout
+	parsers   *parser.Registry
+	cacheDir  string             // ~/.harness/cache/toolout
+	tokenizer func(s string) int // nil → tokens.Estimate (rune-quarter heuristic)
 }
 
 // New creates a Governor. parsers may be nil (disables B1). cacheDir is the
@@ -33,15 +41,27 @@ func New(parsers *parser.Registry, cacheDir string) *Governor {
 	return &Governor{parsers: parsers, cacheDir: cacheDir}
 }
 
-// Apply runs all applicable transforms on res, in order B1 → B3.
+// WithTokenizer sets an alternative token-counting function used by B5. The
+// default is the rune-quarter heuristic (tokens.Estimate). Callers swap in a
+// real tokenizer here without changing the B5 logic — both sides of the
+// before/after comparison always use the same counter.
+func (g *Governor) WithTokenizer(fn func(s string) int) *Governor {
+	g.tokenizer = fn
+	return g
+}
+
+// Apply runs all applicable transforms on res, in order B1 → B2 → B3.
+// Each transform is wrapped by the B5 token gate, which auto-reverts any
+// transform that increases the estimated token count.
 // toolID identifies the tool that produced res; args are its call arguments.
 // query is the active task prompt, used by B1 for relevance scoring.
 func (g *Governor) Apply(ctx context.Context, toolID string, args map[string]any, res tools.Result, query string) tools.Result {
 	if g == nil {
 		return res
 	}
-	res = g.applyB1(toolID, args, res, query)
-	res = g.applyB3(ctx, toolID, res)
+	res = g.wrapB5(res, func(r tools.Result) tools.Result { return g.applyB1(toolID, args, r, query) })
+	res = g.wrapB5(res, func(r tools.Result) tools.Result { return g.applyB2(toolID, r) })
+	res = g.wrapB5(res, func(r tools.Result) tools.Result { return g.applyB3(ctx, toolID, r) })
 	return res
 }
 
