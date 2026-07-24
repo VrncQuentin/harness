@@ -88,6 +88,7 @@ var builtinToolDescriptors = []Descriptor{
 	{ID: "edit", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: edits require approval"},
 	{ID: "exec", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: exec commands require approval"},
 	{ID: "go_test", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: go_test runs the test suite"},
+	{ID: "go_lint", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: go_lint runs the linter"},
 	{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
 }
 
@@ -190,6 +191,7 @@ func RegisterBuiltins(r *Registry) error {
 		"edit":       &editTool{parsers: parsers},
 		"exec":       &execTool{},
 		"go_test":    &goTestTool{},
+		"go_lint":    &goLintTool{},
 		"web_search": &webSearchTool{},
 	}
 	for _, desc := range builtinToolDescriptors {
