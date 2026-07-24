@@ -2,6 +2,8 @@ package tools
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	gitw "github.com/vrnc/harness/internal/git"
 )
@@ -24,6 +26,38 @@ func workspaceRepo(c CallInfo, args map[string]any) (*gitw.Repo, string, error) 
 		return nil, "", fmt.Errorf("%s is not a git repository", absRoot)
 	}
 	return repo, absRoot, nil
+}
+
+// workspaceWriteRepo is workspaceRepo with an additional C2 scope check: git
+// write tools are rejected when their resolved root is a project memory repo.
+func workspaceWriteRepo(c CallInfo, args map[string]any) (*gitw.Repo, string, error) {
+	repo, absRoot, err := workspaceRepo(c, args)
+	if err != nil {
+		return nil, "", err
+	}
+	if isMemoryRepo(absRoot, c.MemoryRepoPaths) {
+		return nil, "", fmt.Errorf("C2 scope violation: %s resolves to a project memory repository", absRoot)
+	}
+	return repo, absRoot, nil
+}
+
+// isMemoryRepo reports whether absRoot matches or is contained within any of
+// the given memory repo paths. Symlinks in the memory repo paths are resolved
+// so that junction/symlink-based setups do not bypass the predicate.
+func isMemoryRepo(absRoot string, memoryPaths []string) bool {
+	for _, mp := range memoryPaths {
+		if strings.TrimSpace(mp) == "" {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(filepath.Clean(mp))
+		if err != nil {
+			resolved = filepath.Clean(mp)
+		}
+		if pathWithinRoot(absRoot, resolved) {
+			return true
+		}
+	}
+	return false
 }
 
 // gitRootProperty is the shared schema for the explicit root argument.

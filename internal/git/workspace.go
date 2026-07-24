@@ -10,15 +10,111 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/filemode"
 	fdiff "github.com/go-git/go-git/v6/plumbing/format/diff"
+	"github.com/go-git/go-git/v6/plumbing/format/reflog"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/plumbing/storer"
 	udiff "github.com/go-git/go-git/v6/utils/diff"
 	"github.com/sergi/go-diff/diffmatchpatch"
 )
+
+// HeadSHA returns the SHA of the current HEAD commit.
+// It returns an empty string if the repo has no commits yet.
+func (r *Repo) HeadSHA() (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	head, err := r.repo.Head()
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("git: head %s: %w", r.path, err)
+	}
+	return head.Hash().String(), nil
+}
+
+// WorkspaceStage stages files for the next commit. Paths are relative to the
+// repository root (forward slashes). When files is empty all modified and
+// untracked files are staged (equivalent to git add -A).
+func (r *Repo) WorkspaceStage(files []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	wt, err := r.repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("git: worktree %s: %w", r.path, err)
+	}
+	if len(files) == 0 {
+		if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
+			return fmt.Errorf("git: stage all %s: %w", r.path, err)
+		}
+		return nil
+	}
+	for _, f := range files {
+		if _, err := wt.Add(f); err != nil {
+			return fmt.Errorf("git: add %s: %w", f, err)
+		}
+	}
+	return nil
+}
+
+// WorkspaceCommit creates a commit from the current index with msg.
+// It appends a reflog entry for ergonomic undo via git reset --hard HEAD@{1}.
+// The returned newSHA is the new commit's hex SHA; preOpSHA is the HEAD SHA
+// before the commit (empty for an initial commit). preOpSHA is the
+// authoritative recovery token — the caller should record it before the commit.
+func (r *Repo) WorkspaceCommit(msg string) (newSHA, preOpSHA string, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if head, herr := r.repo.Head(); herr == nil {
+		preOpSHA = head.Hash().String()
+	}
+
+	wt, wtErr := r.repo.Worktree()
+	if wtErr != nil {
+		return "", "", fmt.Errorf("git: worktree %s: %w", r.path, wtErr)
+	}
+	name, email := r.authorIdentity()
+	now := time.Now()
+	hash, commitErr := wt.Commit(msg, &gogit.CommitOptions{
+		Author: &object.Signature{Name: name, Email: email, When: now},
+	})
+	if commitErr != nil {
+		return "", "", fmt.Errorf("git: commit %s: %w", r.path, commitErr)
+	}
+	newSHA = hash.String()
+
+	// Reflog write — ergonomics only; not the authoritative recovery record.
+	// Silently skipped if the storer does not implement ReflogStorer (in-memory).
+	if rls, ok := r.repo.Storer.(storer.ReflogStorer); ok {
+		if head, herr := r.repo.Head(); herr == nil {
+			oldHash := plumbing.ZeroHash
+			if preOpSHA != "" {
+				oldHash = plumbing.NewHash(preOpSHA)
+			}
+			_ = rls.AppendReflog(head.Name(), &reflog.Entry{
+				OldHash:   oldHash,
+				NewHash:   hash,
+				Committer: reflog.Signature{Name: name, Email: email, When: now},
+				Message:   "commit: " + firstLine(msg),
+			})
+		}
+	}
+
+	return newSHA, preOpSHA, nil
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
 
 // StatusEntry is one changed path in porcelain-style notation.
 type StatusEntry struct {

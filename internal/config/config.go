@@ -194,6 +194,9 @@ type LoopConfig struct {
 	// GoLintEnabled toggles the go_lint tool. Off by default; requires
 	// golangci-lint to be installed.
 	GoLintEnabled bool
+	// GitCommitEnabled toggles the git_commit tool. Off by default; requires
+	// approval — commits to workspace repos, scope-checked against memory repos.
+	GitCommitEnabled bool
 	// WebSearchEnabled toggles the web_search tool. Off by default because it
 	// sends the user's query over the network.
 	WebSearchEnabled bool
@@ -225,6 +228,8 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.GoTestEnabled
 	case "go_lint":
 		return c.GoLintEnabled
+	case "git_commit":
+		return c.GitCommitEnabled
 	case "web_search":
 		return c.WebSearchEnabled
 	default:
@@ -298,6 +303,7 @@ func Defaults() Config {
 			ExecEnabled:      tools.BuiltinDefaultEnabled("exec"),
 			GoTestEnabled:    tools.BuiltinDefaultEnabled("go_test"),
 			GoLintEnabled:    tools.BuiltinDefaultEnabled("go_lint"),
+			GitCommitEnabled: tools.BuiltinDefaultEnabled("git_commit"),
 			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),
 		},
 		Project: ProjectConfig{
