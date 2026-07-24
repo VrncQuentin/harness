@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS config (
     project_llama_on_switch          TEXT    NOT NULL,
     loop_max_turns                   INTEGER NOT NULL,
     loop_doom_threshold              INTEGER NOT NULL,
-    loop_file_read_enabled           INTEGER NOT NULL,
+    loop_read_enabled                INTEGER NOT NULL,
     loop_file_list_enabled           INTEGER NOT NULL,
     loop_ast_map_enabled             INTEGER NOT NULL,
     loop_ast_find_enabled            INTEGER NOT NULL,

@@ -35,9 +35,9 @@ func TestDefaultLayer(t *testing.T) {
 
 func TestEvaluator_AllowedByDefault(t *testing.T) {
 	eval := NewEvaluator(DefaultLayer())
-	dec, src := eval.Evaluate("file_read", "")
+	dec, src := eval.Evaluate("read", "")
 	if dec != Allowed {
-		t.Errorf("file_read should be allowed, got %s", dec)
+		t.Errorf("read should be allowed, got %s", dec)
 	}
 	if src != "builtin: read-only tools allowed" {
 		t.Errorf("unexpected source: %s", src)

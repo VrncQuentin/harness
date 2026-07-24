@@ -167,9 +167,9 @@ type LoopConfig struct {
 	// (same tool id + same args JSON) the loop tolerates before
 	// terminating with a doom-loop error.
 	DoomThreshold int
-	// FileReadEnabled toggles the file_read tool. When false the model
-	// receives a tool-not-available result instead.
-	FileReadEnabled bool
+	// ReadEnabled toggles the read tool. When false the model receives a
+	// tool-not-available result instead.
+	ReadEnabled bool
 	// FileListEnabled toggles the file_list tool.
 	FileListEnabled bool
 	// AstMapEnabled toggles the ast_map tool (parser-backed file outline).
@@ -191,8 +191,8 @@ type LoopConfig struct {
 // config. Unknown tools are disabled.
 func (c LoopConfig) ToolEnabled(id string) bool {
 	switch id {
-	case "file_read":
-		return c.FileReadEnabled
+	case "read":
+		return c.ReadEnabled
 	case "file_list":
 		return c.FileListEnabled
 	case "ast_map":
@@ -265,7 +265,7 @@ func Defaults() Config {
 		Loop: LoopConfig{
 			MaxTurns:         10,
 			DoomThreshold:    3,
-			FileReadEnabled:  tools.BuiltinDefaultEnabled("file_read"),
+			ReadEnabled:      tools.BuiltinDefaultEnabled("read"),
 			FileListEnabled:  tools.BuiltinDefaultEnabled("file_list"),
 			AstMapEnabled:    tools.BuiltinDefaultEnabled("ast_map"),
 			AstFindEnabled:   tools.BuiltinDefaultEnabled("ast_find"),

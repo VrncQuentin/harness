@@ -78,7 +78,7 @@ type Descriptor struct {
 }
 
 var builtinToolDescriptors = []Descriptor{
-	{ID: "file_read", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
+	{ID: "read", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 	{ID: "file_list", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 	{ID: "ast_map", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 	{ID: "ast_find", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
@@ -166,7 +166,7 @@ func (r *Registry) List() []Tool {
 }
 
 // RegisterBuiltins registers the built-in tools on r. Read-only tools
-// (file_read, file_list) are always registered. Destructive tools
+// (read, file_list, ast_map, ast_find) are always registered. Destructive tools
 // (file_write, shell_exec) are registered but disabled by default in
 // config — they must be explicitly enabled and pass the approval
 // layer before they can execute.
@@ -176,7 +176,7 @@ func RegisterBuiltins(r *Registry) error {
 		return fmt.Errorf("tools: parser front-ends: %w", err)
 	}
 	builtins := map[string]Tool{
-		"file_read":  &fileReadTool{},
+		"read":       &readTool{},
 		"file_list":  &fileListTool{},
 		"ast_map":    &astMapTool{parsers: parsers},
 		"ast_find":   &astFindTool{parsers: parsers},

@@ -109,9 +109,9 @@ func TestEngineCachesToolSchemasAcrossTurns(t *testing.T) {
 }
 
 func TestRunRejectsOutOfRangeToolCallIndex(t *testing.T) {
-	engine := newTestEngine(t, config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileReadEnabled: true})
+	engine := newTestEngine(t, config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, ReadEnabled: true})
 	engine.infer = &mockInferClient{tokens: []inference.Token{
-		{ToolCallDelta: &inference.ToolCallDelta{Index: 1_000_000, ID: "call_bad", Name: "file_read"}},
+		{ToolCallDelta: &inference.ToolCallDelta{Index: 1_000_000, ID: "call_bad", Name: "read"}},
 		{Done: true},
 	}}
 
@@ -343,7 +343,7 @@ func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 	cfg := config.LoopConfig{
 		MaxTurns:         2,
 		DoomThreshold:    3,
-		FileReadEnabled:  true,
+		ReadEnabled:      true,
 		FileListEnabled:  true,
 		FileWriteEnabled: false,
 		ShellExecEnabled: false,
@@ -367,8 +367,8 @@ func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 	if engine.isToolEnabled("unknown_tool") {
 		t.Error("unknown_tool should be disabled")
 	}
-	if !engine.isToolEnabled("file_read") {
-		t.Error("file_read should be enabled")
+	if !engine.isToolEnabled("read") {
+		t.Error("read should be enabled")
 	}
 }
 
