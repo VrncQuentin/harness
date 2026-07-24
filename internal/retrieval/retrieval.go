@@ -6,6 +6,7 @@ import (
 	"path"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/vrnc/harness/internal/index"
 )
@@ -84,7 +85,32 @@ func ScoreEpisodePaths(ctx context.Context, embedder EpisodeEmbedder, searcher E
 	}
 	oldestFirst := append([]string(nil), episodePaths...)
 	sort.Strings(oldestFirst)
-	return BlendEpisodeScores(oldestFirst, BestSemanticScores(results), semanticWeight, recencyWeight), true, nil
+	semanticScores := BestSemanticScores(results)
+	blended := BlendEpisodeScores(oldestFirst, semanticScores, semanticWeight, recencyWeight)
+
+	if DefaultTraceSink != nil {
+		qid := QueryID(query)
+		n := float64(len(oldestFirst))
+		now := time.Now()
+		for i, p := range oldestFirst {
+			id := EpisodeID(p)
+			sem := semanticScores[id]
+			if sem == 0 {
+				sem = semanticScores[path.Base(id)]
+			}
+			DefaultTraceSink.Emit(RetrievalTrace{
+				QueryID:       qid,
+				EpisodePath:   p,
+				SemanticScore: sem,
+				RecencyScore:  Decay(len(oldestFirst)-1-i, n),
+				BlendedScore:  blended[p],
+				Rank:          i,
+				Ts:            now,
+			})
+		}
+	}
+
+	return blended, true, nil
 }
 
 // Decay returns an exponential recency score where distanceFromNewest=0
