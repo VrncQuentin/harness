@@ -329,7 +329,7 @@ Depends on M7 (approvals and the existing tool layer) and M9 (project memory rep
 
 - [ ] M10.1 — auditable edit loop: `ast_map`, `ast_find`, `read` (replaces `file_read`), `edit` (replaces `file_write`), tier-1 git tools, B1 skeletonizer, B3 tee-on-failure, C3 origin-class slice; D3 labeled query set begins
 - [ ] M10.2 — execution, compression, local VC writes: `exec` (replaces `shell_exec`), `go_test`, `go_lint`, tier-2 git tools shipping together with the memory-repo scope predicate and ref-SHA/reflog undo, B2 output folder, B5 token gate
-- [ ] M10.3 — retrieval instrumentation: `memory_query` trace emission and the D3 harness against the present two-signal blend
+- [ ] M10.3 — retrieval instrumentation: `memory_query`, trace emission at the retrieval choke point (`ScoreEpisodePaths`, covering the assembler path and the tool), and the D3 harness against the present two-signal blend; this phase is [memory_roadmap.md](memory_roadmap.md)'s MR0 gate
 - [ ] M10.4 — external VC: `git_push`, `gh_pr_create`, `gh_pr_merge` behind proposal return types; `gh_pr_wait` blocking read of PR CI state; GitHub token from environment only
 
 ---
@@ -343,3 +343,16 @@ Depends on M7 (destructive tools, shell execution, approvals, and hardened permi
 - [ ] Isolated `internal/dsl` parser, validator, and linter package; editor and dry-run preview for attached-repo `.hp` specs
 - [ ] Runtime execution through `internal/agentloop`, declared artifacts, verify/gate commands, retries, routes, and `lib` calls
 - [ ] Durable SQLite run state, project-memory-repo artifacts, UI run graph, surfacing/resume controls, and M11 metrics
+
+---
+
+## M12 — Memory Layer
+
+**Goal:** evolve memory from markdown + vector index into a measured, gated, provenance-tracked layer: an FTS retrieval signal, origin classes on retrieval results, a single commit gate with an append-only verdict log in the project memory repo, and supersede/contradiction handling. The full contract, phase gates, and design decisions live in [memory_roadmap.md](memory_roadmap.md).
+
+Depends on M10.3 (MR0, the retrieval instrumentation gate — its numbers gate every M12 phase, and the D3 labeled query set accumulates during M10.1–M10.2) and M10.4 (MR3 reuses the proposal-return-type pattern of the external VC tools). Independent of M11: neither blocks the other, and M12 phases may run in parallel with it.
+
+- [ ] MR1 — FTS5 retrieval signal: `internal/fts`, third blend weight (`fts_weight`, default 0); conditional — skipped if MR0 shows the semantic signal already covers keyword-heavy queries
+- [ ] MR2 — origin class on retrieval results (`extraction`/`inference`, path-derived, same vocabulary as the shipped `tools.OriginClass`); trace rows gain the field
+- [ ] MR3 — commit gate (C1): the four present writers consolidated behind one gate, `memory_propose` tool, append-only `verdicts.jsonl` committed to the project memory repo, verdicts `{accept, reject, supersede, hold}`
+- [ ] MR4 — supersede chains + contradiction surfacing: verdict-aware retrieval filtering, hold-on-contradiction, D3-confirmed precision improvement
