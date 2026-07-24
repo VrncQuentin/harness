@@ -193,9 +193,9 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			ToolID: "edit", Decision: approvals.Denied, Source: "user: edit disabled in config",
 		})
 	}
-	if !loopCfg.ShellExecEnabled {
+	if !loopCfg.ExecEnabled {
 		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "shell_exec", Decision: approvals.Denied, Source: "user: shell_exec disabled in config",
+			ToolID: "exec", Decision: approvals.Denied, Source: "user: exec disabled in config",
 		})
 	}
 	if !loopCfg.WebSearchEnabled {

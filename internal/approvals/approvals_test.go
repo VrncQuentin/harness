@@ -50,9 +50,9 @@ func TestEvaluator_DestructiveAsks(t *testing.T) {
 	if dec != Ask {
 		t.Errorf("edit should ask, got %s", dec)
 	}
-	dec, _ = eval.Evaluate("shell_exec", "ls")
+	dec, _ = eval.Evaluate("exec", "ls")
 	if dec != Ask {
-		t.Errorf("shell_exec should ask, got %s", dec)
+		t.Errorf("exec should ask, got %s", dec)
 	}
 	dec, _ = eval.Evaluate("web_search", "")
 	if dec != Ask {
@@ -78,10 +78,10 @@ func TestEvaluator_LayeredOverride(t *testing.T) {
 	if src != "user: writes allowed" {
 		t.Errorf("unexpected source: %s", src)
 	}
-	// shell_exec still asks
-	dec, _ = eval.Evaluate("shell_exec", "ls")
+	// exec still asks
+	dec, _ = eval.Evaluate("exec", "ls")
 	if dec != Ask {
-		t.Errorf("shell_exec should still ask, got %s", dec)
+		t.Errorf("exec should still ask, got %s", dec)
 	}
 }
 
@@ -113,24 +113,24 @@ func TestEvaluator_ShellCommandPatternAllowsStillAsk(t *testing.T) {
 	layer := Layer{
 		Name: "user-config",
 		Rules: []Rule{
-			{ToolID: "shell_exec", CommandPattern: "git ", Decision: Allowed, Source: "user: git allowed"},
-			{ToolID: "shell_exec", CommandPattern: "ls", Decision: Allowed, Source: "user: ls allowed"},
+			{ToolID: "exec", CommandPattern: "git ", Decision: Allowed, Source: "user: git allowed"},
+			{ToolID: "exec", CommandPattern: "ls", Decision: Allowed, Source: "user: ls allowed"},
 		},
 	}
 	eval := NewEvaluator(DefaultLayer(), layer)
 
-	dec, _ := eval.Evaluate("shell_exec", "git status")
+	dec, _ := eval.Evaluate("exec", "git status")
 	if dec != Ask {
 		t.Errorf("git status should still Ask despite allow rule, got %s", dec)
 	}
 
-	dec, _ = eval.Evaluate("shell_exec", "ls -la")
+	dec, _ = eval.Evaluate("exec", "ls -la")
 	if dec != Ask {
 		t.Errorf("ls should still Ask despite allow rule, got %s", dec)
 	}
 
 	// rm is not matched by any user rule, falls back to Ask
-	dec, _ = eval.Evaluate("shell_exec", "rm -rf /tmp/test")
+	dec, _ = eval.Evaluate("exec", "rm -rf /tmp/test")
 	if dec != Ask {
 		t.Errorf("rm should still ask, got %s", dec)
 	}
@@ -161,8 +161,8 @@ func TestMatchRule_WildcardTool(t *testing.T) {
 	if !matchRule(r, "edit", "") {
 		t.Error("wildcard should match edit")
 	}
-	if !matchRule(r, "shell_exec", "ls") {
-		t.Error("wildcard should match shell_exec")
+	if !matchRule(r, "exec", "ls") {
+		t.Error("wildcard should match exec")
 	}
 	if !matchRule(r, "unknown_tool", "") {
 		t.Error("wildcard should match unknown_tool")
@@ -175,11 +175,11 @@ func TestEvaluator_ShellCmdRequiresAskEvenWithBroadAllow(t *testing.T) {
 	userLayer := Layer{
 		Name: "user-config",
 		Rules: []Rule{
-			{ToolID: "shell_exec", CommandPattern: "git", Decision: Allowed, Source: "user: git allowed"},
+			{ToolID: "exec", CommandPattern: "git", Decision: Allowed, Source: "user: git allowed"},
 		},
 	}
 	eval := NewEvaluator(DefaultLayer(), userLayer)
-	dec, src := eval.Evaluate("shell_exec", "git push origin main")
+	dec, src := eval.Evaluate("exec", "git push origin main")
 	if dec != Ask {
 		t.Errorf("destructive git push should Ask even with broad git allow, got %s", dec)
 	}
@@ -191,17 +191,17 @@ func TestEvaluator_ShellCmdRequiresAskEvenWithBroadAllow(t *testing.T) {
 func TestEvaluator_ShellCmdStillAsksWithExactSessionAllow(t *testing.T) {
 	eval := NewEvaluator(DefaultLayer())
 	eval.AddSessionRule(Rule{
-		ToolID:         "shell_exec",
+		ToolID:         "exec",
 		CommandPattern: "git push origin main",
 		Decision:       Allowed,
 		Source:         "session: always allowed",
 	})
-	dec, _ := eval.Evaluate("shell_exec", "git push origin main")
+	dec, _ := eval.Evaluate("exec", "git push origin main")
 	if dec != Ask {
 		t.Errorf("exact session allow should still Ask for shell command, got %s", dec)
 	}
 	// A different destructive command still asks.
-	dec, _ = eval.Evaluate("shell_exec", "rm -rf /tmp")
+	dec, _ = eval.Evaluate("exec", "rm -rf /tmp")
 	if dec != Ask {
 		t.Errorf("rm -rf should still Ask, got %s", dec)
 	}
@@ -211,11 +211,11 @@ func TestEvaluator_SafeShellCmdStillAsksWithBroadRule(t *testing.T) {
 	userLayer := Layer{
 		Name: "user-config",
 		Rules: []Rule{
-			{ToolID: "shell_exec", CommandPattern: "git", Decision: Allowed, Source: "user: git allowed"},
+			{ToolID: "exec", CommandPattern: "git", Decision: Allowed, Source: "user: git allowed"},
 		},
 	}
 	eval := NewEvaluator(DefaultLayer(), userLayer)
-	dec, _ := eval.Evaluate("shell_exec", "git status")
+	dec, _ := eval.Evaluate("exec", "git status")
 	if dec != Ask {
 		t.Errorf("safe-looking shell command should still Ask by broad rule, got %s", dec)
 	}
@@ -225,18 +225,18 @@ func TestEvaluator_ShellSessionAllowsNotBypassable(t *testing.T) {
 	// Even with a remembered exact shell allow, shell commands still require approval.
 	eval := NewEvaluator(DefaultLayer())
 	eval.AddSessionRule(Rule{
-		ToolID:         "shell_exec",
+		ToolID:         "exec",
 		CommandPattern: "git status",
 		Decision:       Allowed,
 		Source:         "session: always allowed",
 	})
 	// git status is stored as an exact match, but still asks.
-	dec, _ := eval.Evaluate("shell_exec", "git status")
+	dec, _ := eval.Evaluate("exec", "git status")
 	if dec != Ask {
 		t.Errorf("git status should still Ask despite exact session rule, got %s", dec)
 	}
 	// git push also asks.
-	dec, _ = eval.Evaluate("shell_exec", "git push origin main")
+	dec, _ = eval.Evaluate("exec", "git push origin main")
 	if dec != Ask {
 		t.Errorf("git push should Ask despite git status session rule, got %s", dec)
 	}
@@ -246,11 +246,11 @@ func TestEvaluator_DestructiveCmdDeniedRuleWins(t *testing.T) {
 	userLayer := Layer{
 		Name: "user-config",
 		Rules: []Rule{
-			{ToolID: "shell_exec", CommandPattern: "rm -rf /tmp/test", Decision: Denied, Source: "user: denied exact command"},
+			{ToolID: "exec", CommandPattern: "rm -rf /tmp/test", Decision: Denied, Source: "user: denied exact command"},
 		},
 	}
 	eval := NewEvaluator(DefaultLayer(), userLayer)
-	dec, src := eval.Evaluate("shell_exec", "rm -rf /tmp/test")
+	dec, src := eval.Evaluate("exec", "rm -rf /tmp/test")
 	if dec != Denied {
 		t.Errorf("destructive denied rule should deny, got %s", dec)
 	}
