@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS config (
     loop_exec_enabled                INTEGER NOT NULL,
     loop_go_test_enabled             INTEGER NOT NULL,
     loop_go_lint_enabled             INTEGER NOT NULL,
+    loop_git_commit_enabled          INTEGER NOT NULL,
     loop_web_search_enabled          INTEGER NOT NULL,
     saved_at                         INTEGER
 );

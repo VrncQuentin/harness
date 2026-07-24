@@ -517,14 +517,26 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 			}
 		}
 	}
+	// Collect memory repo paths for the C2 scope predicate (git write tools).
+	var memoryRepoPaths []string
+	if ad.rt.projectStore != nil {
+		if projs, err := ad.rt.projectStore.List(true); err == nil {
+			for _, p := range projs {
+				if p.MemoryRepoPath != "" {
+					memoryRepoPaths = append(memoryRepoPaths, p.MemoryRepoPath)
+				}
+			}
+		}
+	}
 	loopCtx, cancelLoop := context.WithCancel(ctx)
 
 	toolCtx := tools.CallInfo{
-		ProjectSlug:    slug,
-		SandboxRoots:   sandboxRoots,
-		SessionID:      id,
-		CallerIdentity: "agent:" + agentName,
-		HTTPClient:     httpclient.New(),
+		ProjectSlug:     slug,
+		SandboxRoots:    sandboxRoots,
+		MemoryRepoPaths: memoryRepoPaths,
+		SessionID:       id,
+		CallerIdentity:  "agent:" + agentName,
+		HTTPClient:      httpclient.New(),
 	}
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
