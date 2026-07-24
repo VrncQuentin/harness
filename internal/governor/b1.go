@@ -91,7 +91,6 @@ func skeletonize(content string, symbols []parser.Symbol, queryTokens []string) 
 		}
 	}
 	// Mark the first suppressed line of each range to emit the stub comment.
-	type stubAt struct{ line int }
 	stubLines := make(map[int]bool)
 	for _, br := range suppress {
 		stubLines[br.start] = true

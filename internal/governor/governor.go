@@ -61,7 +61,7 @@ func (g *Governor) tooloutDir() string {
 func activeQueryTokens(query string) []string {
 	var tokens []string
 	for _, word := range strings.FieldsFunc(query, func(r rune) bool {
-		return !('a' <= r && r <= 'z' || 'A' <= r && r <= 'Z' || '0' <= r && r <= '9')
+		return ('a' > r || r > 'z') && ('A' > r || r > 'Z') && ('0' > r || r > '9')
 	}) {
 		if len(word) >= 3 {
 			tokens = append(tokens, strings.ToLower(word))
