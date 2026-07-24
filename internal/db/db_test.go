@@ -376,7 +376,7 @@ func TestConfigStore_RoundTripsAllConfigFields(t *testing.T) {
 	cfg.Loop.DoomThreshold = 8
 	cfg.Loop.ReadEnabled = false
 	cfg.Loop.FileListEnabled = false
-	cfg.Loop.FileWriteEnabled = true
+	cfg.Loop.EditEnabled = true
 	cfg.Loop.ShellExecEnabled = true
 	cfg.Loop.WebSearchEnabled = true
 

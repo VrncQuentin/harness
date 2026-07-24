@@ -132,10 +132,10 @@ func TestRunRejectsOutOfRangeToolCallIndex(t *testing.T) {
 }
 
 func TestRejectDoesNotAddSessionRule(t *testing.T) {
-	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, EditEnabled: true}
 	engine := newTestEngine(t, cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
+	client := &mockInferClient{tokens: toolCallTokens("edit", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -171,17 +171,17 @@ func TestRejectDoesNotAddSessionRule(t *testing.T) {
 	}
 
 	// Verify no session rule was added.
-	dec, _ := engine.evl.Evaluate("file_write", "")
+	dec, _ := engine.evl.Evaluate("edit", "")
 	if dec != approvals.Ask {
-		t.Errorf("reject should not add session rule; file_write should still Ask, got %s", dec)
+		t.Errorf("reject should not add session rule; edit should still Ask, got %s", dec)
 	}
 }
 
 func TestAllowDoesNotAddSessionRule(t *testing.T) {
-	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, EditEnabled: true}
 	engine := newTestEngine(t, cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
+	client := &mockInferClient{tokens: toolCallTokens("edit", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -214,17 +214,17 @@ func TestAllowDoesNotAddSessionRule(t *testing.T) {
 	}
 
 	// Verify no session rule was added.
-	dec, _ := engine.evl.Evaluate("file_write", "")
+	dec, _ := engine.evl.Evaluate("edit", "")
 	if dec != approvals.Ask {
-		t.Errorf("allow should not add session rule; file_write should still Ask, got %s", dec)
+		t.Errorf("allow should not add session rule; edit should still Ask, got %s", dec)
 	}
 }
 
 func TestAlwaysAddsSessionRule(t *testing.T) {
-	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, EditEnabled: true}
 	engine := newTestEngine(t, cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
+	client := &mockInferClient{tokens: toolCallTokens("edit", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -257,9 +257,9 @@ func TestAlwaysAddsSessionRule(t *testing.T) {
 	}
 
 	// Verify a session rule WAS added.
-	dec, _ := engine.evl.Evaluate("file_write", "")
+	dec, _ := engine.evl.Evaluate("edit", "")
 	if dec != approvals.Allowed {
-		t.Errorf("always should add session rule; file_write should be Allowed, got %s", dec)
+		t.Errorf("always should add session rule; edit should be Allowed, got %s", dec)
 	}
 }
 
@@ -345,7 +345,7 @@ func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 		DoomThreshold:    3,
 		ReadEnabled:      true,
 		FileListEnabled:  true,
-		FileWriteEnabled: false,
+		EditEnabled:      false,
 		ShellExecEnabled: false,
 	}
 	reg := tools.NewRegistry()
@@ -355,8 +355,8 @@ func TestToolDisabledInConfigReturnsNotAvailable(t *testing.T) {
 	engine := NewEngine(&mockInferClient{}, reg, cfg, tools.CallInfo{})
 
 	// isToolEnabled checks config toggles.
-	if engine.isToolEnabled("file_write") {
-		t.Error("file_write should be disabled")
+	if engine.isToolEnabled("edit") {
+		t.Error("edit should be disabled")
 	}
 	if engine.isToolEnabled("shell_exec") {
 		t.Error("shell_exec should be disabled")
@@ -381,9 +381,9 @@ func TestUnknownApprovalID(t *testing.T) {
 }
 
 func TestApprovalWaitTimesOut(t *testing.T) {
-	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, EditEnabled: true}
 	engine := newTestEngine(t, cfg).WithApprovalTimeout(20 * time.Millisecond)
-	engine.infer = &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
+	engine.infer = &mockInferClient{tokens: toolCallTokens("edit", `{"path":"/tmp/test.txt"}`)}
 
 	evch := make(chan Event, 64)
 	done := make(chan error, 1)
@@ -454,9 +454,9 @@ func TestStateEventWaitsForDeliveryWhenChannelIsFull(t *testing.T) {
 	}
 }
 func TestApprovalNeededDeliveryTimesOutWhenEventChannelIsFull(t *testing.T) {
-	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, EditEnabled: true}
 	engine := newTestEngine(t, cfg).WithApprovalTimeout(20 * time.Millisecond)
-	engine.infer = &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
+	engine.infer = &mockInferClient{tokens: toolCallTokens("edit", `{"path":"/tmp/test.txt"}`)}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -467,10 +467,10 @@ func TestApprovalNeededDeliveryTimesOutWhenEventChannelIsFull(t *testing.T) {
 	}
 }
 func TestApprovalNeededEventHasCorrectFields(t *testing.T) {
-	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, EditEnabled: true}
 	engine := newTestEngine(t, cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
+	client := &mockInferClient{tokens: toolCallTokens("edit", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -491,8 +491,8 @@ func TestApprovalNeededEventHasCorrectFields(t *testing.T) {
 	if ev.Type != EvtApprovalNeeded {
 		t.Fatal("expected approval_needed event")
 	}
-	if ev.ToolID != "file_write" {
-		t.Errorf("expected tool_id file_write, got %s", ev.ToolID)
+	if ev.ToolID != "edit" {
+		t.Errorf("expected tool_id edit, got %s", ev.ToolID)
 	}
 	if ev.ApprovalID == "" {
 		t.Error("approval_id should not be empty")
@@ -514,10 +514,10 @@ func TestApprovalNeededEventHasCorrectFields(t *testing.T) {
 }
 
 func TestApprovalDeniedInjectsError(t *testing.T) {
-	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, FileWriteEnabled: true}
+	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, EditEnabled: true}
 	engine := newTestEngine(t, cfg)
 
-	client := &mockInferClient{tokens: toolCallTokens("file_write", `{"path":"/tmp/test.txt"}`)}
+	client := &mockInferClient{tokens: toolCallTokens("edit", `{"path":"/tmp/test.txt"}`)}
 	engine.infer = client
 
 	evch := make(chan Event, 64)
@@ -639,7 +639,7 @@ func TestApplyApprovalClaimsResponseBeforeRememberingRule(t *testing.T) {
 			"approval-1": make(chan approvals.ApprovalResponse, 1),
 		},
 		pendingRules: map[string]approvals.Rule{
-			"approval-1": {ToolID: "file_write", Decision: approvals.Allowed, Source: "test"},
+			"approval-1": {ToolID: "edit", Decision: approvals.Allowed, Source: "test"},
 		},
 	}
 	if err := engine.ApplyApproval("approval-1", approvals.ApprovalResponse{Decision: approvals.Allowed, Remember: true}); err != nil {
@@ -648,7 +648,7 @@ func TestApplyApprovalClaimsResponseBeforeRememberingRule(t *testing.T) {
 	if err := engine.ApplyApproval("approval-1", approvals.ApprovalResponse{Decision: approvals.Allowed, Remember: true}); err == nil {
 		t.Fatal("duplicate ApplyApproval unexpectedly succeeded")
 	}
-	decision, _ := engine.evl.Evaluate("file_write", "")
+	decision, _ := engine.evl.Evaluate("edit", "")
 	if decision != approvals.Allowed {
 		t.Fatalf("session rule decision = %v, want allowed", decision)
 	}

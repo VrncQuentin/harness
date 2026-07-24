@@ -82,7 +82,7 @@ var builtinToolDescriptors = []Descriptor{
 	{ID: "file_list", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 	{ID: "ast_map", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
 	{ID: "ast_find", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only tools allowed"},
-	{ID: "file_write", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: writes require approval"},
+	{ID: "edit", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: edits require approval"},
 	{ID: "shell_exec", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: shell commands require approval"},
 	{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
 }
@@ -167,7 +167,7 @@ func (r *Registry) List() []Tool {
 
 // RegisterBuiltins registers the built-in tools on r. Read-only tools
 // (read, file_list, ast_map, ast_find) are always registered. Destructive tools
-// (file_write, shell_exec) are registered but disabled by default in
+// (edit, shell_exec) are registered but disabled by default in
 // config — they must be explicitly enabled and pass the approval
 // layer before they can execute.
 func RegisterBuiltins(r *Registry) error {
@@ -180,7 +180,7 @@ func RegisterBuiltins(r *Registry) error {
 		"file_list":  &fileListTool{},
 		"ast_map":    &astMapTool{parsers: parsers},
 		"ast_find":   &astFindTool{parsers: parsers},
-		"file_write": &fileWriteTool{},
+		"edit":       &editTool{parsers: parsers},
 		"shell_exec": &shellExecTool{},
 		"web_search": &webSearchTool{},
 	}

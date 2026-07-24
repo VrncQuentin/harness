@@ -46,9 +46,9 @@ func TestEvaluator_AllowedByDefault(t *testing.T) {
 
 func TestEvaluator_DestructiveAsks(t *testing.T) {
 	eval := NewEvaluator(DefaultLayer())
-	dec, _ := eval.Evaluate("file_write", "")
+	dec, _ := eval.Evaluate("edit", "")
 	if dec != Ask {
-		t.Errorf("file_write should ask, got %s", dec)
+		t.Errorf("edit should ask, got %s", dec)
 	}
 	dec, _ = eval.Evaluate("shell_exec", "ls")
 	if dec != Ask {
@@ -63,17 +63,17 @@ func TestEvaluator_DestructiveAsks(t *testing.T) {
 func TestEvaluator_LayeredOverride(t *testing.T) {
 	// Layer 1: agent defaults (destructive = ask)
 	defaults := DefaultLayer()
-	// Layer 2: user config (allow file_write)
+	// Layer 2: user config (allow edit)
 	userLayer := Layer{
 		Name: "user-config",
 		Rules: []Rule{
-			{ToolID: "file_write", Decision: Allowed, Source: "user: writes allowed"},
+			{ToolID: "edit", Decision: Allowed, Source: "user: writes allowed"},
 		},
 	}
 	eval := NewEvaluator(defaults, userLayer)
-	dec, src := eval.Evaluate("file_write", "")
+	dec, src := eval.Evaluate("edit", "")
 	if dec != Allowed {
-		t.Errorf("file_write should be allowed by user config, got %s", dec)
+		t.Errorf("edit should be allowed by user config, got %s", dec)
 	}
 	if src != "user: writes allowed" {
 		t.Errorf("unexpected source: %s", src)
@@ -90,19 +90,19 @@ func TestEvaluator_SessionOverridesConfig(t *testing.T) {
 	userLayer := Layer{
 		Name: "user-config",
 		Rules: []Rule{
-			{ToolID: "file_write", Decision: Allowed, Source: "user: writes allowed"},
+			{ToolID: "edit", Decision: Allowed, Source: "user: writes allowed"},
 		},
 	}
 	sessionLayer := Layer{
 		Name: "session",
 		Rules: []Rule{
-			{ToolID: "file_write", Decision: Denied, Source: "session: denied by user"},
+			{ToolID: "edit", Decision: Denied, Source: "session: denied by user"},
 		},
 	}
 	eval := NewEvaluator(defaults, userLayer, sessionLayer)
-	dec, src := eval.Evaluate("file_write", "")
+	dec, src := eval.Evaluate("edit", "")
 	if dec != Denied {
-		t.Errorf("file_write should be denied by session, got %s", dec)
+		t.Errorf("edit should be denied by session, got %s", dec)
 	}
 	if src != "session: denied by user" {
 		t.Errorf("unexpected source: %s", src)
@@ -158,8 +158,8 @@ func TestDecision_String(t *testing.T) {
 
 func TestMatchRule_WildcardTool(t *testing.T) {
 	r := Rule{ToolID: "*", Decision: Denied, Source: "test"}
-	if !matchRule(r, "file_write", "") {
-		t.Error("wildcard should match file_write")
+	if !matchRule(r, "edit", "") {
+		t.Error("wildcard should match edit")
 	}
 	if !matchRule(r, "shell_exec", "ls") {
 		t.Error("wildcard should match shell_exec")

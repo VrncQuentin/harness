@@ -46,7 +46,7 @@ func (s *ConfigStore) seed() error {
 			loop_max_turns, loop_doom_threshold,
 			loop_read_enabled, loop_file_list_enabled,
 			loop_ast_map_enabled, loop_ast_find_enabled,
-			loop_file_write_enabled, loop_shell_exec_enabled,
+			loop_edit_enabled, loop_shell_exec_enabled,
 			loop_web_search_enabled
 	) VALUES (
 		1,
@@ -79,7 +79,7 @@ func (s *ConfigStore) seed() error {
 		d.Loop.MaxTurns, d.Loop.DoomThreshold,
 		boolInt(d.Loop.ReadEnabled), boolInt(d.Loop.FileListEnabled),
 		boolInt(d.Loop.AstMapEnabled), boolInt(d.Loop.AstFindEnabled),
-		boolInt(d.Loop.FileWriteEnabled), boolInt(d.Loop.ShellExecEnabled),
+		boolInt(d.Loop.EditEnabled), boolInt(d.Loop.ShellExecEnabled),
 		boolInt(d.Loop.WebSearchEnabled),
 	)
 	if err != nil {
@@ -111,7 +111,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 			loop_max_turns, loop_doom_threshold,
 			loop_read_enabled, loop_file_list_enabled,
 			loop_ast_map_enabled, loop_ast_find_enabled,
-			loop_file_write_enabled, loop_shell_exec_enabled,
+			loop_edit_enabled, loop_shell_exec_enabled,
 			loop_web_search_enabled,
 			saved_at
 		FROM config WHERE id = 1`)
@@ -127,7 +127,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		fileList          int
 		astMap            int
 		astFind           int
-		fileWrite         int
+		editEnabled       int
 		shellExec         int
 		webSearch         int
 		prometheusEnabled int
@@ -151,7 +151,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		&cfg.Loop.MaxTurns, &cfg.Loop.DoomThreshold,
 		&readEnabled, &fileList,
 		&astMap, &astFind,
-		&fileWrite, &shellExec, &webSearch,
+		&editEnabled, &shellExec, &webSearch,
 		&savedAt,
 	)
 	if err != nil {
@@ -165,7 +165,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	cfg.Loop.FileListEnabled = fileList != 0
 	cfg.Loop.AstMapEnabled = astMap != 0
 	cfg.Loop.AstFindEnabled = astFind != 0
-	cfg.Loop.FileWriteEnabled = fileWrite != 0
+	cfg.Loop.EditEnabled = editEnabled != 0
 	cfg.Loop.ShellExecEnabled = shellExec != 0
 	cfg.Loop.WebSearchEnabled = webSearch != 0
 	cfg.Metrics.PrometheusEnabled = prometheusEnabled != 0
@@ -197,7 +197,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			loop_max_turns = ?, loop_doom_threshold = ?,
 			loop_read_enabled = ?, loop_file_list_enabled = ?,
 			loop_ast_map_enabled = ?, loop_ast_find_enabled = ?,
-			loop_file_write_enabled = ?, loop_shell_exec_enabled = ?,
+			loop_edit_enabled = ?, loop_shell_exec_enabled = ?,
 			loop_web_search_enabled = ?,
 			saved_at = ?
 		WHERE id = 1`,
@@ -219,7 +219,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 		cfg.Loop.MaxTurns, cfg.Loop.DoomThreshold,
 		boolInt(cfg.Loop.ReadEnabled), boolInt(cfg.Loop.FileListEnabled),
 		boolInt(cfg.Loop.AstMapEnabled), boolInt(cfg.Loop.AstFindEnabled),
-		boolInt(cfg.Loop.FileWriteEnabled), boolInt(cfg.Loop.ShellExecEnabled),
+		boolInt(cfg.Loop.EditEnabled), boolInt(cfg.Loop.ShellExecEnabled),
 		boolInt(cfg.Loop.WebSearchEnabled),
 		time.Now().Unix(),
 	)
