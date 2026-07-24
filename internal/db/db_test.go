@@ -377,7 +377,7 @@ func TestConfigStore_RoundTripsAllConfigFields(t *testing.T) {
 	cfg.Loop.ReadEnabled = false
 	cfg.Loop.FileListEnabled = false
 	cfg.Loop.EditEnabled = true
-	cfg.Loop.ShellExecEnabled = true
+	cfg.Loop.ExecEnabled = true
 	cfg.Loop.WebSearchEnabled = true
 
 	if err := d.Config().Save(&cfg); err != nil {

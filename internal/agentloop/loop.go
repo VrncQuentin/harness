@@ -426,10 +426,22 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 		return approvals.Allowed, nil
 	}
 
+	// cmdArg is the command string passed to the approvals evaluator for
+	// CommandPattern matching. For exec, argv is serialised as a space-joined
+	// string so pattern rules like "go test" or "git status" still work.
 	cmdArg := ""
-	if toolID == "shell_exec" {
-		if s, ok := args["command"].(string); ok {
-			cmdArg = s
+	if toolID == "exec" {
+		switch v := args["cmd"].(type) {
+		case []string:
+			cmdArg = strings.Join(v, " ")
+		case []any:
+			parts := make([]string, 0, len(v))
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					parts = append(parts, s)
+				}
+			}
+			cmdArg = strings.Join(parts, " ")
 		}
 	}
 
@@ -453,10 +465,10 @@ func (e *Engine) checkApproval(ctx context.Context, evch chan<- Event, turn int,
 	e.pending[approvalID] = ch
 
 	// Store a pending session rule for the "always" decision.
-	// For shell_exec, store the exact command string so "always"
-	// only matches that specific command, not a broad prefix.
+	// For exec, store the serialised argv string so "always" only
+	// matches that specific command, not any exec call.
 	cmdPattern := ""
-	if toolID == "shell_exec" && cmdArg != "" {
+	if toolID == "exec" && cmdArg != "" {
 		cmdPattern = cmdArg
 	}
 	e.pendingRules[approvalID] = approvals.Rule{
