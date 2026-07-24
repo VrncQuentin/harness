@@ -197,6 +197,9 @@ type LoopConfig struct {
 	// GitCommitEnabled toggles the git_commit tool. Off by default; requires
 	// approval — commits to workspace repos, scope-checked against memory repos.
 	GitCommitEnabled bool
+	// GitBranchEnabled toggles the git_branch tool. Off by default; requires
+	// approval — creates branches in workspace repos, scope-checked against memory repos.
+	GitBranchEnabled bool
 	// WebSearchEnabled toggles the web_search tool. Off by default because it
 	// sends the user's query over the network.
 	WebSearchEnabled bool
@@ -230,6 +233,8 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.GoLintEnabled
 	case "git_commit":
 		return c.GitCommitEnabled
+	case "git_branch":
+		return c.GitBranchEnabled
 	case "web_search":
 		return c.WebSearchEnabled
 	default:
@@ -304,6 +309,7 @@ func Defaults() Config {
 			GoTestEnabled:    tools.BuiltinDefaultEnabled("go_test"),
 			GoLintEnabled:    tools.BuiltinDefaultEnabled("go_lint"),
 			GitCommitEnabled: tools.BuiltinDefaultEnabled("git_commit"),
+			GitBranchEnabled: tools.BuiltinDefaultEnabled("git_branch"),
 			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),
 		},
 		Project: ProjectConfig{

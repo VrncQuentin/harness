@@ -31,6 +31,7 @@ func TestBuiltinDescriptorsDefinePolicyMetadata(t *testing.T) {
 		{ID: "go_test", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: go_test runs the test suite"},
 		{ID: "go_lint", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: go_lint runs the linter"},
 		{ID: "git_commit", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_commit writes to the repo"},
+		{ID: "git_branch", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_branch creates a branch"},
 		{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
 	}
 	if !reflect.DeepEqual(descriptors, want) {
@@ -56,10 +57,10 @@ func TestRegistry_ListAndGet(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	all := r.List()
-	if len(all) != 13 {
-		t.Fatalf("expected 13 tools, got %d", len(all))
+	if len(all) != 14 {
+		t.Fatalf("expected 14 tools, got %d", len(all))
 	}
-	for _, id := range []string{"read", "file_list", "ast_map", "ast_find", "git_status", "git_diff", "git_log", "edit", "exec", "go_test", "go_lint", "git_commit", "web_search"} {
+	for _, id := range []string{"read", "file_list", "ast_map", "ast_find", "git_status", "git_diff", "git_log", "edit", "exec", "go_test", "go_lint", "git_commit", "git_branch", "web_search"} {
 		if r.Get(id) == nil {
 			t.Errorf("%s not found", id)
 		}
