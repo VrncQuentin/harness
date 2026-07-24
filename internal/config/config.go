@@ -180,6 +180,8 @@ type LoopConfig struct {
 	GitStatusEnabled bool
 	// GitDiffEnabled toggles the git_diff tool (unified diff, read-only).
 	GitDiffEnabled bool
+	// GitLogEnabled toggles the git_log tool (commit log, read-only).
+	GitLogEnabled bool
 	// EditEnabled toggles the edit tool. Off by default; requires the
 	// approval layer before it can be enabled safely.
 	EditEnabled bool
@@ -207,6 +209,8 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.GitStatusEnabled
 	case "git_diff":
 		return c.GitDiffEnabled
+	case "git_log":
+		return c.GitLogEnabled
 	case "edit":
 		return c.EditEnabled
 	case "shell_exec":
@@ -279,6 +283,7 @@ func Defaults() Config {
 			AstFindEnabled:   tools.BuiltinDefaultEnabled("ast_find"),
 			GitStatusEnabled: tools.BuiltinDefaultEnabled("git_status"),
 			GitDiffEnabled:   tools.BuiltinDefaultEnabled("git_diff"),
+			GitLogEnabled:    tools.BuiltinDefaultEnabled("git_log"),
 			EditEnabled:      tools.BuiltinDefaultEnabled("edit"),
 			ShellExecEnabled: tools.BuiltinDefaultEnabled("shell_exec"),
 			WebSearchEnabled: tools.BuiltinDefaultEnabled("web_search"),
