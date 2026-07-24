@@ -157,8 +157,8 @@ Design references: opencode (part-based messages, step counter, doom-loop detect
 
 **Acceptance tests:**
 - [ ] Open the task UI, enter a prompt -> conversation appears in the chat surface, model response streams in
-- [x] Model calls `file_read` on a path within the active project's sandbox root -> content is returned and injected into context (automated: `TestFileRead_WithinSandbox`)
-- [x] Model calls `file_read` on a path outside any configured sandbox root -> request is rejected with a clear error and the rejection is visible to the model (automated: `TestFileRead_OutsideSandbox`, `TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback`)
+- [x] Model calls `file_read` on a path within the active project's sandbox root -> content is returned and injected into context (automated: `TestRead_WithinSandbox`; `file_read` became `read` in M10.1)
+- [x] Model calls `file_read` on a path outside any configured sandbox root -> request is rejected with a clear error and the rejection is visible to the model (automated: `TestRead_OutsideSandbox`, `TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback`)
 - [x] Loop hits the step limit -> terminates gracefully and emits the limit event/error (automated engine coverage: `TestEngineCachesToolSchemasAcrossTurns`)
 - [ ] Model repeats the same tool call three times in a row -> loop terminates and the UI shows the doom-loop event
 - [x] Click cancel mid-task -> active engine cancellation is routed and partial transcript is retained (automated route/runtime coverage: `TestHandleTaskCancel_Success`, `TestTaskRunnerCancelTaskCancelsActiveEngine`, `TestTaskRunnerRecordsPartialTranscriptOnCancel`)

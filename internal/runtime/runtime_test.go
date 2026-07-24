@@ -972,7 +972,7 @@ func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 			{ToolCallDelta: &inference.ToolCallDelta{
 				Index:     0,
 				ID:        "call-1",
-				Name:      "file_read",
+				Name:      "read",
 				Arguments: fmt.Sprintf("{\"path\":%q}", secretPath),
 			}},
 			{Done: true},
@@ -1009,21 +1009,21 @@ func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 		t.Fatalf("RunTask: %v", err)
 	}
 
-	sawFileRead := false
+	sawRead := false
 	for ev := range evch {
-		if ev.Type != agentloop.EvtToolResult || ev.ToolID != "file_read" {
+		if ev.Type != agentloop.EvtToolResult || ev.ToolID != "read" {
 			continue
 		}
-		sawFileRead = true
+		sawRead = true
 		if !strings.Contains(ev.ToolError, "sandbox") {
-			t.Fatalf("file_read ToolError = %q, want sandbox error", ev.ToolError)
+			t.Fatalf("read ToolError = %q, want sandbox error", ev.ToolError)
 		}
 		if strings.Contains(ev.ToolResult, "secret memory contents") {
-			t.Fatalf("file_read returned memory repo content despite no configured project directories: %q", ev.ToolResult)
+			t.Fatalf("read returned memory repo content despite no configured project directories: %q", ev.ToolResult)
 		}
 	}
-	if !sawFileRead {
-		t.Fatal("did not observe file_read tool result")
+	if !sawRead {
+		t.Fatal("did not observe read tool result")
 	}
 }
 func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {

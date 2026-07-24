@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // spanHashLen is the number of hex characters kept from the sha256 digest.
@@ -15,6 +17,33 @@ const spanHashLen = 16
 // "<path>:<start>-<end>", 1-based inclusive.
 func FormatLocator(path string, start, end int) string {
 	return fmt.Sprintf("%s:%d-%d", path, start, end)
+}
+
+// ParseLocator splits "path:start-end" into its parts. The path may itself
+// contain colons (Windows drive letters), so the range is taken from the
+// last colon.
+func ParseLocator(s string) (path string, start, end int, err error) {
+	errInvalid := fmt.Errorf("invalid locator %q — want path:start-end", s)
+	i := strings.LastIndexByte(s, ':')
+	if i <= 0 || i == len(s)-1 {
+		return "", 0, 0, errInvalid
+	}
+	rawStart, rawEnd, ok := strings.Cut(s[i+1:], "-")
+	if !ok {
+		return "", 0, 0, errInvalid
+	}
+	start, convErr := strconv.Atoi(rawStart)
+	if convErr != nil {
+		return "", 0, 0, errInvalid
+	}
+	end, convErr = strconv.Atoi(rawEnd)
+	if convErr != nil {
+		return "", 0, 0, errInvalid
+	}
+	if start < 1 || end < start {
+		return "", 0, 0, fmt.Errorf("invalid locator range %d-%d", start, end)
+	}
+	return s[:i], start, end, nil
 }
 
 // SpanHash hashes the exact bytes of lines start..end (1-based, inclusive,

@@ -374,7 +374,7 @@ func TestConfigStore_RoundTripsAllConfigFields(t *testing.T) {
 	cfg.Log.ProcMaxLines = 666
 	cfg.Loop.MaxTurns = 77
 	cfg.Loop.DoomThreshold = 8
-	cfg.Loop.FileReadEnabled = false
+	cfg.Loop.ReadEnabled = false
 	cfg.Loop.FileListEnabled = false
 	cfg.Loop.FileWriteEnabled = true
 	cfg.Loop.ShellExecEnabled = true

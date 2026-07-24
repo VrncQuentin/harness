@@ -75,7 +75,7 @@ func TestEnqueue_DispatchPreservesTools(t *testing.T) {
 			Tools: []inference.Tool{{
 				Type: "function",
 				Function: inference.ToolDefinition{
-					Name:        "file_read",
+					Name:        "read",
 					Description: "Read a file",
 					Parameters:  map[string]any{"type": "object"},
 				},
@@ -91,7 +91,7 @@ func TestEnqueue_DispatchPreservesTools(t *testing.T) {
 
 	select {
 	case got := <-client.seen:
-		if len(got.Tools) != 1 || got.Tools[0].Function.Name != "file_read" {
+		if len(got.Tools) != 1 || got.Tools[0].Function.Name != "read" {
 			t.Fatalf("tools not preserved: %+v", got.Tools)
 		}
 	case <-ctx.Done():
