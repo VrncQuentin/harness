@@ -17,7 +17,8 @@ Every claim is tagged:
 The X tags exist because the memory layer needs its own roadmap and its own evaluation
 method before schema work starts — the retrieval instrumentation in D3 is the first piece
 of that evaluation method and is deliberately built early so memory changes are measured
-rather than assumed beneficial.
+rather than assumed beneficial. That roadmap now exists: [memory_roadmap.md](memory_roadmap.md)
+(M12), whose MR0 gate is this document's M10.3.
 
 ---
 
@@ -81,7 +82,7 @@ bounded per capability class — see the admission rule at the end of this secti
 | `file_list` | native | P | Directory listing. Unchanged. |
 | `web_search` | native | P | Unchanged. |
 | `memory_query` | native | T | Retrieval entry point. Emits a per-signal trace row on every call — see D3. Richer return records (supersede state, trust, contradiction flags) are [X]: they require the memory data model. |
-| `memory_propose` | native | X | Write path via proposal to a commit gate. Requires the memory roadmap's gate to exist; until then, memory writes continue through the present writers (session lifecycle, UI promotion, dedup, index rebuild). |
+| `memory_propose` | native | X | Write path via proposal to a commit gate. Ships with the gate itself in memory_roadmap.md MR3 (M12) — tool and gate land together, after M10.4's proposal-return-type pattern exists. Until then, memory writes continue through the present writers (session lifecycle, UI promotion, dedup, index rebuild). |
 
 ### `exec` and the approval contract [T]
 
@@ -225,7 +226,8 @@ layer doesn't contradict them:
 
 - **C1 — commit gate.** Single writer to memory, verdicts `{accept, reject, supersede,
   hold}`, append-only audit contract. Consolidating the four present writers behind it is
-  memory-roadmap work.
+  memory-roadmap work (memory_roadmap.md MR3: one gate with an append-only verdict log
+  committed to the project memory repo).
 - **C2 — hard-lock predicate.** The memory-repo scoping predicate above **is the M9
   slice of C2** and ships in M10 phase 2 with the tier-2 git tools — it needs only the
   projects table, not the record model. The fuller hard-lock set follows the memory
@@ -255,14 +257,18 @@ Retrieval today [P] is a two-signal weighted blend:
 **per-signal contribution**, not per-list ranks:
 
 ```
-{query, candidate_id, signal_values{similarity, recency_decay}, weights, final_score, returned}
+{query_id, candidate_id, signal_values{similarity, recency_decay}, weights, final_score, returned}
 ```
 
-one row per candidate per call, emitted by `memory_query` as part of its contract, not a
-debug flag. This is implementable against the present blend and survives retrieval
+one row per candidate per call — `query_id` is a hash of the query text, so no raw
+query strings land in trace rows. Emission happens at the retrieval choke point
+(`retrieval.ScoreEpisodePaths`), so the prompt-assembler path is measured as well;
+`memory_query` inherits emission by construction. Part of the retrieval contract, not
+a debug flag. This is implementable against the present blend and survives retrieval
 becoming an N-signal fusion later — new signals add keys, the schema holds. Measurement:
 precision@k / recall@k against a labeled query set, whose labels accumulate from real
-work starting in phase 1.
+work starting in phase 1. The full instrumentation contract (trace storage, labeled-set
+format, eval binary) is memory_roadmap.md MR0 — the same work, specified once there.
 
 D3 is the evaluation method the memory roadmap is gated on.
 
@@ -283,8 +289,9 @@ together; write tools first and lock later is the one ordering that must not hap
 Continue D3 labels.
 
 **M10.3 — retrieval instrumentation**
-`memory_query` trace emission, D3 harness. Ships against the present two-signal blend;
-requires no memory schema change.
+`memory_query`, trace emission at `ScoreEpisodePaths` (covering the assembler path and
+the tool), D3 harness. Ships against the present two-signal blend; requires no memory
+schema change. This phase **is** memory_roadmap.md's MR0 gate.
 
 **M10.4 — external VC**
 `git_push`, `gh_pr_create`, `gh_pr_merge` behind the proposal-return-type gate, plus
@@ -296,8 +303,9 @@ volume justifies.
 **Then M11** — Pipeline DSL runner (already specced in roadmap.md/dsl_roadmap.md),
 binding tool calls against this surface; M10 joins M7 and M9 as its dependencies.
 
-**Deferred:** B6, D2, D4's supersede check, `memory_propose`/C1 (memory roadmap), and the
-memory roadmap itself — which starts only after M10.3 produces numbers.
+**Deferred:** B6, D2, D4's supersede check, `memory_propose`/C1 (memory_roadmap.md MR3),
+and the memory roadmap itself (memory_roadmap.md, M12) — whose schema work starts only
+after M10.3/MR0 produces numbers.
 
 ---
 

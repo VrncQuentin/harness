@@ -362,6 +362,7 @@ Threads a per-request identifier through `context.Context` so API handlers, queu
       artifacts/<run>/...
   logs/
   cache/
+  eval/                        ← developer eval data; retrieval labeled query sets (planned, M10.3/MR0)
 ```
 
 Each directory under `~/.harness/projects/` is its own git repo. `harness.db`, logs, and cache files are machine-local and are never committed.
