@@ -17,6 +17,7 @@ import (
 	"github.com/vrnc/harness/internal/home"
 	"github.com/vrnc/harness/internal/logbuf"
 	"github.com/vrnc/harness/internal/metrics"
+	"github.com/vrnc/harness/internal/retrieval"
 	harnessruntime "github.com/vrnc/harness/internal/runtime"
 	"github.com/vrnc/harness/internal/tray"
 	"github.com/vrnc/harness/internal/ui"
@@ -88,6 +89,9 @@ func run() error {
 			uiServer.AddStartupError(err)
 		} else {
 			slog.Info("harness starting", "binDir", binDir, "home", harnessHome)
+			if sink, err := retrieval.NewNDJSONSink(filepath.Join(harnessHome, "logs", "retrieval"), nil); err == nil {
+				retrieval.SetDefaultTraceSink(sink)
+			}
 			harnessDB, cfgStore, metricsStore = harnessruntime.OpenDB(uiServer, dbPath, func(slug string) (string, error) {
 				return home.ProjectRepoPath(harnessHome, slug)
 			})

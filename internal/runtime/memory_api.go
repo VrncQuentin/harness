@@ -228,6 +228,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			ToolID: "web_search", Decision: approvals.Denied, Source: "user: web_search disabled in config",
 		})
 	}
+	if !loopCfg.MemoryQueryEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
+			ToolID: "memory_query", Decision: approvals.Denied, Source: "user: memory_query disabled in config",
+		})
+	}
 	approvalLayers := []approvals.Layer{approvals.DefaultLayer(), userLayer}
 
 	var loopMetrics agentloop.MetricsRecorder
@@ -239,6 +244,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		registry:       registry,
 		asm:            asmAdapter,
 		q:              rt.reqQueue,
+		memScorer:      &memoryops.EpisodeScorer{Embedder: embedClient, Config: rt.cfg.Prompt, Index: episodeIndex},
 		approvalLayers: approvalLayers,
 		metrics:        loopMetrics,
 		gov:            gov,
