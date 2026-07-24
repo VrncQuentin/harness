@@ -218,6 +218,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			ToolID: "git_branch", Decision: approvals.Denied, Source: "user: git_branch disabled in config",
 		})
 	}
+	if !loopCfg.GitCheckoutEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
+			ToolID: "git_checkout", Decision: approvals.Denied, Source: "user: git_checkout disabled in config",
+		})
+	}
 	if !loopCfg.WebSearchEnabled {
 		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
 			ToolID: "web_search", Decision: approvals.Denied, Source: "user: web_search disabled in config",
