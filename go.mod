@@ -7,6 +7,7 @@ require (
 	github.com/go-git/go-git/v6 v6.0.0-alpha.4
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
+	github.com/sergi/go-diff v1.4.0
 	golang.org/x/sys v0.44.0
 	modernc.org/sqlite v1.34.1
 )
@@ -27,7 +28,6 @@ require (
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/sergi/go-diff v1.4.0 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/net v0.54.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
