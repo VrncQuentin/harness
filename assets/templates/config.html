@@ -344,8 +344,14 @@
           <span>Enable <code>web_search</code></span>
         </label>
       </div>
+      <div class="fg">
+        <label class="checkbox">
+          <input type="checkbox" id="loop_memory_query_enabled" name="loop_memory_query_enabled" {{if .Config.Loop.MemoryQueryEnabled}}checked{{end}}>
+          <span>Enable <code>memory_query</code> (requires embedder)</span>
+        </label>
+      </div>
     </div>
-    <p class="fg-hint">Destructive tools (<code>edit</code>, <code>exec</code>, <code>go_test</code>, <code>go_lint</code>, <code>git_commit</code>, <code>git_branch</code>, <code>git_checkout</code>, <code>web_search</code>) are protected by the approval layer. They default to disabled. Git write tools are scope-checked against project memory repos. Web search sends the query over the network.</p>
+    <p class="fg-hint">Destructive tools (<code>edit</code>, <code>exec</code>, <code>go_test</code>, <code>go_lint</code>, <code>git_commit</code>, <code>git_branch</code>, <code>git_checkout</code>, <code>web_search</code>) are protected by the approval layer. They default to disabled. Git write tools are scope-checked against project memory repos. Web search sends the query over the network. <code>memory_query</code> requires the embedder to be running and the episode index to be populated.</p>
   </fieldset>
 
   <fieldset class="cfg-section">
