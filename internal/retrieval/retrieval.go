@@ -64,7 +64,11 @@ func BlendEpisodeScores(episodePaths []string, semantic map[string]float64, sema
 // semantic scores with recency. Scores are keyed by the original episode path.
 // The boolean reports whether scoring was applied; false means inputs were not
 // sufficient for semantic retrieval or the index returned no results.
-func ScoreEpisodePaths(ctx context.Context, embedder EpisodeEmbedder, searcher EpisodeSearcher, query string, episodePaths []string, semanticWeight, recencyWeight float64) (map[string]float64, bool, error) {
+//
+// If sink is non-nil, one RetrievalTrace row is emitted per candidate so every
+// call is measurable by the D3 evaluation harness. Pass a NopTraceSink or nil
+// to disable tracing.
+func ScoreEpisodePaths(ctx context.Context, embedder EpisodeEmbedder, searcher EpisodeSearcher, query string, episodePaths []string, semanticWeight, recencyWeight float64, sink TraceSink) (map[string]float64, bool, error) {
 	if strings.TrimSpace(query) == "" || embedder == nil || searcher == nil || len(episodePaths) == 0 {
 		return map[string]float64{}, false, nil
 	}
@@ -84,7 +88,32 @@ func ScoreEpisodePaths(ctx context.Context, embedder EpisodeEmbedder, searcher E
 	}
 	oldestFirst := append([]string(nil), episodePaths...)
 	sort.Strings(oldestFirst)
-	return BlendEpisodeScores(oldestFirst, BestSemanticScores(results), semanticWeight, recencyWeight), true, nil
+	semantic := BestSemanticScores(results)
+	blended := BlendEpisodeScores(oldestFirst, semantic, semanticWeight, recencyWeight)
+
+	if sink != nil {
+		qid := QueryID(query)
+		for i, p := range oldestFirst {
+			id := EpisodeID(p)
+			semScore := semantic[id]
+			if semScore == 0 {
+				semScore = semantic[path.Base(id)]
+			}
+			recScore := Decay(len(oldestFirst)-1-i, float64(len(oldestFirst)))
+			sink.Emit(RetrievalTrace{
+				QueryID:   qid,
+				Candidate: p,
+				Semantic:  semScore,
+				Recency:   recScore,
+				SWeight:   semanticWeight,
+				RWeight:   recencyWeight,
+				Score:     blended[p],
+				Returned:  blended[p] > 0,
+			})
+		}
+	}
+
+	return blended, true, nil
 }
 
 // Decay returns an exponential recency score where distanceFromNewest=0

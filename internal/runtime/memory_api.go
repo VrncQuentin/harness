@@ -24,6 +24,7 @@ import (
 	"github.com/vrnc/harness/internal/parser"
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
+	"github.com/vrnc/harness/internal/retrieval"
 	"github.com/vrnc/harness/internal/session"
 	"github.com/vrnc/harness/internal/tools"
 	"github.com/vrnc/harness/internal/ui"
@@ -106,11 +107,13 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		return false
 	}
 	embedClient := rt.newEmbedderClient()
-	rt.assembler = rt.assembler.WithBlendedRetrieval(episodeIndex, embedClient)
+	traceSink := rt.traceSink()
+	rt.assembler = rt.assembler.WithBlendedRetrieval(episodeIndex, embedClient).WithTraceSink(traceSink)
 	svcDeps.RetrievalScorer = &uiRetrievalScorerAdapter{scorer: &memoryops.EpisodeScorer{
 		Embedder: embedClient,
 		Config:   rt.cfg.Prompt,
 		Index:    episodeIndex,
+		Sink:     traceSink,
 	}}
 	svcDeps.MemoryStore = rt.activeMem
 	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: rt.agentReg, globalMem: rt.globalMem, activeMem: rt.activeMem, getProjectSlug: rt.getActiveProjectSlug, setActive: rt.setActiveAgent}
@@ -226,6 +229,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	if !loopCfg.WebSearchEnabled {
 		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
 			ToolID: "web_search", Decision: approvals.Denied, Source: "user: web_search disabled in config",
+		})
+	}
+	if !loopCfg.MemoryQueryEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
+			ToolID: "memory_query", Decision: approvals.Denied, Source: "user: memory_query disabled in config",
 		})
 	}
 	approvalLayers := []approvals.Layer{approvals.DefaultLayer(), userLayer}
@@ -470,6 +478,21 @@ func (rt *Runtime) getActiveProjectSlug() string {
 		slug = "global"
 	}
 	return slug
+}
+
+// traceSink returns the process-wide D3 retrieval trace sink, creating it on
+// first call. If the harness home cannot be resolved, a NopTraceSink is
+// returned so retrieval continues uninterrupted. Caller must hold rt.mu.
+func (rt *Runtime) traceSink() retrieval.TraceSink {
+	if rt.ndjsonSink != nil {
+		return rt.ndjsonSink
+	}
+	harnessHome, err := home.Default()
+	if err != nil {
+		return retrieval.NopTraceSink{}
+	}
+	rt.ndjsonSink = retrieval.NewNDJSONSink(filepath.Join(harnessHome, "logs"), 30)
+	return rt.ndjsonSink
 }
 
 func (rt *Runtime) getAssembler() *prompt.DiskAssembler {

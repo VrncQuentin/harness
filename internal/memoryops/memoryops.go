@@ -96,6 +96,7 @@ type EpisodeScorer struct {
 	Embedder embedder.Client
 	Config   config.PromptConfig
 	Index    *EpisodeIndex
+	Sink     retrieval.TraceSink // D3: nil disables per-call trace emission
 }
 
 func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, query string, episodePaths []string) (map[string]RetrievalScore, error) {
@@ -121,6 +122,7 @@ func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, query string, episode
 		episodePaths,
 		s.Config.SemanticWeight,
 		s.Config.RecencyWeight,
+		s.Sink,
 	)
 	if err != nil {
 		return out, err

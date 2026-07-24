@@ -16,6 +16,7 @@ import (
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/queue"
+	"github.com/vrnc/harness/internal/retrieval"
 	"github.com/vrnc/harness/internal/session"
 )
 
@@ -51,15 +52,16 @@ type Runtime struct {
 	reqQueue *queue.Queue
 	started  bool
 
-	globalMem  memory.Repo
-	activeMem  memory.Repo
-	agentReg   *agent.DiskRegistry
-	assembler  *prompt.DiskAssembler
-	apiServer  *api.Server
-	gitRepo    *gitw.Repo
-	sessionMu  sync.RWMutex
-	sessionMg  *session.Manager
-	taskRunner *taskRunnerAdapter
+	globalMem   memory.Repo
+	activeMem   memory.Repo
+	agentReg    *agent.DiskRegistry
+	assembler   *prompt.DiskAssembler
+	apiServer   *api.Server
+	gitRepo     *gitw.Repo
+	sessionMu   sync.RWMutex
+	sessionMg   *session.Manager
+	taskRunner  *taskRunnerAdapter
+	ndjsonSink  *retrieval.NDJSONSink // D3 trace sink; created once and reused across restarts
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

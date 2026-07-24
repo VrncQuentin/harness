@@ -99,6 +99,7 @@ type DiskAssembler struct {
 	tokenizer   func(string) int
 	idx         index.Searcher
 	emb         embedder.Client
+	sink        retrieval.TraceSink // D3: nil disables per-call trace emission
 }
 
 var _ Assembler = (*DiskAssembler)(nil)
@@ -146,6 +147,14 @@ func (a *DiskAssembler) WithBlendedRetrieval(idx index.Searcher, emb embedder.Cl
 	cp := *a
 	cp.idx = idx
 	cp.emb = emb
+	return &cp
+}
+
+// WithTraceSink returns a shallow copy that emits one D3 trace row per
+// candidate on every ScoreEpisodePaths call. Pass nil to disable tracing.
+func (a *DiskAssembler) WithTraceSink(sink retrieval.TraceSink) *DiskAssembler {
+	cp := *a
+	cp.sink = sink
 	return &cp
 }
 
@@ -375,7 +384,7 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 		for i := range out {
 			paths[i] = out[i].path
 		}
-		scores, scored, err := retrieval.ScoreEpisodePaths(ctx, a.emb, a.idx, query, paths, a.cfg.SemanticWeight, a.cfg.RecencyWeight)
+		scores, scored, err := retrieval.ScoreEpisodePaths(ctx, a.emb, a.idx, query, paths, a.cfg.SemanticWeight, a.cfg.RecencyWeight, a.sink)
 		if err == nil && scored {
 			for i := range out {
 				out[i].score = scores[out[i].path]
@@ -395,6 +404,60 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 		}
 	}
 	return out, blended, nil
+}
+
+// EpisodeHit is a ranked episode returned by QueryEpisodes.
+type EpisodeHit struct {
+	Path    string
+	Score   float64
+	Content string
+}
+
+// QueryEpisodes scores all episodes under the active memory repo against
+// query and returns the top-k results, best-score first. It uses the same
+// embedder, searcher, config, and trace sink wired into the assembler.
+// If k <= 0 it defaults to 5.
+func (a *DiskAssembler) QueryEpisodes(ctx context.Context, query string, k int) ([]EpisodeHit, error) {
+	if k <= 0 {
+		k = 5
+	}
+	// Collect all episode paths across all agents.
+	paths, err := a.activeMem.Glob("episodes/*/*.md")
+	if err != nil {
+		return nil, fmt.Errorf("prompt: query episodes glob: %w", err)
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	scores, scored, err := retrieval.ScoreEpisodePaths(ctx, a.emb, a.idx, query, paths, a.cfg.SemanticWeight, a.cfg.RecencyWeight, a.sink)
+	if err != nil {
+		return nil, fmt.Errorf("prompt: query episodes score: %w", err)
+	}
+	type scored_ struct {
+		path  string
+		score float64
+	}
+	ranked := make([]scored_, 0, len(paths))
+	for _, p := range paths {
+		s := 0.0
+		if scored {
+			s = scores[p]
+		}
+		ranked = append(ranked, scored_{p, s})
+	}
+	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
+	if k < len(ranked) {
+		ranked = ranked[:k]
+	}
+	out := make([]EpisodeHit, 0, len(ranked))
+	for _, r := range ranked {
+		content, err := a.readOptional(a.activeMem, r.path)
+		if err != nil {
+			continue
+		}
+		out = append(out, EpisodeHit{Path: r.path, Score: r.score, Content: content})
+	}
+	return out, nil
 }
 
 // readRequired returns the contents of p or an error wrapping

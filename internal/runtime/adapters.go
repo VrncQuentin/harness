@@ -530,6 +530,26 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	}
 	loopCtx, cancelLoop := context.WithCancel(ctx)
 
+	// Wire memory_query retrieval function — captures the live assembler
+	// so hot-reloads propagate automatically.
+	var memQueryFn tools.MemoryQueryFn
+	if ad.rt != nil {
+		memQueryFn = func(ctx context.Context, query string, k int) ([]tools.MemoryHit, error) {
+			asm := ad.rt.getAssembler()
+			if asm == nil {
+				return nil, errors.New("memory_query: assembler not ready")
+			}
+			hits, err := asm.QueryEpisodes(ctx, query, k)
+			if err != nil {
+				return nil, err
+			}
+			out := make([]tools.MemoryHit, len(hits))
+			for i, h := range hits {
+				out[i] = tools.MemoryHit{Path: h.Path, Score: h.Score, Content: h.Content}
+			}
+			return out, nil
+		}
+	}
 	toolCtx := tools.CallInfo{
 		ProjectSlug:     slug,
 		SandboxRoots:    sandboxRoots,
@@ -537,6 +557,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		SessionID:       id,
 		CallerIdentity:  "agent:" + agentName,
 		HTTPClient:      httpclient.New(),
+		MemoryQuery:     memQueryFn,
 	}
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)

@@ -67,7 +67,7 @@ func TestScoreEpisodePathsEmbedsSearchesAndBlends(t *testing.T) {
 	}}
 	paths := []string{"episodes/coder/02.md", "episodes/coder/01.md"}
 
-	got, scored, err := ScoreEpisodePaths(context.Background(), embedder, &searcher, "needle", paths, 1, 0)
+	got, scored, err := ScoreEpisodePaths(context.Background(), embedder, &searcher, "needle", paths, 1, 0, nil)
 	if err != nil {
 		t.Fatalf("ScoreEpisodePaths: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestScoreEpisodePathsEmbedsSearchesAndBlends(t *testing.T) {
 }
 
 func TestScoreEpisodePathsReturnsUnscoredWithoutQuery(t *testing.T) {
-	got, scored, err := ScoreEpisodePaths(context.Background(), scoreEmbedder{vec: []float32{1}}, &scoreSearcher{}, " ", []string{"episodes/coder/01.md"}, 1, 1)
+	got, scored, err := ScoreEpisodePaths(context.Background(), scoreEmbedder{vec: []float32{1}}, &scoreSearcher{}, " ", []string{"episodes/coder/01.md"}, 1, 1, nil)
 	if err != nil {
 		t.Fatalf("ScoreEpisodePaths: %v", err)
 	}

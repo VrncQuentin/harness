@@ -22,6 +22,18 @@ var ErrDuplicateTool = errors.New("tools: duplicate id")
 // exist.
 var ErrPathNotFound = errors.New("tools: path not found")
 
+// MemoryHit is one ranked episode result returned by a MemoryQueryFn.
+type MemoryHit struct {
+	Path    string
+	Score   float64
+	Content string
+}
+
+// MemoryQueryFn is the function signature for the runtime-provided episode
+// retrieval function injected via CallInfo. k controls the number of hits;
+// <= 0 means the implementation's default.
+type MemoryQueryFn func(ctx context.Context, query string, k int) ([]MemoryHit, error)
+
 // CallInfo provides the active project context available to every tool call.
 // CallerIdentity records who or what requested the tool (e.g. "agent:coder",
 // "api", "pipeline:deploy"). SessionID pins the call to the owning session
@@ -33,6 +45,7 @@ type CallInfo struct {
 	SessionID       string
 	CallerIdentity  string
 	HTTPClient      *http.Client
+	MemoryQuery     MemoryQueryFn // nil when assembler is unavailable
 }
 
 // OriginClass records where content came from, per the C3 contract:
@@ -94,6 +107,7 @@ var builtinToolDescriptors = []Descriptor{
 	{ID: "git_branch", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_branch creates a branch"},
 	{ID: "git_checkout", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_checkout switches branches"},
 	{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
+	{ID: "memory_query", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only retrieval"},
 }
 
 // BuiltinDescriptors returns the built-in tool descriptors in registration order.
@@ -196,10 +210,11 @@ func RegisterBuiltins(r *Registry) error {
 		"exec":         &execTool{},
 		"go_test":      &goTestTool{},
 		"go_lint":      &goLintTool{},
-		"git_commit":   &gitCommitTool{},
-		"git_branch":   &gitBranchTool{},
-		"git_checkout": &gitCheckoutTool{},
-		"web_search":   &webSearchTool{},
+		"git_commit":    &gitCommitTool{},
+		"git_branch":    &gitBranchTool{},
+		"git_checkout":  &gitCheckoutTool{},
+		"web_search":    &webSearchTool{},
+		"memory_query":  &memoryQueryTool{},
 	}
 	for _, desc := range builtinToolDescriptors {
 		t := builtins[desc.ID]

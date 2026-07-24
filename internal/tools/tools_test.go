@@ -34,6 +34,7 @@ func TestBuiltinDescriptorsDefinePolicyMetadata(t *testing.T) {
 		{ID: "git_branch", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_branch creates a branch"},
 		{ID: "git_checkout", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_checkout switches branches"},
 		{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
+		{ID: "memory_query", DefaultEnabled: true, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only retrieval"},
 	}
 	if !reflect.DeepEqual(descriptors, want) {
 		t.Fatalf("BuiltinDescriptors() = %#v, want %#v", descriptors, want)
@@ -58,10 +59,10 @@ func TestRegistry_ListAndGet(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	all := r.List()
-	if len(all) != 15 {
-		t.Fatalf("expected 15 tools, got %d", len(all))
+	if len(all) != 16 {
+		t.Fatalf("expected 16 tools, got %d", len(all))
 	}
-	for _, id := range []string{"read", "file_list", "ast_map", "ast_find", "git_status", "git_diff", "git_log", "edit", "exec", "go_test", "go_lint", "git_commit", "git_branch", "git_checkout", "web_search"} {
+	for _, id := range []string{"read", "file_list", "ast_map", "ast_find", "git_status", "git_diff", "git_log", "edit", "exec", "go_test", "go_lint", "git_commit", "git_branch", "git_checkout", "web_search", "memory_query"} {
 		if r.Get(id) == nil {
 			t.Errorf("%s not found", id)
 		}

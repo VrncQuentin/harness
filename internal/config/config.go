@@ -206,6 +206,8 @@ type LoopConfig struct {
 	// WebSearchEnabled toggles the web_search tool. Off by default because it
 	// sends the user's query over the network.
 	WebSearchEnabled bool
+	// MemoryQueryEnabled toggles the memory_query tool. On by default; read-only.
+	MemoryQueryEnabled bool
 }
 
 // ToolEnabled reports whether the named built-in tool is enabled by this
@@ -242,6 +244,8 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.GitCheckoutEnabled
 	case "web_search":
 		return c.WebSearchEnabled
+	case "memory_query":
+		return c.MemoryQueryEnabled
 	default:
 		return false
 	}
@@ -317,6 +321,7 @@ func Defaults() Config {
 			GitBranchEnabled:   tools.BuiltinDefaultEnabled("git_branch"),
 			GitCheckoutEnabled: tools.BuiltinDefaultEnabled("git_checkout"),
 			WebSearchEnabled:   tools.BuiltinDefaultEnabled("web_search"),
+			MemoryQueryEnabled: tools.BuiltinDefaultEnabled("memory_query"),
 		},
 		Project: ProjectConfig{
 			ActiveProjectSlug: "global",
