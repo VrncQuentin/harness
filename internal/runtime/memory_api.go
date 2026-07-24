@@ -268,7 +268,6 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		approvalLayers: approvalLayers,
 		metrics:        loopMetrics,
 		gov:            gov,
-		memScorer:      &memoryops.EpisodeScorer{Embedder: embedClient, Config: rt.cfg.Prompt, Index: episodeIndex},
 	}
 	rt.taskRunner = taskAdapter
 	svcDeps.TaskRunner = taskAdapter

@@ -10,8 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"sort"
-
 	"github.com/vrnc/harness/internal/agent"
 	"github.com/vrnc/harness/internal/agentloop"
 	"github.com/vrnc/harness/internal/api"
@@ -443,8 +441,7 @@ type taskRunnerAdapter struct {
 	approvalLayers []approvals.Layer
 	metrics        agentloop.MetricsRecorder
 	// gov is the stateless governor applied to every task engine. Nil means no transforms.
-	gov      agentloop.Governor
-	memScorer *memoryops.EpisodeScorer
+	gov       agentloop.Governor
 	enginesMu sync.Mutex
 	engines   map[string]*agentloop.Engine // sessionID → engine
 	cancels   map[string]context.CancelFunc
@@ -613,8 +610,8 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		SessionID:       id,
 		CallerIdentity:  "agent:" + agentName,
 		HTTPClient:      httpclient.New(),
-		GHTokenFn:   func() string { return os.Getenv("GITHUB_TOKEN") },
-		MemoryQuery: ad.memoryQueryFn(),
+		GHTokenFn:       func() string { return os.Getenv("GITHUB_TOKEN") },
+		MemoryQuery:     ad.memoryQueryFn(),
 	}
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
@@ -796,61 +793,6 @@ const (
 	approvalAuditNeededFormat = "[approval_needed #%d] id=%s tool=%s reason=%q args=%s"
 	approvalAuditResultFormat = "[approval #%d] id=%s tool=%s decision=%s scope=%s reason=%q"
 )
-
-func (ad *taskRunnerAdapter) memoryQueryFn(ctx context.Context) func(context.Context, string, int) ([]tools.MemoryHit, error) {
-	if ad.memScorer == nil {
-		return nil
-	}
-	return func(ctx context.Context, query string, k int) ([]tools.MemoryHit, error) {
-		ad.rt.mu.Lock()
-		mem := ad.rt.activeMem
-		ad.rt.mu.Unlock()
-		if mem == nil {
-			return nil, nil
-		}
-		paths, err := mem.Glob("episodes/*/*.md")
-		if err != nil || len(paths) == 0 {
-			return nil, err
-		}
-		scores, err := ad.memScorer.ScoreEpisodes(ctx, query, paths)
-		if err != nil {
-			return nil, err
-		}
-		type scored struct {
-			path  string
-			score float64
-		}
-		ranked := make([]scored, 0, len(paths))
-		for _, p := range paths {
-			ranked = append(ranked, scored{path: p, score: scores[p].Score})
-		}
-		sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
-		if k < len(ranked) {
-			ranked = ranked[:k]
-		}
-		hits := make([]tools.MemoryHit, 0, len(ranked))
-		for _, s := range ranked {
-			body, err := mem.Read(s.path)
-			if err != nil {
-				continue
-			}
-			hits = append(hits, tools.MemoryHit{
-				Path:    s.path,
-				Score:   s.score,
-				Excerpt: memExcerpt(string(body), 300),
-			})
-		}
-		return hits, nil
-	}
-}
-
-func memExcerpt(s string, n int) string {
-	runes := []rune(strings.TrimSpace(s))
-	if len(runes) <= n {
-		return string(runes)
-	}
-	return string(runes[:n]) + "…"
-}
 
 func recordTaskEvents(mgr taskEventAppender, id string, events []agentloop.Event) {
 	var assistant strings.Builder
