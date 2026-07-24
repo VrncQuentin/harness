@@ -437,10 +437,12 @@ type taskRunnerAdapter struct {
 	// "always" approvals across task sessions.
 	approvalLayers []approvals.Layer
 	metrics        agentloop.MetricsRecorder
-	enginesMu      sync.Mutex
-	engines        map[string]*agentloop.Engine // sessionID → engine
-	cancels        map[string]context.CancelFunc
-	dones          map[string]chan struct{}
+	// gov is the stateless governor applied to every task engine. Nil means no transforms.
+	gov       agentloop.Governor
+	enginesMu sync.Mutex
+	engines   map[string]*agentloop.Engine // sessionID → engine
+	cancels   map[string]context.CancelFunc
+	dones     map[string]chan struct{}
 }
 
 // queuedInferClient wraps a Queue so the agent loop routes through the
@@ -531,6 +533,9 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	}
 	if evl := ad.newApprovalEvaluator(); evl != nil {
 		engine.WithApprovals(evl)
+	}
+	if ad.gov != nil {
+		engine.WithGovernor(ad.gov)
 	}
 
 	// Register engine so approval decisions can be routed back.

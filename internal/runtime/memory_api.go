@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,10 +15,13 @@ import (
 	"github.com/vrnc/harness/internal/approvals"
 	"github.com/vrnc/harness/internal/embedder"
 	gitw "github.com/vrnc/harness/internal/git"
+	"github.com/vrnc/harness/internal/governor"
+	"github.com/vrnc/harness/internal/home"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
 	"github.com/vrnc/harness/internal/memoryops"
 	"github.com/vrnc/harness/internal/metrics"
+	"github.com/vrnc/harness/internal/parser"
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/prompt"
 	"github.com/vrnc/harness/internal/session"
@@ -170,6 +174,16 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		return false
 	}
 
+	// Build the governor (B1 + B3). Failures to resolve the harness home or
+	// create the parser registry degrade gracefully — the governor is omitted
+	// rather than blocking the rest of startup.
+	var gov agentloop.Governor
+	if harnessHome, err := home.Default(); err == nil {
+		if parsers, err := parser.NewRegistry(parser.NewGoFrontEnd()); err == nil {
+			gov = governor.New(parsers, filepath.Join(harnessHome, "cache"))
+		}
+	}
+
 	// Build the permission base layers. Each task engine gets a fresh
 	// evaluator so mutable session approval rules stay scoped to that session.
 	loopCfg := rt.cfg.Loop
@@ -202,6 +216,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		q:              rt.reqQueue,
 		approvalLayers: approvalLayers,
 		metrics:        loopMetrics,
+		gov:            gov,
 	}
 	rt.taskRunner = taskAdapter
 	svcDeps.TaskRunner = taskAdapter
