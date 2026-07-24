@@ -22,6 +22,13 @@ var ErrDuplicateTool = errors.New("tools: duplicate id")
 // exist.
 var ErrPathNotFound = errors.New("tools: path not found")
 
+// MemoryHit is one scored episode returned by a MemoryQuery call.
+type MemoryHit struct {
+	Path    string  // repo-relative episode path
+	Score   float64 // blended semantic+recency score
+	Excerpt string  // first ~300 chars of episode content
+}
+
 // CallInfo provides the active project context available to every tool call.
 // CallerIdentity records who or what requested the tool (e.g. "agent:coder",
 // "api", "pipeline:deploy"). SessionID pins the call to the owning session
@@ -33,6 +40,9 @@ type CallInfo struct {
 	SessionID       string
 	CallerIdentity  string
 	HTTPClient      *http.Client
+	// MemoryQuery runs scored retrieval against the active project's episodes.
+	// Injected by the runtime; nil when the embedder is not running.
+	MemoryQuery func(ctx context.Context, query string, k int) ([]MemoryHit, error)
 }
 
 // OriginClass records where content came from, per the C3 contract:
@@ -94,6 +104,7 @@ var builtinToolDescriptors = []Descriptor{
 	{ID: "git_branch", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_branch creates a branch"},
 	{ID: "git_checkout", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_checkout switches branches"},
 	{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
+	{ID: "memory_query", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only retrieval"},
 }
 
 // BuiltinDescriptors returns the built-in tool descriptors in registration order.
@@ -200,6 +211,7 @@ func RegisterBuiltins(r *Registry) error {
 		"git_branch":   &gitBranchTool{},
 		"git_checkout": &gitCheckoutTool{},
 		"web_search":   &webSearchTool{},
+		"memory_query": &memoryQueryTool{},
 	}
 	for _, desc := range builtinToolDescriptors {
 		t := builtins[desc.ID]
