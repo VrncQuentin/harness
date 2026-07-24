@@ -27,7 +27,7 @@ func TestRenderApprovalHidesAlwaysAllowForShell(t *testing.T) {
 
 	fileWrite := s.renderTaskEvent(TaskEvent{
 		Type:       TaskEventApprovalNeeded,
-		ToolID:     "file_write",
+		ToolID:     "edit",
 		ApprovalID: "a2",
 		Content:    "approve?",
 	})

@@ -174,9 +174,9 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	// evaluator so mutable session approval rules stay scoped to that session.
 	loopCfg := rt.cfg.Loop
 	userLayer := approvals.Layer{Name: "user-config"}
-	if !loopCfg.FileWriteEnabled {
+	if !loopCfg.EditEnabled {
 		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "file_write", Decision: approvals.Denied, Source: "user: file_write disabled in config",
+			ToolID: "edit", Decision: approvals.Denied, Source: "user: edit disabled in config",
 		})
 	}
 	if !loopCfg.ShellExecEnabled {

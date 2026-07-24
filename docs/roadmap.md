@@ -252,7 +252,7 @@ are deferred beyond M7.
 - UI tool history and retry failed tool call
 
 **Acceptance tests:**
-- [ ] Model calls `file_write` within sandbox root -> file is written and visible on disk
+- [ ] Model calls `file_write` within sandbox root -> file is written and visible on disk (`file_write` became `edit` in M10.1: anchored line edits, whole-file mode for new files)
 - [ ] Model calls `shell_exec` with a safe command -> stdout/stderr returned to the model
 - [ ] Model calls `shell_exec` with a destructive command (`rm -rf`) -> approval required before execution
 - [ ] User selects reject in approval UI -> tool result is a denial, loop can recover
