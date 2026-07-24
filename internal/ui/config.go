@@ -190,6 +190,7 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	cfg.Loop.GoLintEnabled = r.FormValue("loop_go_lint_enabled") == "on"
 	cfg.Loop.GitCommitEnabled = r.FormValue("loop_git_commit_enabled") == "on"
 	cfg.Loop.GitBranchEnabled = r.FormValue("loop_git_branch_enabled") == "on"
+	cfg.Loop.GitCheckoutEnabled = r.FormValue("loop_git_checkout_enabled") == "on"
 	cfg.Loop.WebSearchEnabled = r.FormValue("loop_web_search_enabled") == "on"
 
 	cfg.Metrics.RetentionDays = atoiField(r, "metrics_retention_days", "Metrics retention days", cfg.Metrics.RetentionDays, &parseErrs)

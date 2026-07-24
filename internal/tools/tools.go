@@ -92,6 +92,7 @@ var builtinToolDescriptors = []Descriptor{
 	{ID: "go_lint", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: go_lint runs the linter"},
 	{ID: "git_commit", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_commit writes to the repo"},
 	{ID: "git_branch", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_branch creates a branch"},
+	{ID: "git_checkout", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_checkout switches branches"},
 	{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
 }
 
@@ -196,8 +197,9 @@ func RegisterBuiltins(r *Registry) error {
 		"go_test":    &goTestTool{},
 		"go_lint":    &goLintTool{},
 		"git_commit": &gitCommitTool{},
-		"git_branch": &gitBranchTool{},
-		"web_search": &webSearchTool{},
+		"git_branch":   &gitBranchTool{},
+		"git_checkout": &gitCheckoutTool{},
+		"web_search":   &webSearchTool{},
 	}
 	for _, desc := range builtinToolDescriptors {
 		t := builtins[desc.ID]
