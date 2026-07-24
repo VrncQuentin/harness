@@ -16,6 +16,7 @@ import (
 	"github.com/vrnc/harness/internal/httpclient"
 	"github.com/vrnc/harness/internal/inference"
 	"github.com/vrnc/harness/internal/memory"
+	"github.com/vrnc/harness/internal/memoryops"
 	"github.com/vrnc/harness/internal/project"
 	"github.com/vrnc/harness/internal/queue"
 	"github.com/vrnc/harness/internal/reqid"
@@ -428,10 +429,11 @@ func (a *apiSessionAdapter) End(id string) {
 }
 
 type taskRunnerAdapter struct {
-	rt       *Runtime
-	registry *tools.Registry
-	asm      *apiAssemblerAdapter
-	q        *queue.Queue
+	rt        *Runtime
+	registry  *tools.Registry
+	asm       *apiAssemblerAdapter
+	q         *queue.Queue
+	memScorer *memoryops.EpisodeScorer // injected for memory_query tool; nil if unavailable
 	// approvalLayers seed a fresh permission evaluator for each task engine.
 	// The evaluator session layer is mutable, so sharing an evaluator would leak
 	// "always" approvals across task sessions.
@@ -470,6 +472,76 @@ func (ad *taskRunnerAdapter) newApprovalEvaluator() *approvals.Evaluator {
 	}
 	layers := append([]approvals.Layer(nil), ad.approvalLayers...)
 	return approvals.NewEvaluator(layers...)
+}
+
+// memoryQueryFn returns a MemoryQuery closure for the given context, or nil when
+// the episode scorer is not available.
+func (ad *taskRunnerAdapter) memoryQueryFn(ctx context.Context) func(context.Context, string, int) ([]tools.MemoryHit, error) {
+	if ad.memScorer == nil {
+		return nil
+	}
+	return func(ctx context.Context, query string, k int) ([]tools.MemoryHit, error) {
+		ad.rt.mu.Lock()
+		mem := ad.rt.activeMem
+		ad.rt.mu.Unlock()
+		if mem == nil {
+			return nil, nil
+		}
+		// Glob all episode paths across all agents in the active project.
+		paths, err := mem.Glob("episodes/*/*.md")
+		if err != nil {
+			return nil, fmt.Errorf("memory_query: glob episodes: %w", err)
+		}
+		if len(paths) == 0 {
+			return nil, nil
+		}
+		scores, err := ad.memScorer.ScoreEpisodes(ctx, query, paths)
+		if err != nil {
+			return nil, fmt.Errorf("memory_query: score: %w", err)
+		}
+		// Collect scored hits, sort descending.
+		type scored struct {
+			path  string
+			score float64
+		}
+		var hits []scored
+		for _, p := range paths {
+			sc := scores[p]
+			if sc.HasScore {
+				hits = append(hits, scored{p, sc.Score})
+			}
+		}
+		// Sort by score descending, stable to preserve recency tie-breaking.
+		for i := 1; i < len(hits); i++ {
+			for j := i; j > 0 && hits[j].score > hits[j-1].score; j-- {
+				hits[j], hits[j-1] = hits[j-1], hits[j]
+			}
+		}
+		if len(hits) > k {
+			hits = hits[:k]
+		}
+		out := make([]tools.MemoryHit, 0, len(hits))
+		for _, h := range hits {
+			b, err := mem.Read(h.path)
+			if err != nil {
+				continue
+			}
+			out = append(out, tools.MemoryHit{
+				Path:    h.path,
+				Score:   h.score,
+				Excerpt: memExcerpt(string(b), 300),
+			})
+		}
+		return out, nil
+	}
+}
+
+func memExcerpt(s string, n int) string {
+	runes := []rune(strings.TrimSpace(s))
+	if len(runes) <= n {
+		return string(runes)
+	}
+	return string(runes[:n]) + "…"
 }
 
 func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sessionID string, conversation []ui.ChatMessage) (string, <-chan ui.TaskEvent, error) {
@@ -537,6 +609,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		SessionID:       id,
 		CallerIdentity:  "agent:" + agentName,
 		HTTPClient:      httpclient.New(),
+		MemoryQuery:     ad.memoryQueryFn(loopCtx),
 	}
 
 	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
