@@ -42,9 +42,13 @@ func workspaceWriteRepo(c CallInfo, args map[string]any) (*gitw.Repo, string, er
 }
 
 // isMemoryRepo reports whether absRoot matches or is contained within any of
-// the given memory repo paths. Symlinks in the memory repo paths are resolved
-// so that junction/symlink-based setups do not bypass the predicate.
+// the given memory repo paths. Both sides are symlink-resolved so that
+// junction/symlink-based setups (common on Windows) do not bypass the predicate.
 func isMemoryRepo(absRoot string, memoryPaths []string) bool {
+	resolvedAbs, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		resolvedAbs = absRoot
+	}
 	for _, mp := range memoryPaths {
 		if strings.TrimSpace(mp) == "" {
 			continue
@@ -53,7 +57,7 @@ func isMemoryRepo(absRoot string, memoryPaths []string) bool {
 		if err != nil {
 			resolved = filepath.Clean(mp)
 		}
-		if pathWithinRoot(absRoot, resolved) {
+		if pathWithinRoot(resolvedAbs, resolved) {
 			return true
 		}
 	}
