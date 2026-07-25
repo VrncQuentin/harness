@@ -1,6 +1,11 @@
 # CLAUDE.md
 
-This file is the entry point for Claude Code. Read it fully before touching anything.
+This file is the single entry point for every coding agent working in this
+repository — Claude Code reads it automatically, and `AGENTS.md` points here for
+tools that look for that name instead. There is deliberately only one copy of
+these rules; do not fork them into a second file.
+
+Read it fully before touching anything.
 
 ---
 
@@ -21,6 +26,7 @@ Read the architecture doc before writing any code. It defines component boundari
 ```
 cmd/
   harness/          ← main entry point, wires everything together
+  eval-retrieval/   ← offline retrieval eval harness (D3 labeled query set)
 internal/
   agent/            ← agent registry (persona/rules/notes definitions)
   agentloop/        ← native agent turn loop (tool calls, approvals, doom detection)
@@ -30,13 +36,16 @@ internal/
   db/               ← SQLite persistence: config, metrics, projects, migrations
   embedder/         ← embedding sidecar client
   git/              ← go-git wrapper (memory repos)
+  governor/         ← tool-output transforms: skeletonizer, output folding, token gate
   home/             ← harness home (~/.harness) resolution
+  httpclient/       ← shared HTTP client construction
   index/            ← flat vector index (vectors.bin + manifest.json)
   inference/        ← OpenAI-compatible HTTP client for llama-server
   logbuf/           ← in-memory log rings for the UI
   memory/           ← memory repo access + project repo scaffolding
   memoryops/        ← semantic-memory operations (embed-on-save, rebuild, dedup, scoring)
   metrics/          ← typed metrics API + recorder
+  parser/           ← source symbol extraction backing ast_map / ast_find
   proc/             ← process manager (llama-server + embedder)
   project/          ← project model and store contract
   prompt/           ← layered prompt assembler
@@ -45,15 +54,22 @@ internal/
   retrieval/        ← blended semantic + recency episode scoring
   runtime/          ← mutable service graph, wiring, config re-apply
   session/          ← session lifecycle
+  summarizerprompt/ ← session summarizer prompt template
+  tokens/           ← token count estimation
   tools/            ← tool registry + built-in tools (sandboxed)
   tray/             ← system tray (fyne-io/systray), single-instance
   ui/               ← management web UI (net/http + html/template)
+  vector/           ← vector math for the index
 assets/             ← embedded templates, CSS, htmx
 migrations/         ← embedded SQL schema (single squashed migration)
-internal/httpclient/     ← shared HTTP client construction
+scripts/            ← format.ps1, git hooks + installer
 docs/
-  architecture.md
-  roadmap.md
+  architecture.md   ← component boundaries and design decisions
+  roadmap.md        ← milestones and acceptance tests
+  tool_roadmap.md   ← tool surface specification
+  memory_roadmap.md ← memory layer plan
+  DSL.md            ← pipeline DSL specification (planned)
+  dsl_roadmap.md    ← pipeline DSL milestones
 ```
 
 `harness.db` (SQLite: config single-row typed table + metrics history + projects) lives under the harness home `~/.harness/`, created on first run. It is machine-local and never committed.
@@ -86,6 +102,7 @@ docs/
 ### Architecture
 - `systray` must own the main goroutine. Everything else runs in goroutines launched from `cmd/harness/main.go`.
 - The UI server and the API server are on separate ports. Never merge them.
+- **Every listener binds `127.0.0.1`, never `0.0.0.0`.** Neither server has an authentication layer, and the UI exposes state-changing routes (`/config`, `/shutdown`, `/task/send`). The origin check stops cross-origin browsers but not a non-browser client that omits the `Origin` header, so the bind address is the security boundary. `TestStart_BindsLoopbackOnly` enforces this — do not weaken it without adding authentication first.
 - **The UI server starts first, always.** It must be up before anything else is attempted. Config loading, memory repo validation, llama-server startup, embedder startup — all of this happens after the UI is serving. If anything fails, it is displayed in the UI as a setup error. The user should never need a terminal to diagnose or fix a problem.
 - There is no CLI. No subcommands. Project memory repos are created and managed through the `/projects` page: an existing git directory is used as-is, a non-git directory is initialized with `go-git`, and an omitted directory defaults to `~/.harness/projects/<slug>/`.
 - All persistent state (config + metrics + projects) lives in `harness.db` (SQLite, under `~/.harness/`). The schema is a single squashed migration; schema changes edit `migrations/0001_init` in place until first release (delete `harness.db` after editing it — `db.Open` fails fast on a version mismatch).
