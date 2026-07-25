@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/vrnc/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/inference"
 )
 
 // encodeConversation marshals msgs into the JSON sidecar payload. The

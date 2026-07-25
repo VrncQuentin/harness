@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/vrnc/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/project"
 )
 
 const (

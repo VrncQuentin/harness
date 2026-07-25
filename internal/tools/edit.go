@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/vrnc/harness/internal/parser"
+	"github.com/VrncQuentin/harness/internal/parser"
 )
 
 // editTool implements the edit tool: hash-anchored line operations on

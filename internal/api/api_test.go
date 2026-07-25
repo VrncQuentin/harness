@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vrnc/harness/internal/inference"
-	"github.com/vrnc/harness/internal/queue"
+	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/queue"
 )
 
 // stubAssembler returns canned messages, records the last agent it saw, and

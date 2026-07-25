@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/vrnc/harness/internal/parser"
+	"github.com/VrncQuentin/harness/internal/parser"
 )
 
 // ErrSandboxViolation is returned when a file tool tries to access a path

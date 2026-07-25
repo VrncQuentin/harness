@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 func TestDefaults(t *testing.T) {

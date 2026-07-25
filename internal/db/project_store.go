@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vrnc/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/project"
 )
 
 // ProjectStore persists project metadata and attached directories.

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vrnc/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/memory"
 )
 
 // newRepoWithAgents creates a temp memory repo populated with the

@@ -8,9 +8,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/vrnc/harness/internal/project"
-	"github.com/vrnc/harness/internal/summarizerprompt"
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/summarizerprompt"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 // Sentinel errors returned by Validate for missing required fields.

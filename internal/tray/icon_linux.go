@@ -2,6 +2,6 @@
 
 package tray
 
-import "github.com/vrnc/harness/assets"
+import "github.com/VrncQuentin/harness/assets"
 
 var iconPNG = assets.IconPNG

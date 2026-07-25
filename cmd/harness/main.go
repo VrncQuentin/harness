@@ -12,15 +12,15 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/db"
-	"github.com/vrnc/harness/internal/home"
-	"github.com/vrnc/harness/internal/logbuf"
-	"github.com/vrnc/harness/internal/metrics"
-	"github.com/vrnc/harness/internal/retrieval"
-	harnessruntime "github.com/vrnc/harness/internal/runtime"
-	"github.com/vrnc/harness/internal/tray"
-	"github.com/vrnc/harness/internal/ui"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/db"
+	"github.com/VrncQuentin/harness/internal/home"
+	"github.com/VrncQuentin/harness/internal/logbuf"
+	"github.com/VrncQuentin/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/internal/retrieval"
+	harnessruntime "github.com/VrncQuentin/harness/internal/runtime"
+	"github.com/VrncQuentin/harness/internal/tray"
+	"github.com/VrncQuentin/harness/internal/ui"
 )
 
 func main() {

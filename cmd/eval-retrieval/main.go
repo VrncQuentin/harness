@@ -24,9 +24,9 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/embedder"
-	"github.com/vrnc/harness/internal/memoryops"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/embedder"
+	"github.com/VrncQuentin/harness/internal/memoryops"
 )
 
 type queryRecord struct {

@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 // b3Threshold is the minimum error length (bytes) that triggers B3 spill.

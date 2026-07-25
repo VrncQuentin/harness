@@ -18,16 +18,16 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/vrnc/harness/internal/agent"
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/embedder"
-	"github.com/vrnc/harness/internal/index"
-	"github.com/vrnc/harness/internal/inference"
-	"github.com/vrnc/harness/internal/memory"
-	"github.com/vrnc/harness/internal/project"
-	"github.com/vrnc/harness/internal/reqid"
-	"github.com/vrnc/harness/internal/retrieval"
-	"github.com/vrnc/harness/internal/tokens"
+	"github.com/VrncQuentin/harness/internal/agent"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/embedder"
+	"github.com/VrncQuentin/harness/internal/index"
+	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/reqid"
+	"github.com/VrncQuentin/harness/internal/retrieval"
+	"github.com/VrncQuentin/harness/internal/tokens"
 )
 
 // ErrAgentRequired is returned by Assemble when called with an empty

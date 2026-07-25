@@ -23,8 +23,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/vrnc/harness/internal/parser"
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/parser"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 // Governor applies governor-side transforms (B1, B2, B3, B5) to raw tool

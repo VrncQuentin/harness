@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/vrnc/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/inference"
 )
 
 // Request is a single queued inference request.

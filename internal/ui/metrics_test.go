@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/db"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/db"
 )
 
 func newServerWithMetricsStore(t *testing.T) (*Server, *db.DB) {

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/vrnc/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/memory"
 )
 
 // stubMemoryStore is a fake MemoryStore backed by a map for the

@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/metrics"
-	"github.com/vrnc/harness/internal/proc"
-	"github.com/vrnc/harness/internal/ui"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/internal/proc"
+	"github.com/VrncQuentin/harness/internal/ui"
 )
 
 // ApplyConfig reloads config from the store, validates it, and either starts

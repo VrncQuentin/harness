@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/vrnc/harness/assets"
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/logbuf"
-	"github.com/vrnc/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/assets"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/logbuf"
+	"github.com/VrncQuentin/harness/internal/metrics"
 )
 
 // ServiceDeps is the set of UI-facing adapters produced by the runtime memory
@@ -635,14 +635,19 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.Handle("/static/", http.FileServer(http.FS(assets.StaticFS)))
 
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.port),
+		// Loopback only. The management UI has no authentication layer and
+		// exposes state-changing routes (/config, /shutdown, /task/send).
+		// originPolicy blocks cross-origin browser requests, but it cannot
+		// stop a non-browser client that simply omits the Origin header, so
+		// the bind address is the boundary that actually holds.
+		Addr:    fmt.Sprintf("127.0.0.1:%d", s.port),
 		Handler: s.originPolicy(mux),
 	}
 
 	// Verify we can bind before returning.
 	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
-		return fmt.Errorf("ui: bind :%d: %w", s.port, err)
+		return fmt.Errorf("ui: bind %s: %w", srv.Addr, err)
 	}
 
 	go func() {

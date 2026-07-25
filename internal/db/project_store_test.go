@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/vrnc/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/project"
 )
 
 func TestProjectStore_ListStartsWithGlobalAndFiltersHidden(t *testing.T) {

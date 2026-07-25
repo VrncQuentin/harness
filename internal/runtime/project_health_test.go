@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/VrncQuentin/harness/internal/project"
 	gogit "github.com/go-git/go-git/v6"
-	"github.com/vrnc/harness/internal/project"
 )
 
 type projectDirectoryStoreStub struct {

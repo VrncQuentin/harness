@@ -1,4 +1,4 @@
-module github.com/vrnc/harness
+module github.com/VrncQuentin/harness
 
 go 1.25.12
 

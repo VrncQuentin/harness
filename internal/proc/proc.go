@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vrnc/harness/internal/httpclient"
+	"github.com/VrncQuentin/harness/internal/httpclient"
 )
 
 // errLoading is returned by checkHealth when the child reports that the

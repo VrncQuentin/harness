@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vrnc/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/config"
 )
 
 // configPageData is the template context for the config editor.

@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/vrnc/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/memory"
 )
 
 // Committer is the minimum surface the UI needs to commit memory repo files.

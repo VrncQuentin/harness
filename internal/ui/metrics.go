@@ -3,7 +3,7 @@ package ui
 import (
 	"net/http"
 
-	"github.com/vrnc/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/internal/metrics"
 )
 
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {

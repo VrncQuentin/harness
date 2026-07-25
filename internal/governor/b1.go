@@ -3,8 +3,8 @@ package governor
 import (
 	"strings"
 
-	"github.com/vrnc/harness/internal/parser"
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/parser"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 // applyB1 runs the query-aware skeletonizer on read results for

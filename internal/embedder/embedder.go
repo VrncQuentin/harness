@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vrnc/harness/internal/httpclient"
+	"github.com/VrncQuentin/harness/internal/httpclient"
 )
 
 // Client calls the embedder sidecar.

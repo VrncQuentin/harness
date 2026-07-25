@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/vrnc/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/memory"
 )
 
 func newProjectRegistryForTest(t *testing.T, globalFiles, projectFiles map[string]string) (*ProjectRegistry, *memoryReposForProjectRegistryTest) {

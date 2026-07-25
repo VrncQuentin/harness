@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/vrnc/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/memory"
 )
 
 // agentsDir is the root of the agent subtree inside the memory repo.

@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/vrnc/harness/internal/index"
-	"github.com/vrnc/harness/internal/memory"
-	"github.com/vrnc/harness/internal/session"
+	"github.com/VrncQuentin/harness/internal/index"
+	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/session"
 )
 
 func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {

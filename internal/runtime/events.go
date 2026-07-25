@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vrnc/harness/internal/metrics"
-	"github.com/vrnc/harness/internal/proc"
-	"github.com/vrnc/harness/internal/queue"
-	"github.com/vrnc/harness/internal/ui"
+	"github.com/VrncQuentin/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/internal/proc"
+	"github.com/VrncQuentin/harness/internal/queue"
+	"github.com/VrncQuentin/harness/internal/ui"
 )
 
 // recordMetrics periodically writes process and queue metrics to the store.
