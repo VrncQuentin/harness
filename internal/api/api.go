@@ -87,13 +87,16 @@ func NewServer(port int, asm Assembler, q Enqueuer, rec SessionRecorder) *Server
 // silently never listening. Shutdown is triggered by cancelling ctx.
 func (s *Server) Start(ctx context.Context) error {
 	srv := &http.Server{
-		Addr:    fmt.Sprintf(":%d", s.port),
+		// Loopback only, matching the UI server. The OpenAI-compatible API
+		// is unauthenticated; exposing it beyond the host would hand any
+		// machine on the network free inference and session writes.
+		Addr:    fmt.Sprintf("127.0.0.1:%d", s.port),
 		Handler: s.handler(),
 	}
 
 	ln, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
-		return fmt.Errorf("api: bind :%d: %w", s.port, err)
+		return fmt.Errorf("api: bind %s: %w", srv.Addr, err)
 	}
 
 	s.httpSrv = srv

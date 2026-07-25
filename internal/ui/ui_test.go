@@ -3,7 +3,9 @@ package ui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1642,6 +1644,66 @@ func TestStart_ServerStarts(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Errorf("expected 200, got %d", resp.StatusCode)
 	}
+}
+
+// The management UI is unauthenticated and exposes state-changing routes, so
+// it must never listen on a routable interface. originPolicy only stops
+// cross-origin browsers; a non-browser client omitting Origin walks straight
+// through. The bind address is the control that actually holds.
+func TestStart_BindsLoopbackOnly(t *testing.T) {
+	const port = 13002
+	s := NewServer(port)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+
+	// Confirm it is actually up on loopback before asserting the negative.
+	var up bool
+	for i := 0; i < 20; i++ {
+		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), time.Second)
+		if err == nil {
+			_ = c.Close()
+			up = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !up {
+		t.Fatalf("server never came up on loopback:%d", port)
+	}
+
+	for _, ip := range nonLoopbackIPv4(t) {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", ip, port), time.Second)
+		if err == nil {
+			_ = conn.Close()
+			t.Errorf("UI server is reachable on routable address %s:%d; it must bind loopback only", ip, port)
+		}
+	}
+}
+
+// nonLoopbackIPv4 returns the host's routable IPv4 addresses, skipping the
+// test if there are none (isolated build environments).
+func nonLoopbackIPv4(t *testing.T) []string {
+	t.Helper()
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Skipf("cannot enumerate interfaces: %v", err)
+	}
+	var out []string
+	for _, a := range addrs {
+		n, ok := a.(*net.IPNet)
+		if !ok || n.IP.IsLoopback() || n.IP.To4() == nil {
+			continue
+		}
+		out = append(out, n.IP.String())
+	}
+	if len(out) == 0 {
+		t.Skip("no routable IPv4 interface available")
+	}
+	return out
 }
 
 func TestHandleStatus_LayoutPromptHiddenWhenNoRepoConfigured(t *testing.T) {
