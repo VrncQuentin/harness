@@ -233,6 +233,26 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			ToolID: "memory_query", Decision: approvals.Denied, Source: "user: memory_query disabled in config",
 		})
 	}
+	if !loopCfg.GitPushEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
+			ToolID: "git_push", Decision: approvals.Denied, Source: "user: git_push disabled in config",
+		})
+	}
+	if !loopCfg.GHPRCreateEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
+			ToolID: "gh_pr_create", Decision: approvals.Denied, Source: "user: gh_pr_create disabled in config",
+		})
+	}
+	if !loopCfg.GHPRMergeEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
+			ToolID: "gh_pr_merge", Decision: approvals.Denied, Source: "user: gh_pr_merge disabled in config",
+		})
+	}
+	if !loopCfg.GHPRWaitEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
+			ToolID: "gh_pr_wait", Decision: approvals.Denied, Source: "user: gh_pr_wait disabled in config",
+		})
+	}
 	approvalLayers := []approvals.Layer{approvals.DefaultLayer(), userLayer}
 
 	var loopMetrics agentloop.MetricsRecorder

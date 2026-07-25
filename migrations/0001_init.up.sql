@@ -71,6 +71,10 @@ CREATE TABLE IF NOT EXISTS config (
     loop_git_checkout_enabled        INTEGER NOT NULL,
     loop_web_search_enabled          INTEGER NOT NULL,
     loop_memory_query_enabled        INTEGER NOT NULL,
+    loop_git_push_enabled            INTEGER NOT NULL,
+    loop_gh_pr_create_enabled        INTEGER NOT NULL,
+    loop_gh_pr_merge_enabled         INTEGER NOT NULL,
+    loop_gh_pr_wait_enabled          INTEGER NOT NULL,
     saved_at                         INTEGER
 );
 
