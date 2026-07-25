@@ -128,11 +128,14 @@ Defines the local tool surface available to the agent loop.
 
 Responsibilities:
 - Register tools by id, JSON Schema parameters, description, and execute function.
-- Pass a typed context to each tool: active project slug, sandbox roots, session id, caller identity, and cancellation context.
-- `read` (range- and locator-addressed, M10.1 replacement for `file_read`) and `file_list` are read-only tools and reject paths outside active project directories.
-- `ast_map` and `ast_find` (M10.1) are parser-backed read-only tools: deterministic outlines and symbol/content locates that return stable locators (`path:start-end`) plus content hashes. Their output is extraction-class provenance by construction (C3 M10-slice) and the tool layer records the origin class on results.
-- `edit` (hash-anchored line operations with mandatory verify-after-mutate, M10.1 replacement for `file_write`; whole-file mode only creates new files) and `shell_exec` are disabled by default in config and approval-gated before execution. `edit` requires an anchor hash only `ast_map`/`ast_find` emit, so recon-first is enforced by the input type.
-- Web search remains M7 scope as an opt-in tool with explicit network-use disclosure; steering queues, extension hooks, sub-agents, and tool-history retry UI are deferred beyond M7.
+- Pass a typed `CallInfo` to each tool: active project slug, sandbox roots, memory repo paths (C2 scope list), session id, caller identity, HTTP client, optional `MemoryQuery` closure, and optional `GHTokenFn` closure (reads `GITHUB_TOKEN` at call time — never stored).
+- Record `OriginClass` (`extraction` / `inference`) on results per the C3 contract so downstream consumers never have to guess provenance.
+
+Tool tiers:
+- **Tier 1 — read-only, default-allow:** `read` (range- and locator-addressed), `file_list`, `ast_map`, `ast_find`, `git_status`, `git_diff`, `git_log`, `memory_query` (blended semantic+recency retrieval over the active project episode store; requires embedder)
+- **Tier 2 — approval-gated, disabled by default:** `edit` (hash-anchored line operations; anchor hash is only emitted by `ast_map`/`ast_find`, so recon-first is enforced by type), `exec` (argv-array shell with deny filter), `go_test`, `go_lint`
+- **Tier 2 write + C2 scope check:** `git_commit`, `git_branch`, `git_checkout` — reject any repo path that resolves inside a project memory repo; carry ref-SHA for reflog-based undo
+- **Tier 3 — proposal-return, no side effect:** `git_push`, `gh_pr_create`, `gh_pr_merge` return `Result{Proposal: true}` describing what would happen; the agent loop surfaces them for approval rather than executing. `gh_pr_wait` is tier-1 (read-only CI poller): exponential backoff 10 s → 60 s, returns `green`/`red`/`timed_out` JSON.
 
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).
@@ -150,6 +153,15 @@ Responsibilities:
 - Support allow, reject, and always-allow session decisions.
 - Classify destructive shell commands so broad rules cannot silently allow them; exact session approvals are required to bypass Ask for a destructive command.
 - Return audit-friendly decision sources for UI/session history.
+
+### Governor (`internal/governor`)
+Applies result transforms between tool execution and context injection in the agent loop. Transforms are not model-callable and are invisible to the agent as tools.
+
+Transforms applied in order (B1 → B2 → B3), each wrapped by the B5 token gate:
+- **B1 — query-aware skeletonizer:** reduces read output for parser-supported files, keeping full bodies for spans relevant to the active query and emitting only signatures for the rest.
+- **B2 — tool-output folder:** per-tool content cap with head/tail elision for high-volume toolchain tools (`exec`, `go_test`, `go_lint`, `git_diff`, `git_log`).
+- **B3 — tee-on-failure:** spills large error outputs to `~/.harness/cache/toolout/` and injects a compact handle into the conversation so the model can reference them without bloating context.
+- **B5 — token gate:** auto-reverts any transform that increases the estimated token count (rune-quarter heuristic, swappable via `WithTokenizer`).
 
 ### Pipeline Runner (`internal/pipeline`) — planned M11
 Owns parsing, validation, and execution of Harness Pipeline DSL specs (`.hp`). The language contract is documented in [DSL.md](DSL.md). Specs are declarative workflow files stored with the attached project git repos they operate on; the runner executes them through the same first-party agent loop, tool registry, queue, inference client, memory store, and UI event stream used by interactive tasks.
@@ -238,6 +250,24 @@ Responsibilities:
 - Keep the on-disk format isolated from prompt and memory logic.
 
 Attached code repos are indexed by git state: each attached directory gets its own slot under the project memory repo at `index/<dir-slug>/`, and a new HEAD in one attached repo invalidates only that repo's slot. This keeps multi-repo projects unified without writing runtime memory into any source repo. (Directory-level indexing itself is deferred until directory semantic search becomes a user-facing feature — see the M5 note in the roadmap.)
+
+### Retrieval (`internal/retrieval`)
+Owns the blended semantic + recency scoring pipeline and the D3 trace layer.
+
+- `ScoreEpisodePaths` takes a query and a list of episode paths, calls the embedder, performs cosine similarity, blends with an exponential recency decay over the ordered path list, and returns per-path `ScoredEpisode` results.
+- **D3 trace:** every `ScoreEpisodePaths` call emits one `RetrievalTrace` row per episode (query ID, semantic score, recency score, blended score, rank, timestamp) to the active `DefaultTraceSink`. The `QueryID` is a SHA-256[:8] hex fingerprint of the query — no raw query text in trace files.
+- `NDJSONSink` is the production sink: date-bucketed NDJSON files under `~/.harness/logs/retrieval/`, 30-day retention with automatic file rotation and pruning on day change. `NopTraceSink` is used in tests and contexts without a configured sink.
+- `EpisodeID` derives a stable, path-relative identifier for indexing and scoring across different repo roots.
+
+`cmd/eval-retrieval` is a standalone developer binary that reads a labeled NDJSON query set, runs the two-signal blend against a local project repo, and reports per-query MRR and Recall@K plus overall means. It is the D3 evaluation harness required before MR0 gates M12.
+
+### Memory Operations (`internal/memoryops`)
+Semantic-memory operations that sit on top of the memory repo, embedder, and episode index. The runtime wires these into session saving and the UI; the domain logic lives here.
+
+- `EpisodeScorer` wraps an embedder client, episode index, and `config.PromptConfig` (carries `SemanticWeight`, `RecencyWeight`) to expose a `ScoreEpisodes` method used by the prompt assembler and the `memory_query` tool adapter.
+- `AfterSaveEmbed` returns a `session.AfterSaveFunc` that embeds the saved episode body into chunks, calls the embedder, and upserts vectors into the project's `_episodes` index.
+- `EpisodeIndex` wraps `internal/index` with episode-specific content-hash–based idempotency: re-embedding an unchanged episode is a no-op.
+- Dedup and fact-promotion helpers used by the prompt assembler and memory UI.
 
 ### Embedder (`internal/embedder`)
 Runs llama-server as a sidecar process in --embedding mode using the configured embedding model. Same spawn/monitor pattern as the chat llama-server process — consistent failure handling, restart on crash.
@@ -361,8 +391,10 @@ Threads a per-request identifier through `context.Context` so API handlers, queu
       index/<dir-slug>/{vectors.bin, manifest.json}
       artifacts/<run>/...
   logs/
+    retrieval/                 ← D3 NDJSON trace files (date-bucketed, 30-day retention)
   cache/
-  eval/                        ← developer eval data; retrieval labeled query sets (planned, M10.3/MR0)
+    toolout/                   ← B3 tee-on-failure spill directory
+  eval/                        ← developer eval data; retrieval labeled query sets (M10.3/MR0)
 ```
 
 Each directory under `~/.harness/projects/` is its own git repo. `harness.db`, logs, and cache files are machine-local and are never committed.
@@ -390,7 +422,7 @@ Sections and fields:
 - **queue:** `max_depth`
 - **metrics:** `retention_days`
 - **log:** `ring_max_entries`, `proc_max_lines`
-- **loop:** `max_turns`, `doom_threshold`, `read_enabled`, `file_list_enabled`, `ast_map_enabled`, `ast_find_enabled`, `edit_enabled`, `shell_exec_enabled`, `web_search_enabled`
+- **loop:** `max_turns`, `doom_threshold`, `read_enabled`, `file_list_enabled`, `ast_map_enabled`, `ast_find_enabled`, `git_status_enabled`, `git_diff_enabled`, `git_log_enabled`, `edit_enabled`, `exec_enabled`, `go_test_enabled`, `go_lint_enabled`, `git_commit_enabled`, `git_branch_enabled`, `git_checkout_enabled`, `web_search_enabled`, `memory_query_enabled`, `git_push_enabled`, `gh_pr_create_enabled`, `gh_pr_merge_enabled`, `gh_pr_wait_enabled`
 
 First run: the row is seeded with defaults and `saved_at` is NULL. The status page shows a "Set up your harness" CTA until the user saves at least once. Changes to `ui.port`, model/embedder binaries, and ports take effect on the next harness restart; everything else is reloaded when the retry callback fires.
 
