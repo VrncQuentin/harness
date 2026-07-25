@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vrnc/harness/internal/inference"
-	"github.com/vrnc/harness/internal/queue"
-	"github.com/vrnc/harness/internal/reqid"
+	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/queue"
+	"github.com/VrncQuentin/harness/internal/reqid"
 )
 
 // Assembler builds the final message list (rules/persona/memory/conversation)

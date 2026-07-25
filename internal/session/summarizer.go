@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vrnc/harness/internal/inference"
-	"github.com/vrnc/harness/internal/summarizerprompt"
+	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/summarizerprompt"
 )
 
 // Summarizer turns a conversation into a markdown summary by issuing a

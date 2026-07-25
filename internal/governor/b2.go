@@ -3,7 +3,7 @@ package governor
 import (
 	"fmt"
 
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 // b2Limits maps tool IDs to the maximum Content length (bytes) before B2

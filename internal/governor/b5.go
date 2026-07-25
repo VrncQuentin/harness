@@ -1,8 +1,8 @@
 package governor
 
 import (
-	"github.com/vrnc/harness/internal/tokens"
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/tokens"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 // wrapB5 applies transform to pre and returns the result only when the

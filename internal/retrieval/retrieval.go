@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vrnc/harness/internal/index"
+	"github.com/VrncQuentin/harness/internal/index"
 )
 
 // EpisodeEmbedder embeds query text for episode scoring.

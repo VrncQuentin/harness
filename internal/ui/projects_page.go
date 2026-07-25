@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vrnc/harness/internal/memory"
-	"github.com/vrnc/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/project"
 )
 
 type projectRow struct {

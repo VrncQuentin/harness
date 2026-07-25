@@ -9,8 +9,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/project"
 )
 
 func testDefaultMemoryRepoPath(root string) DefaultMemoryRepoPathFunc {

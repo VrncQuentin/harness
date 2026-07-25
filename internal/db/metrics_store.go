@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/vrnc/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/internal/metrics"
 )
 
 // MetricsStore is the time-series store for harness metrics.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vrnc/harness/internal/parser"
+	"github.com/VrncQuentin/harness/internal/parser"
 )
 
 func newASTTestRegistry(t *testing.T) *parser.Registry {

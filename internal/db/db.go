@@ -18,7 +18,7 @@ import (
 	migratesqlite "github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/golang-migrate/migrate/v4/source"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	"github.com/vrnc/harness/migrations"
+	"github.com/VrncQuentin/harness/migrations"
 	_ "modernc.org/sqlite" // register the sqlite driver
 )
 

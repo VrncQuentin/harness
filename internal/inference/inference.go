@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/vrnc/harness/internal/httpclient"
+	"github.com/VrncQuentin/harness/internal/httpclient"
 )
 
 // Client is the interface for the inference backend.

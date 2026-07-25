@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/vrnc/harness/assets"
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/logbuf"
-	"github.com/vrnc/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/assets"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/logbuf"
+	"github.com/VrncQuentin/harness/internal/metrics"
 )
 
 // ServiceDeps is the set of UI-facing adapters produced by the runtime memory

@@ -12,8 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/vrnc/harness/internal/memory"
-	"github.com/vrnc/harness/internal/tokens"
+	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/tokens"
 )
 
 // maxMemoryFileBytes caps the size of a file the editor will accept on

@@ -14,14 +14,14 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/embedder"
-	gitw "github.com/vrnc/harness/internal/git"
-	"github.com/vrnc/harness/internal/index"
-	"github.com/vrnc/harness/internal/memory"
-	"github.com/vrnc/harness/internal/retrieval"
-	"github.com/vrnc/harness/internal/session"
-	"github.com/vrnc/harness/internal/vector"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/embedder"
+	gitw "github.com/VrncQuentin/harness/internal/git"
+	"github.com/VrncQuentin/harness/internal/index"
+	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/retrieval"
+	"github.com/VrncQuentin/harness/internal/session"
+	"github.com/VrncQuentin/harness/internal/vector"
 )
 
 // AfterSaveEmbed returns an AfterSaveFunc that embeds the saved episode and

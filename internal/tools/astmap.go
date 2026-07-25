@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/vrnc/harness/internal/parser"
+	"github.com/VrncQuentin/harness/internal/parser"
 )
 
 // astMapTool implements the ast_map tool: a deterministic structural outline

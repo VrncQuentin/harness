@@ -3,7 +3,7 @@ package approvals
 import (
 	"testing"
 
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 func TestDefaultLayer(t *testing.T) {

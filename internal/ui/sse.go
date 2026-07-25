@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vrnc/harness/internal/logbuf"
+	"github.com/VrncQuentin/harness/internal/logbuf"
 )
 
 func newEventStreamID() string {

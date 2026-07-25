@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/vrnc/harness/internal/parser"
+	"github.com/VrncQuentin/harness/internal/parser"
 )
 
 // astFindMaxMatches caps content-mode matches per call so a common substring

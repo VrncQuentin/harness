@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"strconv"
 
-	"github.com/vrnc/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/config"
 )
 
 func (rt *Runtime) effectiveModelFor(cfg *config.Config) config.ModelConfig {

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	gitw "github.com/vrnc/harness/internal/git"
+	gitw "github.com/VrncQuentin/harness/internal/git"
 )
 
 // workspaceRepo resolves the required root argument against the sandbox and

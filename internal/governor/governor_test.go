@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vrnc/harness/internal/parser"
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/parser"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 func mustRegistry(t *testing.T) *parser.Registry {

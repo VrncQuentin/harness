@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/vrnc/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/config"
 )
 
 // ErrNilConfig is returned by Save when called with a nil config.

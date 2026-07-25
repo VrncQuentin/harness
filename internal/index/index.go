@@ -16,7 +16,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/vrnc/harness/internal/vector"
+	"github.com/VrncQuentin/harness/internal/vector"
 )
 
 const (

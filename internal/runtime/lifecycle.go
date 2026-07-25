@@ -6,13 +6,13 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/vrnc/harness/internal/embedder"
-	"github.com/vrnc/harness/internal/httpclient"
-	"github.com/vrnc/harness/internal/inference"
-	"github.com/vrnc/harness/internal/metrics"
-	"github.com/vrnc/harness/internal/proc"
-	"github.com/vrnc/harness/internal/queue"
-	"github.com/vrnc/harness/internal/ui"
+	"github.com/VrncQuentin/harness/internal/embedder"
+	"github.com/VrncQuentin/harness/internal/httpclient"
+	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/internal/proc"
+	"github.com/VrncQuentin/harness/internal/queue"
+	"github.com/VrncQuentin/harness/internal/ui"
 )
 
 // Start brings llama-server, embedder, queue, memory, prompt, and API services

@@ -8,7 +8,7 @@ import (
 	"slices"
 	"sort"
 
-	"github.com/vrnc/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/memory"
 )
 
 const (

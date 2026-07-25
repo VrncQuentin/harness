@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vrnc/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/inference"
 )
 
 // fakeClient returns a fixed set of tokens.

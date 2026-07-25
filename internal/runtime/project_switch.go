@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/project"
-	"github.com/vrnc/harness/internal/ui"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/ui"
 )
 
 // handleProjectSwitch optionally reloads llama-server when the active project

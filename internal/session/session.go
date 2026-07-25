@@ -27,10 +27,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/vrnc/harness/internal/git"
-	"github.com/vrnc/harness/internal/inference"
-	"github.com/vrnc/harness/internal/memory"
-	"github.com/vrnc/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/git"
+	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/project"
 )
 
 const (

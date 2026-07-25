@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/vrnc/harness/internal/index"
+	"github.com/VrncQuentin/harness/internal/index"
 )
 
 func TestBestSemanticScoresKeepsBestChunk(t *testing.T) {

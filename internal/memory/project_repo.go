@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	gogit "github.com/go-git/go-git/v6"
-	gitw "github.com/vrnc/harness/internal/git"
+	gitw "github.com/VrncQuentin/harness/internal/git"
 )
 
 // EnsureProjectRepo initializes a project memory repo and fills in

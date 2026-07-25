@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 // Decision is the outcome of a permission check for a single tool call.

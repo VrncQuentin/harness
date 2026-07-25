@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"os"
 
-	gitw "github.com/vrnc/harness/internal/git"
-	"github.com/vrnc/harness/internal/project"
-	"github.com/vrnc/harness/internal/ui"
+	gitw "github.com/VrncQuentin/harness/internal/git"
+	"github.com/VrncQuentin/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/ui"
 )
 
 type projectDirectoryStore interface {

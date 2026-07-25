@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/vrnc/harness/internal/index"
+	"github.com/VrncQuentin/harness/internal/index"
 )
 
 const (

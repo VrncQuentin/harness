@@ -6,12 +6,12 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/db"
-	"github.com/vrnc/harness/internal/memory"
-	"github.com/vrnc/harness/internal/metrics"
-	"github.com/vrnc/harness/internal/project"
-	"github.com/vrnc/harness/internal/ui"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/db"
+	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/ui"
 )
 
 // OpenDB opens harness.db (running migrations + seed) and returns the handle

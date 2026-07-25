@@ -14,10 +14,10 @@ import (
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing/object"
-	"github.com/vrnc/harness/internal/git"
-	"github.com/vrnc/harness/internal/inference"
-	"github.com/vrnc/harness/internal/memory"
-	"github.com/vrnc/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/git"
+	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/project"
 )
 
 // fakeInference returns canned tokens. Each call to Complete consumes

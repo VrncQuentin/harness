@@ -1,6 +1,6 @@
 package ui
 
-import "github.com/vrnc/harness/internal/project"
+import "github.com/VrncQuentin/harness/internal/project"
 
 // ProjectStore is the subset of project.Store the UI handlers need.
 type ProjectStore interface {

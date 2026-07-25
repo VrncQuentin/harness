@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vrnc/harness/internal/approvals"
-	"github.com/vrnc/harness/internal/config"
-	"github.com/vrnc/harness/internal/inference"
-	"github.com/vrnc/harness/internal/tools"
+	"github.com/VrncQuentin/harness/internal/approvals"
+	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/tools"
 )
 
 // mockInferClient sends a fixed sequence of tokens then closes.
