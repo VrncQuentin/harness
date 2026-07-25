@@ -180,5 +180,18 @@ holds to deliberately.
 
 ## License
 
-Not yet chosen. Until a license is added, default copyright applies and no
-usage, modification, or redistribution rights are granted.
+Copyright (C) 2026 VrncQuentin.
+
+Licensed under the **GNU Affero General Public License v3.0** — see
+[LICENSE](LICENSE) for the full text.
+
+In short: you may use, study, modify, and redistribute the harness freely. If
+you distribute a modified version, or offer one to users over a network, you
+must release your source under the same license. That network clause is the
+reason for AGPL over plain GPL — the harness serves a web UI and runs models, so
+hosting it as a service is a realistic path that GPL alone would not reach.
+
+If the AGPL does not work for your situation, **a separate commercial license
+can be granted** — open an issue to start that conversation. Copyright is held
+in full by one author, which is what makes that possible, and it is why
+contributions are accepted under a CLA. See [CONTRIBUTING.md](CONTRIBUTING.md).

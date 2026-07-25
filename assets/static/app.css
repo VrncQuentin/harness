@@ -563,5 +563,7 @@ code {
   align-items: center;
 }
 .footer .mono { font-family: var(--mono); }
+.footer-legal a { color: inherit; text-decoration: underline; }
+.footer-legal a:hover { color: var(--fg); }
 
 .inline-form { display: inline; margin: 0; }
