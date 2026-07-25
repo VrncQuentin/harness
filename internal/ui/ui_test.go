@@ -1706,6 +1706,30 @@ func nonLoopbackIPv4(t *testing.T) []string {
 	return out
 }
 
+// AGPL-3.0 5(d) requires an interactive interface to carry the legal notice,
+// and 13 requires users interacting over a network to be offered the
+// Corresponding Source. The footer is in the shared layout, so losing it would
+// strip the notice from every page at once. This is a licensing obligation,
+// not styling — do not delete it without replacing the notice elsewhere.
+func TestLayout_CarriesLicenseAndSourceNotice(t *testing.T) {
+	s := NewServer(3000)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		"AGPL-3.0",
+		"https://www.gnu.org/licenses/agpl-3.0.html",
+		"https://github.com/VrncQuentin/harness",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered layout is missing required license notice %q", want)
+		}
+	}
+}
+
 func TestHandleStatus_LayoutPromptHiddenWhenNoRepoConfigured(t *testing.T) {
 	s := NewServer(3000)
 	// memRepo is "" by default - the prompt must not render.
