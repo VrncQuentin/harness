@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -609,6 +610,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		SessionID:       id,
 		CallerIdentity:  "agent:" + agentName,
 		HTTPClient:      httpclient.New(),
+		GHTokenFn:       func() string { return os.Getenv("GITHUB_TOKEN") },
 		MemoryQuery:     ad.memoryQueryFn(),
 	}
 

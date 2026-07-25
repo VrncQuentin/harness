@@ -193,6 +193,10 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	cfg.Loop.GitCheckoutEnabled = r.FormValue("loop_git_checkout_enabled") == "on"
 	cfg.Loop.WebSearchEnabled = r.FormValue("loop_web_search_enabled") == "on"
 	cfg.Loop.MemoryQueryEnabled = r.FormValue("loop_memory_query_enabled") == "on"
+	cfg.Loop.GitPushEnabled = r.FormValue("loop_git_push_enabled") == "on"
+	cfg.Loop.GHPRCreateEnabled = r.FormValue("loop_gh_pr_create_enabled") == "on"
+	cfg.Loop.GHPRMergeEnabled = r.FormValue("loop_gh_pr_merge_enabled") == "on"
+	cfg.Loop.GHPRWaitEnabled = r.FormValue("loop_gh_pr_wait_enabled") == "on"
 
 	cfg.Metrics.RetentionDays = atoiField(r, "metrics_retention_days", "Metrics retention days", cfg.Metrics.RetentionDays, &parseErrs)
 	cfg.Metrics.PrometheusEnabled = r.FormValue("metrics_prometheus_enabled") == "on"

@@ -35,6 +35,10 @@ func TestBuiltinDescriptorsDefinePolicyMetadata(t *testing.T) {
 		{ID: "git_checkout", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: git_checkout switches branches"},
 		{ID: "web_search", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAsk, DefaultApprovalSource: "builtin: web search uses the network"},
 		{ID: "memory_query", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only retrieval"},
+		{ID: "git_push", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: proposal-return — no side effect until human executes"},
+		{ID: "gh_pr_create", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: proposal-return — no side effect until human executes"},
+		{ID: "gh_pr_merge", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: proposal-return — no side effect until human executes"},
+		{ID: "gh_pr_wait", DefaultEnabled: false, DefaultApproval: ApprovalDefaultAllow, DefaultApprovalSource: "builtin: read-only CI poller"},
 	}
 	if !reflect.DeepEqual(descriptors, want) {
 		t.Fatalf("BuiltinDescriptors() = %#v, want %#v", descriptors, want)
@@ -59,10 +63,17 @@ func TestRegistry_ListAndGet(t *testing.T) {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
 	all := r.List()
-	if len(all) != 16 {
-		t.Fatalf("expected 16 tools, got %d", len(all))
+	if len(all) != 20 {
+		t.Fatalf("expected 20 tools, got %d", len(all))
 	}
-	for _, id := range []string{"read", "file_list", "ast_map", "ast_find", "git_status", "git_diff", "git_log", "edit", "exec", "go_test", "go_lint", "git_commit", "git_branch", "git_checkout", "web_search", "memory_query"} {
+	for _, id := range []string{
+		"read", "file_list", "ast_map", "ast_find",
+		"git_status", "git_diff", "git_log",
+		"edit", "exec", "go_test", "go_lint",
+		"git_commit", "git_branch", "git_checkout",
+		"web_search", "memory_query",
+		"git_push", "gh_pr_create", "gh_pr_merge", "gh_pr_wait",
+	} {
 		if r.Get(id) == nil {
 			t.Errorf("%s not found", id)
 		}

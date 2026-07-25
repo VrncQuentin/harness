@@ -56,7 +56,11 @@ func (s *ConfigStore) seed() error {
 			loop_git_branch_enabled,
 			loop_git_checkout_enabled,
 			loop_web_search_enabled,
-			loop_memory_query_enabled
+			loop_memory_query_enabled,
+			loop_git_push_enabled,
+			loop_gh_pr_create_enabled,
+			loop_gh_pr_merge_enabled,
+			loop_gh_pr_wait_enabled
 	) VALUES (
 		1,
 		?, ?, ?, ?,
@@ -68,7 +72,7 @@ func (s *ConfigStore) seed() error {
 		?, ?, ?, ?,
 		?, ?, ?, ?,
 		?, ?, ?, ?,
-		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 	)`,
 		d.Model.Binary, d.Model.ModelPath, d.Model.CtxSize, d.Model.GPULayers,
 		d.Model.NParallel, d.Model.Port, boolInt(d.Model.Verbose),
@@ -99,6 +103,10 @@ func (s *ConfigStore) seed() error {
 		boolInt(d.Loop.GitCheckoutEnabled),
 		boolInt(d.Loop.WebSearchEnabled),
 		boolInt(d.Loop.MemoryQueryEnabled),
+		boolInt(d.Loop.GitPushEnabled),
+		boolInt(d.Loop.GHPRCreateEnabled),
+		boolInt(d.Loop.GHPRMergeEnabled),
+		boolInt(d.Loop.GHPRWaitEnabled),
 	)
 	if err != nil {
 		return fmt.Errorf("db: seed config: %w", err)
@@ -140,6 +148,10 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 			loop_git_checkout_enabled,
 			loop_web_search_enabled,
 			loop_memory_query_enabled,
+			loop_git_push_enabled,
+			loop_gh_pr_create_enabled,
+			loop_gh_pr_merge_enabled,
+			loop_gh_pr_wait_enabled,
 			saved_at
 		FROM config WHERE id = 1`)
 
@@ -166,6 +178,10 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		gitCheckout       int
 		webSearch         int
 		memoryQuery       int
+		gitPush           int
+		ghPRCreate        int
+		ghPRMerge         int
+		ghPRWait          int
 		prometheusEnabled int
 	)
 	err := row.Scan(
@@ -191,7 +207,7 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 		&gitDiff,
 		&gitLog,
 		&editEnabled, &execEnabled, &goTest, &goLint, &gitCommit, &gitBranch, &gitCheckout, &webSearch,
-		&memoryQuery,
+		&memoryQuery, &gitPush, &ghPRCreate, &ghPRMerge, &ghPRWait,
 		&savedAt,
 	)
 	if err != nil {
@@ -217,6 +233,10 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	cfg.Loop.GitCheckoutEnabled = gitCheckout != 0
 	cfg.Loop.WebSearchEnabled = webSearch != 0
 	cfg.Loop.MemoryQueryEnabled = memoryQuery != 0
+	cfg.Loop.GitPushEnabled = gitPush != 0
+	cfg.Loop.GHPRCreateEnabled = ghPRCreate != 0
+	cfg.Loop.GHPRMergeEnabled = ghPRMerge != 0
+	cfg.Loop.GHPRWaitEnabled = ghPRWait != 0
 	cfg.Metrics.PrometheusEnabled = prometheusEnabled != 0
 	return &cfg, savedAt.Valid, nil
 }
@@ -257,6 +277,10 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			loop_git_checkout_enabled = ?,
 			loop_web_search_enabled = ?,
 			loop_memory_query_enabled = ?,
+			loop_git_push_enabled = ?,
+			loop_gh_pr_create_enabled = ?,
+			loop_gh_pr_merge_enabled = ?,
+			loop_gh_pr_wait_enabled = ?,
 			saved_at = ?
 		WHERE id = 1`,
 		cfg.Model.Binary, cfg.Model.ModelPath, cfg.Model.CtxSize, cfg.Model.GPULayers,
@@ -288,6 +312,10 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 		boolInt(cfg.Loop.GitCheckoutEnabled),
 		boolInt(cfg.Loop.WebSearchEnabled),
 		boolInt(cfg.Loop.MemoryQueryEnabled),
+		boolInt(cfg.Loop.GitPushEnabled),
+		boolInt(cfg.Loop.GHPRCreateEnabled),
+		boolInt(cfg.Loop.GHPRMergeEnabled),
+		boolInt(cfg.Loop.GHPRWaitEnabled),
 		time.Now().Unix(),
 	)
 	if err != nil {

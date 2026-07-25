@@ -209,6 +209,17 @@ type LoopConfig struct {
 	// MemoryQueryEnabled toggles the memory_query tool. Off by default; requires
 	// the embedder to be running and the episode index to be populated.
 	MemoryQueryEnabled bool
+	// GitPushEnabled toggles the git_push proposal tool. Off by default.
+	// When enabled the tool returns a push proposal for human execution,
+	// never pushes autonomously.
+	GitPushEnabled bool
+	// GHPRCreateEnabled toggles the gh_pr_create proposal tool. Off by default.
+	GHPRCreateEnabled bool
+	// GHPRMergeEnabled toggles the gh_pr_merge proposal tool. Off by default.
+	GHPRMergeEnabled bool
+	// GHPRWaitEnabled toggles the gh_pr_wait CI poller. Off by default because
+	// it uses the network and may block for up to the wait ceiling.
+	GHPRWaitEnabled bool
 }
 
 // ToolEnabled reports whether the named built-in tool is enabled by this
@@ -247,6 +258,14 @@ func (c LoopConfig) ToolEnabled(id string) bool {
 		return c.WebSearchEnabled
 	case "memory_query":
 		return c.MemoryQueryEnabled
+	case "git_push":
+		return c.GitPushEnabled
+	case "gh_pr_create":
+		return c.GHPRCreateEnabled
+	case "gh_pr_merge":
+		return c.GHPRMergeEnabled
+	case "gh_pr_wait":
+		return c.GHPRWaitEnabled
 	default:
 		return false
 	}
@@ -323,6 +342,10 @@ func Defaults() Config {
 			GitCheckoutEnabled: tools.BuiltinDefaultEnabled("git_checkout"),
 			WebSearchEnabled:   tools.BuiltinDefaultEnabled("web_search"),
 			MemoryQueryEnabled: tools.BuiltinDefaultEnabled("memory_query"),
+			GitPushEnabled:     tools.BuiltinDefaultEnabled("git_push"),
+			GHPRCreateEnabled:  tools.BuiltinDefaultEnabled("gh_pr_create"),
+			GHPRMergeEnabled:   tools.BuiltinDefaultEnabled("gh_pr_merge"),
+			GHPRWaitEnabled:    tools.BuiltinDefaultEnabled("gh_pr_wait"),
 		},
 		Project: ProjectConfig{
 			ActiveProjectSlug: "global",
