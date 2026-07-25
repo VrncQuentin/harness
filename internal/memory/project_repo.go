@@ -11,8 +11,8 @@ import (
 	"runtime"
 	"strings"
 
-	gogit "github.com/go-git/go-git/v6"
 	gitw "github.com/VrncQuentin/harness/internal/git"
+	gogit "github.com/go-git/go-git/v6"
 )
 
 // EnsureProjectRepo initializes a project memory repo and fills in

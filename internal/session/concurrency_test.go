@@ -9,11 +9,11 @@ import (
 	"sync"
 	"testing"
 
-	gogit "github.com/go-git/go-git/v6"
-	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/VrncQuentin/harness/internal/inference"
 	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/project"
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 // TestManager_ConcurrentSaveAndPromotionShareRepoSafely exercises episode

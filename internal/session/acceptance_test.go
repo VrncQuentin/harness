@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	gogit "github.com/go-git/go-git/v6"
 	"github.com/VrncQuentin/harness/internal/agent"
 	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/git"
@@ -18,6 +17,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/prompt"
+	gogit "github.com/go-git/go-git/v6"
 )
 
 // scaffoldMemoryRepo creates a temp memory repo with the canonical
