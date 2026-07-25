@@ -44,8 +44,8 @@ func (t *ghPRWaitTool) Schema() map[string]any {
 			"repo":      map[string]any{"type": "string", "description": "Repository name"},
 			"pr_number": map[string]any{"type": "integer", "description": "Pull request number"},
 			"timeout_seconds": map[string]any{
-				"type":               "integer",
-				"description":        fmt.Sprintf("Maximum wait time in seconds (default %d, max %d)", ghPRWaitDefaultTimeout, ghPRWaitMaxTimeout),
+				"type":                "integer",
+				"description":         fmt.Sprintf("Maximum wait time in seconds (default %d, max %d)", ghPRWaitDefaultTimeout, ghPRWaitMaxTimeout),
 				"x-expected-blocking": true,
 			},
 		},
@@ -140,7 +140,7 @@ func prHeadSHA(ctx context.Context, hc *http.Client, token, owner, repo string, 
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("HTTP %d from pulls API", resp.StatusCode)
 	}
@@ -174,7 +174,7 @@ func checkRunsState(ctx context.Context, hc *http.Client, token, owner, repo, sh
 	if err != nil {
 		return "", nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return "", nil, fmt.Errorf("HTTP %d from check-runs API", resp.StatusCode)
 	}

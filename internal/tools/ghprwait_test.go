@@ -48,13 +48,13 @@ func fakeGHServer(t *testing.T, headSHA string, checkRuns []map[string]string) *
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/pulls/") {
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"head": map[string]any{"sha": headSHA},
 			})
 			return
 		}
 		if strings.Contains(r.URL.Path, "/check-runs") {
-			json.NewEncoder(w).Encode(map[string]any{
+			_ = json.NewEncoder(w).Encode(map[string]any{
 				"total_count": len(checkRuns),
 				"check_runs":  checkRuns,
 			})
