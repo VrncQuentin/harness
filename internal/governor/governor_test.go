@@ -369,13 +369,57 @@ func TestB2_CutsOnRuneBoundaries(t *testing.T) {
 		}
 	}
 
-	// The short-content hard-cap branch takes a different path.
+	// The smallest configured limit, so the tail cut sits at a different
+	// offset relative to the rune grid.
 	for _, extra := range []int{0, 1, 2} {
-		runes := (b2Limits["go_lint"] + extra) / 3
+		runes := (b2Limits["go_lint"] + b2Head + b2Tail + extra) / 3
 		res := g.Apply(context.Background(), "go_lint", nil,
 			tools.Result{Content: strings.Repeat(wide, runes)}, "")
 		if !utf8.ValidString(res.Content) {
-			t.Errorf("extra=%d: B2 hard-cap branch produced invalid UTF-8", extra)
+			t.Errorf("extra=%d: B2 produced invalid UTF-8 at the go_lint limit", extra)
+		}
+	}
+}
+
+// applyB2 relies on this: past the limit check there is always room for
+// head/tail elision, so it needs no short-content branch. A smaller limit would
+// make elision emit more bytes than it removed.
+func TestB2LimitsExceedHeadTail(t *testing.T) {
+	for tool, limit := range b2Limits {
+		if limit <= b2Head+b2Tail {
+			t.Errorf("b2Limits[%q] = %d, must exceed b2Head+b2Tail (%d)", tool, limit, b2Head+b2Tail)
+		}
+	}
+}
+
+func TestRuneSafeCuts(t *testing.T) {
+	// Three-byte runes: most offsets fall inside a character.
+	s := strings.Repeat("€", 10) // 30 bytes
+	for offset := range len(s) + 1 {
+		end := runeSafeCutEnd(s, offset)
+		if !utf8.ValidString(s[:end]) {
+			t.Errorf("runeSafeCutEnd(%d) = %d left invalid UTF-8", offset, end)
+		}
+		if end > offset {
+			t.Errorf("runeSafeCutEnd(%d) = %d, must not exceed the requested offset", offset, end)
+		}
+		start := runeSafeCutStart(s, offset)
+		if !utf8.ValidString(s[start:]) {
+			t.Errorf("runeSafeCutStart(%d) = %d left invalid UTF-8", offset, start)
+		}
+		if start < offset {
+			t.Errorf("runeSafeCutStart(%d) = %d, must not precede the requested offset", offset, start)
+		}
+	}
+
+	// Single-byte content: every offset is already a boundary.
+	ascii := "abcdef"
+	for offset := range len(ascii) + 1 {
+		if got := runeSafeCutEnd(ascii, offset); got != offset {
+			t.Errorf("runeSafeCutEnd(ascii, %d) = %d, want %d", offset, got, offset)
+		}
+		if got := runeSafeCutStart(ascii, offset); got != offset {
+			t.Errorf("runeSafeCutStart(ascii, %d) = %d, want %d", offset, got, offset)
 		}
 	}
 }

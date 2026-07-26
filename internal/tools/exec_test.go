@@ -124,9 +124,25 @@ func TestExec_OutputIsCappedWhileCommandCompletes(t *testing.T) {
 	if !strings.Contains(res.Content, "(truncated") {
 		t.Fatalf("expected truncation marker, got content length %d", len(res.Content))
 	}
-	maxLen := execOutputLimit + len("\n… (truncated; full output preserved for retrieval)")
+	// Checked before the length bound, so a marker that over-promises is
+	// reported as the promise it is rather than as a few bytes of overflow.
+	//
+	// A successful call discards its buffer and never reaches B3, so nothing
+	// was kept. Promising retrieval here would point the model at a handle that
+	// does not exist.
+	tail := res.Content[max(0, len(res.Content)-160):]
+	for _, promise := range []string{"preserved", "retrieval", "toolout"} {
+		if strings.Contains(res.Content, promise) {
+			t.Errorf("truncation marker promises %q for output that was discarded: %q", promise, tail)
+		}
+	}
+	if res.FullOutput != "" {
+		t.Errorf("FullOutput set on a successful call (%d bytes); nothing spills it", len(res.FullOutput))
+	}
+
+	maxLen := execOutputLimit + len("\n… (truncated)")
 	if len(res.Content) > maxLen {
-		t.Fatalf("content length = %d, want <= %d", len(res.Content), maxLen)
+		t.Errorf("content length = %d, want <= %d", len(res.Content), maxLen)
 	}
 }
 

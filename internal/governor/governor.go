@@ -12,11 +12,12 @@
 //   - B3: tee-on-failure — spills large error outputs to disk and injects a
 //     compact handle into the conversation so the model can reference them.
 //
-//   - B5: token gate — reverter guard applied after each context-reshaping
-//     transform (B1, B2) using the same rune-quarter heuristic as prompt
-//     budgeting; auto-reverts any transform that increases the token count.
-//     B3 is exempt: it moves output to disk rather than reshaping context, and
-//     its write cannot be undone by discarding the returned result.
+//   - B5: token gate — reverter guard applied after each pure transform
+//     (B1, B2) using the same rune-quarter heuristic as prompt budgeting;
+//     auto-reverts either when it increases the token count.
+//     B3 is exempt: it is side-effectful, so discarding its result does not
+//     undo it, and its bounded locator must survive or the spilled output
+//     becomes unreachable.
 package governor
 
 import (
@@ -66,14 +67,20 @@ func (g *Governor) Apply(ctx context.Context, toolID string, args map[string]any
 	res = g.wrapB5(res, func(r tools.Result) tools.Result { return g.applyB2(toolID, r) })
 	// B3 is deliberately outside the token gate.
 	//
-	// B1 and B2 reshape context, so reverting one when it grew the count is
-	// exactly right. B3 does not reshape context: it writes the output to disk
-	// and adds a fixed handle of a few dozen bytes. Gating it broke in two ways.
-	// The handle can be longer than the inline text it is appended to — a short
-	// failure with a large preserved output is the normal case now — so the
-	// gate reverted precisely the spills worth keeping. And the revert is not a
-	// revert: applyB3 has already written the file, so reverting leaves the
-	// spill orphaned on disk with nothing in context pointing at it.
+	// B1 and B2 are pure: they rewrite the result and nothing else, so
+	// discarding the rewrite genuinely undoes them. B3 is side-effectful — it
+	// has written the spill file by the time the gate inspects its return
+	// value — so discarding that value does not undo the transform. It only
+	// throws away the locator, leaving the file orphaned on disk with nothing
+	// in context pointing at it.
+	//
+	// B3 does rewrite Error, replacing it with a prefix plus the handle, and
+	// that rewrite can grow the text: the handle is often longer than the short
+	// inline failure it is appended to now that a small failure can carry a
+	// large preserved output. Under the gate that growth reverted exactly the
+	// spills worth keeping. Retaining the bounded locator is the requirement —
+	// it is the only way back to output that is otherwise unreachable — so the
+	// few dozen bytes it costs are not the gate's to reclaim.
 	res = g.applyB3(ctx, toolID, res)
 	return res
 }
