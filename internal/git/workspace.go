@@ -349,7 +349,7 @@ func (r *Repo) DiffWorktree(ctx context.Context) (string, error) {
 			return "", err
 		}
 		before := r.headContent(headTree, entry.Path)
-		after, isBinary := worktreeContent(filepath.Join(r.path, filepath.FromSlash(entry.Path)))
+		after, isBinary := worktreeContent(r.path, entry.Path)
 		if before == after {
 			continue
 		}
@@ -378,15 +378,83 @@ func (r *Repo) headContent(tree *object.Tree, path string) string {
 	return content
 }
 
-func worktreeContent(absPath string) (content string, isBinary bool) {
-	data, err := os.ReadFile(absPath)
+// worktreeContent returns the on-disk content for the repo-relative relPath.
+//
+// Nothing here dereferences a symlink. A symlink is reported the way git
+// stores one — the link target as the blob content — and a regular file whose
+// resolved parent lies outside root is skipped. Reading through links would
+// let a link committed inside the repo pull file content from anywhere on the
+// filesystem into the diff, escaping the tool sandbox that only ever checked
+// the repository root.
+func worktreeContent(root, relPath string) (content string, isBinary bool) {
+	absPath, ok := worktreeSafePath(root, relPath)
+	if !ok {
+		return "", false
+	}
+	fi, err := os.Lstat(absPath)
 	if err != nil {
 		return "", false // deleted from worktree
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		target, rlErr := os.Readlink(absPath)
+		if rlErr != nil {
+			return "", false
+		}
+		return filepath.ToSlash(target), false
+	}
+	if !fi.Mode().IsRegular() {
+		// Directory, device, socket, or Windows junction (reported irregular):
+		// no diffable content of its own.
+		return "", false
+	}
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return "", false
 	}
 	if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
 		return "", true
 	}
 	return string(data), false
+}
+
+// worktreeSafePath joins a repo-relative status path onto root and reports
+// whether every directory component below root is a real directory. Any
+// intermediate component that is a reparse point — a symlink, or on Windows a
+// junction or mount point — is refused, because reading through one would leave
+// the repository entirely.
+//
+// The check rejects rather than resolves deliberately. filepath.EvalSymlinks
+// returns a junction path unchanged instead of resolving it, and errors on any
+// path below a junction even where os.ReadFile succeeds, so a containment
+// comparison built on it silently accepts an out-of-repo read on Windows.
+// Lstat's mode bits are the reliable signal.
+func worktreeSafePath(root, relPath string) (string, bool) {
+	clean := filepath.Clean(filepath.FromSlash(relPath))
+	if clean == "." || clean == string(filepath.Separator) || filepath.IsAbs(clean) {
+		return "", false
+	}
+	current := root
+	components := strings.Split(clean, string(filepath.Separator))
+	for i, part := range components {
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." {
+			return "", false // status paths never climb; refuse if one does
+		}
+		current = filepath.Join(current, part)
+		if i == len(components)-1 {
+			break // the leaf is classified by the caller
+		}
+		fi, err := os.Lstat(current)
+		if err != nil {
+			return "", false
+		}
+		if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !fi.IsDir() {
+			return "", false
+		}
+	}
+	return current, true
 }
 
 // --- minimal diff.Patch implementation over utils/diff chunks ---
