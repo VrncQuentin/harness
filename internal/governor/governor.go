@@ -85,12 +85,25 @@ func (g *Governor) Apply(ctx context.Context, toolID string, args map[string]any
 	return res
 }
 
-// tooloutDir returns the B3 spill directory, creating it if needed.
-func (g *Governor) tooloutDir() string {
-	if g.cacheDir == "" {
+// TooloutDir returns the directory B3 spills into for a given cache dir.
+//
+// Exported so the tool layer can be pointed at the same directory without
+// duplicating the path. internal/governor imports internal/tools, so the
+// dependency cannot run the other way: the wiring layer calls this and passes
+// the result down through CallInfo.
+func TooloutDir(cacheDir string) string {
+	if cacheDir == "" {
 		return ""
 	}
-	dir := filepath.Join(g.cacheDir, "toolout")
+	return filepath.Join(cacheDir, "toolout")
+}
+
+// tooloutDir returns the B3 spill directory, creating it if needed.
+func (g *Governor) tooloutDir() string {
+	dir := TooloutDir(g.cacheDir)
+	if dir == "" {
+		return ""
+	}
 	// best-effort; B3 degrades gracefully if this fails
 	_ = os.MkdirAll(dir, 0o755)
 	return dir

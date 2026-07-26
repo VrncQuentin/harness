@@ -40,9 +40,14 @@ type CallInfo struct {
 	// whose resolved root is a project memory repo. Evaluated at call time and
 	// fails closed — see MemoryRepoCheck and NewMemoryRepoCheck.
 	MemoryRepoCheck MemoryRepoCheck
-	SessionID       string
-	CallerIdentity  string
-	HTTPClient      *http.Client
+	// TooloutDir is where the governor spills the full output of failed calls.
+	// read resolves toolout:<id> handles against it. Empty disables retrieval,
+	// which is the safe default: an unset directory refuses handles rather than
+	// resolving them somewhere unintended.
+	TooloutDir     string
+	SessionID      string
+	CallerIdentity string
+	HTTPClient     *http.Client
 	// GHTokenFn reads GITHUB_TOKEN from the environment at call time.
 	// The token is never stored — only the function is held so the value
 	// is never in model context or persisted state.

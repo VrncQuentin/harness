@@ -441,11 +441,12 @@ type taskRunnerAdapter struct {
 	approvalLayers []approvals.Layer
 	metrics        agentloop.MetricsRecorder
 	// gov is the stateless governor applied to every task engine. Nil means no transforms.
-	gov       agentloop.Governor
-	enginesMu sync.Mutex
-	engines   map[string]*agentloop.Engine // sessionID → engine
-	cancels   map[string]context.CancelFunc
-	dones     map[string]chan struct{}
+	gov        agentloop.Governor
+	tooloutDir string
+	enginesMu  sync.Mutex
+	engines    map[string]*agentloop.Engine // sessionID → engine
+	cancels    map[string]context.CancelFunc
+	dones      map[string]chan struct{}
 }
 
 // queuedInferClient wraps a Queue so the agent loop routes through the
@@ -623,6 +624,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		// created or repointed while this task runs, and a store failure must
 		// reject the write rather than read as "no memory repos exist".
 		MemoryRepoCheck: tools.NewMemoryRepoCheck(ad.memoryRepoPaths),
+		TooloutDir:      ad.tooloutDir,
 		SessionID:       id,
 		CallerIdentity:  "agent:" + agentName,
 		HTTPClient:      httpclient.New(),

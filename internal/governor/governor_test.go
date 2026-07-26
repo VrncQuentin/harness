@@ -423,3 +423,41 @@ func TestRuneSafeCuts(t *testing.T) {
 		}
 	}
 }
+
+// The round trip that F5 is about: B3 writes the spill and emits a handle, and
+// read resolves that exact handle back to the full output. Each half can be
+// correct alone and still not meet — the id format and the directory have to
+// agree — so this asserts they do, using the handle B3 actually produced rather
+// than one the test constructed.
+func TestB3HandleIsResolvableByRead(t *testing.T) {
+	cacheDir := t.TempDir()
+	g := New(nil, cacheDir)
+
+	full := strings.Repeat("preserved output line\n", 500)
+	res := g.Apply(context.Background(), "exec", nil,
+		tools.Result{Error: "exec: exit status 1\n… (truncated)", FullOutput: full}, "")
+
+	// Pull the handle out of the error exactly as the model would see it.
+	idx := strings.Index(res.Error, tools.TooloutScheme)
+	if idx < 0 {
+		t.Fatalf("no %s handle in %q", tools.TooloutScheme, res.Error)
+	}
+	handle := strings.TrimRight(strings.Fields(res.Error[idx:])[0], ")")
+
+	call := tools.CallInfo{
+		SandboxRoots: []string{t.TempDir()},
+		TooloutDir:   TooloutDir(cacheDir),
+	}
+	reg := tools.NewRegistry()
+	if err := tools.RegisterBuiltins(reg); err != nil {
+		t.Fatalf("RegisterBuiltins: %v", err)
+	}
+	out := reg.Get("read").Execute(context.Background(), call, map[string]any{"locator": handle})
+
+	if out.Error != "" {
+		t.Fatalf("read %s: %s", handle, out.Error)
+	}
+	if !strings.Contains(out.Content, "preserved output line") {
+		t.Errorf("read did not return the spilled output:\n%s", out.Content)
+	}
+}

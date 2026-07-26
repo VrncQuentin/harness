@@ -178,9 +178,15 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	// create the parser registry degrade gracefully — the governor is omitted
 	// rather than blocking the rest of startup.
 	var gov agentloop.Governor
+	var tooloutDir string
 	if harnessHome, err := home.Default(); err == nil {
+		cacheDir := filepath.Join(harnessHome, "cache")
+		// Resolved from the same cache dir the governor spills into, so the
+		// handles B3 emits and the directory read resolves them against cannot
+		// drift apart.
+		tooloutDir = governor.TooloutDir(cacheDir)
 		if parsers, err := parser.NewRegistry(parser.NewGoFrontEnd()); err == nil {
-			gov = governor.New(parsers, filepath.Join(harnessHome, "cache"))
+			gov = governor.New(parsers, cacheDir)
 		}
 	}
 
@@ -268,6 +274,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		approvalLayers: approvalLayers,
 		metrics:        loopMetrics,
 		gov:            gov,
+		tooloutDir:     tooloutDir,
 	}
 	rt.taskRunner = taskAdapter
 	svcDeps.TaskRunner = taskAdapter
