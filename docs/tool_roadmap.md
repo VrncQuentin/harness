@@ -1,9 +1,12 @@
 # Harness Tool Roadmap — M10
 
-Milestone position: **this document is M10**, slotting between M9 (Layout V2, shipped) and M11 (Pipeline DSL, planned).
-M11's stated dependencies are M7 and M9; it gains M10 as a third, since the DSL runner
-binds tool calls against this surface. The DSL does not currently
-support tool calling, so tool renames here break no `.hp` files.
+Milestone position: **this document is the M10 design record**, between M9 (Layout V2,
+shipped) and M11 (Pipeline DSL, planned). M10.1, M10.2, and M10.4 have shipped. M10.3
+code has landed, but its MR0 acceptance gate remains open: trace-sink failures are silent,
+the sink is never closed, the trace and evaluation contracts are incomplete, and no
+ten-query baseline has been recorded.
+M11 binds tool calls against this surface, so the M10.3 closure work is part of making
+the surface observable rather than a reason to rename tools again.
 
 This supersedes the standing deferral of file edit/patch (deferred at M4 and again
 beyond M7 in roadmap.md): `edit` lands in M10.1.
@@ -11,7 +14,8 @@ beyond M7 in roadmap.md): `edit` lands in M10.1.
 Every claim is tagged:
 
 - **[P]** Present — true of the repo today.
-- **[T]** Target — designed here, built in M10.
+- **[S]** Shipped — implemented by M10 and present in the repo today.
+- **[R]** Repair — implementation exists, but the stated acceptance contract is not yet met.
 - **[X]** External — belongs to another roadmap (memory), referenced but not built here.
 
 The X tags exist because the memory layer needs its own roadmap and its own evaluation
@@ -22,7 +26,7 @@ rather than assumed beneficial. That roadmap now exists: [memory_roadmap.md](mem
 
 ---
 
-## Naming convention [T]
+## Naming convention [S]
 
 Tool ids are sent verbatim as function names on the inference path, which enforces the
 charset `^[a-zA-Z0-9_-]{1,64}$`. Dots are out of spec; kebab-case is legal but the
@@ -47,10 +51,10 @@ means adding tools, because the output shape differs.
 
 ---
 
-## Reconciliation with the existing surface
+## Reconciliation with the pre-M10 surface
 
-The current tools [P]: `file_read`, `file_list`, `file_write`, `shell_exec`,
-`web_search`. Disposition:
+The pre-M10 tools were `file_read`, `file_list`, `file_write`, `shell_exec`, and
+`web_search`. Their shipped disposition is:
 
 | Existing | Disposition |
 |---|---|
@@ -60,8 +64,8 @@ The current tools [P]: `file_read`, `file_list`, `file_write`, `shell_exec`,
 | `file_list` | **Retained.** Directory listing is not `ast_map`'s job. |
 | `web_search` | **Retained**, unprefixed native class. |
 
-Each replacement removes its predecessor in the same milestone phase it ships —
-no long-lived aliases, no dual surface for the model to choose between.
+Each replacement removed its predecessor in the same milestone phase — there are no
+long-lived aliases and no dual surface for the model to choose between.
 
 ---
 
@@ -72,19 +76,19 @@ bounded per capability class — see the admission rule at the end of this secti
 
 | Tool | Class | Status | Purpose |
 |---|---|---|---|
-| `ast_map` | ast (Go) | T | Structural outline of a file or package. Single-file mode uses `go/parser` only. Cross-package type resolution uses `go/packages`, which shells to the `go` binary — see toolchain preconditions. |
-| `ast_find` | ast (Go) | T | Symbol- and content-anchored locate. Returns stable locators + content hashes. Never bare line numbers. |
-| `go_test` | toolchain | T | `go test -json` wrapper. Failures-only by default; full NDJSON teed to disk. |
-| `go_lint` | toolchain | T | Wraps the `golangci-lint` binary (v2): `run --output.json.path=stdout`, parse the JSON report, group issues by linter then file. Binary presence is a toolchain precondition — see below. |
-| `read` | native | T | Range- and locator-addressed read. Returns raw bytes; skeletonization is applied downstream by B1. |
-| `edit` | native | T | Hash-anchored line operations; whole-file mode for new files. Rejects when the anchor hash does not match. Verify-after-mutate is mandatory, not a flag. |
-| `exec` | native | T | Structured command execution — see the approval contract below. |
+| `ast_map` | ast (Go) | S | Structural outline of a file. The shipped front-end uses `go/parser` in single-file mode; cross-package type resolution remains a later tier. |
+| `ast_find` | ast (Go) | S | Symbol- and content-anchored locate. Returns stable locators + content hashes. Never bare line numbers. |
+| `go_test` | toolchain | S | `go test -json` wrapper. Failures-only by default; full NDJSON teed to disk. |
+| `go_lint` | toolchain | S | Wraps the `golangci-lint` binary (v2): `run --output.json.path=stdout`, parses the JSON report, and groups issues by linter then file. Binary presence is a toolchain precondition — see below. |
+| `read` | native | S | Range- and locator-addressed read. Returns raw bytes; skeletonization is applied downstream by B1. |
+| `edit` | native | S | Hash-anchored line operations; whole-file mode for new files. Rejects when the anchor hash does not match. Verify-after-mutate is mandatory, not a flag. |
+| `exec` | native | S | Structured command execution — see the approval contract below. |
 | `file_list` | native | P | Directory listing. Unchanged. |
 | `web_search` | native | P | Unchanged. |
-| `memory_query` | native | T | Retrieval entry point. Emits a per-signal trace row on every call — see D3. Richer return records (supersede state, trust, contradiction flags) are [X]: they require the memory data model. |
-| `memory_propose` | native | X | Write path via proposal to a commit gate. Ships with the gate itself in memory_roadmap.md MR3 (M12) — tool and gate land together, after M10.4's proposal-return-type pattern exists. Until then, memory writes continue through the present writers (session lifecycle, UI promotion, dedup, index rebuild). |
+| `memory_query` | native | S / R | Retrieval entry point is shipped. Its production trace/evaluation contract remains MR0 closure work — see D3. Richer return records are [X]: they require the memory data model. |
+| `memory_propose` | native | X | Write path through M12's persistent memory proposal/decision gate. It does not reuse the manual-action `Result.Proposal` boolean. |
 
-### `exec` and the approval contract [T]
+### `exec` and the approval contract [S]
 
 Commands are argv arrays, not `sh -c` strings. This drops pipes, globs, and redirection;
 if that proves too limiting in practice, shell-string mode can be revisited as a
@@ -96,13 +100,14 @@ prompt (`internal/approvals`). This preserves the shipped M7 decision that no re
 allow ever lets a command skip the per-call prompt. The allowlist shrinks the gray zone;
 the human remains the security boundary.
 
-### Structural enforcement of recon-first [T]
+### Structural enforcement of recon-first [S]
 
-`edit` requires an anchor hash that only `ast_find` can produce. The model cannot skip
-recon because it cannot fabricate a valid input. Encoded as a type-level dependency in
-the tool schema, not as prompt guidance.
+Edits to existing files require an anchor hash emitted by the parser-backed discovery
+tools. Whole-file mode is reserved for new-file creation. The model cannot safely skip
+recon because it cannot fabricate a matching anchor. This is encoded in the tool schema,
+not left as prompt guidance.
 
-### Toolchain preconditions [T]
+### Toolchain preconditions [S]
 
 The Harness targets machines that build Go — the `go` binary is a stated precondition,
 not a hidden dependency: an environment that cannot build the agent's output is not a
@@ -113,7 +118,7 @@ it would place the shipped binary under copyleft; it would also graft its ~230-m
 require graph onto `go.mod` and lean on an API surface the maintainers explicitly do
 not support. Subprocess invocation carries none of those costs.
 
-### Version control tools [T]
+### Version control tools [S]
 
 Tiered by reversibility. The tier determines the gate.
 
@@ -121,7 +126,7 @@ Tiered by reversibility. The tier determines the gate.
 |---|---|---|
 | Read | `git_status`, `git_diff`, `git_log`, `gh_pr_wait` | Agent-callable, no gate. High-value B2 folder targets. |
 | Local write | `git_commit`, `git_branch`, `git_checkout` | Agent-callable, scope-checked, gated. Undo via recorded ref SHA. |
-| External | `git_push`, `gh_pr_create`, `gh_pr_merge` | Never autonomous. Emits a proposal for human approval; the approval requirement is enforced by the tool's return type, not by policy. |
+| External | `git_push`, `gh_pr_create`, `gh_pr_merge` | Never autonomous. Validates inputs and emits a manual-action proposal; it performs no network mutation. |
 
 Each tool is atomic. Compound sequences (merge → return to main → delete branch) are not
 collapsed into single tools: a compound tool with an irreversible step in the middle has
@@ -129,7 +134,18 @@ no correct return value for partial failure. Sequencing belongs above the tool l
 in M11's DSL runner once it can call tools, and until then in the agent loop under
 per-step gates.
 
-#### `gh_pr_wait` [T]
+#### Manual-action proposal contract [S]
+
+`git_push`, `gh_pr_create`, and `gh_pr_merge` do not implement an approve-and-execute
+workflow. They return explanatory command text with `Result.Proposal = true`; the agent
+loop currently injects that result like any other tool result and the user executes the
+action outside Harness. The boolean is metadata, not a persisted approval state machine.
+
+This distinction matters for future consumers: M11 may surface these results more richly,
+but must not treat them as completed actions, and M12's memory commit gate must define its
+own persistent proposal/decision workflow rather than claiming to reuse this boolean.
+
+#### `gh_pr_wait` [S]
 
 Blocks until the given PR's CI reaches a terminal state, then returns
 `{green, red, timed_out}`; red carries the failing check names and log handles
@@ -142,7 +158,7 @@ legitimate long wait from a hung tool. It closes the tier-3 workflow as the only
 non-proposal step in it: `gh_pr_create` (proposal) → `gh_pr_wait` → `gh_pr_merge`
 (proposal).
 
-### Repo scoping [T]
+### Repo scoping [S]
 
 Memory repositories are also git — **one per project, paths in the projects table,
 optionally user-supplied** [P]. And there are already two go-git consumers with disjoint
@@ -164,7 +180,7 @@ Package shape: `internal/git` remains the single go-git wrapper and grows the wo
 operations; the scope predicate lives at the tool boundary in `internal/tools`, not in
 the wrapper — the wrapper stays policy-free so the memory writer can keep using it.
 
-### Undo for tier 2 [T]
+### Undo for tier 2 [S]
 
 Two records per tier-2 write, different jobs:
 
@@ -179,7 +195,7 @@ Two records per tier-2 write, different jobs:
   file; malformed entries corrupt it). v6 is alpha: pin the exact tag and re-verify the
   storer surface on each bump. The library has no `gc`, so nothing expires these logs.
 
-### Tool admission rule [T]
+### Tool admission rule [S]
 
 A new tool must belong to an existing class and must not overlap the charter of an
 existing tool in that class. A new class requires architecture-level justification of the
@@ -188,7 +204,7 @@ deliberately.
 
 ---
 
-## B. Governor-side transforms [T]
+## B. Governor-side transforms [S]
 
 **Naming:** the Governor is this component — the tool-result and context layer between
 execution and context assembly. The run-limit / loop-detection concept currently called
@@ -203,41 +219,42 @@ Not model-callable. These fire on results the model never sees raw.
 | B1 | Query-aware skeletonizer | Full bodies for spans relevant to the active task, signatures elsewhere. Consumes `read` output and the parser front-end. The active query is an input an external proxy structurally cannot have. Query-aware from the start. |
 | B2 | Tool-output folder | Per-tool output compression for the tools in section A. One folder per toolchain tool, not a dispatcher. |
 | B3 | Tee-on-failure | Full unfiltered output to disk on non-zero exit; context receives the compressed form plus a retrieval handle (stable locator). |
-| B4 | Observation mask | Stale tool outputs replaced with placeholders; reasoning preserved. |
+| B4 | Observation mask | Deferred; stale-output masking needs real long-running task data before admission. |
 | B5 | Token gate | Recount after every transform with the **same counter used for budgeting**, auto-revert when a transform increased the count. Correct against the present rune-quarter heuristic [P] because both sides use the same counter; swapping in a real tokenizer via the existing `WithTokenizer` hook is a separate accuracy improvement, not a B5 prerequisite. |
 | B6 | MCP result normalizer | Deferred — no MCP servers admitted. If admitted, results enter this same chain. No bypass path. |
 
-Package homes are documented in architecture.md as each lands (proposed:
-`internal/governor` for B1–B5, `internal/git` growing workspace ops, `gh` under `internal/gh` or beside it, `internal/tools` continuing to
-own the callable surface). Documentation follows code by at most the same change.
+Shipped package homes are `internal/governor` for B1/B2/B3/B5,
+`internal/parser` for language front-ends, `internal/git` for go-git operations, and
+`internal/tools` for the callable surface including GitHub proposals/polling. B4 and B6
+remain deferred.
 
 ---
 
 ## C. Memory commit layer [X — memory roadmap]
 
-Everything in this section presumes a record-based memory data model — stable IDs,
-supersede chains, trust/origin scores, contradiction flags, rejected-alternatives-as-rows
-— **which does not exist**. Memory today is markdown + `vectors.bin`/`manifest.json` in
-per-project git repos, with SQLite holding config/metrics/projects [P]. Present writers:
-session lifecycle (summarize → episode → commit), UI promotion, dedup, index rebuild.
+Everything in this section presumes origin-aware retrieval records, stable record IDs,
+append-only proposal/decision events, and supersede relations — **which do not exist**.
+Memory today is markdown + `vectors.bin`/`manifest.json` in per-project git repos, with
+SQLite holding config/metrics/projects [P]. Semantic writers are session summaries and UI
+promotion; session logs/sidecars and indexes are supporting or derived writes.
 
 These are therefore target contracts for the memory roadmap, recorded here so the tool
 layer doesn't contradict them:
 
-- **C1 — commit gate.** Single writer to memory, verdicts `{accept, reject, supersede,
-  hold}`, append-only audit contract. Consolidating the four present writers behind it is
-  memory-roadmap work (memory_roadmap.md MR3: one gate with an append-only verdict log
-  committed to the project memory repo).
+- **C1 — semantic-write gate.** Session summaries, facts, notes, and `memory_propose` use
+  a persistent project-local proposal/decision workflow. Decisions are
+  `{accept, reject, hold}`; supersession is a relation on an accepted record, not a
+  verdict. Immutable payloads and `memory_events.jsonl` are committed to the project repo.
 - **C2 — hard-lock predicate.** The memory-repo scoping predicate above **is the M9
   slice of C2** and ships in M10 phase 2 with the tier-2 git tools — it needs only the
   projects table, not the record model. The fuller hard-lock set follows the memory
   roadmap.
-- **C3 — origin class.** The M10 slice: `ast_*` output is extraction-class, model output
-  is inference-class, and the tool layer records which. Attaching origin to memory
-  records is memory-roadmap work.
+- **C3 — origin class.** The M10 slice records how tool output was produced. M12 MR1 adds
+  the origin of each underlying memory hit, fails unknown origins closed to inference,
+  and treats origin as metadata rather than authorization.
 
-The sequencing rule: **no memory schema work starts before D3 reports**, because the
-project has no way to know whether a memory change helps without it.
+The sequencing rule: **no memory schema work starts before M11 and before MR0 reports**
+under the current one-milestone-at-a-time policy.
 
 ---
 
@@ -245,30 +262,59 @@ project has no way to know whether a memory change helps without it.
 
 | # | Pass | Status | Notes |
 |---|---|---|---|
-| D3 | Retrieval quality harness | T | See contract below. Built natively. |
-| D1 | Failure aggregator | T (late) | Groups recurring failures across runs into evidence-backed issues, surfaced to a human. No auto-apply. |
+| D3 | Retrieval quality harness | R | Binary, startup sink wiring, and trace types exist, but sink error/close handling, separate versioned trace and label schemas, and the ten-query baseline are still required. |
+| D1 | Failure aggregator | Deferred | Groups recurring failures across runs into evidence-backed issues, surfaced to a human. No auto-apply. |
 | D2 | Replay-as-regression | X | Requires run material in a queryable store — depends on what the memory roadmap decides to persist. Not "already held" anywhere today. |
-| D4 | Invariant CI checks | T (late) | Scope-predicate completeness, allowlist deny-by-default. Plain Go tests. Supersede-chain acyclicity joins when supersede chains exist [X]. |
+| D4 | Invariant CI checks | Deferred | Scope-predicate completeness, allowlist deny-by-default. Plain Go tests. Supersede-chain acyclicity joins when supersede chains exist [X]. |
 
-### D3 contract [T]
+### D3 / MR0 closure contract [R]
 
 Retrieval today [P] is a two-signal weighted blend:
-`semantic_weight * similarity + recency_weight * exp_decay`. The trace contract is
-**per-signal contribution**, not per-list ranks:
+`semantic_weight * similarity + recency_weight * exp_decay`. Startup already installs the
+trace sink when construction succeeds. MR0 is not complete until construction/emission
+failures are surfaced, shutdown closes the sink, and each artifact has its own versioned
+contract: runtime/tests/docs share the trace schema, while evaluator/tests/docs share the
+separate labeled-query schema.
 
 ```
-{query_id, candidate_id, signal_values{similarity, recency_decay}, weights, final_score, returned}
+{
+  version,
+  record_type,           // "call" | "candidate"
+  project_slug,
+  query_id,              // full SHA-256 hex; never the raw query
+  candidate_id,          // project-relative episode path on candidate rows
+  semantic,
+  recency,
+  semantic_weight,
+  recency_weight,
+  final_score,
+  rank,                  // one-based final-score rank
+  returned,              // selected into the configured top-K
+  outcome,               // scored | unscoreable | error on call rows
+  timestamp
+}
 ```
 
-one row per candidate per call — `query_id` is a hash of the query text, so no raw
-query strings land in trace rows. Emission happens at the retrieval choke point
-(`retrieval.ScoreEpisodePaths`), so the prompt-assembler path is measured as well;
-`memory_query` inherits emission by construction. Part of the retrieval contract, not
-a debug flag. This is implementable against the present blend and survives retrieval
-becoming an N-signal fusion later — new signals add keys, the schema holds. Measurement:
-precision@k / recall@k against a labeled query set, whose labels accumulate from real
-work starting in phase 1. The full instrumentation contract (trace storage, labeled-set
-format, eval binary) is memory_roadmap.md MR0 — the same work, specified once there.
+Each invocation emits one call row. A scoreable invocation with candidates additionally
+emits one candidate row per candidate; an unscoreable or failed invocation records its
+outcome without raw query text or error payloads. Emission happens at
+`retrieval.ScoreEpisodePaths`, so the prompt-assembler and `memory_query` paths are both
+measured. Both callers pass trace context containing `project_slug` and their requested
+top-K; this namespaces otherwise-identical paths and gives `returned` one unambiguous
+meaning.
+
+The canonical labeled set is one NDJSON file per project at
+`~/.harness/eval/retrieval/<project-slug>.ndjson`:
+
+```json
+{"version":1,"query":"the Go AST package discussion","relevant":["episodes/coder/2025-01-15T10:30:00Z.md"]}
+```
+
+The evaluator reports Precision@3 and Recall@3 for semantic-only, recency-only, and the
+configured blend; MRR may be reported as an additional diagnostic. It rejects fewer than
+ten valid labeled rows for the MR0 baseline mode and writes a machine-readable result
+under `~/.harness/eval/retrieval/results/`. The full acceptance gate is specified once in
+memory_roadmap.md MR0.
 
 D3 is the evaluation method the memory roadmap is gated on.
 
@@ -279,33 +325,37 @@ D3 is the evaluation method the memory roadmap is gated on.
 **M10.1 — auditable edit loop**
 `ast_map` (single-file tier), `ast_find`, `read` (replaces `file_read`), `edit` (replaces
 `file_write`), `git_status`, `git_diff`, `git_log`, B1, B3, C3 M10-slice.
-Begin the D3 labeled query set.
+Label collection was intended to begin here, but no accepted baseline was recorded.
 
 **M10.2 — execution, compression, local VC writes**
 `exec` (replaces `shell_exec`, allowlist as deny filter + existing approval prompt),
 `go_test`, `go_lint`, `git_commit`, `git_branch`, `git_checkout`, B2, B5, **C2 predicate,
 ref-SHA recording, reflog wiring** — the write tools and their scoping/undo ship
 together; write tools first and lock later is the one ordering that must not happen.
-Continue D3 labels.
+M10.3 closure now owns collecting the first ten real labels and recording the baseline;
+implementation checkboxes do not imply those observations happened.
 
-**M10.3 — retrieval instrumentation**
-`memory_query`, trace emission at `ScoreEpisodePaths` (covering the assembler path and
-the tool), D3 harness. Ships against the present two-signal blend; requires no memory
-schema change. This phase **is** memory_roadmap.md's MR0 gate.
+**M10.3 — retrieval instrumentation (implementation landed; MR0 closure pending)**
+`memory_query`, trace types at `ScoreEpisodePaths`, startup sink installation, and the D3
+binary have landed. Sink error/close handling, separate versioned trace and label schemas,
+evaluator alignment, a ten-query labeled set, and a recorded baseline remain required.
+This phase **is** memory_roadmap.md's MR0 gate and is not accepted until those items pass.
 
 **M10.4 — external VC**
-`git_push`, `gh_pr_create`, `gh_pr_merge` behind the proposal-return-type gate, plus
+`git_push`, `gh_pr_create`, and `gh_pr_merge` as manual-action proposals, plus
 `gh_pr_wait` closing the create → wait-green → merge workflow. GitHub
 token from environment variable only — never persisted, never in config, never rendered
 by `/config`, never in model context. D1 lands here or after M11, whichever the failure
 volume justifies.
 
 **Then M11** — Pipeline DSL runner (already specced in roadmap.md/dsl_roadmap.md),
-binding tool calls against this surface; M10 joins M7 and M9 as its dependencies.
+binding tool calls against this surface; M10 joins M7 and M9 as its dependencies. Under
+the one-milestone-at-a-time rule, M10.3/MR0 closure completes before M11 begins; M12 then
+starts only after M11 and consumes the recorded MR0 baseline as evidence.
 
 **Deferred:** B6, D2, D4's supersede check, `memory_propose`/C1 (memory_roadmap.md MR3),
 and the memory roadmap itself (memory_roadmap.md, M12) — whose schema work starts only
-after M10.3/MR0 produces numbers.
+after M11 under the current one-milestone-at-a-time policy and after MR0 produces numbers.
 
 ---
 
@@ -335,5 +385,7 @@ choice rather than a library limit; revision resolution exists but verify which 
 resolve before depending on them; global git config is read-only (author identity already
 falls back to a stable harness identity in `internal/git` [P]); no gc.
 
-**gh via REST API over `net/http`**, not the `gh` CLI — no external binary, structured
-responses. Tools keep the `gh_` prefix; it names the toolchain, not the transport.
+**GitHub reads via REST API over `net/http`.** `gh_pr_wait` uses the Checks API without
+requiring the `gh` binary. The proposal-only create/merge tools may render a `gh` command
+for the human to run, but Harness does not execute it. The `gh_` prefix names the
+toolchain, not a guaranteed transport for manual proposals.
