@@ -29,12 +29,19 @@ func workspaceRepo(c CallInfo, args map[string]any) (*gitw.Repo, string, error) 
 
 // workspaceWriteRepo is workspaceRepo with an additional C2 scope check: git
 // write tools are rejected when their resolved root is a project memory repo.
+//
+// The check fails closed. An unconfigured predicate or an error resolving the
+// scope both reject the call, because neither is evidence that the root is
+// outside every memory repo.
 func workspaceWriteRepo(c CallInfo, args map[string]any) (*gitw.Repo, string, error) {
 	repo, absRoot, err := workspaceRepo(c, args)
 	if err != nil {
 		return nil, "", err
 	}
-	inMemoryRepo, err := isMemoryRepo(absRoot, c.MemoryRepoPaths)
+	if c.MemoryRepoCheck == nil {
+		return nil, "", fmt.Errorf("C2 scope check unavailable: %w", ErrMemoryScopeUnavailable)
+	}
+	inMemoryRepo, err := c.MemoryRepoCheck(absRoot)
 	if err != nil {
 		return nil, "", fmt.Errorf("C2 scope check failed for %s: %w", absRoot, err)
 	}

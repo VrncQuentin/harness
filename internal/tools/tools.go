@@ -34,9 +34,12 @@ type MemoryHit struct {
 // "api", "pipeline:deploy"). SessionID pins the call to the owning session
 // for audit trails and episode recording.
 type CallInfo struct {
-	ProjectSlug     string
-	SandboxRoots    []string
-	MemoryRepoPaths []string // C2: paths of all project memory repos; git_* write tools reject calls resolving here
+	ProjectSlug  string
+	SandboxRoots []string
+	// MemoryRepoCheck is the C2 hard lock: git_* write tools reject any call
+	// whose resolved root is a project memory repo. Evaluated at call time and
+	// fails closed — see MemoryRepoCheck and NewMemoryRepoCheck.
+	MemoryRepoCheck MemoryRepoCheck
 	SessionID       string
 	CallerIdentity  string
 	HTTPClient      *http.Client

@@ -26,7 +26,7 @@ func TestGitPushTool_DetachedHEAD(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := &gitPushTool{}
-	c := CallInfo{SandboxRoots: []string{dir}}
+	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), c, map[string]any{"root": dir})
 	if res.Error == "" || !strings.Contains(res.Error, "detached") {
 		t.Errorf("expected detached HEAD error, got error=%q content=%q", res.Error, res.Content)
@@ -43,7 +43,7 @@ func TestGitPushTool_Proposal(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := &gitPushTool{}
-	c := CallInfo{SandboxRoots: []string{dir}}
+	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), c, map[string]any{"root": dir})
 	if res.Error != "" {
 		t.Fatalf("unexpected error: %s", res.Error)
@@ -72,7 +72,7 @@ func TestGitPushTool_ExplicitBranchAndRemote(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := &gitPushTool{}
-	c := CallInfo{SandboxRoots: []string{dir}}
+	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), c, map[string]any{
 		"root":   dir,
 		"remote": "upstream",
@@ -99,7 +99,7 @@ func TestGitPushTool_ForceFlag(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := &gitPushTool{}
-	c := CallInfo{SandboxRoots: []string{dir}}
+	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), c, map[string]any{"root": dir, "force": true})
 	if res.Error != "" {
 		t.Fatalf("unexpected error: %s", res.Error)
@@ -119,7 +119,7 @@ func TestGitPushTool_C2MemoryRepoRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	tool := &gitPushTool{}
-	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoPaths: []string{dir}}
+	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: memoryScopeOver(dir)}
 	res := tool.Execute(context.Background(), c, map[string]any{"root": dir})
 	if res.Error == "" || !strings.Contains(res.Error, "C2") {
 		t.Errorf("expected C2 scope error, got error=%q", res.Error)

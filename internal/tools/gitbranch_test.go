@@ -11,7 +11,7 @@ func TestGitBranch_MissingName(t *testing.T) {
 	initRepoWithCommit(t, dir)
 
 	tool := &gitBranchTool{}
-	ci := CallInfo{SandboxRoots: []string{dir}}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), ci, map[string]any{"root": dir})
 	if res.Error == "" {
 		t.Fatal("expected error for missing name, got none")
@@ -20,7 +20,7 @@ func TestGitBranch_MissingName(t *testing.T) {
 
 func TestGitBranch_MissingRoot(t *testing.T) {
 	tool := &gitBranchTool{}
-	ci := CallInfo{SandboxRoots: []string{t.TempDir()}}
+	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), ci, map[string]any{"name": "new-branch"})
 	if res.Error == "" {
 		t.Fatal("expected error for missing root, got none")
@@ -32,7 +32,7 @@ func TestGitBranch_C2MemoryRepoRejected(t *testing.T) {
 	initRepoWithCommit(t, dir)
 
 	tool := &gitBranchTool{}
-	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoPaths: []string{dir}}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: memoryScopeOver(dir)}
 	res := tool.Execute(context.Background(), ci, map[string]any{"root": dir, "name": "bad"})
 	if res.Error == "" {
 		t.Fatal("expected C2 scope error, got none")
@@ -47,7 +47,7 @@ func TestGitBranch_CreatesFromHEAD(t *testing.T) {
 	initRepoWithCommit(t, dir)
 
 	tool := &gitBranchTool{}
-	ci := CallInfo{SandboxRoots: []string{dir}}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), ci, map[string]any{
 		"root": dir,
 		"name": "feature-x",

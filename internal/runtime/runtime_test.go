@@ -1369,9 +1369,13 @@ func seedRequiredConfigFiles(t *testing.T, cfg *config.Config) {
 type runtimeProjectStoreStub struct {
 	projects map[string]project.Project
 	dirs     map[string][]project.Directory
+	listErr  error // when set, List fails — exercises fail-closed callers
 }
 
 func (s *runtimeProjectStoreStub) List(bool) ([]project.Project, error) {
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
 	projects := make([]project.Project, 0, len(s.projects))
 	for _, p := range s.projects {
 		projects = append(projects, p)
