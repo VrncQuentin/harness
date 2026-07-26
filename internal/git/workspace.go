@@ -16,6 +16,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/filemode"
 	fdiff "github.com/go-git/go-git/v6/plumbing/format/diff"
+	"github.com/go-git/go-git/v6/plumbing/format/index"
 	"github.com/go-git/go-git/v6/plumbing/format/reflog"
 	"github.com/go-git/go-git/v6/plumbing/object"
 	"github.com/go-git/go-git/v6/plumbing/storer"
@@ -38,36 +39,31 @@ func (r *Repo) HeadSHA() (string, error) {
 	return head.Hash().String(), nil
 }
 
-// WorkspaceStage stages files for the next commit. Paths are relative to the
-// repository root (forward slashes). When files is empty all modified and
-// untracked files are staged (equivalent to git add -A).
-func (r *Repo) WorkspaceStage(files []string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	wt, err := r.repo.Worktree()
-	if err != nil {
-		return fmt.Errorf("git: worktree %s: %w", r.path, err)
-	}
-	if len(files) == 0 {
-		if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
-			return fmt.Errorf("git: stage all %s: %w", r.path, err)
-		}
-		return nil
-	}
-	for _, f := range files {
-		if _, err := wt.Add(f); err != nil {
-			return fmt.Errorf("git: add %s: %w", f, err)
-		}
-	}
-	return nil
-}
-
-// WorkspaceCommit creates a commit from the current index with msg.
+// WorkspaceStageAndCommit stages files and creates a commit from them as a
+// single operation. Paths are relative to the repository root (forward
+// slashes); when files is empty all modified and untracked files are staged
+// (equivalent to git add -A).
+//
+// Staging and committing are one indivisible step on purpose. Performed as two
+// calls they left two ways to corrupt a user's work in progress:
+//
+//   - A commit that failed after staging succeeded left the staged changes in
+//     the index, so a write that reported failure had in fact half-happened.
+//   - Two concurrent calls interleaved, and one task's commit swept up the
+//     other's staged files.
+//
+// The index is snapshotted before staging and restored if the commit fails, so
+// a failed call leaves the index as it found it.
+//
 // It appends a reflog entry for ergonomic undo via git reset --hard HEAD@{1}.
 // The returned newSHA is the new commit's hex SHA; preOpSHA is the HEAD SHA
 // before the commit (empty for an initial commit). preOpSHA is the
 // authoritative recovery token — the caller should record it before the commit.
-func (r *Repo) WorkspaceCommit(msg string) (newSHA, preOpSHA string, err error) {
+func (r *Repo) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preOpSHA string, err error) {
+	lock := r.writeLock()
+	lock.Lock()
+	defer lock.Unlock()
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -79,13 +75,29 @@ func (r *Repo) WorkspaceCommit(msg string) (newSHA, preOpSHA string, err error) 
 	if wtErr != nil {
 		return "", "", fmt.Errorf("git: worktree %s: %w", r.path, wtErr)
 	}
+
+	// Snapshot the index for rollback before it is mutated.
+	indexBefore, idxErr := r.snapshotIndex()
+	if idxErr != nil {
+		return "", "", fmt.Errorf("git: commit %s: snapshot index: %w", r.path, idxErr)
+	}
+
+	if stageErr := r.stageLocked(wt, files); stageErr != nil {
+		return "", "", errors.Join(stageErr, r.restoreIndex(indexBefore))
+	}
+
 	name, email := r.authorIdentity()
 	now := time.Now()
 	hash, commitErr := wt.Commit(msg, &gogit.CommitOptions{
 		Author: &object.Signature{Name: name, Email: email, When: now},
 	})
 	if commitErr != nil {
-		return "", "", fmt.Errorf("git: commit %s: %w", r.path, commitErr)
+		// Undo the staging this call performed: a failed write must not leave
+		// the index holding changes the user did not stage.
+		return "", "", errors.Join(
+			fmt.Errorf("git: commit %s: %w", r.path, commitErr),
+			r.restoreIndex(indexBefore),
+		)
 	}
 	newSHA = hash.String()
 
@@ -107,6 +119,52 @@ func (r *Repo) WorkspaceCommit(msg string) (newSHA, preOpSHA string, err error) 
 	}
 
 	return newSHA, preOpSHA, nil
+}
+
+// stageLocked stages files into the index. The caller must hold both locks.
+func (r *Repo) stageLocked(wt *gogit.Worktree, files []string) error {
+	if len(files) == 0 {
+		if err := wt.AddWithOptions(&gogit.AddOptions{All: true}); err != nil {
+			return fmt.Errorf("git: stage all %s: %w", r.path, err)
+		}
+		return nil
+	}
+	for _, f := range files {
+		if _, err := wt.Add(f); err != nil {
+			return fmt.Errorf("git: add %s: %w", f, err)
+		}
+	}
+	return nil
+}
+
+// snapshotIndex returns a deep copy of the current index for rollback. Entries
+// are copied rather than aliased because staging mutates the index in place.
+func (r *Repo) snapshotIndex() (*index.Index, error) {
+	current, err := r.repo.Storer.Index()
+	if err != nil {
+		return nil, err
+	}
+	snapshot := *current
+	snapshot.Entries = make([]*index.Entry, len(current.Entries))
+	for i, entry := range current.Entries {
+		copied := *entry
+		snapshot.Entries[i] = &copied
+	}
+	return &snapshot, nil
+}
+
+// restoreIndex puts back a snapshot taken by snapshotIndex. It runs only after
+// an operation has already failed, so its own error is reported alongside the
+// original rather than replacing it: the caller needs to know both that the
+// write failed and that the index was left dirty.
+func (r *Repo) restoreIndex(snapshot *index.Index) error {
+	if snapshot == nil {
+		return nil
+	}
+	if err := r.repo.Storer.SetIndex(snapshot); err != nil {
+		return fmt.Errorf("git: %s: staged changes could not be rolled back: %w", r.path, err)
+	}
+	return nil
 }
 
 // CreateBranch creates a local branch named name starting at startPoint

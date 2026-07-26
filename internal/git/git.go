@@ -8,6 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +34,35 @@ type Repo struct {
 	repo *gogit.Repository
 	path string
 	mu   sync.Mutex
+}
+
+// repoWriteLocks serializes multi-step writes per repository path.
+//
+// r.mu cannot do this job: a handle is opened per tool call, so two
+// concurrent calls against the same repository hold two different mutexes and
+// exclude nothing. Index and ref updates are shared filesystem state, so the
+// lock has to be keyed by the repository rather than by the handle.
+//
+// This guards harness-internal concurrency only. A user running git in the
+// same repository at the same time is outside its reach.
+var repoWriteLocks sync.Map // lock key -> *sync.Mutex
+
+// writeLock returns the mutex guarding writes to r's repository.
+func (r *Repo) writeLock() *sync.Mutex {
+	key := filepath.Clean(r.path)
+	if resolved, err := filepath.EvalSymlinks(key); err == nil {
+		key = resolved
+	}
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	actual, _ := repoWriteLocks.LoadOrStore(key, &sync.Mutex{})
+	lock, ok := actual.(*sync.Mutex)
+	if !ok {
+		// Unreachable: only *sync.Mutex is ever stored.
+		return &sync.Mutex{}
+	}
+	return lock
 }
 
 // Open opens an existing git repository at path. It returns a wrapped
