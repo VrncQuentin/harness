@@ -2,6 +2,7 @@ package git
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/go-git/go-git/v6/plumbing"
 )
 
 func newWorkspaceRepo(t *testing.T) *Repo {
@@ -727,6 +730,170 @@ func TestCheckoutSerializesAgainstStageAndCommit(t *testing.T) {
 	close(errs)
 	for err := range errs {
 		t.Errorf("checkout racing stage-and-commit: %v", err)
+	}
+}
+
+// A create must never move an existing branch. SetReference overwrites a ref
+// unconditionally, so a silent reset would discard the old tip with no
+// pre-operation record of it anywhere.
+func TestCreateBranchRejectsExisting(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeRepoFile(t, repo, "a.txt", "one\n")
+	first, err := repo.Commit("first", []string{"a.txt"})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if _, _, err = repo.CreateBranch("feature", ""); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+
+	// Move HEAD on so a reset would be observable.
+	writeRepoFile(t, repo, "a.txt", "two\n")
+	second, err := repo.Commit("second", []string{"a.txt"})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if first == second {
+		t.Fatal("second commit did not advance HEAD; test cannot detect a reset")
+	}
+
+	_, _, err = repo.CreateBranch("feature", "")
+	if !errors.Is(err, ErrBranchExists) {
+		t.Fatalf("re-create error = %v, want ErrBranchExists", err)
+	}
+	if !strings.Contains(err.Error(), first) {
+		t.Errorf("error %q does not report the existing tip %s", err, first)
+	}
+
+	ref, err := repo.repo.Reference(plumbing.NewBranchReferenceName("feature"), false)
+	if err != nil {
+		t.Fatalf("Reference after refused create: %v", err)
+	}
+	if got := ref.Hash().String(); got != first {
+		t.Errorf("branch tip = %s, want %s — the refused create moved it anyway", got, first)
+	}
+}
+
+func TestCreateBranchRejectsInvalidName(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeRepoFile(t, repo, "a.txt", "one\n")
+	if _, err := repo.Commit("first", []string{"a.txt"}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// git-check-ref-format rejects each of these.
+	for _, name := range []string{"has space", "has..dots", "trailing.lock", "-leading-dash", "ends/", "back\\slash"} {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := repo.CreateBranch(name, ""); err == nil {
+				t.Errorf("CreateBranch(%q) succeeded, want a validation error", name)
+			}
+		})
+	}
+}
+
+func TestCreateBranchFromStartPoint(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeRepoFile(t, repo, "a.txt", "one\n")
+	first, err := repo.Commit("first", []string{"a.txt"})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	writeRepoFile(t, repo, "a.txt", "two\n")
+	if _, err = repo.Commit("second", []string{"a.txt"}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	sha, preOpSHA, err := repo.CreateBranch("from-first", first)
+	if err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+	if sha != first {
+		t.Errorf("branch created at %s, want %s", sha, first)
+	}
+	if preOpSHA == "" {
+		t.Error("preOpSHA empty, want the HEAD SHA at call time")
+	}
+	if _, _, err = repo.CreateBranch("bad-start", "no-such-rev"); err == nil {
+		t.Error("CreateBranch with an unresolvable start point succeeded, want an error")
+	}
+}
+
+// The existence check is only a check if nothing can create the branch between
+// it and the ref write. Racing handles ask for the same name at different start
+// points: exactly one must win, and the loser must be refused rather than
+// silently resetting the winner's branch to its own start point.
+func TestCreateBranchConcurrentSameNameDifferentStartPoints(t *testing.T) {
+	dir := t.TempDir()
+	seed, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeRepoFile(t, seed, "a.txt", "one\n")
+	first, err := seed.Commit("first", []string{"a.txt"})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	writeRepoFile(t, seed, "a.txt", "two\n")
+	second, err := seed.Commit("second", []string{"a.txt"})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if first == second {
+		t.Fatal("commits share a SHA; the racers would be indistinguishable")
+	}
+
+	const racers = 8
+	startPoints := []string{first, second}
+
+	var wg sync.WaitGroup
+	type outcome struct {
+		sha string
+		err error
+	}
+	results := make(chan outcome, racers)
+	start := make(chan struct{})
+	for i := range racers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			// A separate handle each, as every tool call gets.
+			handle, oerr := Open(dir)
+			if oerr != nil {
+				results <- outcome{err: oerr}
+				return
+			}
+			<-start
+			sha, _, cerr := handle.CreateBranch("contended", startPoints[n%len(startPoints)])
+			results <- outcome{sha: sha, err: cerr}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var winners []string
+	for res := range results {
+		switch {
+		case res.err == nil:
+			winners = append(winners, res.sha)
+		case errors.Is(res.err, ErrBranchExists):
+			// The expected refusal for every loser.
+		default:
+			t.Errorf("unexpected error from a racing create: %v", res.err)
+		}
+	}
+	if len(winners) != 1 {
+		t.Fatalf("%d creates succeeded, want exactly 1 — the check and the ref write are not atomic", len(winners))
+	}
+
+	// The surviving branch must sit at the winner's start point, untouched by
+	// every refused create.
+	ref, err := seed.repo.Reference(plumbing.NewBranchReferenceName("contended"), false)
+	if err != nil {
+		t.Fatalf("Reference: %v", err)
+	}
+	if got := ref.Hash().String(); got != winners[0] {
+		t.Errorf("branch tip = %s, want the winning create's %s — a loser reset it", got, winners[0])
 	}
 }
 

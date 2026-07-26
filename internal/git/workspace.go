@@ -163,14 +163,44 @@ func (r *Repo) restoreIndex(snapshot *index.Index) error {
 	return nil
 }
 
+// ErrBranchExists is returned by CreateBranch when the named branch is already
+// present. Creating never moves an existing branch: SetReference overwrites a
+// ref unconditionally, so the old tip would be discarded with no pre-operation
+// record of it anywhere — the opposite of the reversible-write contract.
+// Callers that mean to move a branch must do so explicitly.
+var ErrBranchExists = errors.New("git: branch already exists")
+
 // CreateBranch creates a local branch named name starting at startPoint
 // (a branch name, tag, or commit SHA). If startPoint is empty HEAD is used.
 // It returns (sha, preOpSHA, err) where sha is the SHA the branch was created
 // at, and preOpSHA is the HEAD SHA at call time (for the caller to record).
+// The created ref has no pre-operation value by construction — an existing
+// branch is refused with ErrBranchExists — so undoing a create is deleting the
+// branch, not restoring a tip.
+//
+// The existence check and the ref write are both inside the repository-wide
+// lock. Split across it they would not be a check at all: two handles could
+// each find the name free and then set it to different start points, and the
+// second write would silently reset the branch the first had just created.
+//
 // A reflog entry is appended to the new branch's reflog.
 func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err error) {
 	unlock := r.lockRepo()
 	defer unlock()
+
+	refName := plumbing.NewBranchReferenceName(name)
+	if vErr := refName.Validate(); vErr != nil {
+		return "", "", fmt.Errorf("git: branch %q: %w", name, vErr)
+	}
+
+	// Refuse before touching anything: a create must never reset a branch.
+	existing, refErr := r.repo.Reference(refName, false)
+	switch {
+	case refErr == nil:
+		return "", "", fmt.Errorf("%w: %s is at %s", ErrBranchExists, name, existing.Hash())
+	case !errors.Is(refErr, plumbing.ErrReferenceNotFound):
+		return "", "", fmt.Errorf("git: branch %s: read existing ref: %w", name, refErr)
+	}
 
 	// Record HEAD SHA for pre-op tracking.
 	if head, herr := r.repo.Head(); herr == nil {
@@ -179,7 +209,9 @@ func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err 
 
 	// Resolve the starting commit.
 	var startHash plumbing.Hash
+	startDesc := startPoint
 	if startPoint == "" {
+		startDesc = "HEAD"
 		head, herr := r.repo.Head()
 		if herr != nil {
 			return "", "", fmt.Errorf("git: branch %s: resolve HEAD: %w", name, herr)
@@ -193,7 +225,6 @@ func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err 
 		startHash = *h
 	}
 
-	refName := plumbing.NewBranchReferenceName(name)
 	ref := plumbing.NewHashReference(refName, startHash)
 	if err := r.repo.Storer.SetReference(ref); err != nil {
 		return "", "", fmt.Errorf("git: branch %s: set ref: %w", name, err)
@@ -207,7 +238,7 @@ func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err 
 			OldHash:   plumbing.ZeroHash,
 			NewHash:   startHash,
 			Committer: reflog.Signature{Name: n, Email: e, When: now},
-			Message:   "branch: Created from " + startPoint,
+			Message:   "branch: Created from " + startDesc,
 		})
 	}
 

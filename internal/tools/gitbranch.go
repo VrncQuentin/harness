@@ -2,8 +2,11 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+
+	gitw "github.com/VrncQuentin/harness/internal/git"
 )
 
 // gitBranchTool implements the git_branch tool: tier-2 local write.
@@ -53,11 +56,18 @@ func (t *gitBranchTool) Execute(_ context.Context, c CallInfo, args map[string]a
 
 	sha, preOpSHA, err := repo.CreateBranch(name, startPoint)
 	if err != nil {
+		if errors.Is(err, gitw.ErrBranchExists) {
+			return Result{Error: fmt.Sprintf(
+				"git_branch: %v — creating would discard that tip. Use git_checkout to switch to it, or pick another name.", err)}
+		}
 		return Result{Error: fmt.Sprintf("git_branch: %v", err)}
 	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "created branch %q at %s in %s\n", name, sha, absRoot)
+	// The branch did not exist before this call, so the reversal is deletion,
+	// not restoring a previous tip.
+	fmt.Fprintf(&b, "undo: git branch -D %s\n", name)
 	if preOpSHA != "" {
 		fmt.Fprintf(&b, "pre-op HEAD SHA: %s", preOpSHA)
 	}
