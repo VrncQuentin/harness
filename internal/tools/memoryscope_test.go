@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,6 +32,20 @@ func TestNewMemoryRepoCheck(t *testing.T) {
 	other := t.TempDir()
 	boom := errors.New("store offline")
 
+	// The nested path exists on disk deliberately. isMemoryRepo canonicalizes
+	// each side with filepath.EvalSymlinks, which fails on a path that is not
+	// there and falls back to the raw string — so a missing subdirectory is
+	// compared unresolved against a resolved root, and the two disagree
+	// whenever the given form is not already canonical (an 8.3 short name such
+	// as the RUNNER~1 temp directory on Windows CI). That is a real gap in the
+	// predicate rather than a test artifact, and it is out of scope here: this
+	// PR changes when the scope is resolved, not how paths are compared. #391
+	// closes it by resolving the deepest existing ancestor.
+	nested := filepath.Join(repo, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
 	tests := []struct {
 		name    string
 		list    func() ([]string, error)
@@ -47,7 +62,7 @@ func TestNewMemoryRepoCheck(t *testing.T) {
 		{
 			name:    "root inside a memory repo",
 			list:    func() ([]string, error) { return []string{repo}, nil },
-			absRoot: filepath.Join(repo, "nested"),
+			absRoot: nested,
 			want:    true,
 		},
 		{
