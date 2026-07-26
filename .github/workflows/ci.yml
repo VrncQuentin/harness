@@ -56,5 +56,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # -count=1 keeps a cached PASS from standing in for a run that never
+      # happened. Linux carries the race detector: it needs cgo, and the
+      # harness's own development target (windows/386) cannot run it at all,
+      # so this job is the only place data races are detected.
       - name: Test
-        run: go test ./...
+        if: runner.os != 'Linux'
+        run: go test -count=1 ./...
+      - name: Test (race detector)
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 ./...
