@@ -46,6 +46,7 @@ internal/
   memoryops/        ← semantic-memory operations (embed-on-save, rebuild, dedup, scoring)
   metrics/          ← typed metrics API + recorder
   parser/           ← source symbol extraction backing ast_map / ast_find
+  pathid/           ← physical filesystem path identity (sandbox, C2 lock, git write lock)
   proc/             ← process manager (llama-server + embedder)
   project/          ← project model and store contract
   prompt/           ← layered prompt assembler

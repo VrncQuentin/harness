@@ -3,60 +3,38 @@ package tools
 import (
 	"fmt"
 	"path/filepath"
-	"runtime"
 	"strings"
+
+	"github.com/VrncQuentin/harness/internal/pathid"
 )
 
-// validatePath checks that path (after symlink resolution) is within at
+// validatePath checks that path (after physical resolution) is within at
 // least one sandbox root. If sandbox roots are empty, all paths are rejected.
+//
+// A resolution failure rejects the call rather than moving on to the next
+// root. An unresolvable path is not a path known to be outside the sandbox —
+// it is a path whose location is unknown, and the sandbox is a security
+// boundary, so the unknown case has to be a refusal.
 func validatePath(path string, roots []string) (string, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("tools: cannot resolve path: %w", err)
 	}
+	resolvedTarget, err := pathid.Resolve(abs)
+	if err != nil {
+		return "", fmt.Errorf("tools: cannot resolve path %s: %w", path, err)
+	}
 	for _, root := range roots {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}
-		resolvedRoot, err := filepath.EvalSymlinks(filepath.Clean(root))
+		resolvedRoot, err := pathid.Resolve(root)
 		if err != nil {
 			return "", fmt.Errorf("tools: resolve sandbox root %s: %w", root, err)
 		}
-		resolvedAncestor, err := resolveExistingAncestor(abs)
-		if err != nil {
-			continue
-		}
-		if pathWithinRoot(resolvedAncestor, resolvedRoot) {
+		if pathid.WithinRoot(resolvedTarget, resolvedRoot) {
 			return abs, nil
 		}
 	}
 	return "", fmt.Errorf("%w: %s", ErrSandboxViolation, path)
-}
-
-// resolveExistingAncestor evaluates symlinks on the deepest path component
-// already present on disk. This prevents a lexically in-root missing target
-// below a symlink or junction from escaping its sandbox.
-func resolveExistingAncestor(path string) (string, error) {
-	current := filepath.Clean(path)
-	for {
-		resolved, err := filepath.EvalSymlinks(current)
-		if err == nil {
-			return resolved, nil
-		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			return "", err
-		}
-		current = parent
-	}
-}
-
-func pathWithinRoot(path, root string) bool {
-	path = filepath.Clean(path)
-	root = filepath.Clean(root)
-	if runtime.GOOS == "windows" {
-		path = strings.ToLower(path)
-		root = strings.ToLower(root)
-	}
-	return path == root || strings.HasPrefix(path, root+string(filepath.Separator))
 }
