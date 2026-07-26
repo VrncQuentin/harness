@@ -932,6 +932,50 @@ func TestWorkspaceStageAndCommitWritesBothReflogs(t *testing.T) {
 	}
 }
 
+// A detached HEAD has no branch to record, and HEAD must not be written twice
+// for one move. Repository.Head() resolves the symbolic ref — it reports the
+// branch name when attached but "HEAD" when detached — so deriving the branch
+// from it appends HEAD's log twice, and HEAD@{1} then resolves to the new
+// commit rather than the one before it.
+func TestWorkspaceStageAndCommitDetachedHeadWritesHeadLogOnce(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeRepoFile(t, repo, "a.txt", "one\n")
+	first, err := repo.Commit("first", []string{"a.txt"})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Detach: point HEAD straight at the commit instead of at a branch.
+	detached := plumbing.NewHashReference(plumbing.HEAD, plumbing.NewHash(first))
+	if err = repo.repo.Storer.SetReference(detached); err != nil {
+		t.Fatalf("SetReference: %v", err)
+	}
+	if raw, rerr := repo.repo.Reference(plumbing.HEAD, false); rerr != nil || raw.Type() == plumbing.SymbolicReference {
+		t.Fatalf("HEAD is not detached (type %v, err %v); the test cannot detect the duplicate", raw.Type(), rerr)
+	}
+
+	writeRepoFile(t, repo, "a.txt", "two\n")
+	newSHA, preOpSHA, warn, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "detached commit")
+	if err != nil {
+		t.Fatalf("detached commit: %v", err)
+	}
+	if warn != nil {
+		t.Fatalf("unexpected warning: %v", warn)
+	}
+	if preOpSHA != first {
+		t.Errorf("preOpSHA = %s, want %s", preOpSHA, first)
+	}
+
+	headLog := reflogFile(t, repo, "HEAD")
+	if n := strings.Count(headLog, "commit: detached commit"); n != 1 {
+		t.Errorf("HEAD reflog has %d entries for one commit, want 1 — HEAD@{1} would skip the pre-op commit:\n%s", n, headLog)
+	}
+	// The entry must still describe the real move.
+	if !strings.Contains(headLog, first) || !strings.Contains(headLog, newSHA) {
+		t.Errorf("HEAD reflog entry does not record %s → %s:\n%s", first, newSHA, headLog)
+	}
+}
+
 // breakReflogs makes every reflog write fail by replacing .git/logs with a
 // regular file, so the directory the entries need cannot be created.
 func breakReflogs(t *testing.T, repo *Repo) {

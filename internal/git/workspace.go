@@ -121,11 +121,22 @@ func (r *Repo) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preO
 	// points at. Only the branch log was written before, which is why
 	// HEAD@{1} — which reads .git/logs/HEAD — did not resolve after a harness
 	// commit despite this method promising it.
+	//
+	// The branch is read from the raw HEAD reference, not from Head(). Head()
+	// resolves the symbolic ref and reports the branch name when attached but
+	// "HEAD" when detached, so using it would write HEAD's log twice on a
+	// detached commit — two entries for one move, which shifts HEAD@{1} onto
+	// the new commit instead of the one before it.
 	refs := []plumbing.ReferenceName{plumbing.HEAD}
-	if head, herr := r.repo.Head(); herr == nil {
-		refs = append(refs, head.Name())
+	var headErr error
+	rawHead, refErr := r.repo.Reference(plumbing.HEAD, false)
+	switch {
+	case refErr != nil:
+		headErr = fmt.Errorf("read HEAD reference: %w", refErr)
+	case rawHead.Type() == plumbing.SymbolicReference:
+		refs = append(refs, rawHead.Target())
 	}
-	warn = r.appendReflog(entry, refs...)
+	warn = errors.Join(headErr, r.appendReflog(entry, refs...))
 
 	return newSHA, preOpSHA, warn, nil
 }
