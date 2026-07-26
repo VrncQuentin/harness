@@ -2,8 +2,11 @@ package governor
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/VrncQuentin/harness/internal/parser"
 	"github.com/VrncQuentin/harness/internal/tools"
@@ -270,4 +273,78 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// readSpill returns the contents of the single file B3 wrote under cacheDir.
+func readSpill(t *testing.T, cacheDir string) string {
+	t.Helper()
+	dir := filepath.Join(cacheDir, "toolout")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir %s: %v", dir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spill dir holds %d files, want exactly 1", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	return string(data)
+}
+
+// B3 promises the full unfiltered output on disk. The tools bound what they
+// inject inline, so spilling Result.Error wrote the same truncated text the
+// model had already been shown and labelled it "full output".
+func TestB3_SpillsFullOutputNotTheInlineExcerpt(t *testing.T) {
+	cacheDir := t.TempDir()
+	g := New(nil, cacheDir)
+
+	full := strings.Repeat("F", b3Threshold*4)
+	inline := strings.Repeat("F", 512) + "\n… (truncated)"
+
+	res := g.Apply(context.Background(), "exec", nil,
+		tools.Result{Error: inline, FullOutput: full}, "")
+
+	if !strings.Contains(res.Error, "toolout:") {
+		t.Fatalf("no toolout handle in %q", res.Error)
+	}
+	spilled := readSpill(t, cacheDir)
+	if spilled != full {
+		t.Errorf("spilled %d bytes, want the full %d — the excerpt was written instead",
+			len(spilled), len(full))
+	}
+	// The in-memory copy has served its purpose; carrying it onward would push
+	// megabytes into events and session records.
+	if res.FullOutput != "" {
+		t.Errorf("FullOutput still set after the spill (%d bytes)", len(res.FullOutput))
+	}
+}
+
+// A small inline error with a large preserved output must still spill: the
+// decision is about how much output exists, not how much of it was shown.
+func TestB3_SpillsWhenOnlyFullOutputIsLarge(t *testing.T) {
+	cacheDir := t.TempDir()
+	g := New(nil, cacheDir)
+
+	full := strings.Repeat("G", b3Threshold*2)
+	res := g.Apply(context.Background(), "go_test", nil,
+		tools.Result{Error: "go_test: exit status 1\n--- FAIL: TestX", FullOutput: full}, "")
+
+	if !strings.Contains(res.Error, "toolout:") {
+		t.Fatalf("no toolout handle for a large preserved output: %q", res.Error)
+	}
+	if spilled := readSpill(t, cacheDir); spilled != full {
+		t.Errorf("spilled %d bytes, want %d", len(spilled), len(full))
+	}
+}
+
+func TestB3_TruncatesOnRuneBoundary(t *testing.T) {
+	g := New(nil, t.TempDir())
+	// Multi-byte runes across the 512-byte prefix cut.
+	res := g.Apply(context.Background(), "exec", nil,
+		tools.Result{Error: strings.Repeat("é", b3Threshold)}, "")
+	if !utf8.ValidString(res.Error) {
+		t.Error("B3 prefix cut produced invalid UTF-8")
+	}
 }

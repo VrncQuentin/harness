@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"github.com/VrncQuentin/harness/internal/tools"
 )
@@ -20,7 +21,18 @@ const b3Threshold = 4096
 // The transform degrades gracefully: if the cache dir is unavailable the
 // error is returned unchanged.
 func (g *Governor) applyB3(_ context.Context, toolID string, res tools.Result) tools.Result {
-	if res.Error == "" || len(res.Error) < b3Threshold {
+	if res.Error == "" {
+		return res
+	}
+	// Spill the complete output when the tool preserved one. Writing res.Error
+	// alone wrote whatever survived the tool's inline cap, so the file B3
+	// advertised as the full output was in fact the same truncated text the
+	// model had already been shown.
+	spill := res.FullOutput
+	if spill == "" {
+		spill = res.Error
+	}
+	if len(spill) < b3Threshold {
 		return res
 	}
 	dir := g.tooloutDir()
@@ -28,21 +40,35 @@ func (g *Governor) applyB3(_ context.Context, toolID string, res tools.Result) t
 		return res
 	}
 
-	id := tooloutID(toolID, res.Error)
+	id := tooloutID(toolID, spill)
 	path := filepath.Join(dir, id)
-	if err := os.WriteFile(path, []byte(res.Error), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(spill), 0o644); err != nil {
 		// Write failure — return unchanged.
 		return res
 	}
 
 	// Keep a prefix of the error for immediate context, add the handle.
 	const prefixLen = 512
-	prefix := res.Error
-	if len(prefix) > prefixLen {
-		prefix = prefix[:prefixLen]
-	}
-	res.Error = fmt.Sprintf("%s\n… (full output in toolout:%s)", prefix, id)
+	res.Error = fmt.Sprintf("%s\n… (full output in toolout:%s)", truncateRunes(res.Error, prefixLen), id)
+	// The spill is on disk and addressable now, so drop the in-memory copy
+	// rather than carrying megabytes of output onward into events and session
+	// records.
+	res.FullOutput = ""
 	return res
+}
+
+// truncateRunes returns at most limit bytes of s, cut on a rune boundary.
+// Slicing at a fixed byte offset splits multi-byte characters, and the invalid
+// UTF-8 that produces goes straight into the model's context.
+func truncateRunes(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
 }
 
 // tooloutID returns a deterministic file ID for (toolID, content).

@@ -12,9 +12,11 @@
 //   - B3: tee-on-failure — spills large error outputs to disk and injects a
 //     compact handle into the conversation so the model can reference them.
 //
-//   - B5: token gate — reverter guard applied after each transform using the
-//     same rune-quarter heuristic as prompt budgeting; auto-reverts any
-//     transform that increases the token count.
+//   - B5: token gate — reverter guard applied after each context-reshaping
+//     transform (B1, B2) using the same rune-quarter heuristic as prompt
+//     budgeting; auto-reverts any transform that increases the token count.
+//     B3 is exempt: it moves output to disk rather than reshaping context, and
+//     its write cannot be undone by discarding the returned result.
 package governor
 
 import (
@@ -61,7 +63,17 @@ func (g *Governor) Apply(ctx context.Context, toolID string, args map[string]any
 	}
 	res = g.wrapB5(res, func(r tools.Result) tools.Result { return g.applyB1(toolID, args, r, query) })
 	res = g.wrapB5(res, func(r tools.Result) tools.Result { return g.applyB2(toolID, r) })
-	res = g.wrapB5(res, func(r tools.Result) tools.Result { return g.applyB3(ctx, toolID, r) })
+	// B3 is deliberately outside the token gate.
+	//
+	// B1 and B2 reshape context, so reverting one when it grew the count is
+	// exactly right. B3 does not reshape context: it writes the output to disk
+	// and adds a fixed handle of a few dozen bytes. Gating it broke in two ways.
+	// The handle can be longer than the inline text it is appended to — a short
+	// failure with a large preserved output is the normal case now — so the
+	// gate reverted precisely the spills worth keeping. And the revert is not a
+	// revert: applyB3 has already written the file, so reverting leaves the
+	// spill orphaned on disk with nothing in context pointing at it.
+	res = g.applyB3(ctx, toolID, res)
 	return res
 }
 

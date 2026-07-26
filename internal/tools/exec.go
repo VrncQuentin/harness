@@ -8,9 +8,34 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const execOutputLimit = 64 * 1024
+
+// spillCeiling bounds how much subprocess output is held for the governor's
+// tee-on-failure. It is far above the inline caps so the preserved copy is
+// genuinely the full output in every ordinary case, but it is still a bound: a
+// runaway process must not be able to exhaust memory purely because its output
+// is being kept for the spill file.
+const spillCeiling = 8 << 20 // 8 MiB
+
+// boundInline returns at most limit bytes of s, appending an elision note when
+// it had to cut.
+//
+// The cut lands on a rune boundary. Slicing raw bytes at a fixed offset splits
+// multi-byte characters, and the resulting invalid UTF-8 goes straight into the
+// conversation and from there into session records.
+func boundInline(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n… (truncated; full output preserved for retrieval)"
+}
 
 type execTool struct{}
 
@@ -98,13 +123,23 @@ func (t *execTool) Execute(ctx context.Context, c CallInfo, args map[string]any)
 
 	cmd := exec.CommandContext(timeoutCtx, argv[0], argv[1:]...) //nolint:gosec
 	cmd.Dir = workDir
-	output := newCappedOutput(execOutputLimit)
+	output := newCappedOutput(spillCeiling)
 	cmd.Stdout = output
 	cmd.Stderr = output
-	if err := cmd.Run(); err != nil {
-		return Result{Error: fmt.Sprintf("exec: %v\n%s", err, output.String())}
+	runErr := cmd.Run()
+
+	full := output.String()
+	inline := boundInline(full, execOutputLimit)
+	if runErr != nil {
+		res := Result{Error: fmt.Sprintf("exec: %v\n%s", runErr, inline)}
+		// Only worth carrying when the inline text is not already the whole
+		// output; the governor spills this instead of the truncated excerpt.
+		if inline != full {
+			res.FullOutput = full
+		}
+		return res
 	}
-	return Result{Content: output.String()}
+	return Result{Content: inline}
 }
 
 // parseStringSlice converts an any value to []string, accepting both

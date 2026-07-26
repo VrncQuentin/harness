@@ -18,7 +18,7 @@ var _ Tool = (*goTestTool)(nil)
 
 func (t *goTestTool) ID() string { return "go_test" }
 func (t *goTestTool) Description() string {
-	return "Run go test -json on the given packages and return a failure summary. Full output is capped to 64 KB."
+	return "Run go test -json on the given packages and return a failure summary. Inline output is capped to 64 KB; the full output of a failing run is preserved for retrieval."
 }
 func (t *goTestTool) Schema() map[string]any {
 	return map[string]any{
@@ -86,7 +86,7 @@ func (t *goTestTool) Execute(ctx context.Context, c CallInfo, args map[string]an
 
 	cmd := exec.CommandContext(timeoutCtx, "go", goArgs...) //nolint:gosec
 	cmd.Dir = workDir
-	out := newCappedOutput(goTestOutputLimit)
+	out := newCappedOutput(spillCeiling)
 	cmd.Stdout = out
 	cmd.Stderr = out
 
@@ -100,27 +100,44 @@ func (t *goTestTool) Execute(ctx context.Context, c CallInfo, args map[string]an
 // a successful tool call: metrics counted it as a success, the model saw plain
 // content rather than an ERROR, and the governor's tee-on-failure never fired,
 // because every one of those keys on Result.Error.
+//
+// The inline text is bounded, but a failing run also carries the untruncated
+// output in FullOutput so the governor's tee writes the whole thing to disk
+// rather than the excerpt the model was shown.
 func goTestResult(runErr error, raw string, all bool) Result {
+	inline := boundInline(raw, goTestOutputLimit)
+	// failed builds a failure result that keeps the complete output for the
+	// spill whenever the inline form had to be cut.
+	failed := func(format string, args ...any) Result {
+		res := Result{Error: fmt.Sprintf(format, args...)}
+		if inline != raw {
+			res.FullOutput = raw
+		}
+		return res
+	}
+
 	if all {
 		if runErr != nil {
-			return Result{Error: fmt.Sprintf("go_test: %v\n%s", runErr, raw)}
+			return failed("go_test: %v\n%s", runErr, inline)
 		}
-		return Result{Content: raw}
+		return Result{Content: inline}
 	}
 
 	summary := formatTestFailures(raw)
 	switch {
 	case runErr != nil && summary != "":
-		return Result{Error: fmt.Sprintf("go_test: %v\n%s", runErr, summary)}
+		// The summary is the useful part, but the spill keeps everything: a
+		// summary is a digest of the run, not a substitute for it.
+		return failed("go_test: %v\n%s", runErr, boundInline(summary, goTestOutputLimit))
 	case runErr != nil:
 		// Failed with nothing parseable: a build error, a panic, or the
 		// timeout. The raw output is all there is to go on.
-		return Result{Error: fmt.Sprintf("go_test: %v\n%s", runErr, raw)}
+		return failed("go_test: %v\n%s", runErr, inline)
 	case summary != "":
 		// go reported success while its own JSON stream recorded failures. A
 		// green exit code that disagrees with the events is not evidence the
 		// suite passed, so the failures win.
-		return Result{Error: fmt.Sprintf("go_test: exited 0 but reported test failures\n%s", summary)}
+		return failed("go_test: exited 0 but reported test failures\n%s", boundInline(summary, goTestOutputLimit))
 	}
 	return Result{Content: "All tests passed."}
 }
@@ -134,6 +151,12 @@ func formatTestFailures(raw string) string {
 	seen := make(map[failKey]bool)
 
 	scanner := bufio.NewScanner(strings.NewReader(raw))
+	// A single go test -json record can exceed the scanner's default 64 KB
+	// token limit — one test printing a large diff is enough. Past that the
+	// scanner stops silently, and every failure after the long line vanishes
+	// from the summary. The buffer is sized to the same ceiling that bounds
+	// what was captured in the first place.
+	scanner.Buffer(make([]byte, 0, 64*1024), spillCeiling)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
