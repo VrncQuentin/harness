@@ -70,7 +70,16 @@ func (t *goLintTool) Execute(ctx context.Context, c CallInfo, args map[string]an
 		}
 	}
 
-	lintArgs := append([]string{"run", "--output.json.path=stdout"}, pkgs...)
+	// --issues-exit-code pins the status golangci-lint uses to mean "completed,
+	// with findings". It defaults to 1, but a project can set run.issues-exit-code
+	// in its own config, and goLintResult classifies purely by that number —
+	// a project choosing 0 or 5 would otherwise silently redefine the protocol
+	// and turn findings into a pass, or a clean run into a failure.
+	lintArgs := append([]string{
+		"run",
+		"--output.json.path=stdout",
+		fmt.Sprintf("--issues-exit-code=%d", lintIssuesExitCode),
+	}, pkgs...)
 	timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
@@ -107,8 +116,14 @@ func goLintResult(runErr error, timedOut bool, stdout, stderr []byte) Result {
 	}
 
 	if len(stdout) == 0 {
-		if len(stderr) > 0 {
+		switch {
+		case len(stderr) > 0:
 			return Result{Error: fmt.Sprintf("go_lint: no output; stderr: %s", string(stderr))}
+		case runErr != nil:
+			// The issues exit code with nothing on either stream: the linter
+			// said it had findings and then produced no report. Silence is not
+			// a clean run, and reporting one would contradict the exit status.
+			return Result{Error: fmt.Sprintf("go_lint: reported issues but produced no report: %v", runErr)}
 		}
 		return Result{Content: "No lint issues found."}
 	}

@@ -137,6 +137,14 @@ func TestGoLintResult(t *testing.T) {
 			wantSubstr: "timed out",
 		},
 		{
+			// The linter said it had findings and then produced nothing.
+			// Silence must not be reported as a clean run.
+			name:       "issues exit with no output at all",
+			exitCode:   1,
+			wantErr:    true,
+			wantSubstr: "produced no report",
+		},
+		{
 			name:       "issues exit with an empty report",
 			exitCode:   1,
 			stdout:     emptyJSON,
