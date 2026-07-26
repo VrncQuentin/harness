@@ -144,27 +144,45 @@ func TestGitCommit_StageSpecificFiles(t *testing.T) {
 	}
 }
 
-func TestIsMemoryRepo_Match(t *testing.T) {
+func TestIsMemoryRepo(t *testing.T) {
 	dir := t.TempDir()
-	if !isMemoryRepo(dir, []string{dir}) {
-		t.Fatal("expected dir to match its own memory path")
+	other := t.TempDir()
+
+	tests := []struct {
+		name        string
+		absRoot     string
+		memoryPaths []string
+		want        bool
+	}{
+		{name: "matches its own memory path", absRoot: dir, memoryPaths: []string{dir}, want: true},
+		{name: "different directories", absRoot: dir, memoryPaths: []string{other}},
+		{name: "no memory paths", absRoot: dir},
+		{name: "empty memory path entry", absRoot: dir, memoryPaths: []string{""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := isMemoryRepo(tt.absRoot, tt.memoryPaths)
+			if err != nil {
+				t.Fatalf("isMemoryRepo: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("isMemoryRepo = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestIsMemoryRepo_NoMatch(t *testing.T) {
-	a := t.TempDir()
-	b := t.TempDir()
-	if isMemoryRepo(a, []string{b}) {
-		t.Fatal("expected no match for different dirs")
-	}
-}
-
-func TestIsMemoryRepo_Empty(t *testing.T) {
+// The predicate guards a hard lock, so a path it cannot locate has to surface
+// as an error. Reporting false would tell the caller the root is outside every
+// memory repo, which is the one thing that is not known.
+func TestIsMemoryRepoReportsUnresolvablePaths(t *testing.T) {
 	dir := t.TempDir()
-	if isMemoryRepo(dir, nil) {
-		t.Fatal("expected no match for nil memory paths")
+	unresolvable := filepath.Join(dir, "bad\x00name")
+
+	if _, err := isMemoryRepo(unresolvable, []string{dir}); err == nil {
+		t.Error("unresolvable root returned no error; the C2 lock would see a plain false")
 	}
-	if isMemoryRepo(dir, []string{""}) {
-		t.Fatal("expected no match for empty memory path")
+	if _, err := isMemoryRepo(dir, []string{unresolvable}); err == nil {
+		t.Error("unresolvable memory path returned no error; the C2 lock would see a plain false")
 	}
 }

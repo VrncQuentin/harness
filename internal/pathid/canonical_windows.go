@@ -1,6 +1,6 @@
 //go:build windows
 
-package tools
+package pathid
 
 import (
 	"fmt"
@@ -17,7 +17,7 @@ const (
 	volumeNameDOS      = 0x0 // drive-letter form, not a \\?\Volume{GUID} path
 )
 
-// canonicalPath returns the physical path of an existing file or directory,
+// Canonical returns the physical path of an existing file or directory,
 // resolving symlinks, junctions, mount points, and 8.3 short names.
 //
 // It stands in for filepath.EvalSymlinks, which cannot be trusted for
@@ -30,7 +30,7 @@ const (
 //
 // The path must exist: a handle is required. Callers resolve the deepest
 // existing ancestor for paths that are about to be created.
-func canonicalPath(path string) (string, error) {
+func Canonical(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -42,13 +42,13 @@ func canonicalPath(path string) (string, error) {
 	buf := make([]uint16, windows.MAX_PATH)
 	n, err := windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), flags)
 	if err != nil {
-		return "", fmt.Errorf("tools: canonical path %s: %w", path, err)
+		return "", fmt.Errorf("pathid: canonical path %s: %w", path, err)
 	}
 	if n > uint32(len(buf)) {
 		// n is the required length in UTF-16 words, excluding the terminator.
 		buf = make([]uint16, n+1)
 		if _, err = windows.GetFinalPathNameByHandle(h, &buf[0], uint32(len(buf)), flags); err != nil {
-			return "", fmt.Errorf("tools: canonical path %s: %w", path, err)
+			return "", fmt.Errorf("pathid: canonical path %s: %w", path, err)
 		}
 	}
 	return stripExtendedPrefix(windows.UTF16ToString(buf)), nil

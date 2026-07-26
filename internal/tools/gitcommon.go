@@ -2,10 +2,9 @@ package tools
 
 import (
 	"fmt"
-	"path/filepath"
-	"strings"
 
 	gitw "github.com/VrncQuentin/harness/internal/git"
+	"github.com/VrncQuentin/harness/internal/pathid"
 )
 
 // workspaceRepo resolves the required root argument against the sandbox and
@@ -35,39 +34,28 @@ func workspaceWriteRepo(c CallInfo, args map[string]any) (*gitw.Repo, string, er
 	if err != nil {
 		return nil, "", err
 	}
-	if isMemoryRepo(absRoot, c.MemoryRepoPaths) {
+	inMemoryRepo, err := isMemoryRepo(absRoot, c.MemoryRepoPaths)
+	if err != nil {
+		return nil, "", fmt.Errorf("C2 scope check failed for %s: %w", absRoot, err)
+	}
+	if inMemoryRepo {
 		return nil, "", fmt.Errorf("C2 scope violation: %s resolves to a project memory repository", absRoot)
 	}
 	return repo, absRoot, nil
 }
 
 // isMemoryRepo reports whether absRoot matches or is contained within any of
-// the given memory repo paths. Both sides are canonicalized so that
+// the given memory repo paths. Both sides are physically resolved so that
 // junction/symlink-based setups (common on Windows) do not bypass the
-// predicate. canonicalPath rather than filepath.EvalSymlinks is required here:
-// EvalSymlinks leaves a junction unresolved, so a junction attached as a
-// project directory and pointing at a memory repo compared unequal and the
-// C2 lock let the write through. Resolution goes through
-// resolveExistingAncestor so a configured path that does not exist yet is
-// still judged by where it would land.
-func isMemoryRepo(absRoot string, memoryPaths []string) bool {
-	resolvedAbs, err := resolveExistingAncestor(absRoot)
-	if err != nil {
-		resolvedAbs = filepath.Clean(absRoot)
-	}
-	for _, mp := range memoryPaths {
-		if strings.TrimSpace(mp) == "" {
-			continue
-		}
-		resolved, err := resolveExistingAncestor(filepath.Clean(mp))
-		if err != nil {
-			resolved = filepath.Clean(mp)
-		}
-		if pathWithinRoot(resolvedAbs, resolved) {
-			return true
-		}
-	}
-	return false
+// predicate: filepath.EvalSymlinks leaves a junction unresolved, so a junction
+// attached as a project directory and pointing at a memory repo compared
+// unequal and the C2 lock let the write through.
+//
+// A resolution failure is an error, never a false. The predicate guards a hard
+// lock, and "I could not locate this path" must not be delivered to the caller
+// as "this path is not a memory repo".
+func isMemoryRepo(absRoot string, memoryPaths []string) (bool, error) {
+	return pathid.SameOrWithin(absRoot, memoryPaths)
 }
 
 // gitRootProperty is the shared schema for the explicit root argument.

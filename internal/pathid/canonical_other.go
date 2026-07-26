@@ -1,13 +1,16 @@
 //go:build !windows
 
-package tools
+package pathid
 
 import "path/filepath"
 
-// canonicalPath returns the physical path of an existing file or directory.
+// Canonical returns the physical path of an existing file or directory.
 // On non-Windows systems symlinks are the only reparse mechanism and
 // filepath.EvalSymlinks resolves them completely, so it is the whole
 // implementation. See canonical_windows.go for why Windows needs more.
-func canonicalPath(path string) (string, error) {
+//
+// The path must exist: callers resolving a path that may not exist yet use
+// Resolve, which walks up to the deepest existing component.
+func Canonical(path string) (string, error) {
 	return filepath.EvalSymlinks(path)
 }

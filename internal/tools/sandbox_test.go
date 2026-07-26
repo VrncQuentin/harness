@@ -28,22 +28,6 @@ func mustLinkDir(t *testing.T, target, link string) {
 	}
 }
 
-func TestCanonicalPathHasNoExtendedPrefix(t *testing.T) {
-	dir := t.TempDir()
-	got, err := canonicalPath(dir)
-	if err != nil {
-		t.Fatalf("canonicalPath: %v", err)
-	}
-	// A \\?\-prefixed result would never compare equal to a user-configured
-	// sandbox root, silently rejecting every path.
-	if strings.HasPrefix(got, `\\?\`) {
-		t.Errorf("canonicalPath = %q, still carries the extended-length prefix", got)
-	}
-	if !filepath.IsAbs(got) {
-		t.Errorf("canonicalPath = %q, want an absolute path", got)
-	}
-}
-
 func TestValidatePathRejectsPathBelowLinkedDir(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
@@ -111,18 +95,32 @@ func TestIsMemoryRepoDetectsLinkedPath(t *testing.T) {
 
 	// A link attached as a project directory resolves onto the memory repo, so
 	// the C2 lock must still fire.
-	if !isMemoryRepo(attached, []string{memRepo}) {
-		t.Error("isMemoryRepo via linked path = false, want true (C2 bypass)")
+	if in, err := isMemoryRepo(attached, []string{memRepo}); err != nil || !in {
+		t.Errorf("isMemoryRepo via linked path = (%v, %v), want (true, nil) — C2 bypass", in, err)
 	}
-	if !isMemoryRepo(filepath.Join(attached, "sub"), []string{memRepo}) {
-		t.Error("isMemoryRepo below linked path = false, want true (C2 bypass)")
+	if in, err := isMemoryRepo(filepath.Join(attached, "sub"), []string{memRepo}); err != nil || !in {
+		t.Errorf("isMemoryRepo below linked path = (%v, %v), want (true, nil) — C2 bypass", in, err)
 	}
 	unrelated := filepath.Join(base, "unrelated")
 	if err := os.MkdirAll(unrelated, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	if isMemoryRepo(unrelated, []string{memRepo}) {
-		t.Error("isMemoryRepo unrelated dir = true, want false")
+	if in, err := isMemoryRepo(unrelated, []string{memRepo}); err != nil || in {
+		t.Errorf("isMemoryRepo unrelated dir = (%v, %v), want (false, nil)", in, err)
+	}
+}
+
+// An unresolvable path must reject the call. Continuing to the next root, or
+// falling back to a lexical comparison, would let a path whose physical
+// location is unknown be judged as though it were known.
+func TestValidatePathRejectsUnresolvablePath(t *testing.T) {
+	root := t.TempDir()
+
+	if _, err := validatePath(filepath.Join(root, "bad\x00name"), []string{root}); err == nil {
+		t.Error("validatePath accepted a path it could not resolve")
+	}
+	if _, err := validatePath(filepath.Join(root, "ok.txt"), []string{filepath.Join(root, "bad\x00root")}); err == nil {
+		t.Error("validatePath accepted a call whose sandbox root could not be resolved")
 	}
 }
 
