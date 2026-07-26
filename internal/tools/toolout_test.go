@@ -160,7 +160,7 @@ func TestRead_TooloutRefusesLinkedLeaf(t *testing.T) {
 		}
 		linkedDir := filepath.Join(dir, "sub")
 		mustLinkDir(t, filepath.Dir(secretFile), linkedDir)
-		defer os.Remove(linkedDir)
+		defer func() { _ = os.Remove(linkedDir) }()
 
 		// The id itself is refused for containing a separator, but assert on
 		// the disclosure rather than the reason.
@@ -180,7 +180,7 @@ func TestRead_TooloutRefusesLinkedLeaf(t *testing.T) {
 		const id = "abcdefabcdef0123"
 		link := filepath.Join(dir, id)
 		mustLinkDir(t, outside, link)
-		defer os.Remove(link)
+		defer func() { _ = os.Remove(link) }()
 
 		_, err := resolveToolout(dir, TooloutScheme+id)
 		if err == nil {
@@ -202,7 +202,7 @@ func TestRead_TooloutRefusesLinkedLeaf(t *testing.T) {
 		if err := os.Symlink(secretFile, link); err != nil {
 			t.Skipf("symlinks unavailable in this environment: %v", err)
 		}
-		defer os.Remove(link)
+		defer func() { _ = os.Remove(link) }()
 
 		res := (&readTool{}).Execute(context.Background(),
 			CallInfo{SandboxRoots: []string{t.TempDir()}, TooloutDir: dir},
