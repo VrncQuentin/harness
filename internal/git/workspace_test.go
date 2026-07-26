@@ -147,9 +147,12 @@ func TestWorktreeContent_RejectsPathBelowLinkedParent(t *testing.T) {
 	if content, _ := worktreeContent(root, "leakdir/secret.txt"); content != "" {
 		t.Errorf("read through linked parent returned %q, want empty", content)
 	}
-	// The link itself carries no diffable content.
-	if content, _ := worktreeContent(root, "leakdir"); content != "" {
-		t.Errorf("directory link content = %q, want empty", content)
+	// The link itself never yields the target file's bytes. What it does yield
+	// depends on the link kind, and both are correct: a symlink diffs as its
+	// target path, which is how git stores one, while a Windows junction is
+	// reported irregular and contributes nothing.
+	if content, _ := worktreeContent(root, "leakdir"); strings.Contains(content, outOfSandboxSecret) {
+		t.Errorf("directory link content = %q, leaked content from outside the repo", content)
 	}
 }
 
