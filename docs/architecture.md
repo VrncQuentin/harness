@@ -186,11 +186,11 @@ Responsibilities:
 ### Governor (`internal/governor`)
 Applies result transforms between tool execution and context injection in the agent loop. Transforms are not model-callable and are invisible to the agent as tools.
 
-Transforms applied in order (B1 → B2 → B3), each wrapped by the B5 token gate:
+Transforms applied in order (B1 → B2 → B3). B5 gates B1 and B2; B3 is exempt:
 - **B1 — query-aware skeletonizer:** reduces read output for parser-supported files, keeping full bodies for spans relevant to the active query and emitting only signatures for the rest.
 - **B2 — tool-output folder:** per-tool content cap with head/tail elision for high-volume toolchain tools (`exec`, `go_test`, `go_lint`, `git_diff`, `git_log`).
-- **B3 — tee-on-failure:** spills large error outputs to `~/.harness/cache/toolout/` and injects a compact handle into the conversation so the model can reference them without bloating context.
-- **B5 — token gate:** auto-reverts any transform that increases the estimated token count (rune-quarter heuristic, swappable via `WithTokenizer`).
+- **B3 — tee-on-failure:** writes the full unfiltered output of a failed call to `~/.harness/cache/toolout/` and injects a compact handle into the conversation so the model can reference it without bloating context. Tools hand over the complete output in `Result.FullOutput` when their inline text is a bounded excerpt of it; the inline caps alone would leave B3 preserving the same truncated text the model already saw.
+- **B5 — token gate:** auto-reverts B1 or B2 when it increases the estimated token count (rune-quarter heuristic, swappable via `WithTokenizer`). **B3 is deliberately outside the gate.** B1 and B2 are pure — they rewrite the result and nothing else, so discarding the rewrite genuinely undoes them. B3 is side-effectful: the spill file is already written when the gate inspects its return value, so discarding that value does not undo the transform, it only drops the locator and leaves the file orphaned. B3 does rewrite `Error` into a prefix plus handle, and that can grow the text, because the handle is often longer than the short inline failure it accompanies once a small failure can carry a large preserved output. Retaining the bounded locator is the requirement — it is the only route back to output that is otherwise unreachable.
 
 ### Pipeline Runner (`internal/pipeline`) — planned M11
 Owns parsing, validation, and execution of Harness Pipeline DSL specs (`.hp`). The language contract is documented in [DSL.md](DSL.md). Specs are declarative workflow files stored with the attached project git repos they operate on; the runner executes them through the same first-party agent loop, tool registry, queue, inference client, memory store, and UI event stream used by interactive tasks.

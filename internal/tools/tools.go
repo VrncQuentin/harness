@@ -77,10 +77,17 @@ const (
 // for human approval — no actual side effect occurred. The model must relay
 // the proposal rather than proceeding as if the action was taken.
 type Result struct {
-	Content  string
-	Error    string
-	Origin   OriginClass
-	Proposal bool
+	Content string
+	Error   string
+	Origin  OriginClass
+	// FullOutput carries the complete subprocess output when Content or Error
+	// holds only a bounded excerpt of it. It exists so the governor's
+	// tee-on-failure can write the whole thing to disk: the tools bound what
+	// they inject into the conversation, and without a separate carrier the
+	// governor only ever saw the already-truncated text it was supposed to be
+	// preserving. Empty when the inline text is already complete.
+	FullOutput string
+	Proposal   bool
 }
 
 // ApprovalDefault is the built-in approval-layer posture for a tool.

@@ -20,7 +20,18 @@ const b3Threshold = 4096
 // The transform degrades gracefully: if the cache dir is unavailable the
 // error is returned unchanged.
 func (g *Governor) applyB3(_ context.Context, toolID string, res tools.Result) tools.Result {
-	if res.Error == "" || len(res.Error) < b3Threshold {
+	if res.Error == "" {
+		return res
+	}
+	// Spill the complete output when the tool preserved one. Writing res.Error
+	// alone wrote whatever survived the tool's inline cap, so the file B3
+	// advertised as the full output was in fact the same truncated text the
+	// model had already been shown.
+	spill := res.FullOutput
+	if spill == "" {
+		spill = res.Error
+	}
+	if len(spill) < b3Threshold {
 		return res
 	}
 	dir := g.tooloutDir()
@@ -28,20 +39,20 @@ func (g *Governor) applyB3(_ context.Context, toolID string, res tools.Result) t
 		return res
 	}
 
-	id := tooloutID(toolID, res.Error)
+	id := tooloutID(toolID, spill)
 	path := filepath.Join(dir, id)
-	if err := os.WriteFile(path, []byte(res.Error), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(spill), 0o644); err != nil {
 		// Write failure — return unchanged.
 		return res
 	}
 
 	// Keep a prefix of the error for immediate context, add the handle.
 	const prefixLen = 512
-	prefix := res.Error
-	if len(prefix) > prefixLen {
-		prefix = prefix[:prefixLen]
-	}
-	res.Error = fmt.Sprintf("%s\n… (full output in toolout:%s)", prefix, id)
+	res.Error = fmt.Sprintf("%s\n… (full output in toolout:%s)", res.Error[:runeSafeCutEnd(res.Error, prefixLen)], id)
+	// The spill is on disk and addressable now, so drop the in-memory copy
+	// rather than carrying megabytes of output onward into events and session
+	// records.
+	res.FullOutput = ""
 	return res
 }
 

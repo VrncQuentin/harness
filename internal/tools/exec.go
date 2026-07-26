@@ -8,9 +8,53 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const execOutputLimit = 64 * 1024
+
+// spillCeiling bounds how much subprocess output is held for the governor's
+// tee-on-failure. It is far above the inline caps so the preserved copy is
+// genuinely the full output in every ordinary case, but it is still a bound: a
+// runaway process must not be able to exhaust memory purely because its output
+// is being kept for the spill file.
+const spillCeiling = 8 << 20 // 8 MiB
+
+// scannerHeadroom covers the truncation marker cappedOutput appends past the
+// ceiling, so a parser sized to the ceiling does not fail on the largest inputs.
+const scannerHeadroom = 1 << 10
+
+// boundInline returns at most limit bytes of s, appending an elision note when
+// it had to cut.
+//
+// The note says only that output was cut. Whether the remainder can be
+// retrieved depends on the result reaching B3 with a preserved copy, which the
+// successful paths do not: they discard the buffer and B3 never runs on them.
+// Promising retrieval here would be a promise this function cannot keep — B3
+// announces the handle itself, once the spill is actually on disk.
+//
+// The cut lands on a rune boundary. Slicing raw bytes at a fixed offset splits
+// multi-byte characters, and the resulting invalid UTF-8 goes straight into the
+// conversation and from there into session records.
+func boundInline(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return s[:runeSafeCut(s, limit)] + "\n… (truncated)"
+}
+
+// runeSafeCut returns the largest offset at or below limit that lands on a rune
+// boundary.
+func runeSafeCut(s string, limit int) int {
+	if limit >= len(s) {
+		return len(s)
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return cut
+}
 
 type execTool struct{}
 
@@ -98,13 +142,23 @@ func (t *execTool) Execute(ctx context.Context, c CallInfo, args map[string]any)
 
 	cmd := exec.CommandContext(timeoutCtx, argv[0], argv[1:]...) //nolint:gosec
 	cmd.Dir = workDir
-	output := newCappedOutput(execOutputLimit)
+	output := newCappedOutput(spillCeiling)
 	cmd.Stdout = output
 	cmd.Stderr = output
-	if err := cmd.Run(); err != nil {
-		return Result{Error: fmt.Sprintf("exec: %v\n%s", err, output.String())}
+	runErr := cmd.Run()
+
+	full := output.String()
+	inline := boundInline(full, execOutputLimit)
+	if runErr != nil {
+		res := Result{Error: fmt.Sprintf("exec: %v\n%s", runErr, inline)}
+		// Only worth carrying when the inline text is not already the whole
+		// output; the governor spills this instead of the truncated excerpt.
+		if inline != full {
+			res.FullOutput = full
+		}
+		return res
 	}
-	return Result{Content: output.String()}
+	return Result{Content: inline}
 }
 
 // parseStringSlice converts an any value to []string, accepting both

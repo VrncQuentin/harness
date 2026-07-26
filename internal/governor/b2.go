@@ -2,6 +2,7 @@ package governor
 
 import (
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/VrncQuentin/harness/internal/tools"
 )
@@ -18,6 +19,11 @@ var b2Limits = map[string]int{
 }
 
 // b2Head and b2Tail are the bytes kept at each end of elided content.
+//
+// Every entry in b2Limits must exceed b2Head+b2Tail, so content that passes the
+// limit check always has room for head/tail elision. TestB2LimitsExceedHeadTail
+// enforces it; a smaller limit would make elision produce more bytes than it
+// removed.
 const (
 	b2Head = 512
 	b2Tail = 512
@@ -31,14 +37,44 @@ func (g *Governor) applyB2(toolID string, res tools.Result) tools.Result {
 	if !ok || res.Content == "" || len(res.Content) <= limit {
 		return res
 	}
-	if len(res.Content) <= b2Head+b2Tail {
-		// Too short for head/tail elision; hard-cap at the tool limit.
-		res.Content = res.Content[:limit] + "\n… (truncated)"
-		return res
-	}
-	head := res.Content[:b2Head]
-	tail := res.Content[len(res.Content)-b2Tail:]
-	dropped := len(res.Content) - b2Head - b2Tail
+	// Both cuts below land on a rune boundary. B2 runs after the tools have
+	// already bounded their output safely, and slicing at a fixed byte offset
+	// here would undo that: a multi-byte character split across the head or
+	// tail boundary puts invalid UTF-8 into the conversation and from there
+	// into the session record.
+	//
+	// There is no separate short-content branch. Reaching this point means
+	// len(Content) > limit, and every limit exceeds b2Head+b2Tail, so there is
+	// always room for head/tail elision.
+	head := res.Content[:runeSafeCutEnd(res.Content, b2Head)]
+	tail := res.Content[runeSafeCutStart(res.Content, len(res.Content)-b2Tail):]
+	dropped := len(res.Content) - len(head) - len(tail)
 	res.Content = fmt.Sprintf("%s\n… (%d bytes elided) …\n%s", head, dropped, tail)
 	return res
+}
+
+// runeSafeCutEnd returns the largest offset at or below limit that starts a
+// rune, so s[:runeSafeCutEnd(s, limit)] is always valid UTF-8.
+func runeSafeCutEnd(s string, limit int) int {
+	if limit >= len(s) {
+		return len(s)
+	}
+	cut := limit
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return cut
+}
+
+// runeSafeCutStart returns the smallest offset at or above from that starts a
+// rune, so s[runeSafeCutStart(s, from):] is always valid UTF-8.
+func runeSafeCutStart(s string, from int) int {
+	if from <= 0 {
+		return 0
+	}
+	cut := from
+	for cut < len(s) && !utf8.RuneStart(s[cut]) {
+		cut++
+	}
+	return cut
 }

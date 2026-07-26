@@ -2,8 +2,11 @@ package governor
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/VrncQuentin/harness/internal/parser"
 	"github.com/VrncQuentin/harness/internal/tools"
@@ -270,4 +273,153 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// readSpill returns the contents of the single file B3 wrote under cacheDir.
+func readSpill(t *testing.T, cacheDir string) string {
+	t.Helper()
+	dir := filepath.Join(cacheDir, "toolout")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir %s: %v", dir, err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spill dir holds %d files, want exactly 1", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	return string(data)
+}
+
+// B3 promises the full unfiltered output on disk. The tools bound what they
+// inject inline, so spilling Result.Error wrote the same truncated text the
+// model had already been shown and labelled it "full output".
+func TestB3_SpillsFullOutputNotTheInlineExcerpt(t *testing.T) {
+	cacheDir := t.TempDir()
+	g := New(nil, cacheDir)
+
+	full := strings.Repeat("F", b3Threshold*4)
+	inline := strings.Repeat("F", 512) + "\n… (truncated)"
+
+	res := g.Apply(context.Background(), "exec", nil,
+		tools.Result{Error: inline, FullOutput: full}, "")
+
+	if !strings.Contains(res.Error, "toolout:") {
+		t.Fatalf("no toolout handle in %q", res.Error)
+	}
+	spilled := readSpill(t, cacheDir)
+	if spilled != full {
+		t.Errorf("spilled %d bytes, want the full %d — the excerpt was written instead",
+			len(spilled), len(full))
+	}
+	// The in-memory copy has served its purpose; carrying it onward would push
+	// megabytes into events and session records.
+	if res.FullOutput != "" {
+		t.Errorf("FullOutput still set after the spill (%d bytes)", len(res.FullOutput))
+	}
+}
+
+// A small inline error with a large preserved output must still spill: the
+// decision is about how much output exists, not how much of it was shown.
+func TestB3_SpillsWhenOnlyFullOutputIsLarge(t *testing.T) {
+	cacheDir := t.TempDir()
+	g := New(nil, cacheDir)
+
+	full := strings.Repeat("G", b3Threshold*2)
+	res := g.Apply(context.Background(), "go_test", nil,
+		tools.Result{Error: "go_test: exit status 1\n--- FAIL: TestX", FullOutput: full}, "")
+
+	if !strings.Contains(res.Error, "toolout:") {
+		t.Fatalf("no toolout handle for a large preserved output: %q", res.Error)
+	}
+	if spilled := readSpill(t, cacheDir); spilled != full {
+		t.Errorf("spilled %d bytes, want %d", len(spilled), len(full))
+	}
+}
+
+func TestB3_TruncatesOnRuneBoundary(t *testing.T) {
+	g := New(nil, t.TempDir())
+	// Multi-byte runes across the 512-byte prefix cut.
+	res := g.Apply(context.Background(), "exec", nil,
+		tools.Result{Error: strings.Repeat("é", b3Threshold)}, "")
+	if !utf8.ValidString(res.Error) {
+		t.Error("B3 prefix cut produced invalid UTF-8")
+	}
+}
+
+// B2 runs after the tools have already bounded their output on rune
+// boundaries. Slicing at fixed byte offsets here would undo that, putting
+// invalid UTF-8 into the conversation and the session record.
+func TestB2_CutsOnRuneBoundaries(t *testing.T) {
+	g := New(nil, t.TempDir())
+
+	// Three-byte runes, deliberately. Two-byte runes sit on even offsets and
+	// the cuts here (512, and len-512) are even too, so they would never land
+	// mid-character — a two-byte test passes against byte slicing and proves
+	// nothing. At three bytes per rune the boundaries fall inside a character.
+	const wide = "€" // 3 bytes
+	for _, extra := range []int{0, 1, 2, 3, 7} {
+		runes := (b2Limits["exec"] + b2Head + b2Tail + extra) / 3
+		res := g.Apply(context.Background(), "exec", nil,
+			tools.Result{Content: strings.Repeat(wide, runes)}, "")
+		if !utf8.ValidString(res.Content) {
+			t.Errorf("extra=%d: B2 head/tail elision produced invalid UTF-8", extra)
+		}
+	}
+
+	// The smallest configured limit, so the tail cut sits at a different
+	// offset relative to the rune grid.
+	for _, extra := range []int{0, 1, 2} {
+		runes := (b2Limits["go_lint"] + b2Head + b2Tail + extra) / 3
+		res := g.Apply(context.Background(), "go_lint", nil,
+			tools.Result{Content: strings.Repeat(wide, runes)}, "")
+		if !utf8.ValidString(res.Content) {
+			t.Errorf("extra=%d: B2 produced invalid UTF-8 at the go_lint limit", extra)
+		}
+	}
+}
+
+// applyB2 relies on this: past the limit check there is always room for
+// head/tail elision, so it needs no short-content branch. A smaller limit would
+// make elision emit more bytes than it removed.
+func TestB2LimitsExceedHeadTail(t *testing.T) {
+	for tool, limit := range b2Limits {
+		if limit <= b2Head+b2Tail {
+			t.Errorf("b2Limits[%q] = %d, must exceed b2Head+b2Tail (%d)", tool, limit, b2Head+b2Tail)
+		}
+	}
+}
+
+func TestRuneSafeCuts(t *testing.T) {
+	// Three-byte runes: most offsets fall inside a character.
+	s := strings.Repeat("€", 10) // 30 bytes
+	for offset := range len(s) + 1 {
+		end := runeSafeCutEnd(s, offset)
+		if !utf8.ValidString(s[:end]) {
+			t.Errorf("runeSafeCutEnd(%d) = %d left invalid UTF-8", offset, end)
+		}
+		if end > offset {
+			t.Errorf("runeSafeCutEnd(%d) = %d, must not exceed the requested offset", offset, end)
+		}
+		start := runeSafeCutStart(s, offset)
+		if !utf8.ValidString(s[start:]) {
+			t.Errorf("runeSafeCutStart(%d) = %d left invalid UTF-8", offset, start)
+		}
+		if start < offset {
+			t.Errorf("runeSafeCutStart(%d) = %d, must not precede the requested offset", offset, start)
+		}
+	}
+
+	// Single-byte content: every offset is already a boundary.
+	ascii := "abcdef"
+	for offset := range len(ascii) + 1 {
+		if got := runeSafeCutEnd(ascii, offset); got != offset {
+			t.Errorf("runeSafeCutEnd(ascii, %d) = %d, want %d", offset, got, offset)
+		}
+		if got := runeSafeCutStart(ascii, offset); got != offset {
+			t.Errorf("runeSafeCutStart(ascii, %d) = %d, want %d", offset, got, offset)
+		}
+	}
 }
