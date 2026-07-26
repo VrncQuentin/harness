@@ -137,6 +137,35 @@ Tool tiers:
 - **Tier 2 write + C2 scope check:** `git_commit`, `git_branch`, `git_checkout` — reject any repo path that resolves inside a project memory repo; carry ref-SHA for reflog-based undo
 - **Tier 3 — manual-action proposal, no side effect:** `git_push`, `gh_pr_create`, `gh_pr_merge` return `Result{Proposal: true}` plus command text for the user to execute outside Harness. The agent loop does not currently persist or approve/execute these proposals. `gh_pr_wait` is tier-1 (read-only CI poller): exponential backoff 10 s → 60 s, returns `green`/`red`/`timed_out` JSON.
 
+### Path Identity (`internal/pathid`)
+Answers one question — where a path physically is — for every component that
+enforces a boundary with it. It is a security boundary in its own right: the
+tool sandbox, the C2 memory-repo lock, and the git write lock all decide
+containment or identity from its results, and they must not decide differently.
+
+Responsibilities:
+- `Canonical` resolves an existing path to its physical location. On Windows
+  this is `GetFinalPathNameByHandle`, which resolves junctions, mount points,
+  symlinks, and 8.3 short names; elsewhere `filepath.EvalSymlinks` is complete
+  because symlinks are the only reparse mechanism.
+- `Resolve` canonicalizes the deepest existing component and re-appends the
+  components below it, so a path that does not exist yet is judged by where it
+  would land rather than by its parent.
+- `WithinRoot` and `Key` compare already-canonical paths, case-insensitively on
+  Windows.
+- `SameOrWithin` combines the two for the containment question the sandbox and
+  the C2 lock ask.
+
+Design constraints:
+- **`filepath.EvalSymlinks` must not be used for containment or identity.** It
+  leaves a Windows junction unresolved and fails outright on paths below one,
+  so a check built on it accepts a path that physically reads outside its root
+  and gives a junction alias a different identity from its target.
+- **Every function fails closed.** Only `fs.ErrNotExist` walks upward; any other
+  resolution failure is returned. A caller cannot distinguish an unresolvable
+  path from a safe one, so the unknown case must be a refusal rather than a
+  lexical guess.
+
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).
 
