@@ -60,12 +60,8 @@ func (r *Repo) HeadSHA() (string, error) {
 // before the commit (empty for an initial commit). preOpSHA is the
 // authoritative recovery token — the caller should record it before the commit.
 func (r *Repo) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preOpSHA string, err error) {
-	lock := r.writeLock()
-	lock.Lock()
-	defer lock.Unlock()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	unlock := r.lockRepo()
+	defer unlock()
 
 	if head, herr := r.repo.Head(); herr == nil {
 		preOpSHA = head.Hash().String()
@@ -173,8 +169,8 @@ func (r *Repo) restoreIndex(snapshot *index.Index) error {
 // at, and preOpSHA is the HEAD SHA at call time (for the caller to record).
 // A reflog entry is appended to the new branch's reflog.
 func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	unlock := r.lockRepo()
+	defer unlock()
 
 	// Record HEAD SHA for pre-op tracking.
 	if head, herr := r.repo.Head(); herr == nil {
@@ -226,8 +222,8 @@ func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err 
 // The movement is recorded in the HEAD reflog, matching git: a checkout moves
 // HEAD, not the branch, and the branch tips on either side are untouched.
 func (r *Repo) Checkout(name string) (preOpBranch, preOpSHA string, err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	unlock := r.lockRepo()
+	defer unlock()
 
 	// Snapshot pre-op state.
 	if head, herr := r.repo.Head(); herr == nil {

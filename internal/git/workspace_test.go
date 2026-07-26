@@ -264,7 +264,6 @@ func TestLog(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 // reflogFile returns the contents of .git/logs/<ref>, or "" when absent. The
 // on-disk file is what matters: the git CLI reads these, so an entry written to
 // the wrong ref is a wrong answer for the user even if the API round-trips.
@@ -330,7 +329,9 @@ func TestCheckoutRejectsUnknownBranch(t *testing.T) {
 	}
 	if got := reflogFile(t, repo, "HEAD"); strings.Contains(got, "no-such-branch") {
 		t.Errorf("failed checkout still wrote a reflog entry:\n%s", got)
-=======
+	}
+}
+
 // stagedPaths returns the paths currently in the index.
 func stagedPaths(t *testing.T, repo *Repo) []string {
 	t.Helper()
@@ -508,7 +509,224 @@ func TestWorkspaceStageAndCommitSerializesAcrossHandles(t *testing.T) {
 	}
 	if len(entries) != workers+1 {
 		t.Errorf("log has %d commits, want %d (base + %d workers)", len(entries), workers+1, workers)
->>>>>>> b8f8c33 (fix(git): commit staging and creation as one reversible operation)
+	}
+}
+
+// shortPathName returns the 8.3 alias of dir, or "" when the volume has none.
+// Windows CI runners have 8.3 generation on — their temp directory is the
+// RUNNER~1 form — while many developer volumes have it disabled.
+func shortPathName(t *testing.T, dir string) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	out, err := exec.Command("powershell", "-NoProfile", "-Command",
+		"(New-Object -ComObject Scripting.FileSystemObject).GetFolder('"+dir+"').ShortPath").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	short := strings.TrimSpace(string(out))
+	if short == dir {
+		return ""
+	}
+	return short
+}
+
+// Every spelling of one repository must select one mutation lock. The lock was
+// keyed through filepath.EvalSymlinks, which canonicalizes case and resolves
+// "." and ".." but leaves an 8.3 short name alone — so a repository reached by
+// its short path and by its long path took two different mutexes and the two
+// handles serialized against nothing.
+func TestMutationLockIdentityAcrossSpellings(t *testing.T) {
+	base := t.TempDir()
+	repoPath := filepath.Join(base, "ProjectRepositoryDirectoryLongName")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	seed, err := Init(repoPath)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeRepoFile(t, seed, "base.txt", "base\n")
+	if _, _, err = seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+
+	spellings := map[string]string{
+		"as given":      repoPath,
+		"trailing sep":  repoPath + string(filepath.Separator),
+		"dot component": filepath.Join(repoPath, "."),
+		"parent bounce": filepath.Join(repoPath, "..", filepath.Base(repoPath)),
+	}
+	if runtime.GOOS == "windows" {
+		spellings["upper case"] = strings.ToUpper(repoPath)
+	}
+	// The case that specifically catches the old EvalSymlinks key: it does not
+	// resolve 8.3 aliases, so long and short forms hashed differently.
+	if short := shortPathName(t, repoPath); short != "" {
+		spellings["8.3 short name"] = short
+	} else {
+		t.Log("no 8.3 alias on this volume; the short-name case runs on Windows CI")
+	}
+
+	for name, spelling := range spellings {
+		t.Run(name, func(t *testing.T) {
+			handle, oerr := Open(spelling)
+			if oerr != nil {
+				t.Fatalf("Open(%s): %v", spelling, oerr)
+			}
+			if handle.lockKey != seed.lockKey {
+				t.Errorf("lock key differs, so these handles do not share a lock:\n  seed:  %s\n  %s: %s",
+					seed.lockKey, name, handle.lockKey)
+			}
+		})
+	}
+
+	// The shared key must also hand back the same mutex under real contention.
+	const workers = 6
+	for i := range workers {
+		if err := os.WriteFile(filepath.Join(repoPath, fmt.Sprintf("f%d.txt", i)), []byte("x\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+	alternates := make([]string, 0, len(spellings))
+	for _, spelling := range spellings {
+		alternates = append(alternates, spelling)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	start := make(chan struct{})
+	for i := range workers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			// Writers arrive through different spellings of the same repository.
+			handle, oerr := Open(alternates[n%len(alternates)])
+			if oerr != nil {
+				errs <- oerr
+				return
+			}
+			<-start
+			file := fmt.Sprintf("f%d.txt", n)
+			if _, _, cerr := handle.WorkspaceStageAndCommit([]string{file}, "commit "+file); cerr != nil {
+				errs <- cerr
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent commit through mixed spellings: %v", err)
+	}
+
+	entries, err := seed.Log(workers + 5)
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if len(entries) != workers+1 {
+		t.Errorf("log has %d commits, want %d (base + %d writers)", len(entries), workers+1, workers)
+	}
+}
+
+// go-git refuses to open a repository reached through a directory link, so a
+// second handle cannot be created that way and the lock never sees the alias.
+// Pinning this keeps the identity test honest about which spellings are
+// actually reachable, and turns a future relaxation of that restriction into a
+// visible failure rather than a silent hole.
+func TestOpenThroughDirectoryLinkIsRefused(t *testing.T) {
+	base := t.TempDir()
+	repoPath := filepath.Join(base, "repo")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if _, err := Init(repoPath); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, repoPath, alias)
+
+	if _, err := Open(alias); err == nil {
+		t.Error("Open through a directory link succeeded; the mutation lock must then key it onto the same repository")
+	}
+}
+
+// A checkout moves HEAD, the index, and the worktree. Serializing commits
+// against each other but not against a checkout leaves it free to run between a
+// commit's staging and its wt.Commit, so the commit builds on state that has
+// already been replaced.
+func TestCheckoutSerializesAgainstStageAndCommit(t *testing.T) {
+	dir := t.TempDir()
+	seed, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeRepoFile(t, seed, "base.txt", "base\n")
+	if _, _, err = seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	if _, _, err = seed.CreateBranch("other", ""); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+
+	const rounds = 8
+	for i := range rounds {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.txt", i)), []byte("x\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, rounds*2)
+	start := make(chan struct{})
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		handle, oerr := Open(dir)
+		if oerr != nil {
+			errs <- oerr
+			return
+		}
+		<-start
+		for i := range rounds {
+			if _, _, cerr := handle.WorkspaceStageAndCommit(
+				[]string{fmt.Sprintf("f%d.txt", i)}, fmt.Sprintf("commit %d", i)); cerr != nil {
+				errs <- cerr
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		handle, oerr := Open(dir)
+		if oerr != nil {
+			errs <- oerr
+			return
+		}
+		<-start
+		for range rounds {
+			// Switch back and forth from a separate handle throughout.
+			if _, _, cerr := handle.Checkout("other"); cerr != nil {
+				errs <- cerr
+				return
+			}
+			if _, _, cerr := handle.Checkout("master"); cerr != nil {
+				// A repo initialised as main rather than master is fine; stop
+				// rather than fail on the branch name.
+				return
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("checkout racing stage-and-commit: %v", err)
 	}
 }
 
