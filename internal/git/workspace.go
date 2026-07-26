@@ -163,7 +163,10 @@ func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err 
 // Checkout switches to an existing local branch named name.
 // It returns (preOpBranch, preOpSHA, err) where preOpBranch is the short
 // branch name before checkout and preOpSHA is the HEAD SHA (both empty for
-// repos with no commits). Reflog entries are appended to the target branch.
+// repos with no commits).
+//
+// The movement is recorded in the HEAD reflog, matching git: a checkout moves
+// HEAD, not the branch, and the branch tips on either side are untouched.
 func (r *Repo) Checkout(name string) (preOpBranch, preOpSHA string, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -183,12 +186,19 @@ func (r *Repo) Checkout(name string) (preOpBranch, preOpSHA string, err error) {
 		return "", "", fmt.Errorf("git: checkout %s: %w", name, coErr)
 	}
 
-	// Append reflog to the checked-out branch.
+	// Record the movement in the HEAD reflog, not the target branch's.
+	//
+	// The entry was previously appended to refs/heads/<name>, which claimed the
+	// branch tip had moved from the old HEAD to the new one. It had not: a
+	// checkout leaves both branches where they are. That corrupted the target
+	// branch's history with a movement it never made, and left the HEAD reflog
+	// with no record at all — so git reflog and HEAD@{n}, which read
+	// .git/logs/HEAD, could not see the switch.
 	if rls, ok := r.repo.Storer.(storer.ReflogStorer); ok {
 		if head, herr := r.repo.Head(); herr == nil {
 			now := time.Now()
 			n, e := r.authorIdentity()
-			_ = rls.AppendReflog(refName, &reflog.Entry{
+			_ = rls.AppendReflog(plumbing.HEAD, &reflog.Entry{
 				OldHash:   plumbing.NewHash(preOpSHA),
 				NewHash:   head.Hash(),
 				Committer: reflog.Signature{Name: n, Email: e, When: now},

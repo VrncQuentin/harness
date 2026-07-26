@@ -111,6 +111,74 @@ func TestLog(t *testing.T) {
 	}
 }
 
+// reflogFile returns the contents of .git/logs/<ref>, or "" when absent. The
+// on-disk file is what matters: the git CLI reads these, so an entry written to
+// the wrong ref is a wrong answer for the user even if the API round-trips.
+func reflogFile(t *testing.T, repo *Repo, ref string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repo.path, ".git", "logs", filepath.FromSlash(ref)))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
+		}
+		t.Fatalf("read reflog %s: %v", ref, err)
+	}
+	return string(data)
+}
+
+func TestCheckoutWritesHeadReflog(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeRepoFile(t, repo, "a.txt", "one\n")
+	first, err := repo.Commit("first", []string{"a.txt"})
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if _, _, err = repo.CreateBranch("feature", ""); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+
+	branchLogBefore := reflogFile(t, repo, "refs/heads/feature")
+
+	preOpBranch, preOpSHA, err := repo.Checkout("feature")
+	if err != nil {
+		t.Fatalf("Checkout: %v", err)
+	}
+	if preOpSHA != first {
+		t.Errorf("preOpSHA = %s, want %s", preOpSHA, first)
+	}
+	if preOpBranch == "" {
+		t.Error("preOpBranch empty, want the branch name before the switch")
+	}
+
+	headLog := reflogFile(t, repo, "HEAD")
+	if headLog == "" {
+		t.Fatal("HEAD reflog is empty; git reflog and HEAD@{n} cannot see the checkout")
+	}
+	if !strings.Contains(headLog, "checkout: moving from") {
+		t.Errorf("HEAD reflog missing the checkout entry:\n%s", headLog)
+	}
+
+	// The branch tip did not move, so its own reflog must not claim it did.
+	if got := reflogFile(t, repo, "refs/heads/feature"); got != branchLogBefore {
+		t.Errorf("target branch reflog changed on checkout:\nbefore: %q\nafter:  %q", branchLogBefore, got)
+	}
+}
+
+func TestCheckoutRejectsUnknownBranch(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeRepoFile(t, repo, "a.txt", "one\n")
+	if _, err := repo.Commit("first", []string{"a.txt"}); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	if _, _, err := repo.Checkout("no-such-branch"); err == nil {
+		t.Fatal("Checkout of an unknown branch succeeded, want an error")
+	}
+	if got := reflogFile(t, repo, "HEAD"); strings.Contains(got, "no-such-branch") {
+		t.Errorf("failed checkout still wrote a reflog entry:\n%s", got)
+	}
+}
+
 func TestDiffCommits(t *testing.T) {
 	repo := newWorkspaceRepo(t)
 	writeRepoFile(t, repo, "a.txt", "one\ntwo\n")
