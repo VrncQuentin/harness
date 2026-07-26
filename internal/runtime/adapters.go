@@ -475,6 +475,30 @@ func (ad *taskRunnerAdapter) newApprovalEvaluator() *approvals.Evaluator {
 	return approvals.NewEvaluator(layers...)
 }
 
+// memoryRepoPaths lists every project's memory-repo path from the project
+// store. It backs the C2 predicate and is called on each git write tool
+// invocation, so it must read the store rather than a captured slice.
+//
+// An absent store is an error, not an empty list: "there are no memory repos"
+// and "I cannot tell you what the memory repos are" have to reach the tool
+// layer as different answers, or the hard lock opens whenever the store fails.
+func (ad *taskRunnerAdapter) memoryRepoPaths() ([]string, error) {
+	if ad.rt == nil || ad.rt.projectStore == nil {
+		return nil, errors.New("project store unavailable")
+	}
+	projs, err := ad.rt.projectStore.List(true)
+	if err != nil {
+		return nil, fmt.Errorf("list projects: %w", err)
+	}
+	paths := make([]string, 0, len(projs))
+	for _, p := range projs {
+		if p.MemoryRepoPath != "" {
+			paths = append(paths, p.MemoryRepoPath)
+		}
+	}
+	return paths, nil
+}
+
 // memoryQueryFn returns a MemoryQuery closure, or nil when the episode scorer
 // is not available.
 func (ad *taskRunnerAdapter) memoryQueryFn() func(context.Context, string, int) ([]tools.MemoryHit, error) {
@@ -590,23 +614,15 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 			}
 		}
 	}
-	// Collect memory repo paths for the C2 scope predicate (git write tools).
-	var memoryRepoPaths []string
-	if ad.rt.projectStore != nil {
-		if projs, err := ad.rt.projectStore.List(true); err == nil {
-			for _, p := range projs {
-				if p.MemoryRepoPath != "" {
-					memoryRepoPaths = append(memoryRepoPaths, p.MemoryRepoPath)
-				}
-			}
-		}
-	}
 	loopCtx, cancelLoop := context.WithCancel(ctx)
 
 	toolCtx := tools.CallInfo{
-		ProjectSlug:     slug,
-		SandboxRoots:    sandboxRoots,
-		MemoryRepoPaths: memoryRepoPaths,
+		ProjectSlug:  slug,
+		SandboxRoots: sandboxRoots,
+		// C2 is resolved per call, not snapshotted here: a project can be
+		// created or repointed while this task runs, and a store failure must
+		// reject the write rather than read as "no memory repos exist".
+		MemoryRepoCheck: tools.NewMemoryRepoCheck(ad.memoryRepoPaths),
 		SessionID:       id,
 		CallerIdentity:  "agent:" + agentName,
 		HTTPClient:      httpclient.New(),

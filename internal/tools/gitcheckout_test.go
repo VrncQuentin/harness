@@ -11,7 +11,7 @@ func TestGitCheckout_MissingBranch(t *testing.T) {
 	initRepoWithCommit(t, dir)
 
 	tool := &gitCheckoutTool{}
-	ci := CallInfo{SandboxRoots: []string{dir}}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), ci, map[string]any{"root": dir})
 	if res.Error == "" {
 		t.Fatal("expected error for missing branch, got none")
@@ -20,7 +20,7 @@ func TestGitCheckout_MissingBranch(t *testing.T) {
 
 func TestGitCheckout_MissingRoot(t *testing.T) {
 	tool := &gitCheckoutTool{}
-	ci := CallInfo{SandboxRoots: []string{t.TempDir()}}
+	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), ci, map[string]any{"branch": "main"})
 	if res.Error == "" {
 		t.Fatal("expected error for missing root, got none")
@@ -32,7 +32,7 @@ func TestGitCheckout_C2MemoryRepoRejected(t *testing.T) {
 	initRepoWithCommit(t, dir)
 
 	tool := &gitCheckoutTool{}
-	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoPaths: []string{dir}}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: memoryScopeOver(dir)}
 	res := tool.Execute(context.Background(), ci, map[string]any{"root": dir, "branch": "main"})
 	if res.Error == "" {
 		t.Fatal("expected C2 scope error, got none")
@@ -48,7 +48,7 @@ func TestGitCheckout_SwitchBranch(t *testing.T) {
 
 	// Create a second branch to switch to using git_branch.
 	branchTool := &gitBranchTool{}
-	ci := CallInfo{SandboxRoots: []string{dir}}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := branchTool.Execute(context.Background(), ci, map[string]any{
 		"root": dir,
 		"name": "feature",

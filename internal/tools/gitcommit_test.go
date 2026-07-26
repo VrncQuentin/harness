@@ -43,7 +43,7 @@ func TestGitCommit_MissingMessage(t *testing.T) {
 	initRepoWithCommit(t, dir)
 
 	tool := &gitCommitTool{}
-	ci := CallInfo{SandboxRoots: []string{dir}}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), ci, map[string]any{"root": dir})
 	if res.Error == "" {
 		t.Fatal("expected error for missing message, got none")
@@ -52,7 +52,7 @@ func TestGitCommit_MissingMessage(t *testing.T) {
 
 func TestGitCommit_MissingRoot(t *testing.T) {
 	tool := &gitCommitTool{}
-	ci := CallInfo{SandboxRoots: []string{t.TempDir()}}
+	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), ci, map[string]any{"message": "hi"})
 	if res.Error == "" {
 		t.Fatal("expected error for missing root, got none")
@@ -65,7 +65,7 @@ func TestGitCommit_SandboxViolation(t *testing.T) {
 	other := t.TempDir()
 
 	tool := &gitCommitTool{}
-	ci := CallInfo{SandboxRoots: []string{other}} // dir not in sandbox
+	ci := CallInfo{SandboxRoots: []string{other}, MemoryRepoCheck: noMemoryRepos()} // dir not in sandbox
 	res := tool.Execute(context.Background(), ci, map[string]any{"root": dir, "message": "hi"})
 	if res.Error == "" {
 		t.Fatal("expected sandbox violation error, got none")
@@ -78,7 +78,7 @@ func TestGitCommit_C2MemoryRepoRejected(t *testing.T) {
 
 	tool := &gitCommitTool{}
 	// dir is in sandbox but also listed as a memory repo — must be rejected.
-	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoPaths: []string{dir}}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: memoryScopeOver(dir)}
 	res := tool.Execute(context.Background(), ci, map[string]any{"root": dir, "message": "evil"})
 	if res.Error == "" {
 		t.Fatal("expected C2 scope error, got none")
@@ -99,7 +99,7 @@ func TestGitCommit_StageAllAndCommit(t *testing.T) {
 	}
 
 	tool := &gitCommitTool{}
-	ci := CallInfo{SandboxRoots: []string{dir}}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	// files omitted → stage all
 	res := tool.Execute(context.Background(), ci, map[string]any{
 		"root":    dir,
@@ -130,7 +130,7 @@ func TestGitCommit_StageSpecificFiles(t *testing.T) {
 	}
 
 	tool := &gitCommitTool{}
-	ci := CallInfo{SandboxRoots: []string{dir}}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), ci, map[string]any{
 		"root":    dir,
 		"message": "add a only",
