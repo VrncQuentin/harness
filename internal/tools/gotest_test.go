@@ -200,3 +200,62 @@ func TestGoTest_PassingSuiteReportsSuccess(t *testing.T) {
 		t.Errorf("Content = %q, want the pass message", res.Content)
 	}
 }
+
+// A summarized failure replaces the raw NDJSON rather than truncating it, so
+// the raw must be preserved however small it is. Keying preservation on "was
+// the inline text cut" meant an under-cap run lost its raw output entirely: B3
+// spilled the summary under the name "full output", or skipped the spill when
+// the summary fell below its threshold.
+func TestGoTestResult_SummarizedFailurePreservesRawBelowTheCap(t *testing.T) {
+	// Raw well under the inline cap, with a summary far shorter than it.
+	var raw strings.Builder
+	raw.WriteString(`{"Action":"fail","Package":"p","Test":"TestX"}` + "\n")
+	for i := range 200 {
+		fmt.Fprintf(&raw, `{"Action":"output","Package":"p","Test":"TestOther","Output":"noise line %d\n"}`+"\n", i)
+	}
+	rawStr := raw.String()
+	if len(rawStr) >= goTestOutputLimit {
+		t.Fatalf("raw is %d bytes, must stay under the %d-byte cap for this case", len(rawStr), goTestOutputLimit)
+	}
+
+	res := goTestResult(&fakeExitError{code: 1}, rawStr, false)
+
+	if res.Error == "" {
+		t.Fatal("expected a failure result")
+	}
+	if res.FullOutput != rawStr {
+		t.Errorf("FullOutput = %d bytes, want the raw %d — the summary replaced it and the raw was dropped",
+			len(res.FullOutput), len(rawStr))
+	}
+	if len(res.Error) >= len(rawStr) {
+		t.Errorf("inline error (%d bytes) is not shorter than raw (%d); this case is meant to summarize",
+			len(res.Error), len(rawStr))
+	}
+}
+
+// The scanner must keep reading past a record larger than its default token
+// size, or every failure after a long line silently disappears.
+func TestFormatTestFailures_LongRecordDoesNotHideLaterFailures(t *testing.T) {
+	huge := strings.Repeat("z", 128*1024)
+	raw := fmt.Sprintf(`{"Action":"output","Package":"p","Test":"TestBig","Output":%q}`+"\n", huge) +
+		`{"Action":"fail","Package":"p","Test":"TestAfterTheLongRecord"}` + "\n"
+
+	summary := formatTestFailures(raw)
+	if !strings.Contains(summary, "TestAfterTheLongRecord") {
+		t.Errorf("failure after a long record is missing from the summary:\n%s", summary)
+	}
+}
+
+// When the stream genuinely cannot be read to the end, the summary has to say
+// so: a short list would under-report failures and an empty one would read as
+// a pass.
+func TestFormatTestFailures_ReportsUnreadableStream(t *testing.T) {
+	// A record beyond even the raised limit.
+	oversize := strings.Repeat("q", spillCeiling+scannerHeadroom+1)
+	raw := fmt.Sprintf(`{"Action":"output","Package":"p","Test":"T","Output":%q}`+"\n", oversize)
+
+	summary := formatTestFailures(raw)
+	if !strings.Contains(summary, "could not be fully parsed") {
+		t.Errorf("unreadable stream produced %q, want an explicit warning", summary)
+	}
+}

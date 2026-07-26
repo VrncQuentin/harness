@@ -348,3 +348,34 @@ func TestB3_TruncatesOnRuneBoundary(t *testing.T) {
 		t.Error("B3 prefix cut produced invalid UTF-8")
 	}
 }
+
+// B2 runs after the tools have already bounded their output on rune
+// boundaries. Slicing at fixed byte offsets here would undo that, putting
+// invalid UTF-8 into the conversation and the session record.
+func TestB2_CutsOnRuneBoundaries(t *testing.T) {
+	g := New(nil, t.TempDir())
+
+	// Three-byte runes, deliberately. Two-byte runes sit on even offsets and
+	// the cuts here (512, and len-512) are even too, so they would never land
+	// mid-character — a two-byte test passes against byte slicing and proves
+	// nothing. At three bytes per rune the boundaries fall inside a character.
+	const wide = "€" // 3 bytes
+	for _, extra := range []int{0, 1, 2, 3, 7} {
+		runes := (b2Limits["exec"] + b2Head + b2Tail + extra) / 3
+		res := g.Apply(context.Background(), "exec", nil,
+			tools.Result{Content: strings.Repeat(wide, runes)}, "")
+		if !utf8.ValidString(res.Content) {
+			t.Errorf("extra=%d: B2 head/tail elision produced invalid UTF-8", extra)
+		}
+	}
+
+	// The short-content hard-cap branch takes a different path.
+	for _, extra := range []int{0, 1, 2} {
+		runes := (b2Limits["go_lint"] + extra) / 3
+		res := g.Apply(context.Background(), "go_lint", nil,
+			tools.Result{Content: strings.Repeat(wide, runes)}, "")
+		if !utf8.ValidString(res.Content) {
+			t.Errorf("extra=%d: B2 hard-cap branch produced invalid UTF-8", extra)
+		}
+	}
+}

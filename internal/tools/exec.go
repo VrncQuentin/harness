@@ -20,8 +20,18 @@ const execOutputLimit = 64 * 1024
 // is being kept for the spill file.
 const spillCeiling = 8 << 20 // 8 MiB
 
+// scannerHeadroom covers the truncation marker cappedOutput appends past the
+// ceiling, so a parser sized to the ceiling does not fail on the largest inputs.
+const scannerHeadroom = 1 << 10
+
 // boundInline returns at most limit bytes of s, appending an elision note when
 // it had to cut.
+//
+// The note says only that output was cut. Whether the remainder can be
+// retrieved depends on the result reaching B3 with a preserved copy, which the
+// successful paths do not: they discard the buffer and B3 never runs on them.
+// Promising retrieval here would be a promise this function cannot keep — B3
+// announces the handle itself, once the spill is actually on disk.
 //
 // The cut lands on a rune boundary. Slicing raw bytes at a fixed offset splits
 // multi-byte characters, and the resulting invalid UTF-8 goes straight into the
@@ -30,11 +40,20 @@ func boundInline(s string, limit int) string {
 	if len(s) <= limit {
 		return s
 	}
+	return s[:runeSafeCut(s, limit)] + "\n… (truncated)"
+}
+
+// runeSafeCut returns the largest offset at or below limit that lands on a rune
+// boundary.
+func runeSafeCut(s string, limit int) int {
+	if limit >= len(s) {
+		return len(s)
+	}
 	cut := limit
 	for cut > 0 && !utf8.RuneStart(s[cut]) {
 		cut--
 	}
-	return s[:cut] + "\n… (truncated; full output preserved for retrieval)"
+	return cut
 }
 
 type execTool struct{}

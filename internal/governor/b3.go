@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"unicode/utf8"
 
 	"github.com/VrncQuentin/harness/internal/tools"
 )
@@ -49,26 +48,12 @@ func (g *Governor) applyB3(_ context.Context, toolID string, res tools.Result) t
 
 	// Keep a prefix of the error for immediate context, add the handle.
 	const prefixLen = 512
-	res.Error = fmt.Sprintf("%s\n… (full output in toolout:%s)", truncateRunes(res.Error, prefixLen), id)
+	res.Error = fmt.Sprintf("%s\n… (full output in toolout:%s)", res.Error[:runeSafeCutEnd(res.Error, prefixLen)], id)
 	// The spill is on disk and addressable now, so drop the in-memory copy
 	// rather than carrying megabytes of output onward into events and session
 	// records.
 	res.FullOutput = ""
 	return res
-}
-
-// truncateRunes returns at most limit bytes of s, cut on a rune boundary.
-// Slicing at a fixed byte offset splits multi-byte characters, and the invalid
-// UTF-8 that produces goes straight into the model's context.
-func truncateRunes(s string, limit int) string {
-	if len(s) <= limit {
-		return s
-	}
-	cut := limit
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut]
 }
 
 // tooloutID returns a deterministic file ID for (toolID, content).

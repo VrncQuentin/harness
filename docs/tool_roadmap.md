@@ -218,9 +218,9 @@ Not model-callable. These fire on results the model never sees raw.
 |---|---|---|
 | B1 | Query-aware skeletonizer | Full bodies for spans relevant to the active task, signatures elsewhere. Consumes `read` output and the parser front-end. The active query is an input an external proxy structurally cannot have. Query-aware from the start. |
 | B2 | Tool-output folder | Per-tool output compression for the tools in section A. One folder per toolchain tool, not a dispatcher. |
-| B3 | Tee-on-failure | Full unfiltered output to disk on non-zero exit; context receives the compressed form plus a retrieval handle (stable locator). |
+| B3 | Tee-on-failure | Full unfiltered output to disk on non-zero exit; context receives the compressed form plus a retrieval handle (stable locator). Tools pass the complete output through `Result.FullOutput` when their inline text is bounded — capturing at the inline cap would tee the same excerpt the model already has. |
 | B4 | Observation mask | Deferred; stale-output masking needs real long-running task data before admission. |
-| B5 | Token gate | Recount after every transform with the **same counter used for budgeting**, auto-revert when a transform increased the count. Correct against the present rune-quarter heuristic [P] because both sides use the same counter; swapping in a real tokenizer via the existing `WithTokenizer` hook is a separate accuracy improvement, not a B5 prerequisite. |
+| B5 | Token gate | Recount after each **context-reshaping** transform (B1, B2) with the **same counter used for budgeting**, auto-revert when one increased the count. **B3 is exempt:** it moves output to disk rather than reshaping context, its retrieval handle is frequently longer than the short inline failure it accompanies, and its file write cannot be undone by discarding the returned result. Correct against the present rune-quarter heuristic [P] because both sides use the same counter; swapping in a real tokenizer via the existing `WithTokenizer` hook is a separate accuracy improvement, not a B5 prerequisite. |
 | B6 | MCP result normalizer | Deferred — no MCP servers admitted. If admitted, results enter this same chain. No bypass path. |
 
 Shipped package homes are `internal/governor` for B1/B2/B3/B5,

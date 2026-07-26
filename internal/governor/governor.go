@@ -53,8 +53,9 @@ func (g *Governor) WithTokenizer(fn func(s string) int) *Governor {
 }
 
 // Apply runs all applicable transforms on res, in order B1 → B2 → B3.
-// Each transform is wrapped by the B5 token gate, which auto-reverts any
-// transform that increases the estimated token count.
+// B1 and B2 are wrapped by the B5 token gate, which auto-reverts either when it
+// increases the estimated token count. B3 is exempt — see the comment at its
+// call site below.
 // toolID identifies the tool that produced res; args are its call arguments.
 // query is the active task prompt, used by B1 for relevance scoring.
 func (g *Governor) Apply(ctx context.Context, toolID string, args map[string]any, res tools.Result, query string) tools.Result {
