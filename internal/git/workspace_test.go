@@ -289,13 +289,13 @@ func TestCheckoutWritesHeadReflog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if _, _, err = repo.CreateBranch("feature", ""); err != nil {
+	if _, _, _, err = repo.CreateBranch("feature", ""); err != nil {
 		t.Fatalf("CreateBranch: %v", err)
 	}
 
 	branchLogBefore := reflogFile(t, repo, "refs/heads/feature")
 
-	preOpBranch, preOpSHA, err := repo.Checkout("feature")
+	preOpBranch, preOpSHA, _, err := repo.Checkout("feature")
 	if err != nil {
 		t.Fatalf("Checkout: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestCheckoutRejectsUnknownBranch(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	if _, _, err := repo.Checkout("no-such-branch"); err == nil {
+	if _, _, _, err := repo.Checkout("no-such-branch"); err == nil {
 		t.Fatal("Checkout of an unknown branch succeeded, want an error")
 	}
 	if got := reflogFile(t, repo, "HEAD"); strings.Contains(got, "no-such-branch") {
@@ -355,7 +355,7 @@ func TestWorkspaceStageAndCommit(t *testing.T) {
 	writeRepoFile(t, repo, "a.txt", "one\n")
 	writeRepoFile(t, repo, "b.txt", "two\n")
 
-	newSHA, preOpSHA, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "first")
+	newSHA, preOpSHA, _, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "first")
 	if err != nil {
 		t.Fatalf("WorkspaceStageAndCommit: %v", err)
 	}
@@ -371,7 +371,7 @@ func TestWorkspaceStageAndCommit(t *testing.T) {
 
 	// Second commit: empty file list stages everything.
 	writeRepoFile(t, repo, "a.txt", "one changed\n")
-	second, preOp2, err := repo.WorkspaceStageAndCommit(nil, "second")
+	second, preOp2, _, err := repo.WorkspaceStageAndCommit(nil, "second")
 	if err != nil {
 		t.Fatalf("WorkspaceStageAndCommit all: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestWorkspaceStageAndCommit(t *testing.T) {
 func TestWorkspaceStageAndCommitRollsBackPartialStaging(t *testing.T) {
 	repo := newWorkspaceRepo(t)
 	writeRepoFile(t, repo, "committed.txt", "one\n")
-	if _, _, err := repo.WorkspaceStageAndCommit([]string{"committed.txt"}, "first"); err != nil {
+	if _, _, _, err := repo.WorkspaceStageAndCommit([]string{"committed.txt"}, "first"); err != nil {
 		t.Fatalf("seed commit: %v", err)
 	}
 	before := stagedPaths(t, repo)
@@ -401,7 +401,7 @@ func TestWorkspaceStageAndCommitRollsBackPartialStaging(t *testing.T) {
 	// The first path stages cleanly; the second does not exist, so the call
 	// fails with "good.txt" already in the index.
 	writeRepoFile(t, repo, "good.txt", "staged before the failure\n")
-	_, _, err := repo.WorkspaceStageAndCommit([]string{"good.txt", "no-such-file.txt"}, "doomed")
+	_, _, _, err := repo.WorkspaceStageAndCommit([]string{"good.txt", "no-such-file.txt"}, "doomed")
 	if err == nil {
 		t.Fatal("staging a nonexistent file succeeded, want an error")
 	}
@@ -422,7 +422,7 @@ func TestWorkspaceStageAndCommitRollsBackPartialStaging(t *testing.T) {
 func TestSnapshotAndRestoreIndex(t *testing.T) {
 	repo := newWorkspaceRepo(t)
 	writeRepoFile(t, repo, "a.txt", "one\n")
-	if _, _, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "first"); err != nil {
+	if _, _, _, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "first"); err != nil {
 		t.Fatalf("seed commit: %v", err)
 	}
 
@@ -467,7 +467,7 @@ func TestWorkspaceStageAndCommitSerializesAcrossHandles(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	writeRepoFile(t, seed, "base.txt", "base\n")
-	if _, _, err := seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
+	if _, _, _, err := seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
 		t.Fatalf("seed commit: %v", err)
 	}
 
@@ -493,7 +493,7 @@ func TestWorkspaceStageAndCommitSerializesAcrossHandles(t *testing.T) {
 			}
 			<-start
 			file := fmt.Sprintf("f%d.txt", n)
-			if _, _, cerr := handle.WorkspaceStageAndCommit([]string{file}, "commit "+file); cerr != nil {
+			if _, _, _, cerr := handle.WorkspaceStageAndCommit([]string{file}, "commit "+file); cerr != nil {
 				errs <- cerr
 			}
 		}(i)
@@ -551,7 +551,7 @@ func TestMutationLockIdentityAcrossSpellings(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	writeRepoFile(t, seed, "base.txt", "base\n")
-	if _, _, err = seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
+	if _, _, _, err = seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
 		t.Fatalf("seed commit: %v", err)
 	}
 
@@ -612,7 +612,7 @@ func TestMutationLockIdentityAcrossSpellings(t *testing.T) {
 			}
 			<-start
 			file := fmt.Sprintf("f%d.txt", n)
-			if _, _, cerr := handle.WorkspaceStageAndCommit([]string{file}, "commit "+file); cerr != nil {
+			if _, _, _, cerr := handle.WorkspaceStageAndCommit([]string{file}, "commit "+file); cerr != nil {
 				errs <- cerr
 			}
 		}(i)
@@ -666,10 +666,10 @@ func TestCheckoutSerializesAgainstStageAndCommit(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	writeRepoFile(t, seed, "base.txt", "base\n")
-	if _, _, err = seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
+	if _, _, _, err = seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
 		t.Fatalf("seed commit: %v", err)
 	}
-	if _, _, err = seed.CreateBranch("other", ""); err != nil {
+	if _, _, _, err = seed.CreateBranch("other", ""); err != nil {
 		t.Fatalf("CreateBranch: %v", err)
 	}
 
@@ -694,7 +694,7 @@ func TestCheckoutSerializesAgainstStageAndCommit(t *testing.T) {
 		}
 		<-start
 		for i := range rounds {
-			if _, _, cerr := handle.WorkspaceStageAndCommit(
+			if _, _, _, cerr := handle.WorkspaceStageAndCommit(
 				[]string{fmt.Sprintf("f%d.txt", i)}, fmt.Sprintf("commit %d", i)); cerr != nil {
 				errs <- cerr
 				return
@@ -713,11 +713,11 @@ func TestCheckoutSerializesAgainstStageAndCommit(t *testing.T) {
 		<-start
 		for range rounds {
 			// Switch back and forth from a separate handle throughout.
-			if _, _, cerr := handle.Checkout("other"); cerr != nil {
+			if _, _, _, cerr := handle.Checkout("other"); cerr != nil {
 				errs <- cerr
 				return
 			}
-			if _, _, cerr := handle.Checkout("master"); cerr != nil {
+			if _, _, _, cerr := handle.Checkout("master"); cerr != nil {
 				// A repo initialised as main rather than master is fine; stop
 				// rather than fail on the branch name.
 				return
@@ -743,7 +743,7 @@ func TestCreateBranchRejectsExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
-	if _, _, err = repo.CreateBranch("feature", ""); err != nil {
+	if _, _, _, err = repo.CreateBranch("feature", ""); err != nil {
 		t.Fatalf("CreateBranch: %v", err)
 	}
 
@@ -757,7 +757,7 @@ func TestCreateBranchRejectsExisting(t *testing.T) {
 		t.Fatal("second commit did not advance HEAD; test cannot detect a reset")
 	}
 
-	_, _, err = repo.CreateBranch("feature", "")
+	_, _, _, err = repo.CreateBranch("feature", "")
 	if !errors.Is(err, ErrBranchExists) {
 		t.Fatalf("re-create error = %v, want ErrBranchExists", err)
 	}
@@ -784,7 +784,7 @@ func TestCreateBranchRejectsInvalidName(t *testing.T) {
 	// git-check-ref-format rejects each of these.
 	for _, name := range []string{"has space", "has..dots", "trailing.lock", "-leading-dash", "ends/", "back\\slash"} {
 		t.Run(name, func(t *testing.T) {
-			if _, _, err := repo.CreateBranch(name, ""); err == nil {
+			if _, _, _, err := repo.CreateBranch(name, ""); err == nil {
 				t.Errorf("CreateBranch(%q) succeeded, want a validation error", name)
 			}
 		})
@@ -803,7 +803,7 @@ func TestCreateBranchFromStartPoint(t *testing.T) {
 		t.Fatalf("Commit: %v", err)
 	}
 
-	sha, preOpSHA, err := repo.CreateBranch("from-first", first)
+	sha, preOpSHA, _, err := repo.CreateBranch("from-first", first)
 	if err != nil {
 		t.Fatalf("CreateBranch: %v", err)
 	}
@@ -813,7 +813,7 @@ func TestCreateBranchFromStartPoint(t *testing.T) {
 	if preOpSHA == "" {
 		t.Error("preOpSHA empty, want the HEAD SHA at call time")
 	}
-	if _, _, err = repo.CreateBranch("bad-start", "no-such-rev"); err == nil {
+	if _, _, _, err = repo.CreateBranch("bad-start", "no-such-rev"); err == nil {
 		t.Error("CreateBranch with an unresolvable start point succeeded, want an error")
 	}
 }
@@ -863,7 +863,7 @@ func TestCreateBranchConcurrentSameNameDifferentStartPoints(t *testing.T) {
 				return
 			}
 			<-start
-			sha, _, cerr := handle.CreateBranch("contended", startPoints[n%len(startPoints)])
+			sha, _, _, cerr := handle.CreateBranch("contended", startPoints[n%len(startPoints)])
 			results <- outcome{sha: sha, err: cerr}
 		}(i)
 	}
@@ -895,6 +895,137 @@ func TestCreateBranchConcurrentSameNameDifferentStartPoints(t *testing.T) {
 	if got := ref.Hash().String(); got != winners[0] {
 		t.Errorf("branch tip = %s, want the winning create's %s — a loser reset it", got, winners[0])
 	}
+}
+
+// git records a commit in both logs — HEAD moved, and so did the branch it
+// points at. Only the branch log was written before, so HEAD@{1}, which reads
+// .git/logs/HEAD, did not resolve after a harness commit even though the method
+// documented that undo.
+func TestWorkspaceStageAndCommitWritesBothReflogs(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeRepoFile(t, repo, "a.txt", "one\n")
+	if _, _, warn, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "first"); err != nil || warn != nil {
+		t.Fatalf("first commit: err=%v warn=%v", err, warn)
+	}
+	writeRepoFile(t, repo, "a.txt", "two\n")
+	if _, _, warn, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "second"); err != nil || warn != nil {
+		t.Fatalf("second commit: err=%v warn=%v", err, warn)
+	}
+
+	head, err := repo.repo.Head()
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	for _, ref := range []string{"HEAD", head.Name().String()} {
+		got := reflogFile(t, repo, ref)
+		if got == "" {
+			t.Errorf("%s reflog is empty; a commit must appear in both logs", ref)
+			continue
+		}
+		if !strings.Contains(got, "commit: second") {
+			t.Errorf("%s reflog missing the commit entry:\n%s", ref, got)
+		}
+	}
+	// Two commits, so HEAD@{1} has something to resolve to.
+	if n := strings.Count(reflogFile(t, repo, "HEAD"), "commit: "); n != 2 {
+		t.Errorf("HEAD reflog has %d commit entries, want 2 — HEAD@{1} would not resolve", n)
+	}
+}
+
+// breakReflogs makes every reflog write fail by replacing .git/logs with a
+// regular file, so the directory the entries need cannot be created.
+func breakReflogs(t *testing.T, repo *Repo) {
+	t.Helper()
+	logs := filepath.Join(repo.path, ".git", "logs")
+	if err := os.RemoveAll(logs); err != nil {
+		t.Fatalf("RemoveAll logs: %v", err)
+	}
+	if err := os.WriteFile(logs, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile logs: %v", err)
+	}
+}
+
+// A reflog that cannot be written costs the convenience of HEAD@{1}, not the
+// recovery path. The operation has already happened, so it must be reported as
+// a warning rather than an error — telling the caller a write failed when it
+// succeeded would be worse than the missing log entry.
+func TestReflogFailureWarnsWithoutFailingTheWrite(t *testing.T) {
+	t.Run("commit", func(t *testing.T) {
+		repo := newWorkspaceRepo(t)
+		writeRepoFile(t, repo, "a.txt", "one\n")
+		if _, _, _, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "first"); err != nil {
+			t.Fatalf("seed commit: %v", err)
+		}
+		breakReflogs(t, repo)
+
+		writeRepoFile(t, repo, "a.txt", "two\n")
+		newSHA, _, warn, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "second")
+		if err != nil {
+			t.Fatalf("commit reported failure for a reflog problem: %v", err)
+		}
+		if warn == nil {
+			t.Fatal("no warning for an unwritable reflog")
+		}
+		if newSHA == "" {
+			t.Error("no SHA returned; the commit itself must still have happened")
+		}
+		// The label says which log failed, not just that something did.
+		if !strings.Contains(warn.Error(), "reflog") {
+			t.Errorf("warning %q does not identify the reflog", warn)
+		}
+		// The commit is real: HEAD advanced to it.
+		head, herr := repo.repo.Head()
+		if herr != nil || head.Hash().String() != newSHA {
+			t.Errorf("HEAD = %v (err %v), want the new commit %s", head, herr, newSHA)
+		}
+	})
+
+	t.Run("branch", func(t *testing.T) {
+		repo := newWorkspaceRepo(t)
+		writeRepoFile(t, repo, "a.txt", "one\n")
+		if _, err := repo.Commit("first", []string{"a.txt"}); err != nil {
+			t.Fatalf("seed commit: %v", err)
+		}
+		breakReflogs(t, repo)
+
+		sha, _, warn, err := repo.CreateBranch("feature", "")
+		if err != nil {
+			t.Fatalf("CreateBranch reported failure for a reflog problem: %v", err)
+		}
+		if warn == nil {
+			t.Fatal("no warning for an unwritable reflog")
+		}
+		if _, rerr := repo.repo.Reference(plumbing.NewBranchReferenceName("feature"), false); rerr != nil {
+			t.Errorf("branch missing after a warned create: %v", rerr)
+		}
+		if sha == "" {
+			t.Error("no SHA returned; the branch itself must still have been created")
+		}
+	})
+
+	t.Run("checkout", func(t *testing.T) {
+		repo := newWorkspaceRepo(t)
+		writeRepoFile(t, repo, "a.txt", "one\n")
+		if _, err := repo.Commit("first", []string{"a.txt"}); err != nil {
+			t.Fatalf("seed commit: %v", err)
+		}
+		if _, _, _, err := repo.CreateBranch("feature", ""); err != nil {
+			t.Fatalf("CreateBranch: %v", err)
+		}
+		breakReflogs(t, repo)
+
+		_, _, warn, err := repo.Checkout("feature")
+		if err != nil {
+			t.Fatalf("Checkout reported failure for a reflog problem: %v", err)
+		}
+		if warn == nil {
+			t.Fatal("no warning for an unwritable reflog")
+		}
+		head, herr := repo.repo.Head()
+		if herr != nil || head.Name().Short() != "feature" {
+			t.Errorf("HEAD = %v (err %v), want the checkout to have happened", head, herr)
+		}
+	})
 }
 
 func TestDiffCommits(t *testing.T) {
