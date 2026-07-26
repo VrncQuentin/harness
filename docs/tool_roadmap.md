@@ -307,7 +307,7 @@ The canonical labeled set is one NDJSON file per project at
 `~/.harness/eval/retrieval/<project-slug>.ndjson`:
 
 ```json
-{"query":"the Go AST package discussion","relevant":["episodes/coder/2025-01-15T10:30:00Z.md"]}
+{"version":1,"query":"the Go AST package discussion","relevant":["episodes/coder/2025-01-15T10:30:00Z.md"]}
 ```
 
 The evaluator reports Precision@3 and Recall@3 for semantic-only, recency-only, and the

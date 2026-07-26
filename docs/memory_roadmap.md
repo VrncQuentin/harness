@@ -133,8 +133,12 @@ One canonical NDJSON file per project:
 `~/.harness/eval/retrieval/<project-slug>.ndjson`
 
 ```json
-{"query":"the Go AST package discussion","relevant":["episodes/coder/2025-01-15T10:30:00Z.md"]}
+{"version":1,"query":"the Go AST package discussion","relevant":["episodes/coder/2025-01-15T10:30:00Z.md"]}
 ```
+
+`version` carries the labeled-query schema version independently of the trace schema's
+`Version`; the two artifacts version separately. A row whose version the evaluator does
+not recognize is not a valid row.
 
 The binary replays each query against the selected project repo and reports Precision@3
 and Recall@3 for semantic-only, recency-only, and the configured blend. MRR may remain as
