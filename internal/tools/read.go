@@ -30,15 +30,19 @@ func (t *readTool) Schema() map[string]any {
 			},
 			"locator": map[string]any{
 				"type":        "string",
-				"description": "Stable locator (path:start-end) from ast_map/ast_find, or a toolout:<id> handle from a truncated tool failure. Takes precedence over path. A toolout handle accepts start_line/end_line to page through large output.",
+				"description": "Stable locator (path:start-end) from ast_map/ast_find, or a toolout:<id> handle from a truncated tool failure. Takes precedence over path. Page a toolout handle with offset, not line numbers.",
 			},
 			"start_line": map[string]any{
 				"type":        "integer",
-				"description": "First line to read (1-based, inclusive). Requires path.",
+				"description": "First line to read (1-based, inclusive). Requires path or a path:start-end locator; not accepted with a toolout handle.",
 			},
 			"end_line": map[string]any{
 				"type":        "integer",
-				"description": "Last line to read (1-based, inclusive). Requires path and start_line.",
+				"description": "Last line to read (1-based, inclusive). Requires start_line; not accepted with a toolout handle.",
+			},
+			"offset": map[string]any{
+				"type":        "integer",
+				"description": "Byte offset to resume a toolout handle from, taken from the continuation note of the previous page. Only for toolout locators.",
 			},
 		},
 	}
@@ -46,7 +50,16 @@ func (t *readTool) Schema() map[string]any {
 
 func (t *readTool) Execute(ctx context.Context, c CallInfo, args map[string]any) Result {
 	if locator, ok := args["locator"].(string); ok && isTooloutLocator(locator) {
-		return readToolout(c, locator, intArg(args, "start_line"), intArg(args, "end_line"))
+		// Line addressing is refused rather than ignored. Silently treating
+		// start_line/end_line as absent turned a mis-addressed read into a
+		// first page, so the caller believed it had the lines it asked for.
+		if _, present := args["start_line"]; present {
+			return Result{Error: "read: start_line/end_line do not address a toolout handle — page it with offset instead"}
+		}
+		if _, present := args["end_line"]; present {
+			return Result{Error: "read: start_line/end_line do not address a toolout handle — page it with offset instead"}
+		}
+		return readToolout(c, locator, intArg(args, "offset"))
 	}
 	target, start, end, err := readTarget(args)
 	if err != nil {
@@ -77,20 +90,31 @@ func (t *readTool) Execute(ctx context.Context, c CallInfo, args map[string]any)
 // tooloutPageLimit bounds how much spilled output a single read injects.
 //
 // A spill can be megabytes. Returning one whole would put back into context
-// exactly the volume the tee existed to keep out of it, so an unranged read
-// returns a first page and says how to ask for the rest.
+// exactly the volume the tee existed to keep out of it, so a read returns one
+// page and says where the next one starts.
 const tooloutPageLimit = 32 * 1024
 
 // readToolout serves output the governor spilled to disk, addressed by the
 // toolout:<id> handle it injected into the conversation. Without this the
 // handle was a dead reference: B3 advertised a locator that no tool resolved,
 // so the preserved output could not be reached at all.
-func readToolout(c CallInfo, locator string, start, end int) Result {
+//
+// Paging is by byte offset rather than by line, and every response is bounded
+// by construction. Line addressing cannot do this job for arbitrary captured
+// output: a page boundary lands mid-line, so a line-numbered continuation
+// either skips the unseen remainder of that line or re-sends the whole of it,
+// and one line of a spill can be the entire file. Byte offsets have neither
+// problem — consecutive pages concatenate back into exactly the spilled bytes.
+func readToolout(c CallInfo, locator string, offset int) Result {
+	if offset < 0 {
+		return Result{Error: fmt.Sprintf("read: offset %d is negative", offset)}
+	}
 	path, err := resolveToolout(c.TooloutDir, locator)
 	if err != nil {
 		return Result{Error: "read: " + err.Error()}
 	}
-	//nolint:gosec // path is the spill dir joined with a validated hex id
+	//nolint:gosec // path is the spill dir joined with a validated hex id,
+	// checked to resolve physically inside the spill directory
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -99,23 +123,27 @@ func readToolout(c CallInfo, locator string, start, end int) Result {
 		return Result{Error: fmt.Sprintf("read: %s: %v", locator, err)}
 	}
 
-	if start > 0 {
-		span, spanErr := spanBytes(data, start, end)
-		if spanErr != nil {
-			return Result{Error: "read: " + spanErr.Error()}
-		}
-		return Result{Content: string(span)}
+	if offset > len(data) {
+		return Result{Error: fmt.Sprintf("read: offset %d is past the end of %s (%d bytes)", offset, locator, len(data))}
 	}
 
-	total := len(splitLinesKeepEnds(data))
-	if len(data) <= tooloutPageLimit {
-		return Result{Content: string(data)}
+	rest := data[offset:]
+	// The cut lands on a rune boundary so the page is valid UTF-8. The next
+	// offset is measured from the page actually returned, so no byte is
+	// skipped and none is repeated.
+	end := offset + runeSafeCut(string(rest), tooloutPageLimit)
+	page := data[offset:end]
+
+	if end == len(data) {
+		if offset == 0 {
+			return Result{Content: string(page)}
+		}
+		return Result{Content: fmt.Sprintf("%s\n… (bytes %d-%d of %d; end of output)",
+			page, offset, end, len(data))}
 	}
-	page := data[:runeSafeCut(string(data), tooloutPageLimit)]
-	shown := len(splitLinesKeepEnds(page))
 	return Result{Content: fmt.Sprintf(
-		"%s\n… (showing lines 1-%d of %d; request more with locator %s plus start_line/end_line)",
-		page, shown, total, locator)}
+		"%s\n… (bytes %d-%d of %d; continue with locator %s and offset %d)",
+		page, offset, end, len(data), locator, end)}
 }
 
 // readTarget resolves the addressed file and optional range from the

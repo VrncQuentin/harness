@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/VrncQuentin/harness/internal/pathid"
 )
 
 // TooloutScheme prefixes the handles the governor's tee-on-failure emits for
@@ -24,11 +26,17 @@ func isTooloutLocator(locator string) bool {
 //
 // The spill directory sits under the harness home, outside every sandbox root,
 // so this deliberately does not go through validatePath — a sandbox check would
-// reject every handle. That makes the id the only thing standing between a
-// crafted locator and an arbitrary file, so it is matched strictly against the
-// shape B3 generates: lowercase hex and nothing else. A separator, a dot, a
-// drive letter, or an absolute path is refused rather than joined onto the
-// directory, so no handle can address anything outside it.
+// reject every handle.
+//
+// Two checks stand in for it, and both are needed. The id is matched against
+// the shape B3 generates — lowercase hex and nothing else — so a separator, a
+// dot, a drive letter, or an absolute path is refused rather than joined onto
+// the directory. That is lexical only, and a lexically perfect name still says
+// nothing about where the file it names actually is: a symlink or reparse
+// point called deadbeefdeadbeef inside the spill directory would be followed
+// straight out of it. So the resolved leaf must also be physically inside the
+// resolved directory, established through internal/pathid for the same reason
+// it exists at all — filepath.EvalSymlinks cannot answer this on Windows.
 func resolveToolout(dir, locator string) (string, error) {
 	id, ok := strings.CutPrefix(locator, TooloutScheme)
 	if !ok {
@@ -40,7 +48,20 @@ func resolveToolout(dir, locator string) (string, error) {
 	if !validTooloutID(id) {
 		return "", fmt.Errorf("tools: %q is not a valid toolout id — expected lowercase hex", id)
 	}
-	return filepath.Join(dir, id), nil
+
+	target := filepath.Join(dir, id)
+	resolvedDir, err := pathid.Resolve(dir)
+	if err != nil {
+		return "", fmt.Errorf("tools: cannot resolve the toolout directory: %w", err)
+	}
+	resolvedTarget, err := pathid.Resolve(target)
+	if err != nil {
+		return "", fmt.Errorf("tools: cannot resolve %s: %w", locator, err)
+	}
+	if !pathid.WithinRoot(resolvedTarget, resolvedDir) {
+		return "", fmt.Errorf("tools: %s resolves outside the toolout directory", locator)
+	}
+	return target, nil
 }
 
 // tooloutIDMaxLen bounds the accepted id length. B3 emits 16 hex characters;

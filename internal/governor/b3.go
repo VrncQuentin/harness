@@ -46,9 +46,12 @@ func (g *Governor) applyB3(_ context.Context, toolID string, res tools.Result) t
 		return res
 	}
 
-	// Keep a prefix of the error for immediate context, add the handle.
+	// Keep a prefix of the error for immediate context, add the handle. The
+	// scheme comes from the tool layer that resolves it, so the emitting and
+	// resolving sides cannot drift apart.
 	const prefixLen = 512
-	res.Error = fmt.Sprintf("%s\n… (full output in toolout:%s)", res.Error[:runeSafeCutEnd(res.Error, prefixLen)], id)
+	res.Error = fmt.Sprintf("%s\n… (full output in %s%s)",
+		res.Error[:runeSafeCutEnd(res.Error, prefixLen)], tools.TooloutScheme, id)
 	// The spill is on disk and addressable now, so drop the in-memory copy
 	// rather than carrying megabytes of output onward into events and session
 	// records.
