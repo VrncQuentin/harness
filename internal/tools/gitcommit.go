@@ -64,11 +64,7 @@ func (t *gitCommitTool) Execute(_ context.Context, c CallInfo, args map[string]a
 		}
 	}
 
-	if err := repo.WorkspaceStage(files); err != nil {
-		return Result{Error: fmt.Sprintf("git_commit: stage %s: %v", absRoot, err)}
-	}
-
-	newSHA, preOpSHA, err := repo.WorkspaceCommit(msg)
+	newSHA, preOpSHA, err := repo.WorkspaceStageAndCommit(files, msg)
 	if err != nil {
 		return Result{Error: fmt.Sprintf("git_commit: %v", err)}
 	}

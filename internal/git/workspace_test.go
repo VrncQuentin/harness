@@ -2,11 +2,14 @@ package git
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -326,6 +329,404 @@ func TestCheckoutRejectsUnknownBranch(t *testing.T) {
 	}
 	if got := reflogFile(t, repo, "HEAD"); strings.Contains(got, "no-such-branch") {
 		t.Errorf("failed checkout still wrote a reflog entry:\n%s", got)
+	}
+}
+
+// stagedPaths returns the paths currently in the index.
+func stagedPaths(t *testing.T, repo *Repo) []string {
+	t.Helper()
+	idx, err := repo.repo.Storer.Index()
+	if err != nil {
+		t.Fatalf("Index: %v", err)
+	}
+	paths := make([]string, 0, len(idx.Entries))
+	for _, e := range idx.Entries {
+		paths = append(paths, e.Name)
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func TestWorkspaceStageAndCommit(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeRepoFile(t, repo, "a.txt", "one\n")
+	writeRepoFile(t, repo, "b.txt", "two\n")
+
+	newSHA, preOpSHA, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "first")
+	if err != nil {
+		t.Fatalf("WorkspaceStageAndCommit: %v", err)
+	}
+	if newSHA == "" {
+		t.Error("newSHA empty")
+	}
+	if preOpSHA != "" {
+		t.Errorf("preOpSHA = %q on an initial commit, want empty", preOpSHA)
+	}
+	if got := stagedPaths(t, repo); len(got) != 1 || got[0] != "a.txt" {
+		t.Errorf("staged = %v, want only a.txt", got)
+	}
+
+	// Second commit: empty file list stages everything.
+	writeRepoFile(t, repo, "a.txt", "one changed\n")
+	second, preOp2, err := repo.WorkspaceStageAndCommit(nil, "second")
+	if err != nil {
+		t.Fatalf("WorkspaceStageAndCommit all: %v", err)
+	}
+	if preOp2 != newSHA {
+		t.Errorf("preOpSHA = %s, want the previous HEAD %s", preOp2, newSHA)
+	}
+	if second == newSHA {
+		t.Error("second commit produced the same SHA as the first")
+	}
+	if got := stagedPaths(t, repo); len(got) != 2 {
+		t.Errorf("staged = %v, want a.txt and b.txt", got)
+	}
+}
+
+// A failed write must not leave behind the part of the staging it completed.
+// The file list is staged entry by entry, so a bad path partway through used to
+// leave every earlier file staged while the call reported failure — the user's
+// index silently gained content from a commit that never happened.
+func TestWorkspaceStageAndCommitRollsBackPartialStaging(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeRepoFile(t, repo, "committed.txt", "one\n")
+	if _, _, err := repo.WorkspaceStageAndCommit([]string{"committed.txt"}, "first"); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	before := stagedPaths(t, repo)
+
+	// The first path stages cleanly; the second does not exist, so the call
+	// fails with "good.txt" already in the index.
+	writeRepoFile(t, repo, "good.txt", "staged before the failure\n")
+	_, _, err := repo.WorkspaceStageAndCommit([]string{"good.txt", "no-such-file.txt"}, "doomed")
+	if err == nil {
+		t.Fatal("staging a nonexistent file succeeded, want an error")
+	}
+
+	after := stagedPaths(t, repo)
+	for _, p := range after {
+		if p == "good.txt" {
+			t.Errorf("index = %v, still holds good.txt from the failed call", after)
+		}
+	}
+	if len(after) != len(before) {
+		t.Errorf("index after failed call = %v, want it restored to %v", after, before)
+	}
+}
+
+// The rollback mechanism itself: a snapshot must be able to undo arbitrary
+// staging, and must not alias the live index it was copied from.
+func TestSnapshotAndRestoreIndex(t *testing.T) {
+	repo := newWorkspaceRepo(t)
+	writeRepoFile(t, repo, "a.txt", "one\n")
+	if _, _, err := repo.WorkspaceStageAndCommit([]string{"a.txt"}, "first"); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+
+	snapshot, err := repo.snapshotIndex()
+	if err != nil {
+		t.Fatalf("snapshotIndex: %v", err)
+	}
+	snapshotLen := len(snapshot.Entries)
+
+	wt, err := repo.repo.Worktree()
+	if err != nil {
+		t.Fatalf("Worktree: %v", err)
+	}
+	writeRepoFile(t, repo, "b.txt", "two\n")
+	if err = repo.stageLocked(wt, []string{"b.txt"}); err != nil {
+		t.Fatalf("stageLocked: %v", err)
+	}
+	if got := stagedPaths(t, repo); len(got) != snapshotLen+1 {
+		t.Fatalf("staged = %v, want one more than the snapshot's %d", got, snapshotLen)
+	}
+	// Staging must not have mutated the snapshot through a shared backing array.
+	if len(snapshot.Entries) != snapshotLen {
+		t.Errorf("snapshot grew to %d entries, want %d — it aliases the live index", len(snapshot.Entries), snapshotLen)
+	}
+
+	if err = repo.restoreIndex(snapshot); err != nil {
+		t.Fatalf("restoreIndex: %v", err)
+	}
+	got := stagedPaths(t, repo)
+	if len(got) != snapshotLen || (len(got) > 0 && got[0] != "a.txt") {
+		t.Errorf("index after restore = %v, want just a.txt", got)
+	}
+}
+
+// Handles are opened per tool call, so two concurrent commits hold two
+// different Repo structs. Serialization has to key on the repository, not the
+// handle, or one task's commit sweeps up the other's staged files.
+func TestWorkspaceStageAndCommitSerializesAcrossHandles(t *testing.T) {
+	dir := t.TempDir()
+	seed, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeRepoFile(t, seed, "base.txt", "base\n")
+	if _, _, err := seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+
+	const workers = 4
+	for i := range workers {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.txt", i)), []byte("x\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	start := make(chan struct{})
+	for i := range workers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			// A separate handle per goroutine, exactly as each tool call gets.
+			handle, oerr := Open(dir)
+			if oerr != nil {
+				errs <- oerr
+				return
+			}
+			<-start
+			file := fmt.Sprintf("f%d.txt", n)
+			if _, _, cerr := handle.WorkspaceStageAndCommit([]string{file}, "commit "+file); cerr != nil {
+				errs <- cerr
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent commit: %v", err)
+	}
+
+	// Each commit must be its own; nothing may be lost or double-counted.
+	entries, err := seed.Log(workers + 5)
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if len(entries) != workers+1 {
+		t.Errorf("log has %d commits, want %d (base + %d workers)", len(entries), workers+1, workers)
+	}
+}
+
+// shortPathName returns the 8.3 alias of dir, or "" when the volume has none.
+// Windows CI runners have 8.3 generation on — their temp directory is the
+// RUNNER~1 form — while many developer volumes have it disabled.
+func shortPathName(t *testing.T, dir string) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	out, err := exec.Command("powershell", "-NoProfile", "-Command",
+		"(New-Object -ComObject Scripting.FileSystemObject).GetFolder('"+dir+"').ShortPath").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	short := strings.TrimSpace(string(out))
+	if short == dir {
+		return ""
+	}
+	return short
+}
+
+// Every spelling of one repository must select one mutation lock. The lock was
+// keyed through filepath.EvalSymlinks, which canonicalizes case and resolves
+// "." and ".." but leaves an 8.3 short name alone — so a repository reached by
+// its short path and by its long path took two different mutexes and the two
+// handles serialized against nothing.
+func TestMutationLockIdentityAcrossSpellings(t *testing.T) {
+	base := t.TempDir()
+	repoPath := filepath.Join(base, "ProjectRepositoryDirectoryLongName")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	seed, err := Init(repoPath)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeRepoFile(t, seed, "base.txt", "base\n")
+	if _, _, err = seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+
+	spellings := map[string]string{
+		"as given":      repoPath,
+		"trailing sep":  repoPath + string(filepath.Separator),
+		"dot component": filepath.Join(repoPath, "."),
+		"parent bounce": filepath.Join(repoPath, "..", filepath.Base(repoPath)),
+	}
+	if runtime.GOOS == "windows" {
+		spellings["upper case"] = strings.ToUpper(repoPath)
+	}
+	// The case that specifically catches the old EvalSymlinks key: it does not
+	// resolve 8.3 aliases, so long and short forms hashed differently.
+	if short := shortPathName(t, repoPath); short != "" {
+		spellings["8.3 short name"] = short
+	} else {
+		t.Log("no 8.3 alias on this volume; the short-name case runs on Windows CI")
+	}
+
+	for name, spelling := range spellings {
+		t.Run(name, func(t *testing.T) {
+			handle, oerr := Open(spelling)
+			if oerr != nil {
+				t.Fatalf("Open(%s): %v", spelling, oerr)
+			}
+			if handle.lockKey != seed.lockKey {
+				t.Errorf("lock key differs, so these handles do not share a lock:\n  seed:  %s\n  %s: %s",
+					seed.lockKey, name, handle.lockKey)
+			}
+		})
+	}
+
+	// The shared key must also hand back the same mutex under real contention.
+	const workers = 6
+	for i := range workers {
+		if err := os.WriteFile(filepath.Join(repoPath, fmt.Sprintf("f%d.txt", i)), []byte("x\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+	alternates := make([]string, 0, len(spellings))
+	for _, spelling := range spellings {
+		alternates = append(alternates, spelling)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	start := make(chan struct{})
+	for i := range workers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			// Writers arrive through different spellings of the same repository.
+			handle, oerr := Open(alternates[n%len(alternates)])
+			if oerr != nil {
+				errs <- oerr
+				return
+			}
+			<-start
+			file := fmt.Sprintf("f%d.txt", n)
+			if _, _, cerr := handle.WorkspaceStageAndCommit([]string{file}, "commit "+file); cerr != nil {
+				errs <- cerr
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent commit through mixed spellings: %v", err)
+	}
+
+	entries, err := seed.Log(workers + 5)
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if len(entries) != workers+1 {
+		t.Errorf("log has %d commits, want %d (base + %d writers)", len(entries), workers+1, workers)
+	}
+}
+
+// go-git refuses to open a repository reached through a directory link, so a
+// second handle cannot be created that way and the lock never sees the alias.
+// Pinning this keeps the identity test honest about which spellings are
+// actually reachable, and turns a future relaxation of that restriction into a
+// visible failure rather than a silent hole.
+func TestOpenThroughDirectoryLinkIsRefused(t *testing.T) {
+	base := t.TempDir()
+	repoPath := filepath.Join(base, "repo")
+	if err := os.MkdirAll(repoPath, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if _, err := Init(repoPath); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, repoPath, alias)
+
+	if _, err := Open(alias); err == nil {
+		t.Error("Open through a directory link succeeded; the mutation lock must then key it onto the same repository")
+	}
+}
+
+// A checkout moves HEAD, the index, and the worktree. Serializing commits
+// against each other but not against a checkout leaves it free to run between a
+// commit's staging and its wt.Commit, so the commit builds on state that has
+// already been replaced.
+func TestCheckoutSerializesAgainstStageAndCommit(t *testing.T) {
+	dir := t.TempDir()
+	seed, err := Init(dir)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	writeRepoFile(t, seed, "base.txt", "base\n")
+	if _, _, err = seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
+		t.Fatalf("seed commit: %v", err)
+	}
+	if _, _, err = seed.CreateBranch("other", ""); err != nil {
+		t.Fatalf("CreateBranch: %v", err)
+	}
+
+	const rounds = 8
+	for i := range rounds {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d.txt", i)), []byte("x\n"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, rounds*2)
+	start := make(chan struct{})
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		handle, oerr := Open(dir)
+		if oerr != nil {
+			errs <- oerr
+			return
+		}
+		<-start
+		for i := range rounds {
+			if _, _, cerr := handle.WorkspaceStageAndCommit(
+				[]string{fmt.Sprintf("f%d.txt", i)}, fmt.Sprintf("commit %d", i)); cerr != nil {
+				errs <- cerr
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		handle, oerr := Open(dir)
+		if oerr != nil {
+			errs <- oerr
+			return
+		}
+		<-start
+		for range rounds {
+			// Switch back and forth from a separate handle throughout.
+			if _, _, cerr := handle.Checkout("other"); cerr != nil {
+				errs <- cerr
+				return
+			}
+			if _, _, cerr := handle.Checkout("master"); cerr != nil {
+				// A repo initialised as main rather than master is fine; stop
+				// rather than fail on the branch name.
+				return
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("checkout racing stage-and-commit: %v", err)
 	}
 }
 
