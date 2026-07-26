@@ -24,10 +24,16 @@ var ErrMemoryScopeUnavailable = errors.New("tools: memory-repo scope could not b
 type MemoryRepoCheck func(absRoot string) (bool, error)
 
 // NewMemoryRepoCheck builds the C2 predicate over list, which must return every
-// project's memory-repo path at the moment it is called. Errors from list are
-// propagated rather than swallowed: the previous implementation dropped a
-// project-store failure into an empty slice, which the tool layer then read as
-// "no memory repos exist" and allowed the write.
+// project's memory-repo path at the moment it is called.
+//
+// Two failure sources are propagated rather than swallowed, because both would
+// otherwise reach the tool layer as a plain "not a memory repo":
+//
+//   - list failing. The previous implementation dropped a project-store error
+//     into an empty slice, which read as "no memory repos exist".
+//   - isMemoryRepo failing to physically resolve either side. A path whose
+//     location cannot be determined is not a path known to be outside every
+//     memory repo.
 func NewMemoryRepoCheck(list func() ([]string, error)) MemoryRepoCheck {
 	return func(absRoot string) (bool, error) {
 		if list == nil {
@@ -37,6 +43,10 @@ func NewMemoryRepoCheck(list func() ([]string, error)) MemoryRepoCheck {
 		if err != nil {
 			return false, fmt.Errorf("%w: %w", ErrMemoryScopeUnavailable, err)
 		}
-		return isMemoryRepo(absRoot, paths), nil
+		inMemoryRepo, err := isMemoryRepo(absRoot, paths)
+		if err != nil {
+			return false, fmt.Errorf("%w: %w", ErrMemoryScopeUnavailable, err)
+		}
+		return inMemoryRepo, nil
 	}
 }
