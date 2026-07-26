@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -60,5 +61,41 @@ func TestGitBranch_CreatesFromHEAD(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "pre-op HEAD SHA") {
 		t.Fatalf("expected pre-op SHA in result, got %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "undo: delete local branch") {
+		t.Fatalf("expected the undo instruction in result, got %q", res.Content)
+	}
+}
+
+// git's ref-format rules permit shell metacharacters in a branch name, so the
+// undo hint must describe the action rather than render a runnable command.
+// Emitting "git branch -D <name>" would hand the reader — or anything that
+// scrapes tool output for commands — a line that executes whatever the name
+// encodes.
+func TestGitBranch_UndoHintIsNotExecutable(t *testing.T) {
+	// Each of these is accepted by git and creatable on both platforms.
+	names := []string{"safe;whoami", "safe$(whoami)", "safe`id`", "quote'name"}
+
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			initRepoWithCommit(t, dir)
+
+			tool := &gitBranchTool{}
+			ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
+			res := tool.Execute(context.Background(), ci, map[string]any{"root": dir, "name": name})
+			if res.Error != "" {
+				t.Fatalf("unexpected error for a valid branch name: %s", res.Error)
+			}
+
+			// No runnable git command may appear anywhere in the output.
+			if strings.Contains(res.Content, "git branch -D") {
+				t.Errorf("output renders a runnable delete command:\n%s", res.Content)
+			}
+			// The name must be quoted, so the metacharacters are inert text.
+			if !strings.Contains(res.Content, fmt.Sprintf("%q", name)) {
+				t.Errorf("branch name is not quoted in the output:\n%s", res.Content)
+			}
+		})
 	}
 }

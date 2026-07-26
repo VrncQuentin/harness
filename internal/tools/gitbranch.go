@@ -67,7 +67,14 @@ func (t *gitBranchTool) Execute(_ context.Context, c CallInfo, args map[string]a
 	fmt.Fprintf(&b, "created branch %q at %s in %s\n", name, sha, absRoot)
 	// The branch did not exist before this call, so the reversal is deletion,
 	// not restoring a previous tip.
-	fmt.Fprintf(&b, "undo: git branch -D %s\n", name)
+	//
+	// Described rather than rendered as a runnable command. git accepts branch
+	// names containing shell metacharacters — "safe;whoami" and "safe$(whoami)"
+	// both pass ref validation — so emitting "git branch -D <name>" would hand
+	// the reader a line that executes whatever the name encodes. Quoting it
+	// correctly would mean inventing cross-platform shell quoting here, ahead of
+	// the proposal-quoting work that owns that problem.
+	fmt.Fprintf(&b, "undo: delete local branch named %q\n", name)
 	if preOpSHA != "" {
 		fmt.Fprintf(&b, "pre-op HEAD SHA: %s", preOpSHA)
 	}
