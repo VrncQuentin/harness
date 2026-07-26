@@ -55,11 +55,17 @@ func (r *Repo) HeadSHA() (string, error) {
 // The index is snapshotted before staging and restored if the commit fails, so
 // a failed call leaves the index as it found it.
 //
-// It appends a reflog entry for ergonomic undo via git reset --hard HEAD@{1}.
 // The returned newSHA is the new commit's hex SHA; preOpSHA is the HEAD SHA
 // before the commit (empty for an initial commit). preOpSHA is the
-// authoritative recovery token — the caller should record it before the commit.
-func (r *Repo) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preOpSHA string, err error) {
+// authoritative recovery token — the caller should record it before the commit,
+// and it stays the recovery path whatever happens to the reflog.
+//
+// Reflog entries are written to both HEAD and the current branch, which is what
+// makes git reset --hard HEAD@{1} resolve for a human afterwards. warn is
+// non-nil when the commit succeeded but one of those writes did not: the
+// operation is done and must not be reported as failed, but the caller should
+// pass the warning on so the missing ergonomic undo is visible.
+func (r *Repo) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preOpSHA string, warn error, err error) {
 	unlock := r.lockRepo()
 	defer unlock()
 
@@ -69,17 +75,17 @@ func (r *Repo) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preO
 
 	wt, wtErr := r.repo.Worktree()
 	if wtErr != nil {
-		return "", "", fmt.Errorf("git: worktree %s: %w", r.path, wtErr)
+		return "", "", nil, fmt.Errorf("git: worktree %s: %w", r.path, wtErr)
 	}
 
 	// Snapshot the index for rollback before it is mutated.
 	indexBefore, idxErr := r.snapshotIndex()
 	if idxErr != nil {
-		return "", "", fmt.Errorf("git: commit %s: snapshot index: %w", r.path, idxErr)
+		return "", "", nil, fmt.Errorf("git: commit %s: snapshot index: %w", r.path, idxErr)
 	}
 
 	if stageErr := r.stageLocked(wt, files); stageErr != nil {
-		return "", "", errors.Join(stageErr, r.restoreIndex(indexBefore))
+		return "", "", nil, errors.Join(stageErr, r.restoreIndex(indexBefore))
 	}
 
 	name, email := r.authorIdentity()
@@ -90,31 +96,69 @@ func (r *Repo) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preO
 	if commitErr != nil {
 		// Undo the staging this call performed: a failed write must not leave
 		// the index holding changes the user did not stage.
-		return "", "", errors.Join(
+		return "", "", nil, errors.Join(
 			fmt.Errorf("git: commit %s: %w", r.path, commitErr),
 			r.restoreIndex(indexBefore),
 		)
 	}
 	newSHA = hash.String()
 
-	// Reflog write — ergonomics only; not the authoritative recovery record.
-	// Silently skipped if the storer does not implement ReflogStorer (in-memory).
-	if rls, ok := r.repo.Storer.(storer.ReflogStorer); ok {
-		if head, herr := r.repo.Head(); herr == nil {
-			oldHash := plumbing.ZeroHash
-			if preOpSHA != "" {
-				oldHash = plumbing.NewHash(preOpSHA)
-			}
-			_ = rls.AppendReflog(head.Name(), &reflog.Entry{
-				OldHash:   oldHash,
-				NewHash:   hash,
-				Committer: reflog.Signature{Name: name, Email: email, When: now},
-				Message:   "commit: " + firstLine(msg),
-			})
+	// Reflog write — ergonomics only; preOpSHA remains the authoritative record.
+	// Reported as a warning rather than an error: the commit is already made,
+	// and failing the call would tell the caller a write did not happen when it
+	// did.
+	oldHash := plumbing.ZeroHash
+	if preOpSHA != "" {
+		oldHash = plumbing.NewHash(preOpSHA)
+	}
+	entry := &reflog.Entry{
+		OldHash:   oldHash,
+		NewHash:   hash,
+		Committer: reflog.Signature{Name: name, Email: email, When: now},
+		Message:   "commit: " + firstLine(msg),
+	}
+	// git records a commit in both logs: HEAD moved, and so did the branch it
+	// points at. Only the branch log was written before, which is why
+	// HEAD@{1} — which reads .git/logs/HEAD — did not resolve after a harness
+	// commit despite this method promising it.
+	//
+	// The branch is read from the raw HEAD reference, not from Head(). Head()
+	// resolves the symbolic ref and reports the branch name when attached but
+	// "HEAD" when detached, so using it would write HEAD's log twice on a
+	// detached commit — two entries for one move, which shifts HEAD@{1} onto
+	// the new commit instead of the one before it.
+	refs := []plumbing.ReferenceName{plumbing.HEAD}
+	var headErr error
+	rawHead, refErr := r.repo.Reference(plumbing.HEAD, false)
+	switch {
+	case refErr != nil:
+		headErr = fmt.Errorf("read HEAD reference: %w", refErr)
+	case rawHead.Type() == plumbing.SymbolicReference:
+		refs = append(refs, rawHead.Target())
+	}
+	warn = errors.Join(headErr, r.appendReflog(entry, refs...))
+
+	return newSHA, preOpSHA, warn, nil
+}
+
+// appendReflog writes entry to each of refs, collecting failures rather than
+// stopping at the first: a missing entry in one log does not make the others
+// less worth writing. Each failure is labelled with the ref it belongs to.
+//
+// A storer without reflog support is not a failure — the in-memory storer used
+// by tests has none, and there is nothing to write.
+func (r *Repo) appendReflog(entry *reflog.Entry, refs ...plumbing.ReferenceName) error {
+	rls, ok := r.repo.Storer.(storer.ReflogStorer)
+	if !ok {
+		return nil
+	}
+	var errs []error
+	for _, ref := range refs {
+		if err := rls.AppendReflog(ref, entry); err != nil {
+			errs = append(errs, fmt.Errorf("reflog %s: %w", ref, err))
 		}
 	}
-
-	return newSHA, preOpSHA, nil
+	return errors.Join(errs...)
 }
 
 // stageLocked stages files into the index. The caller must hold both locks.
@@ -172,34 +216,37 @@ var ErrBranchExists = errors.New("git: branch already exists")
 
 // CreateBranch creates a local branch named name starting at startPoint
 // (a branch name, tag, or commit SHA). If startPoint is empty HEAD is used.
-// It returns (sha, preOpSHA, err) where sha is the SHA the branch was created
-// at, and preOpSHA is the HEAD SHA at call time (for the caller to record).
-// The created ref has no pre-operation value by construction — an existing
-// branch is refused with ErrBranchExists — so undoing a create is deleting the
-// branch, not restoring a tip.
+// It returns (sha, preOpSHA, warn, err) where sha is the SHA the branch was
+// created at, and preOpSHA is the HEAD SHA at call time (for the caller to
+// record). The created ref has no pre-operation value by construction — an
+// existing branch is refused with ErrBranchExists — so undoing a create is
+// deleting the branch, not restoring a tip.
 //
 // The existence check and the ref write are both inside the repository-wide
 // lock. Split across it they would not be a check at all: two handles could
 // each find the name free and then set it to different start points, and the
 // second write would silently reset the branch the first had just created.
 //
-// A reflog entry is appended to the new branch's reflog.
-func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err error) {
+// warn is non-nil when the branch was created but its reflog entry could not be
+// written; the branch exists either way. The entry goes to the new branch's log
+// only — a branch creation does not move HEAD, so git writes nothing to
+// logs/HEAD for it.
+func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, warn error, err error) {
 	unlock := r.lockRepo()
 	defer unlock()
 
 	refName := plumbing.NewBranchReferenceName(name)
 	if vErr := refName.Validate(); vErr != nil {
-		return "", "", fmt.Errorf("git: branch %q: %w", name, vErr)
+		return "", "", nil, fmt.Errorf("git: branch %q: %w", name, vErr)
 	}
 
 	// Refuse before touching anything: a create must never reset a branch.
 	existing, refErr := r.repo.Reference(refName, false)
 	switch {
 	case refErr == nil:
-		return "", "", fmt.Errorf("%w: %s is at %s", ErrBranchExists, name, existing.Hash())
+		return "", "", nil, fmt.Errorf("%w: %s is at %s", ErrBranchExists, name, existing.Hash())
 	case !errors.Is(refErr, plumbing.ErrReferenceNotFound):
-		return "", "", fmt.Errorf("git: branch %s: read existing ref: %w", name, refErr)
+		return "", "", nil, fmt.Errorf("git: branch %s: read existing ref: %w", name, refErr)
 	}
 
 	// Record HEAD SHA for pre-op tracking.
@@ -214,35 +261,32 @@ func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err 
 		startDesc = "HEAD"
 		head, herr := r.repo.Head()
 		if herr != nil {
-			return "", "", fmt.Errorf("git: branch %s: resolve HEAD: %w", name, herr)
+			return "", "", nil, fmt.Errorf("git: branch %s: resolve HEAD: %w", name, herr)
 		}
 		startHash = head.Hash()
 	} else {
 		h, herr := r.repo.ResolveRevision(plumbing.Revision(startPoint))
 		if herr != nil {
-			return "", "", fmt.Errorf("git: branch %s: resolve %q: %w", name, startPoint, herr)
+			return "", "", nil, fmt.Errorf("git: branch %s: resolve %q: %w", name, startPoint, herr)
 		}
 		startHash = *h
 	}
 
 	ref := plumbing.NewHashReference(refName, startHash)
 	if err := r.repo.Storer.SetReference(ref); err != nil {
-		return "", "", fmt.Errorf("git: branch %s: set ref: %w", name, err)
+		return "", "", nil, fmt.Errorf("git: branch %s: set ref: %w", name, err)
 	}
 
 	// Append reflog for the new branch.
-	if rls, ok := r.repo.Storer.(storer.ReflogStorer); ok {
-		now := time.Now()
-		n, e := r.authorIdentity()
-		_ = rls.AppendReflog(refName, &reflog.Entry{
-			OldHash:   plumbing.ZeroHash,
-			NewHash:   startHash,
-			Committer: reflog.Signature{Name: n, Email: e, When: now},
-			Message:   "branch: Created from " + startDesc,
-		})
-	}
+	n, e := r.authorIdentity()
+	warn = r.appendReflog(&reflog.Entry{
+		OldHash:   plumbing.ZeroHash,
+		NewHash:   startHash,
+		Committer: reflog.Signature{Name: n, Email: e, When: time.Now()},
+		Message:   "branch: Created from " + startDesc,
+	}, refName)
 
-	return startHash.String(), preOpSHA, nil
+	return startHash.String(), preOpSHA, warn, nil
 }
 
 // Checkout switches to an existing local branch named name.
@@ -252,7 +296,7 @@ func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, err 
 //
 // The movement is recorded in the HEAD reflog, matching git: a checkout moves
 // HEAD, not the branch, and the branch tips on either side are untouched.
-func (r *Repo) Checkout(name string) (preOpBranch, preOpSHA string, err error) {
+func (r *Repo) Checkout(name string) (preOpBranch, preOpSHA string, warn error, err error) {
 	unlock := r.lockRepo()
 	defer unlock()
 
@@ -264,11 +308,11 @@ func (r *Repo) Checkout(name string) (preOpBranch, preOpSHA string, err error) {
 
 	wt, wtErr := r.repo.Worktree()
 	if wtErr != nil {
-		return "", "", fmt.Errorf("git: worktree %s: %w", r.path, wtErr)
+		return "", "", nil, fmt.Errorf("git: worktree %s: %w", r.path, wtErr)
 	}
 	refName := plumbing.NewBranchReferenceName(name)
 	if coErr := wt.Checkout(&gogit.CheckoutOptions{Branch: refName}); coErr != nil {
-		return "", "", fmt.Errorf("git: checkout %s: %w", name, coErr)
+		return "", "", nil, fmt.Errorf("git: checkout %s: %w", name, coErr)
 	}
 
 	// Record the movement in the HEAD reflog, not the target branch's.
@@ -279,20 +323,17 @@ func (r *Repo) Checkout(name string) (preOpBranch, preOpSHA string, err error) {
 	// branch's history with a movement it never made, and left the HEAD reflog
 	// with no record at all — so git reflog and HEAD@{n}, which read
 	// .git/logs/HEAD, could not see the switch.
-	if rls, ok := r.repo.Storer.(storer.ReflogStorer); ok {
-		if head, herr := r.repo.Head(); herr == nil {
-			now := time.Now()
-			n, e := r.authorIdentity()
-			_ = rls.AppendReflog(plumbing.HEAD, &reflog.Entry{
-				OldHash:   plumbing.NewHash(preOpSHA),
-				NewHash:   head.Hash(),
-				Committer: reflog.Signature{Name: n, Email: e, When: now},
-				Message:   "checkout: moving from " + preOpBranch + " to " + name,
-			})
-		}
+	if head, herr := r.repo.Head(); herr == nil {
+		n, e := r.authorIdentity()
+		warn = r.appendReflog(&reflog.Entry{
+			OldHash:   plumbing.NewHash(preOpSHA),
+			NewHash:   head.Hash(),
+			Committer: reflog.Signature{Name: n, Email: e, When: time.Now()},
+			Message:   "checkout: moving from " + preOpBranch + " to " + name,
+		}, plumbing.HEAD)
 	}
 
-	return preOpBranch, preOpSHA, nil
+	return preOpBranch, preOpSHA, warn, nil
 }
 
 func firstLine(s string) string {

@@ -144,6 +144,45 @@ func TestGitCommit_StageSpecificFiles(t *testing.T) {
 	}
 }
 
+// A reflog that could not be written must not turn a successful commit into a
+// failed tool call. It rides along as a WARNING on the content, the way edit
+// reports a file that no longer parses after a successful write.
+func TestGitCommit_ReflogFailureWarnsOnSuccess(t *testing.T) {
+	dir := t.TempDir()
+	initRepoWithCommit(t, dir)
+
+	// Replace .git/logs with a regular file so reflog writes cannot succeed.
+	logs := filepath.Join(dir, ".git", "logs")
+	if err := os.RemoveAll(logs); err != nil {
+		t.Fatalf("RemoveAll logs: %v", err)
+	}
+	if err := os.WriteFile(logs, []byte("not a directory\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile logs: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	tool := &gitCommitTool{}
+	ci := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
+	res := tool.Execute(context.Background(), ci, map[string]any{"root": dir, "message": "add hello"})
+
+	if res.Error != "" {
+		t.Fatalf("commit reported an error for a reflog problem: %s", res.Error)
+	}
+	if !strings.Contains(res.Content, "committed") {
+		t.Errorf("result does not report the commit that happened:\n%s", res.Content)
+	}
+	if !strings.Contains(res.Content, "WARNING:") {
+		t.Errorf("result carries no WARNING for the unwritten reflog:\n%s", res.Content)
+	}
+	// The recovery path is the pre-op SHA, so it has to still be there.
+	if !strings.Contains(res.Content, "pre-op SHA") {
+		t.Errorf("result dropped the pre-op SHA, which is the authoritative undo:\n%s", res.Content)
+	}
+}
+
 func TestIsMemoryRepo(t *testing.T) {
 	dir := t.TempDir()
 	other := t.TempDir()

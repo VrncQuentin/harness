@@ -64,7 +64,7 @@ func (t *gitCommitTool) Execute(_ context.Context, c CallInfo, args map[string]a
 		}
 	}
 
-	newSHA, preOpSHA, err := repo.WorkspaceStageAndCommit(files, msg)
+	newSHA, preOpSHA, warn, err := repo.WorkspaceStageAndCommit(files, msg)
 	if err != nil {
 		return Result{Error: fmt.Sprintf("git_commit: %v", err)}
 	}
@@ -75,6 +75,20 @@ func (t *gitCommitTool) Execute(_ context.Context, c CallInfo, args map[string]a
 		fmt.Fprintf(&b, "pre-op SHA: %s  (undo: git reset --hard %s)", preOpSHA, preOpSHA)
 	} else {
 		b.WriteString("initial commit — no pre-op SHA")
+	}
+	// The commit is made. A reflog that did not get written costs the
+	// convenience of HEAD@{1}, not the recovery path, so it is reported
+	// alongside the success rather than as a failure.
+	//
+	// An initial commit has no pre-op SHA to point at, so it must not be told
+	// to undo with one: there is no earlier state to return to, and the
+	// reversal is removing the commit itself.
+	if warn != nil {
+		recovery := "undo with the pre-op SHA above"
+		if preOpSHA == "" {
+			recovery = "this was the initial commit, so there is no earlier state to return to"
+		}
+		fmt.Fprintf(&b, "\nWARNING: commit succeeded but the reflog was not updated: %v — %s", warn, recovery)
 	}
 	return Result{Content: b.String()}
 }

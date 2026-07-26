@@ -45,7 +45,7 @@ func (t *gitCheckoutTool) Execute(_ context.Context, c CallInfo, args map[string
 		return Result{Error: "git_checkout: " + err.Error()}
 	}
 
-	preOpBranch, preOpSHA, err := repo.Checkout(branch)
+	preOpBranch, preOpSHA, warn, err := repo.Checkout(branch)
 	if err != nil {
 		return Result{Error: fmt.Sprintf("git_checkout: %v", err)}
 	}
@@ -53,7 +53,14 @@ func (t *gitCheckoutTool) Execute(_ context.Context, c CallInfo, args map[string
 	var b strings.Builder
 	fmt.Fprintf(&b, "switched to branch %q in %s\n", branch, absRoot)
 	if preOpBranch != "" {
-		fmt.Fprintf(&b, "pre-op branch: %s  pre-op SHA: %s  (undo: git checkout %s)", preOpBranch, preOpSHA, preOpBranch)
+		// Described, not rendered as a command, for the same reason as
+		// git_branch: git accepts branch names containing shell
+		// metacharacters, so "git checkout <name>" would be an executable line
+		// built from an untrusted string.
+		fmt.Fprintf(&b, "pre-op branch: %q  pre-op SHA: %s  (undo: switch back to branch %q)", preOpBranch, preOpSHA, preOpBranch)
+	}
+	if warn != nil {
+		fmt.Fprintf(&b, "\nWARNING: checkout succeeded but the HEAD reflog was not updated: %v", warn)
 	}
 	return Result{Content: b.String()}
 }

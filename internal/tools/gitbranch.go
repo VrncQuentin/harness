@@ -54,7 +54,7 @@ func (t *gitBranchTool) Execute(_ context.Context, c CallInfo, args map[string]a
 
 	startPoint, _ := args["start_point"].(string)
 
-	sha, preOpSHA, err := repo.CreateBranch(name, startPoint)
+	sha, preOpSHA, warn, err := repo.CreateBranch(name, startPoint)
 	if err != nil {
 		if errors.Is(err, gitw.ErrBranchExists) {
 			return Result{Error: fmt.Sprintf(
@@ -77,6 +77,9 @@ func (t *gitBranchTool) Execute(_ context.Context, c CallInfo, args map[string]a
 	fmt.Fprintf(&b, "undo: delete local branch named %q\n", name)
 	if preOpSHA != "" {
 		fmt.Fprintf(&b, "pre-op HEAD SHA: %s", preOpSHA)
+	}
+	if warn != nil {
+		fmt.Fprintf(&b, "\nWARNING: branch created but its reflog was not updated: %v", warn)
 	}
 	return Result{Content: b.String()}
 }
