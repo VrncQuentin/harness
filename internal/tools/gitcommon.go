@@ -42,18 +42,24 @@ func workspaceWriteRepo(c CallInfo, args map[string]any) (*gitw.Repo, string, er
 }
 
 // isMemoryRepo reports whether absRoot matches or is contained within any of
-// the given memory repo paths. Both sides are symlink-resolved so that
-// junction/symlink-based setups (common on Windows) do not bypass the predicate.
+// the given memory repo paths. Both sides are canonicalized so that
+// junction/symlink-based setups (common on Windows) do not bypass the
+// predicate. canonicalPath rather than filepath.EvalSymlinks is required here:
+// EvalSymlinks leaves a junction unresolved, so a junction attached as a
+// project directory and pointing at a memory repo compared unequal and the
+// C2 lock let the write through. Resolution goes through
+// resolveExistingAncestor so a configured path that does not exist yet is
+// still judged by where it would land.
 func isMemoryRepo(absRoot string, memoryPaths []string) bool {
-	resolvedAbs, err := filepath.EvalSymlinks(absRoot)
+	resolvedAbs, err := resolveExistingAncestor(absRoot)
 	if err != nil {
-		resolvedAbs = absRoot
+		resolvedAbs = filepath.Clean(absRoot)
 	}
 	for _, mp := range memoryPaths {
 		if strings.TrimSpace(mp) == "" {
 			continue
 		}
-		resolved, err := filepath.EvalSymlinks(filepath.Clean(mp))
+		resolved, err := resolveExistingAncestor(filepath.Clean(mp))
 		if err != nil {
 			resolved = filepath.Clean(mp)
 		}
