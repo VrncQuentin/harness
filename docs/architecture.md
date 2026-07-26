@@ -129,13 +129,13 @@ Defines the local tool surface available to the agent loop.
 Responsibilities:
 - Register tools by id, JSON Schema parameters, description, and execute function.
 - Pass a typed `CallInfo` to each tool: active project slug, sandbox roots, memory repo paths (C2 scope list), session id, caller identity, HTTP client, optional `MemoryQuery` closure, and optional `GHTokenFn` closure (reads `GITHUB_TOKEN` at call time — never stored).
-- Record `OriginClass` (`extraction` / `inference`) on results per the C3 contract so downstream consumers never have to guess provenance.
+- Record how tool output was produced with `OriginClass` (`extraction` / `inference`). M12 MR1 adds per-hit memory-content origin; origin metadata never bypasses approvals, sandboxing, or verification.
 
 Tool tiers:
 - **Tier 1 — read-only, default-allow:** `read` (range- and locator-addressed), `file_list`, `ast_map`, `ast_find`, `git_status`, `git_diff`, `git_log`, `memory_query` (blended semantic+recency retrieval over the active project episode store; requires embedder)
 - **Tier 2 — approval-gated, disabled by default:** `edit` (hash-anchored line operations; anchor hash is only emitted by `ast_map`/`ast_find`, so recon-first is enforced by type), `exec` (argv-array shell with deny filter), `go_test`, `go_lint`
 - **Tier 2 write + C2 scope check:** `git_commit`, `git_branch`, `git_checkout` — reject any repo path that resolves inside a project memory repo; carry ref-SHA for reflog-based undo
-- **Tier 3 — proposal-return, no side effect:** `git_push`, `gh_pr_create`, `gh_pr_merge` return `Result{Proposal: true}` describing what would happen; the agent loop surfaces them for approval rather than executing. `gh_pr_wait` is tier-1 (read-only CI poller): exponential backoff 10 s → 60 s, returns `green`/`red`/`timed_out` JSON.
+- **Tier 3 — manual-action proposal, no side effect:** `git_push`, `gh_pr_create`, `gh_pr_merge` return `Result{Proposal: true}` plus command text for the user to execute outside Harness. The agent loop does not currently persist or approve/execute these proposals. `gh_pr_wait` is tier-1 (read-only CI poller): exponential backoff 10 s → 60 s, returns `green`/`red`/`timed_out` JSON.
 
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).
@@ -223,6 +223,11 @@ Mediates all reads and writes to git-backed project memory repos.
 
 **Cross-agent reads:** explicit only. An agent may request episodes from another agent's directory. Not automatic.
 
+**Planned M12 semantic-write gate:** after M11 and MR0 closure, session summaries,
+promoted facts, notes, and `memory_propose` use a project-local append-only event log and
+immutable proposal payloads. Session logs, conversation sidecars, and vector/FTS indexes
+remain outside the semantic gate as evidence, operational state, or derived projections.
+
 ### Project Store (`internal/project`)
 Defines project identity and validation rules. SQL persistence lives in `internal/db`, while this package owns typed project values, slugs, directory metadata, effective model overrides, and lifecycle status such as hidden or system projects.
 
@@ -254,12 +259,17 @@ Attached code repos are indexed by git state: each attached directory gets its o
 ### Retrieval (`internal/retrieval`)
 Owns the blended semantic + recency scoring pipeline and the D3 trace layer.
 
-- `ScoreEpisodePaths` takes a query and a list of episode paths, calls the embedder, performs cosine similarity, blends with an exponential recency decay over the ordered path list, and returns per-path `ScoredEpisode` results.
-- **D3 trace:** every `ScoreEpisodePaths` call emits one `RetrievalTrace` row per episode (query ID, semantic score, recency score, blended score, rank, timestamp) to the active `DefaultTraceSink`. The `QueryID` is a SHA-256[:8] hex fingerprint of the query — no raw query text in trace files.
-- `NDJSONSink` is the production sink: date-bucketed NDJSON files under `~/.harness/logs/retrieval/`, 30-day retention with automatic file rotation and pruning on day change. `NopTraceSink` is used in tests and contexts without a configured sink.
+- `ScoreEpisodePaths` takes a query and episode paths, calls the embedder, blends cosine similarity with exponential recency, and currently returns `(map[path]score, scored, error)`.
+- `RetrievalTrace` and `NDJSONSink` exist, but M10.3/MR0 is not accepted: runtime wiring never installs `DefaultTraceSink`, so production calls emit no durable traces.
+- The current candidate row lacks project identity, weights, selected/top-K state, and final score rank; its `Rank` field is path-order position. Empty/unscoreable/error calls emit nothing.
+- `QueryID` is currently a SHA-256[:8] prefix. MR0 replaces it with the canonical full hash and adds project-scoped call/candidate records; prompt assembly and `memory_query` pass trace context with project slug and requested top-K.
+- `NDJSONSink` already implements date-bucketed files and 30-day pruning. MR0 wires and closes it through runtime and surfaces sink failures.
 - `EpisodeID` derives a stable, path-relative identifier for indexing and scoring across different repo roots.
 
-`cmd/eval-retrieval` is a standalone developer binary that reads a labeled NDJSON query set, runs the two-signal blend against a local project repo, and reports per-query MRR and Recall@K plus overall means. It is the D3 evaluation harness required before MR0 gates M12.
+`cmd/eval-retrieval` currently reads one NDJSON `query`/`relevant` file and reports MRR
+and Recall@K for the configured blend. MR0 aligns it with the runtime schema, adds
+semantic-only/recency-only/configured-blend Precision@3 and Recall@3, enforces ten real
+labels in baseline mode, and writes a machine-readable baseline before M12 begins.
 
 ### Memory Operations (`internal/memoryops`)
 Semantic-memory operations that sit on top of the memory repo, embedder, and episode index. The runtime wires these into session saving and the UI; the domain logic lives here.
@@ -450,8 +460,8 @@ First run: the row is seeded with defaults and `saved_at` is NULL. The status pa
 
 **Two HTTP servers, one binary.** UI server (port 3000) and API server (port 8080) are separate. UI is always on. API is opt-in for external OpenAI-compatible clients and is never required for the first-party browser workflow.
 
-**Native agent layer staged after Projects.** M4 introduced `internal/agentloop` and `internal/tools` as first-party components. `internal/agent` remains the registry/persona package. The MVP started read-only and project-scoped; M7 adds approval-gated destructive tools.
+**Native agent layer staged after Projects.** M4 introduced `internal/agentloop` and `internal/tools` as first-party components. `internal/agent` remains the registry/persona package. The MVP started read-only and project-scoped; M7 added approvals and M10 shipped the parser-backed editing, execution, git, retrieval, and governor surface.
 
-**Approval-gated tools.** M7 registers `file_write` and `shell_exec` but leaves both disabled by default. Enabling them still routes calls through the approvals evaluator. Every `shell_exec` command is always gated on an explicit per-call approval: a matching deny rule still denies, but there is no remembered `allow` that lets a shell command skip the prompt, so the task UI does not offer "always allow" for shell. Web search also remains M7, but must be opt-in and clearly disclosed because it uses the network. File edit/patch, steering/follow-ups, extension hooks, sub-agents, and tool-history retry UI are deferred beyond M7.
+**Approval-gated tools.** M10 replaced `file_write`/`shell_exec` with `edit`/`exec`; both remain disabled by default and route through the approvals evaluator when enabled. Every `exec` command requires explicit per-call approval, while matching deny rules still deny. `go_test`, `go_lint`, and local git writes are also opt-in/gated. Web search is opt-in and disclosed. External VC tools only generate manual-action proposals; they do not perform pushes or PR mutations.
 
 **Pipeline DSL staged with project memory repos and tool permissions.** `.hp` pipelines depend on project memory repos, attached source repos, the native agent loop, and the hardened tool/approval layer because model steps write declared outputs through harness tools and verify/gate commands run as trusted local processes. The DSL is deliberately not part of M4: interactive agent-loop execution comes first, safe write/shell permissions come second, storage layout stabilization comes third, declarative multi-step automation comes after those foundations.
