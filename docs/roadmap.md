@@ -329,7 +329,7 @@ Depends on M7 (approvals and the existing tool layer) and M9 (project memory rep
 
 - [x] M10.1 — auditable edit loop: `ast_map`, `ast_find`, `read` (replaces `file_read`), `edit` (replaces `file_write`), tier-1 git tools, B1 skeletonizer, B3 tee-on-failure, C3 origin-class slice
 - [x] M10.2 — execution, compression, local VC writes: `exec` (replaces `shell_exec`), `go_test`, `go_lint`, tier-2 git tools shipping together with the memory-repo scope predicate and ref-SHA/reflog undo, B2 output folder, B5 token gate
-- [ ] M10.3 — retrieval instrumentation closure (implementation landed): wire the production trace sink, unify the versioned trace/label schemas, emit project-scoped call/candidate rows with final rank/weights/returned state, align per-signal Precision@3 and Recall@3 evaluation, and record a real ten-query baseline; this is [memory_roadmap.md](memory_roadmap.md)'s MR0 gate
+- [ ] M10.3 — retrieval instrumentation closure (implementation landed): surface sink construction/emission failures and close it on shutdown, version the separate trace and labeled-query schemas, emit project-scoped call/candidate rows with final rank/weights/returned state, align per-signal Precision@3 and Recall@3 evaluation, and record a real ten-query baseline; this is [memory_roadmap.md](memory_roadmap.md)'s MR0 gate
 - [x] M10.4 — external VC: `git_push`, `gh_pr_create`, and `gh_pr_merge` return manual-action proposals with no network mutation; `gh_pr_wait` is a blocking read of PR CI state; GitHub token comes from the environment only
 
 ---
@@ -350,7 +350,7 @@ Depends on M7 (destructive tools, shell execution, approvals, and hardened permi
 
 **Goal:** evolve memory from markdown + vector index into a measured, provenance-aware layer with origin-aware retrieval records, an evidence-gated optional FTS signal, a persistent semantic-write event log, stable record IDs, supersede-aware reads, and possible-conflict review. The full contract, phase gates, and design decisions live in [memory_roadmap.md](memory_roadmap.md).
 
-Depends on M11 under the repository's one-milestone-at-a-time policy and on M10.3/MR0 closure (production traces, one canonical schema, ten real labels, and a recorded baseline). MR3 defines its own persistent proposal workflow and does not reuse M10.4's manual-action proposal boolean.
+Depends on M11 under the repository's one-milestone-at-a-time policy and on M10.3/MR0 closure (reported/closed production tracing, separate versioned trace and label schemas, ten real labels, and a recorded baseline). MR3 defines its own persistent proposal workflow and does not reuse M10.4's manual-action proposal boolean.
 
 - [ ] MR1 — origin-aware retrieval records: project-scoped IDs and per-hit content origin; unknown origin fails closed to inference and never bypasses approval/verification
 - [ ] MR2 — conditional FTS5 signal: project-scoped rebuildable index, normalized score, `fts_weight = 0` default; skip unless MR0 proves an unresolved keyword-miss cohort

@@ -260,10 +260,10 @@ Attached code repos are indexed by git state: each attached directory gets its o
 Owns the blended semantic + recency scoring pipeline and the D3 trace layer.
 
 - `ScoreEpisodePaths` takes a query and episode paths, calls the embedder, blends cosine similarity with exponential recency, and currently returns `(map[path]score, scored, error)`.
-- `RetrievalTrace` and `NDJSONSink` exist, but M10.3/MR0 is not accepted: runtime wiring never installs `DefaultTraceSink`, so production calls emit no durable traces.
+- `RetrievalTrace` and `NDJSONSink` exist, and startup installs `DefaultTraceSink` when construction succeeds. Production calls normally append rows without buffering, but M10.3/MR0 is not accepted: constructor failures are silently ignored, emission errors are discarded, and shutdown never closes the sink.
 - The current candidate row lacks project identity, weights, selected/top-K state, and final score rank; its `Rank` field is path-order position. Empty/unscoreable/error calls emit nothing.
 - `QueryID` is currently a SHA-256[:8] prefix. MR0 replaces it with the canonical full hash and adds project-scoped call/candidate records; prompt assembly and `memory_query` pass trace context with project slug and requested top-K.
-- `NDJSONSink` already implements date-bucketed files and 30-day pruning. MR0 wires and closes it through runtime and surfaces sink failures.
+- `NDJSONSink` already implements date-bucketed files and 30-day pruning. MR0 preserves its startup wiring, surfaces construction/emission failures, and closes it during shutdown.
 - `EpisodeID` derives a stable, path-relative identifier for indexing and scoring across different repo roots.
 
 `cmd/eval-retrieval` currently reads one NDJSON `query`/`relevant` file and reports MRR

@@ -2,8 +2,9 @@
 
 Milestone position: **this document is the M10 design record**, between M9 (Layout V2,
 shipped) and M11 (Pipeline DSL, planned). M10.1, M10.2, and M10.4 have shipped. M10.3
-code has landed, but its MR0 acceptance gate remains open: production tracing is not
-wired, the trace/eval schemas disagree, and no ten-query baseline has been recorded.
+code has landed, but its MR0 acceptance gate remains open: trace-sink failures are silent,
+the sink is never closed, the trace and evaluation contracts are incomplete, and no
+ten-query baseline has been recorded.
 M11 binds tool calls against this surface, so the M10.3 closure work is part of making
 the surface observable rather than a reason to rename tools again.
 
@@ -261,7 +262,7 @@ under the current one-milestone-at-a-time policy.
 
 | # | Pass | Status | Notes |
 |---|---|---|---|
-| D3 | Retrieval quality harness | R | Binary and trace types exist, but production wiring, one canonical schema, and the ten-query baseline are still required. |
+| D3 | Retrieval quality harness | R | Binary, startup sink wiring, and trace types exist, but sink error/close handling, separate versioned trace and label schemas, and the ten-query baseline are still required. |
 | D1 | Failure aggregator | Deferred | Groups recurring failures across runs into evidence-backed issues, surfaced to a human. No auto-apply. |
 | D2 | Replay-as-regression | X | Requires run material in a queryable store — depends on what the memory roadmap decides to persist. Not "already held" anywhere today. |
 | D4 | Invariant CI checks | Deferred | Scope-predicate completeness, allowlist deny-by-default. Plain Go tests. Supersede-chain acyclicity joins when supersede chains exist [X]. |
@@ -269,9 +270,11 @@ under the current one-milestone-at-a-time policy.
 ### D3 / MR0 closure contract [R]
 
 Retrieval today [P] is a two-signal weighted blend:
-`semantic_weight * similarity + recency_weight * exp_decay`. MR0 is not complete until
-the runtime installs the trace sink and one canonical versioned schema is used by the
-runtime, evaluator, tests, and documentation.
+`semantic_weight * similarity + recency_weight * exp_decay`. Startup already installs the
+trace sink when construction succeeds. MR0 is not complete until construction/emission
+failures are surfaced, shutdown closes the sink, and each artifact has its own versioned
+contract: runtime/tests/docs share the trace schema, while evaluator/tests/docs share the
+separate labeled-query schema.
 
 ```
 {
@@ -333,10 +336,10 @@ M10.3 closure now owns collecting the first ten real labels and recording the ba
 implementation checkboxes do not imply those observations happened.
 
 **M10.3 — retrieval instrumentation (implementation landed; MR0 closure pending)**
-`memory_query`, trace types at `ScoreEpisodePaths`, and the D3 binary have landed. The
-runtime sink wiring, canonical schema, evaluator alignment, ten-query labeled set, and
-recorded baseline remain required. This phase **is** memory_roadmap.md's MR0 gate and is
-not accepted until those items pass.
+`memory_query`, trace types at `ScoreEpisodePaths`, startup sink installation, and the D3
+binary have landed. Sink error/close handling, separate versioned trace and label schemas,
+evaluator alignment, a ten-query labeled set, and a recorded baseline remain required.
+This phase **is** memory_roadmap.md's MR0 gate and is not accepted until those items pass.
 
 **M10.4 — external VC**
 `git_push`, `gh_pr_create`, and `gh_pr_merge` as manual-action proposals, plus

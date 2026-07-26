@@ -6,9 +6,10 @@ explicit content provenance, and a persistent semantic-write gate.
 
 Sequencing against the other milestones:
 
-- **MR0 is the current M10.3 closure work, not M12 proper.** Trace/eval code exists, but
-  production sink wiring, one canonical schema, a ten-query labeled set, and a recorded
-  baseline are still required before MR0 passes.
+- **MR0 is the current M10.3 closure work, not M12 proper.** Trace/eval code and startup
+  sink installation exist, but sink error/close handling, separate versioned trace and
+  label schemas, a ten-query labeled set, and a recorded baseline are still required
+  before MR0 passes.
 - **M11 starts after MR0 closes; M12 starts after M11.** Reprioritizing either milestone
   requires an explicit roadmap change; the documents must not silently authorize
   parallel milestone work.
@@ -79,9 +80,10 @@ supersede chains, a persistent proposal/decision gate, FTS5, or cross-file retri
 **Prerequisite for everything else. No memory schema work starts before this reports.**
 
 MR0 **is** tool_roadmap.md's M10.3 closure gate. `memory_query`, trace types, the NDJSON
-sink, and `cmd/eval-retrieval` exist, but the runtime does not install the sink and the
-implementation, evaluator, and documentation currently use incompatible schemas and
-metrics. The main roadmap must keep M10.3 unchecked until this section passes.
+sink, startup installation, and `cmd/eval-retrieval` exist. Sink construction failures are
+silently ignored, emission errors are discarded, and shutdown never closes the sink; the
+trace rows and evaluator also lack the fields, comparisons, and baseline artifact required
+below. The main roadmap must keep M10.3 unchecked until this section passes.
 
 MR0 lives in `internal/retrieval`, `internal/memoryops`, and runtime wiring. It changes no
 authoritative memory schema. The evaluator remains a developer-side binary and is not a
@@ -116,9 +118,10 @@ content never enter trace files.
 
 Emission remains at `ScoreEpisodePaths`, the shared choke point for prompt assembly and
 `memory_query`. Both callers pass a `TraceContext` containing the active `project_slug`
-and their requested top-K so `Returned` has one unambiguous meaning. The runtime installs
-and closes the sink after the harness home is known. Sink creation or write failures are
-surfaced through the existing setup/log path rather than silently discarded.
+and their requested top-K so `Returned` has one unambiguous meaning. The runtime already
+installs the sink after the harness home is known; MR0 retains that wiring, surfaces sink
+creation/emission failures through the existing setup/log path, and closes the sink during
+graceful shutdown.
 
 Storage: append-only NDJSON under `~/.harness/logs/retrieval/<date>.ndjson`. Not in
 the memory repo, not in SQLite. Log rotation on date boundary; keep 30 days.
@@ -140,11 +143,13 @@ rows and writes a machine-readable result under
 `~/.harness/eval/retrieval/results/<project-slug>-<timestamp>.json`.
 
 **Acceptance gates for MR0:**
-- Runtime startup installs the production sink and graceful shutdown closes it.
+- Runtime startup keeps installing the production sink, surfaces construction/emission
+  failures, and graceful shutdown closes it.
 - Every invocation emits one call row; every scoreable candidate emits one candidate row
   with correct final rank, weights, and `Returned` state.
 - Project identity prevents equal episode paths in different projects from colliding.
-- Runtime, evaluator, tests, and docs use the same versioned trace and label schemas.
+- Runtime trace emission, trace tests, and docs use one versioned trace schema; evaluator
+  input, label tests, and docs use a separate versioned labeled-query schema.
 - The evaluator runs against at least ten real labeled queries and produces per-signal
   and combined Precision@3 and Recall@3 plus a machine-readable baseline artifact.
 - M10.3 is checked only after that baseline run is observed, not merely after unit tests.
