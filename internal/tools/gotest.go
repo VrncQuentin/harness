@@ -90,24 +90,39 @@ func (t *goTestTool) Execute(ctx context.Context, c CallInfo, args map[string]an
 	cmd.Stdout = out
 	cmd.Stderr = out
 
-	runErr := cmd.Run()
+	return goTestResult(cmd.Run(), out.String(), all)
+}
 
+// goTestResult maps a completed go test run onto a tool result.
+//
+// The subprocess exit status decides the outcome, not whether a failure summary
+// could be parsed. Returning a summary as Content reported a failed test run as
+// a successful tool call: metrics counted it as a success, the model saw plain
+// content rather than an ERROR, and the governor's tee-on-failure never fired,
+// because every one of those keys on Result.Error.
+func goTestResult(runErr error, raw string, all bool) Result {
 	if all {
-		content := out.String()
 		if runErr != nil {
-			return Result{Error: fmt.Sprintf("go_test: %v\n%s", runErr, content)}
+			return Result{Error: fmt.Sprintf("go_test: %v\n%s", runErr, raw)}
 		}
-		return Result{Content: content}
+		return Result{Content: raw}
 	}
 
-	summary := formatTestFailures(out.String())
-	if runErr != nil && summary == "" {
-		return Result{Error: fmt.Sprintf("go_test: %v\n%s", runErr, out.String())}
+	summary := formatTestFailures(raw)
+	switch {
+	case runErr != nil && summary != "":
+		return Result{Error: fmt.Sprintf("go_test: %v\n%s", runErr, summary)}
+	case runErr != nil:
+		// Failed with nothing parseable: a build error, a panic, or the
+		// timeout. The raw output is all there is to go on.
+		return Result{Error: fmt.Sprintf("go_test: %v\n%s", runErr, raw)}
+	case summary != "":
+		// go reported success while its own JSON stream recorded failures. A
+		// green exit code that disagrees with the events is not evidence the
+		// suite passed, so the failures win.
+		return Result{Error: fmt.Sprintf("go_test: exited 0 but reported test failures\n%s", summary)}
 	}
-	if summary == "" {
-		return Result{Content: "All tests passed."}
-	}
-	return Result{Content: summary}
+	return Result{Content: "All tests passed."}
 }
 
 // formatTestFailures parses go test -json NDJSON and returns a compact failure

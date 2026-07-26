@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -69,7 +70,16 @@ func (t *goLintTool) Execute(ctx context.Context, c CallInfo, args map[string]an
 		}
 	}
 
-	lintArgs := append([]string{"run", "--output.json.path=stdout"}, pkgs...)
+	// --issues-exit-code pins the status golangci-lint uses to mean "completed,
+	// with findings". It defaults to 1, but a project can set run.issues-exit-code
+	// in its own config, and goLintResult classifies purely by that number —
+	// a project choosing 0 or 5 would otherwise silently redefine the protocol
+	// and turn findings into a pass, or a clean run into a failure.
+	lintArgs := append([]string{
+		"run",
+		"--output.json.path=stdout",
+		fmt.Sprintf("--issues-exit-code=%d", lintIssuesExitCode),
+	}, pkgs...)
 	timeoutCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 
@@ -79,25 +89,72 @@ func (t *goLintTool) Execute(ctx context.Context, c CallInfo, args map[string]an
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	_ = cmd.Run() // non-zero exit is expected when there are lint issues
+	runErr := cmd.Run()
+	timedOut := errors.Is(timeoutCtx.Err(), context.DeadlineExceeded)
+	return goLintResult(runErr, timedOut, stdout.Bytes(), stderr.Bytes())
+}
 
-	if stdout.Len() == 0 {
-		if stderr.Len() > 0 {
-			return Result{Error: fmt.Sprintf("go_lint: no output; stderr: %s", stderr.String())}
+// goLintResult maps a completed golangci-lint run onto a tool result.
+//
+// golangci-lint exits 1 when it has issues to report, which is a run that
+// worked. Every other non-zero status means the lint did not complete — a
+// broken config, a package that would not build, or the timeout killing it.
+// Discarding the status turned all of those into "No lint issues found.",
+// which reads as a clean bill of health for a lint that never ran.
+func goLintResult(runErr error, timedOut bool, stdout, stderr []byte) Result {
+	errText := strings.TrimSpace(string(stderr))
+
+	if runErr != nil && !isLintIssuesExit(runErr) {
+		detail := errText
+		if detail == "" {
+			detail = strings.TrimSpace(string(stdout))
+		}
+		if timedOut {
+			return Result{Error: fmt.Sprintf("go_lint: timed out: %v\n%s", runErr, detail)}
+		}
+		return Result{Error: fmt.Sprintf("go_lint: did not complete: %v\n%s", runErr, detail)}
+	}
+
+	if len(stdout) == 0 {
+		switch {
+		case len(stderr) > 0:
+			return Result{Error: fmt.Sprintf("go_lint: no output; stderr: %s", string(stderr))}
+		case runErr != nil:
+			// The issues exit code with nothing on either stream: the linter
+			// said it had findings and then produced no report. Silence is not
+			// a clean run, and reporting one would contradict the exit status.
+			return Result{Error: fmt.Sprintf("go_lint: reported issues but produced no report: %v", runErr)}
 		}
 		return Result{Content: "No lint issues found."}
 	}
 
 	var report golangciReport
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		return Result{Error: fmt.Sprintf("go_lint: failed to parse output: %v\nstderr: %s", err, stderr.String())}
+	if err := json.Unmarshal(stdout, &report); err != nil {
+		return Result{Error: fmt.Sprintf("go_lint: failed to parse output: %v\nstderr: %s", err, string(stderr))}
 	}
 
 	if len(report.Issues) == 0 {
+		// Exit 1 with an empty issue list means the report does not say what
+		// the linter objected to. Reporting a clean run would be inventing an
+		// answer the tool did not give.
+		if runErr != nil {
+			return Result{Error: fmt.Sprintf("go_lint: reported failure with no issues in its report: %v\nstderr: %s", runErr, errText)}
+		}
 		return Result{Content: "No lint issues found."}
 	}
 
 	return Result{Content: formatLintReport(report.Issues)}
+}
+
+// lintIssuesExitCode is golangci-lint's status for "the run completed and found
+// issues". Every other non-zero code reports a run that did not complete.
+const lintIssuesExitCode = 1
+
+// isLintIssuesExit reports whether err is golangci-lint exiting because it had
+// issues to report, as opposed to failing to run.
+func isLintIssuesExit(err error) bool {
+	var exitErr *exec.ExitError
+	return errors.As(err, &exitErr) && exitErr.ExitCode() == lintIssuesExitCode
 }
 
 // formatLintReport groups issues by linter → file → sorted by line.
