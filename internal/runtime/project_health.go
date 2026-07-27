@@ -38,6 +38,12 @@ func CheckProjectDirectories(store projectDirectoryStore, slug string) ([]ui.Pro
 
 	warnings := make([]ui.ProjectDirectoryWarning, 0)
 	for _, dir := range dirs {
+		// An attached project directory is a root in its own right, chosen by
+		// the user, so there is no enclosing tree to resolve it through. This
+		// produces a UI warning and nothing else: no read, no write, and no
+		// authorization follows it — the tools that operate inside these
+		// directories run their own pathid containment check per call. See the
+		// filesystem access ledger in docs/architecture.md.
 		info, err := os.Stat(dir.Path)
 		switch {
 		case errors.Is(err, fs.ErrNotExist):

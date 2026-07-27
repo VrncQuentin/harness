@@ -4,12 +4,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 const traceRetentionDays = 30
@@ -56,24 +58,37 @@ func QueryID(query string) string {
 }
 
 // NDJSONSink writes one JSON object per line to date-bucketed NDJSON files
-// under dir. Files older than retentionDays are pruned on each date rotation.
-// The now func is injectable for tests; nil uses time.Now.
+// under a pinned trace directory. Files older than retentionDays are pruned on
+// each date rotation. The now func is injectable for tests; nil uses time.Now.
+//
+// The directory is pinned for the sink's lifetime, so the daily file it opens,
+// the listing it prunes from, and the files it removes all resolve through one
+// handle. Pruning is the reason that matters: it deletes by name, and a name
+// joined onto a directory string deletes whatever the name currently leads to.
 type NDJSONSink struct {
-	dir           string
+	root          *rootfs.Root
 	retentionDays int
 	now           func() time.Time
 
 	mu  sync.Mutex
 	day string
-	f   *os.File
+	f   *rootfs.AppendFile
 }
 
-// NewNDJSONSink returns a sink that writes under dir. It creates dir if absent.
+// NewNDJSONSink returns a sink that writes under dir. It creates dir if absent
+// and pins it. The caller closes the sink.
 func NewNDJSONSink(dir string, now func() time.Time) (*NDJSONSink, error) {
+	// Creating the trace directory is the bootstrap that brings the root into
+	// existence; there is no handle to resolve it through yet, and nothing
+	// below it is touched until it has been pinned on the next line.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("retrieval: trace dir: %w", err)
 	}
-	s := &NDJSONSink{dir: dir, retentionDays: traceRetentionDays, now: now}
+	root, err := rootfs.Open(dir)
+	if err != nil {
+		return nil, fmt.Errorf("retrieval: trace dir: %w", err)
+	}
+	s := &NDJSONSink{root: root, retentionDays: traceRetentionDays, now: now}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -96,16 +111,18 @@ func (s *NDJSONSink) Emit(t RetrievalTrace) {
 	_, _ = s.f.Write([]byte{'\n'})
 }
 
-// Close flushes and closes the currently open file.
+// Close flushes and closes the currently open file and releases the pinned
+// trace directory.
 func (s *NDJSONSink) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var errs []error
 	if s.f != nil {
-		err := s.f.Close()
+		errs = append(errs, s.f.Close())
 		s.f = nil
-		return err
 	}
-	return nil
+	errs = append(errs, s.root.Close())
+	return errors.Join(errs...)
 }
 
 // ensureFile opens (or rotates to) the file for day. Caller holds mu.
@@ -118,8 +135,7 @@ func (s *NDJSONSink) ensureFile(day string) error {
 		s.f = nil
 		s.prune()
 	}
-	p := filepath.Join(s.dir, day+".ndjson")
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := s.root.OpenAppend(day+".ndjson", 0o644)
 	if err != nil {
 		return fmt.Errorf("retrieval: open trace file: %w", err)
 	}
@@ -129,9 +145,14 @@ func (s *NDJSONSink) ensureFile(day string) error {
 }
 
 // prune removes files older than retentionDays. Caller holds mu.
+//
+// Both the listing and the removals go through the pinned directory, so a name
+// that has become a link since the listing is refused rather than followed —
+// which for a delete is the difference between dropping an expired trace and
+// dropping whatever the link points at.
 func (s *NDJSONSink) prune() {
 	cutoff := s.now().UTC().AddDate(0, 0, -s.retentionDays)
-	entries, err := os.ReadDir(s.dir)
+	entries, err := s.root.ReadDir(".")
 	if err != nil {
 		return
 	}
@@ -145,7 +166,7 @@ func (s *NDJSONSink) prune() {
 			continue
 		}
 		if t.Before(cutoff) {
-			_ = os.Remove(filepath.Join(s.dir, e.Name()))
+			_ = s.root.Remove(e.Name())
 		}
 	}
 }

@@ -33,6 +33,12 @@ var (
 // runs at a time. Returns (true, nil) for the first instance, (false, nil)
 // if another instance holds the lock.
 func AcquireSingleInstance() (bool, error) {
+	// The lock lives on the descriptor, not on the name: flock is taken on the
+	// fd this call opens, so whatever the name resolved to is the thing being
+	// locked, and a second instance racing on the same name contends on the
+	// same object or fails to take the lock. There is no configured tree to
+	// contain it and no second resolution to defend against. See the filesystem
+	// access ledger in docs/architecture.md.
 	lockPath := filepath.Join(os.TempDir(), "harness.lock")
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {

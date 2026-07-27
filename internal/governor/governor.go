@@ -99,6 +99,11 @@ func TooloutDir(cacheDir string) string {
 }
 
 // tooloutDir returns the B3 spill directory, creating it if needed.
+//
+// The MkdirAll is the bootstrap that brings the spill root into existence;
+// writeSpill pins that directory and resolves the spill id through the handle,
+// so nothing below this directory is ever addressed by pathname. See the
+// filesystem access ledger in docs/architecture.md.
 func (g *Governor) tooloutDir() string {
 	dir := TooloutDir(g.cacheDir)
 	if dir == "" {

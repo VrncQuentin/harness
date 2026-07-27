@@ -27,6 +27,14 @@ func Default() (string, error) {
 }
 
 // Ensure creates the stable machine-local directory skeleton.
+//
+// This is the bootstrap that brings the harness home into existence, so there
+// is no enclosing handle to resolve it through: every rooted capability in the
+// harness is opened on a directory this call created. Nothing is read or
+// written here — only directories are created, and MkdirAll accepts an existing
+// directory and refuses anything else, so a name already taken by a file or a
+// link to elsewhere fails rather than being adopted. See the filesystem access
+// ledger in docs/architecture.md.
 func Ensure(root string) error {
 	if root == "" {
 		return fmt.Errorf("home: root is empty")

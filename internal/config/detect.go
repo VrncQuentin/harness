@@ -32,6 +32,15 @@ type Suggestions struct {
 // For dev ergonomics Detect also searches binDir's parent - the common layout
 // is dist/harness.exe alongside a sibling models/ and llama.cpp/ at the repo
 // root, so binDir alone misses both.
+//
+// The scans below stat and list by pathname, and deliberately stay that way.
+// This is not an authorization boundary: it produces *suggestions* for a form
+// the user then edits and saves, and every value it offers is validated again
+// on save and resolved again when the process is actually spawned. The
+// locations searched are also not a configured tree the harness owns — they are
+// wherever the operator happens to keep llama.cpp and their models — so there
+// is no root to resolve them through. See the filesystem access ledger in
+// docs/architecture.md.
 func Detect(binDir string) Suggestions {
 	if binDir == "" {
 		return Suggestions{}

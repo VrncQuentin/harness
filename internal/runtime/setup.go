@@ -72,6 +72,16 @@ func ValidatePaths(uiServer *ui.Server, cfg *config.Config) bool {
 	return ok
 }
 
+// validateFilePath reports whether a configured file exists, for the startup
+// checklist the status page renders.
+//
+// These are the llama-server and embedder binaries and their model files:
+// user-chosen paths anywhere on the machine, with no configured tree to contain
+// them, and each is handed to os/exec or to llama-server as a pathname
+// afterwards. There is nothing for a rooted open to enforce. Nothing is read or
+// written here either — the result is a message, and a stale answer costs an
+// inaccurate checklist entry that the actual spawn then corrects. See the
+// filesystem access ledger in docs/architecture.md.
 func validateFilePath(label, path string) error {
 	info, err := os.Stat(path)
 	if err != nil {

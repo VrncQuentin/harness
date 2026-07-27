@@ -80,6 +80,11 @@ func Open(path string, defaultMemoryRepoPath DefaultMemoryRepoPathFunc) (*DB, er
 // startup still opens the real DB after the UI is serving, where any errors
 // are surfaced in the browser.
 func PeekUIPort(path string, fallback int) int {
+	// The database is opened by the SQLite driver, which takes a DSN string and
+	// cannot be handed a file handle, so this path is a pathname either way.
+	// The Stat only decides whether to attempt the open at all; a wrong answer
+	// costs the fallback port, not access to anything. See the filesystem
+	// access ledger in docs/architecture.md.
 	if _, err := os.Stat(path); err != nil {
 		return fallback
 	}

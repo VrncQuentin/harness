@@ -263,15 +263,42 @@ func (r *Root) CreateExclusive(rel string, data []byte, perm fs.FileMode) error 
 	return f.Close()
 }
 
-// AppendSync appends data to rel and fsyncs it, creating the file if it is
-// absent. It never truncates and never seeks: an append-only log's whole
-// guarantee is that what is already there stays there.
+// OpenAppend opens rel for appending, creating it if it is absent, and returns
+// a handle the caller keeps open. It never truncates and never seeks.
 //
 // It is deliberately not a general OpenFile. Handing callers the flag set would
 // put O_TRUNC one argument away from an operation whose entire purpose is that
-// it cannot destroy previous records.
-func (r *Root) AppendSync(rel string, data []byte, perm fs.FileMode) error {
+// it cannot destroy previous records, and the returned handle exposes no way to
+// shorten the file either.
+func (r *Root) OpenAppend(rel string, perm fs.FileMode) (*AppendFile, error) {
 	f, err := r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_APPEND, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &AppendFile{f: f}, nil
+}
+
+// AppendFile is an open append-only file inside a Root. Its whole surface is
+// "add to the end", "make it durable", and "let go".
+type AppendFile struct {
+	f *os.File
+}
+
+// Write appends p. O_APPEND puts the position in the kernel's hands, so a
+// concurrent writer on another handle cannot make two appends overlap.
+func (f *AppendFile) Write(p []byte) (int, error) { return f.f.Write(p) }
+
+// Sync flushes the file to stable storage.
+func (f *AppendFile) Sync() error { return f.f.Sync() }
+
+// Close releases the handle.
+func (f *AppendFile) Close() error { return f.f.Close() }
+
+// AppendSync appends data to rel and fsyncs it, creating the file if it is
+// absent. It never truncates: an append-only log's whole guarantee is that what
+// is already there stays there.
+func (r *Root) AppendSync(rel string, data []byte, perm fs.FileMode) error {
+	f, err := r.OpenAppend(rel, perm)
 	if err != nil {
 		return err
 	}

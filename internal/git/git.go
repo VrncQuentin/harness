@@ -12,6 +12,7 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/object"
 
 	"github.com/VrncQuentin/harness/internal/pathid"
@@ -103,6 +104,14 @@ func Open(path string) (*Repo, error) {
 
 // Init opens an existing plain git repository at path, or initializes a new
 // one there when none exists yet. The directory is created if missing.
+//
+// The MkdirAll is a bootstrap: it creates the repository root that callers
+// afterwards pin, and it is followed immediately by go-git, which addresses its
+// storage by pathname and has no way to accept a directory handle. Routing this
+// one call through a root would not change that, so identity is enforced where
+// it can be — newRepo resolves the repository with pathid, and the C2 scope
+// checks around the git tools do the same. See the filesystem access ledger in
+// docs/architecture.md.
 func Init(path string) (*Repo, error) {
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return nil, fmt.Errorf("git: create repo dir %s: %w", path, err)
@@ -156,6 +165,53 @@ func (r *Repo) Commit(msg string, files []string) (string, error) {
 		return "", fmt.Errorf("git: commit %s: %w", r.path, err)
 	}
 	return hash.String(), nil
+}
+
+// ErrDetachedHEAD reports that HEAD does not name a branch. It carries the
+// short hash HEAD points at so a caller can say what it found.
+type ErrDetachedHEAD struct {
+	Short string
+}
+
+func (e *ErrDetachedHEAD) Error() string {
+	return fmt.Sprintf("HEAD is detached at %s", e.Short)
+}
+
+// CurrentBranch returns the short name of the branch HEAD points at.
+//
+// It reads HEAD through the repository handle this Repo already holds, which is
+// what removes the second pathname resolution the git_push tool used to do: that
+// one validated the repository root and then opened root/.git/HEAD by name, so
+// the path that was authorized and the path that was read were resolved
+// separately, and it broke outright on a linked worktree, where .git is a file
+// rather than a directory.
+//
+// What this does not provide is a handle guarantee. go-git addresses its
+// storage by pathname internally, so the read is still ultimately by name — the
+// improvement is that there is one resolution instead of two, performed by the
+// component that owns the repository, and that it understands the layouts a
+// hand-rolled read of .git/HEAD does not. Repository opening keeps the explicit
+// pathid identity and C2 checks around it for exactly this reason.
+//
+// HEAD is read unresolved, so a repository with no commits yet still reports its
+// branch instead of failing on a reference that points at nothing.
+func (r *Repo) CurrentBranch() (string, error) {
+	ref, err := r.repo.Reference(plumbing.HEAD, false)
+	if err != nil {
+		return "", fmt.Errorf("git: read HEAD in %s: %w", r.path, err)
+	}
+	if ref.Type() != plumbing.SymbolicReference {
+		short := ref.Hash().String()
+		if len(short) > 8 {
+			short = short[:8]
+		}
+		return "", &ErrDetachedHEAD{Short: short}
+	}
+	target := ref.Target()
+	if !target.IsBranch() {
+		return "", &ErrDetachedHEAD{Short: target.String()}
+	}
+	return target.Short(), nil
 }
 
 // authorIdentity returns the user.name / user.email pair from the repo's

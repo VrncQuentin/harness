@@ -3,7 +3,6 @@ package memory
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -142,6 +141,10 @@ func copyTreeWithoutGitHooked(src, dst string, afterCheck func()) error {
 		return fmt.Errorf("memory: open source repo %s: %w", src, err)
 	}
 	defer srcRoot.Close() //nolint:errcheck // read-only handle
+	// Creating the destination is the bootstrap that brings the second root
+	// into existence. There is no handle to resolve it through yet — that is
+	// what the next line establishes — and nothing below it is touched until
+	// the identity checks after the pin have passed.
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return fmt.Errorf("memory: create destination %s: %w", dst, err)
 	}
@@ -385,26 +388,32 @@ func copyFileBetweenRoots(srcDir, dstDir *rootfs.Root, name, rel string) error {
 	return nil
 }
 
+// listRepoFiles enumerates the repo's working-tree files as repo-relative
+// paths, for staging. The walk descends through a pinned handle per directory
+// rather than re-resolving each subdirectory's name, so a link planted inside
+// the repo cannot add a path from outside it to the list a commit then stages.
 func listRepoFiles(root string) ([]string, error) {
+	pinned, err := rootfs.Open(root)
+	if err != nil {
+		return nil, fmt.Errorf("memory: open repo %s: %w", root, err)
+	}
+	defer pinned.Close() //nolint:errcheck // read-only handle
+
 	var files []string
-	err := filepath.WalkDir(root, func(abs string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	err = pinned.Walk("", func(entry rootfs.WalkEntry) (bool, error) {
+		if entry.Name == gitDirName && entry.Info.IsDir() {
+			return true, nil
 		}
-		if d.Name() == gitDirName && d.IsDir() {
-			return filepath.SkipDir
+		if entry.Info.IsDir() {
+			return false, nil
 		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(root, abs)
-		if err != nil {
-			return err
-		}
-		files = append(files, filepath.ToSlash(rel))
-		return nil
+		files = append(files, filepath.ToSlash(entry.Rel))
+		return false, nil
 	})
-	return files, err
+	if err != nil {
+		return nil, fmt.Errorf("memory: list repo files %s: %w", root, err)
+	}
+	return files, nil
 }
 
 // SameProjectRepoPath reports whether two project repo paths identify the same
