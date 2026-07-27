@@ -208,15 +208,19 @@ Responsibilities:
   handle is `OpenRead`, returning a `File` — see below for why.
 - `Root.Walk` pins each subdirectory before describing or entering it, so what
   is reported to the visitor and what is recursed into are the same handle
-  rather than two separate resolutions of one name. Which entries are even
-  candidates for that pin is decided by the directory-listing's own entry type,
-  not by a later `Stat`: a symbolic link is a distinct type from a directory
-  even when its target is one, so a link is Lstat'd and reported without an
-  `OpenChild` attempt ever being made, preserving "a link is reported as a link
-  and not descended into" even for one that only appears after the listing.
-  Walk is depth-bounded: `os.Root` follows an in-root symlink, so a link
-  pointing at one of its own ancestors is a cycle that would otherwise not
-  terminate.
+  rather than two separate resolutions of one name. A directory-listing entry's
+  *type* decides whether to attempt that pin at all: a symbolic link present at
+  listing time is a distinct type from a directory even when its target is one,
+  so it is Lstat'd and reported without an `OpenChild` attempt ever being made.
+  That listing is a snapshot, though, and `os.Root` follows an in-root symlink
+  rather than refusing it — so a name that was a real directory when listed and
+  becomes a symlink before the pin runs would be opened by `OpenChild` if entry
+  type at listing time were the only check. It is not the only check: `walkDir`
+  Lstat's the same name through the parent immediately after pinning it, which
+  does not follow links, and refuses to describe or enter the pinned child
+  unless that Lstat still shows a directory. Walk is also depth-bounded:
+  `os.Root` follows an in-root symlink, so a link pointing at one of its own
+  ancestors is a cycle that would otherwise not terminate.
 - `Root.AppendSync` / `Root.OpenAppend` are the append-only capability the
   session log and the retrieval trace use. There is deliberately no general
   `OpenFile`: exposing the flag set would put `O_TRUNC` one argument away from
@@ -357,7 +361,7 @@ this table.
 | `internal/governor/governor.go` `tooloutDir` | `os.MkdirAll` | Bootstrap of the spill root. Everything below it is addressed through a pinned handle by `writeSpill`. |
 | `internal/retrieval/trace.go` `NewNDJSONSink` | `os.MkdirAll` | Bootstrap of the trace root, pinned on the next line; the daily file, the listing, and the retention deletes all go through that handle. |
 | `internal/memory/project_repo.go` `copyTreeWithoutGitHooked` | `os.MkdirAll` | Bootstrap of the copy destination, pinned immediately after and then checked for identity and containment before anything is written. |
-| `internal/git/git.go` `Init` | `os.MkdirAll` | Bootstrap of a repository root, immediately followed by `go-git`, which addresses its storage by pathname and cannot take a handle. Identity is enforced with `pathid` in `newRepo` and by the C2 checks around the git tools. `internal/runtime`'s session-manager wiring additionally confirms, via `memory.DirReader.SamePhysicalLocation`, that the go-git repo it just opened by path is still the same directory the project memory reader is pinned to — the closest check available given `go-git` cannot be handed a handle to bind to directly. |
+| `internal/git/git.go` `Init` | `os.MkdirAll` | Bootstrap of a repository root, immediately followed by `go-git`, which addresses its storage by pathname and cannot take a handle. `newRepo` resolves the repository's physical identity via `pathid` immediately after `go-git` opens it — as close as achievable to what `go-git` itself used, since it exposes no way to ask what it actually opened — and retains it as `Repo.Identity()`. `internal/runtime`'s session-manager wiring compares that captured identity directly against `memory.DirReader.Identity()` (itself captured at the reader's own pin time), rather than re-resolving `roots.activeRoot` a further time to compare against: a fresh resolution taken later only answers what the path currently names, not whether it named the same thing when each side actually opened it. |
 | `internal/db/db.go` `PeekUIPort` | `os.Stat` | The SQLite driver takes a DSN string, so the path is a pathname either way. The stat only decides whether to attempt the open; a wrong answer costs the fallback UI port. |
 | `internal/runtime/setup.go` `validateFilePath` | `os.Stat` | User-chosen model and binary paths anywhere on the machine, with no configured tree to contain them, each handed to `os/exec` afterwards. Produces a checklist message; no read, write, or authorization follows. |
 | `internal/runtime/project_health.go` `CheckProjectDirectories` | `os.Stat` | An attached project directory is a root in its own right. Produces a UI warning only; the tools that operate inside those directories run their own `pathid` containment check per call. |
@@ -457,16 +461,45 @@ Mediates all reads and writes to git-backed project memory repos.
 - `PromoteFact(text string)` → append to `facts.md` in the active project repo + commit
 - `AppendAgentNote(agent, text string)` → append to `agents/<n>/notes.md` in the active repo + commit
 - Both exposed in the UI memory page
-- If the commit fails, `PromotionService` reads the target file back before rolling
+- `PromotionService`'s whole read-modify-write-commit-and-possible-rollback
+  sequence is one critical section per repository, serialized by
+  `promotionLocks` (a package-level lock table keyed by physical repo identity,
+  the same role `internal/git`'s `repoMutationLocks` plays for git mutations).
+  A `PromotionService` value is constructed fresh per request, so a lock on the
+  value itself would not serialize anything; the lock has to live outside any
+  one request's value to serialize across them. This is what actually prevents
+  two concurrent promotions to the same path from losing an update, rather than
+  merely detecting the collision afterward.
+- On top of that, if the commit still fails, `rollback` reads the target file
   back and only restores or removes it when the content still matches what this
-  call itself wrote. The file is not locked while the commit is in flight, so a
-  second promotion to the same path can land in the window between the write and
-  a failed commit; rolling back by name alone, on the strength of what this call
-  remembers writing, would erase that other promotion instead of this one's.
+  call itself published. The lock already rules out another *promotion* landing
+  mid-sequence; this check is for a *different* writer to the same file that
+  does not participate in the lock — the UI's direct memory-file editor,
+  notably, which writes through the same store without going through
+  `PromotionService`. Rolling back by name alone, on the strength of what this
+  call remembers writing, would erase such a writer's content instead of this
+  call's own.
 - The UI handler reads the memory store and the committer (and the dedup checker
   and its threshold) from one snapshot of the published service deps, not from
   separate reads, so a config reload landing mid-request cannot make the write
   and the commit act on two different generations of the memory service graph.
+- `handlePromoteFact` and `handleAppendNote` are wrapped with
+  `Server.trackGenRequest`, so a reload's `quiesceMemoryAndAPI` step waits for
+  any in-flight call to one of them (via `Server.DrainGenerationRequests`,
+  alongside the existing task-loop cancellation and session flush) before the
+  memory/API generation they were using is closed. This coverage is
+  deliberately partial: other handlers that read `MemoryStore`, `Committer`,
+  `AgentRegistry`, or `SessionStore` for a quick request/response — the
+  `/memory` and `/agents` pages, notably — are not yet wrapped and remain
+  exposed to the same narrow window, where a reload landing exactly during
+  one of their reads or writes can close the handle mid-use. The failure mode
+  there is a request-scoped I/O error (`os.Root`/`os.File` both refuse
+  operations on an already-closed handle rather than silently reusing a
+  reassigned descriptor), not a boundary escape — but it is a real, open gap
+  pending a repository-wide audit of which handlers need the same wrapping,
+  not a solved one. SSE endpoints (`/events`, `/chat/events`, `/task/events`)
+  must never be wrapped this way, since they are long-lived by design and a
+  drain that waited for one to end on its own would turn a reload into a hang.
 
 **Cross-agent reads:** explicit only. An agent may request episodes from another agent's directory. Not automatic.
 
