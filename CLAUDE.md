@@ -101,6 +101,16 @@ docs/
 - No `init()` functions.
 - Errors wrapped with context: `fmt.Errorf("proc: failed to start llama-server: %w", err)`.
 
+### Filesystem access
+This is a safety boundary, not a style preference. Both halves apply everywhere:
+
+- **Decide with `internal/pathid`.** Any conclusion about physical path equality, containment, deduplication, or locking comes from it. Never `filepath.EvalSymlinks`, never a string prefix, never a path used directly as a map or lock key.
+- **Act through `internal/rootfs`.** Any operation meant to stay inside a configured directory tree runs against a pinned `Root`/`Target`. Do not validate or canonicalize a pathname and then reopen that pathname to do the work. Pin before authorizing, and bind identity to the opened directory with `OpenIdentified` when identity matters. A multi-step operation holds one handle from start to finish. A traversal descends through pinned child handles rather than resolving a child's name a second time.
+
+`os.OpenRoot` belongs only in `internal/rootfs`. Do not add a generic `Create`/`OpenFile` that truncates before the caller can establish identity, an accessor returning an authorized absolute pathname, or cleanup that can delete a replacement object owned by another writer.
+
+Not every direct `os.*` call is wrong — a genuinely unconstrained user-selected file, a bootstrap that creates a root itself, or a pathname handed to a subprocess or a library that cannot consume handles may stay. Each one must be documented at the call site **and** listed in the exception ledger in [docs/architecture.md](docs/architecture.md). Adding a direct-path call without a ledger entry is a review failure.
+
 ### Architecture
 - `systray` must own the main goroutine. Everything else runs in goroutines launched from `cmd/harness/main.go`.
 - The UI server and the API server are on separate ports. Never merge them.

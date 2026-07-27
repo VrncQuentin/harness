@@ -198,10 +198,32 @@ pathname from the decision by holding the directory open and resolving every
 component against that handle.
 
 Responsibilities:
-- `Root` wraps an open directory for relative access (`ReadFile`, `Lstat`,
-  `Readlink`, `Open`, `OpenWrite`, `ReadDir`, `MkdirAll`). `internal/git`'s
-  `DiffWorktree` pins the worktree with it; `internal/memory` pins both ends of
-  a project-repo copy with it.
+- `Root` wraps an open directory for relative access (`ReadFile`, `Stat`,
+  `Lstat`, `Readlink`, `Open`, `OpenRead`, `ReadDir`, `MkdirAll`, `Remove`,
+  `RemoveAll`, `CreateExclusive`, `AppendSync`, `OpenAppend`, `OpenReadWrite`,
+  `WriteStreamAtomic`, `OpenChild`, `Clone`, `Walk`). `internal/git`'s
+  `DiffWorktree` pins the worktree with it; `internal/memory` pins a project
+  repo for the lifetime of its reader and both ends of a repo copy with it.
+- `Root.Walk` descends through a pinned handle per directory and describes each
+  entry with `Lstat` through its parent, so a traversal never resolves one name
+  twice. It is depth-bounded: `os.Root` follows an in-root symlink, so a link
+  pointing at one of its own ancestors is a cycle that would otherwise not
+  terminate.
+- `Root.AppendSync` / `Root.OpenAppend` are the append-only capability the
+  session log and the retrieval trace use. There is deliberately no general
+  `OpenFile`: exposing the flag set would put `O_TRUNC` one argument away from
+  an operation whose whole guarantee is that previous records survive.
+- `Root.OpenReadWrite` returns a `File` for a multi-step mutation — `Size`,
+  `ReadAt`, `Append`, `Truncate`, `Sync` — and does not truncate on open. The
+  vector index measures, appends, and rolls back through one handle, because
+  reopening between the steps would let the length measured, the bytes written,
+  and the length truncated back to belong to three different files.
+- `File` and `AppendFile` expose no pathname accessor. `os.File.Name` on a file
+  opened through an `os.Root` reports the root path joined with the relative
+  name, which is an authorized read convertible into an unauthorized reopen.
+- `Root.Clone` hands out a second independent handle on the same directory, for
+  a component that needs a root for its own lifetime without inheriting somebody
+  else's `Close`.
 - `OpenIdentified` pins a directory and returns it **with** the physical
   identity that directory has been confirmed to have. The pairing is the point:
   an identity resolved separately from a pin describes a name, so any later
@@ -266,8 +288,62 @@ Design constraints:
   validate their working directory with `pathid` and nothing more; command
   containment is a separate problem. `go-git` likewise takes a pathname, so
   repository opening keeps the explicit identity and C2 checks around it.
-- The toolout spill directory is outside every sandbox root, so it opens its own
-  `os.Root` in `internal/tools` rather than going through `Set`.
+- The toolout spill directory is outside every sandbox root, so both the
+  governor's producer and the `read` tool's consumer take a standalone
+  `rootfs.Root` on it rather than going through `Set`.
+
+### Filesystem Access Rule
+
+One rule covers the whole repository, and it has two halves:
+
+- **Any decision about physical path equality, containment, deduplication, or
+  locking uses `internal/pathid`.**
+- **Any operation meant to stay inside a configured directory tree executes
+  through a pinned `rootfs.Root` or `rootfs.Target`.** A pathname is never
+  validated or canonicalized and then reopened for the operation; identity, when
+  it matters, is bound to the opened directory with `OpenIdentified`; a
+  multi-step operation holds one handle from end to end; and a traversal
+  descends through pinned child handles rather than resolving a child's name a
+  second time.
+
+Concretely: project memory repos are pinned by `memory.OpenDirReader` for the
+lifetime of the service graph that uses them, and every read, write, listing,
+glob, walk, and removal below them resolves through that handle. The session log
+appends through the same handle. The vector index is located by a repo-relative
+name resolved through the repo's handle — never by an absolute
+`<repo>/index/_episodes` pathname, which can already lead out of the repo. The
+B3 spill directory is pinned for each write and each read.
+
+**Production `os.OpenRoot` exists only in `internal/rootfs`.**
+
+#### Direct-path exception ledger
+
+Every remaining production filesystem call addressed by pathname is listed here
+and documented at its call site. Nothing else is permitted without adding it to
+this table.
+
+| Location | Call | Why `pathid`/`rootfs` does not apply |
+| --- | --- | --- |
+| `internal/home/home.go` `Ensure` | `os.MkdirAll` | Bootstrap: creates the harness home the other roots are opened on. Only creates directories; `MkdirAll` accepts an existing directory and refuses anything else. |
+| `internal/governor/governor.go` `tooloutDir` | `os.MkdirAll` | Bootstrap of the spill root. Everything below it is addressed through a pinned handle by `writeSpill`. |
+| `internal/retrieval/trace.go` `NewNDJSONSink` | `os.MkdirAll` | Bootstrap of the trace root, pinned on the next line; the daily file, the listing, and the retention deletes all go through that handle. |
+| `internal/memory/project_repo.go` `copyTreeWithoutGitHooked` | `os.MkdirAll` | Bootstrap of the copy destination, pinned immediately after and then checked for identity and containment before anything is written. |
+| `internal/git/git.go` `Init` | `os.MkdirAll` | Bootstrap of a repository root, immediately followed by `go-git`, which addresses its storage by pathname and cannot take a handle. Identity is enforced with `pathid` in `newRepo` and by the C2 checks around the git tools. |
+| `internal/db/db.go` `PeekUIPort` | `os.Stat` | The SQLite driver takes a DSN string, so the path is a pathname either way. The stat only decides whether to attempt the open; a wrong answer costs the fallback UI port. |
+| `internal/runtime/setup.go` `validateFilePath` | `os.Stat` | User-chosen model and binary paths anywhere on the machine, with no configured tree to contain them, each handed to `os/exec` afterwards. Produces a checklist message; no read, write, or authorization follows. |
+| `internal/runtime/project_health.go` `CheckProjectDirectories` | `os.Stat` | An attached project directory is a root in its own right. Produces a UI warning only; the tools that operate inside those directories run their own `pathid` containment check per call. |
+| `internal/config/detect.go` `Detect` | `os.Stat`, `os.ReadDir` | Best-effort first-run discovery over locations the harness does not own. Not an authorization boundary: it offers *suggestions* that are validated on save and resolved again at spawn time. |
+| `internal/tray/tray_linux.go` `AcquireSingleInstance` | `os.OpenFile` | The lock lives on the descriptor: `flock` is taken on the fd this call opens, so whatever the name resolved to is what is locked. No configured tree, no second resolution. |
+| `cmd/eval-retrieval/main.go` `run` | `os.Open` | The labeled query set is a file the operator names on the command line, outside every harness-managed tree. |
+| `internal/pathid/canonical_*.go` | `os.Open`, `filepath.EvalSymlinks` | These *are* the physical-identity primitives. Resolving a pathname is their purpose. |
+
+Two limits are inherent rather than exceptions, and are stated where they
+matter. `go-git` resolves its own storage by pathname, so `Repo.CurrentBranch`
+is one resolution performed by the component that owns the repository rather
+than a handle guarantee. And a hard link inside a tree is another name for a
+file elsewhere, not a link a root can refuse — writes are protected by
+publishing through a rename, which replaces the directory entry, but an append
+to a hard-linked file necessarily reaches the file it names.
 
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).
