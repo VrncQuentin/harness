@@ -71,7 +71,6 @@ var ErrOutsideRoots = errors.New("rootfs: path is outside every root")
 // counterpart.
 type Root struct {
 	root *os.Root
-	name string
 }
 
 // Open pins the directory at path. The caller closes the result.
@@ -80,11 +79,8 @@ func Open(path string) (*Root, error) {
 	if err != nil {
 		return nil, fmt.Errorf("rootfs: open root %s: %w", path, err)
 	}
-	return &Root{root: r, name: path}, nil
+	return &Root{root: r}, nil
 }
-
-// Name returns the path the root was opened as.
-func (r *Root) Name() string { return r.name }
 
 // Close releases the directory handle.
 func (r *Root) Close() error { return r.root.Close() }
@@ -321,16 +317,6 @@ func (t *Target) ReadDir() ([]os.DirEntry, error) {
 		return nil, t.pathError(err)
 	}
 	return entries, nil
-}
-
-// Stat describes the target, following it when it is a link. A link that
-// leaves the root is refused by the root, not followed.
-func (t *Target) Stat() (fs.FileInfo, error) {
-	info, err := t.root.root.Stat(t.rel)
-	if err != nil {
-		return nil, t.pathError(err)
-	}
-	return info, nil
 }
 
 // MkdirAllParent creates the target's parent directories inside the root.

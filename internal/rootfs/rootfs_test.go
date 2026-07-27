@@ -677,9 +677,6 @@ func TestRootReadsAndClassifiesEntries(t *testing.T) {
 	}
 	defer root.Close() //nolint:errcheck // test cleanup
 
-	if root.Name() != base {
-		t.Errorf("Name = %q, want %q", root.Name(), base)
-	}
 	data, err := root.ReadFile(filepath.Join("sub", "a.txt"))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
