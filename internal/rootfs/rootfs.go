@@ -94,6 +94,16 @@ func (r *Root) ReadFile(rel string) ([]byte, error) { return r.root.ReadFile(rel
 // Lstat describes rel without following it when it is itself a link.
 func (r *Root) Lstat(rel string) (fs.FileInfo, error) { return r.root.Lstat(rel) }
 
+// Stat describes rel, following it when it is a link that stays inside the
+// root. A link that leaves the root fails rather than resolving.
+//
+// It is a read, and only a read. Nothing in this package pairs it with a
+// mutation of the same name: stat-by-name followed by mutate-by-name is two
+// resolutions of one name, and the operations that mutate — WriteStreamAtomic,
+// CreateExclusive, AppendSync, OpenReadWrite — each dereference the name once
+// themselves rather than acting on what a preceding Stat found.
+func (r *Root) Stat(rel string) (fs.FileInfo, error) { return r.root.Stat(rel) }
+
 // Readlink returns the target rel points at, without resolving it. A link
 // whose target lies outside the root is still readable — reading a link is not
 // following one, and callers that represent a link by its target (git stores
@@ -117,7 +127,15 @@ func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 // being read. Only replacing the entry is safe against a link to anything.
 //
 // The temporary file is removed unless the rename consumes it, so a failed
-// write leaves neither a partial target nor a stray file.
+// write leaves neither a partial target nor a stray file. Removing it is safe
+// where removing a published name would not be: the temporary name was minted
+// by this call under a prefix no other writer uses, so it cannot have become
+// somebody else's file in the meantime.
+//
+// The temporary file is fsynced before the rename. Without it "atomic" holds
+// only against a concurrent reader, not against a crash: the rename can reach
+// the disk while the contents have not, leaving the name published over an
+// empty or partial file.
 func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) error {
 	tmpRel, f, err := r.createTemp(filepath.Dir(rel), perm)
 	if err != nil {
@@ -131,6 +149,10 @@ func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) er
 	}()
 
 	if _, err := io.Copy(f, src); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
 		_ = f.Close()
 		return err
 	}
@@ -205,6 +227,244 @@ func (r *Root) OpenChild(rel string) (*Root, error) {
 		return nil, err
 	}
 	return &Root{root: child}, nil
+}
+
+// Clone returns a second, independent handle on the directory this one holds.
+//
+// It is an open, not a cheap duplicate, and the caller closes it. It exists so
+// a component that needs a root for its own lifetime can take one without
+// inheriting somebody else's close: re-opening by pathname would resolve the
+// name a second time and could pin a different directory, while resolving "."
+// through the existing handle can only produce the directory already held.
+func (r *Root) Clone() (*Root, error) { return r.OpenChild(".") }
+
+// CreateExclusive writes data to rel, failing with fs.ErrExist if anything
+// already holds the name. See Target.CreateExclusive for why this is a distinct
+// operation from WriteStreamAtomic rather than a variant of it, and why a
+// failed write leaves its partial file rather than removing a name that may by
+// then belong to someone else.
+func (r *Root) CreateExclusive(rel string, data []byte, perm fs.FileMode) error {
+	f, err := r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	// The mode is applied to the open handle because a umask can reduce the
+	// permission requested at create time.
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if len(data) > 0 {
+		if _, err := f.Write(data); err != nil {
+			_ = f.Close()
+			return err
+		}
+	}
+	return f.Close()
+}
+
+// AppendSync appends data to rel and fsyncs it, creating the file if it is
+// absent. It never truncates and never seeks: an append-only log's whole
+// guarantee is that what is already there stays there.
+//
+// It is deliberately not a general OpenFile. Handing callers the flag set would
+// put O_TRUNC one argument away from an operation whose entire purpose is that
+// it cannot destroy previous records.
+func (r *Root) AppendSync(rel string, data []byte, perm fs.FileMode) error {
+	f, err := r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_APPEND, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// Remove deletes the entry at rel. A directory must be empty.
+func (r *Root) Remove(rel string) error { return r.root.Remove(rel) }
+
+// RemoveAll deletes rel and everything below it, resolving each level through
+// the root rather than by pathname. A missing rel is not an error.
+func (r *Root) RemoveAll(rel string) error { return r.root.RemoveAll(rel) }
+
+// OpenRead opens rel for reading and returns a handle. Unlike Open it does not
+// hand back an *os.File, whose Name reports the root path joined with rel — an
+// absolute pathname that an authorized read could be turned back into an
+// unauthorized reopen.
+func (r *Root) OpenRead(rel string) (*File, error) {
+	f, err := r.root.OpenFile(rel, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	return &File{f: f}, nil
+}
+
+// OpenReadWrite opens rel for reading and writing, creating it if absent, and
+// returns a handle for a multi-step mutation.
+//
+// It does not truncate. A sequence that measures a file, extends it, and rolls
+// the extension back on failure has to be one handle from end to end: reopening
+// the name between the steps means the size that was measured, the bytes that
+// were appended, and the length truncated back to can each belong to a
+// different file. There is no O_TRUNC variant of this call for the same reason
+// — truncation is a step the caller takes through the handle, once it holds
+// the file it means to shorten.
+func (r *Root) OpenReadWrite(rel string, perm fs.FileMode) (*File, error) {
+	f, err := r.root.OpenFile(rel, os.O_RDWR|os.O_CREATE, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &File{f: f}, nil
+}
+
+// File is an open file inside a Root. It carries the operations a multi-step
+// rooted mutation needs and nothing that would let a caller leave the handle:
+// there is no accessor for the file's pathname, because an authorized handle
+// must not be convertible into a pathname to reopen later.
+type File struct {
+	f *os.File
+}
+
+// Size reports the current length, measured through the handle rather than by
+// statting the name it was opened under.
+func (f *File) Size() (int64, error) {
+	info, err := f.f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
+}
+
+// ReadAt implements io.ReaderAt.
+func (f *File) ReadAt(p []byte, off int64) (int, error) { return f.f.ReadAt(p, off) }
+
+// Append writes p at the current end of the file.
+//
+// The seek is what makes this an append on a handle opened O_RDWR. O_APPEND
+// would put the kernel in charge of the position, but it also strips write
+// access on Windows down to FILE_APPEND_DATA, which is not enough to truncate —
+// and the caller that appends here is the same one that has to be able to roll
+// the append back through this handle.
+func (f *File) Append(p []byte) error {
+	if _, err := f.f.Seek(0, io.SeekEnd); err != nil {
+		return err
+	}
+	_, err := f.f.Write(p)
+	return err
+}
+
+// Truncate shortens (or extends) the file to size through the handle.
+func (f *File) Truncate(size int64) error { return f.f.Truncate(size) }
+
+// Sync flushes the file to stable storage.
+func (f *File) Sync() error { return f.f.Sync() }
+
+// Close releases the handle.
+func (f *File) Close() error { return f.f.Close() }
+
+// WalkEntry is one entry reported by Walk.
+type WalkEntry struct {
+	// Rel is the entry's path relative to the directory the walk started
+	// from, with OS separators.
+	Rel string
+	// Name is the entry's final component.
+	Name string
+	// Info describes the entry without following it when it is itself a
+	// link, resolved through the pinned handle on its parent directory.
+	Info fs.FileInfo
+}
+
+// WalkFunc is called once per entry found by Walk. Returning skip for a
+// directory prunes it; for anything else skip is ignored. A returned error
+// stops the walk and is passed back to the caller.
+type WalkFunc func(entry WalkEntry) (skip bool, err error)
+
+// maxWalkDepth bounds descent. os.Root follows a symbolic link whose target
+// stays inside the root, so a link inside a tree that points at one of its own
+// ancestors is a cycle the walk would otherwise follow forever. A bound turns
+// that into a diagnosable failure rather than a hang.
+const maxWalkDepth = 64
+
+// Walk visits every entry below rel, depth-first, in filename order within each
+// directory.
+//
+// Each subdirectory is pinned and then descended through that same handle. The
+// alternative — reading a name, deciding it is a directory, and resolving the
+// name again to recurse — resolves one name twice, and between the two the
+// directory that was inspected can be renamed aside and another moved into its
+// place. Everything reported for a subtree therefore comes from the handle that
+// subtree was entered through.
+//
+// Entries are described with Lstat through the pinned parent, so a symbolic
+// link is reported as a link and is not descended into. An entry that
+// disappears between being listed and being described is skipped: it is gone,
+// which is a valid answer to "what is in this directory", not a failure.
+func (r *Root) Walk(rel string, visit WalkFunc) error {
+	start := r
+	if rel != "" && rel != "." {
+		child, err := r.OpenChild(rel)
+		if err != nil {
+			return err
+		}
+		defer child.Close() //nolint:errcheck // read-only handle
+		start = child
+	}
+	return start.walk("", visit, 0)
+}
+
+func (r *Root) walk(prefix string, visit WalkFunc, depth int) error {
+	if depth > maxWalkDepth {
+		return fmt.Errorf("rootfs: tree nests deeper than %d levels at %q — refusing to continue", maxWalkDepth, prefix)
+	}
+	entries, err := r.ReadDir(".")
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		relPath := name
+		if prefix != "" {
+			relPath = filepath.Join(prefix, name)
+		}
+		info, err := r.root.Lstat(name)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return err
+		}
+		skip, err := visit(WalkEntry{Rel: relPath, Name: name, Info: info})
+		if err != nil {
+			return err
+		}
+		if skip || !info.IsDir() {
+			continue
+		}
+		if err := r.walkChild(name, relPath, visit, depth); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// walkChild pins one subdirectory and descends through that handle, keeping the
+// close on the success and failure paths alike.
+func (r *Root) walkChild(name, relPath string, visit WalkFunc, depth int) error {
+	child, err := r.OpenChild(name)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer child.Close() //nolint:errcheck // read-only handle
+	return child.walk(relPath, visit, depth+1)
 }
 
 // Set is an ordered list of root directories. It converts a caller-supplied
@@ -435,21 +695,7 @@ func (t *Target) WriteAtomic(data []byte, perm fs.FileMode) error {
 // documented trade above already permits a short file; it does not permit
 // deleting a stranger's.
 func (t *Target) CreateExclusive(data []byte, perm fs.FileMode) error {
-	f, err := t.root.root.OpenFile(t.rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
-	if err != nil {
-		return t.pathError(err)
-	}
-	// The mode is applied to the open handle because a umask can reduce the
-	// permission requested at create time.
-	if err := f.Chmod(perm); err != nil {
-		_ = f.Close()
-		return t.pathError(err)
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return t.pathError(err)
-	}
-	if err := f.Close(); err != nil {
+	if err := t.root.CreateExclusive(t.rel, data, perm); err != nil {
 		return t.pathError(err)
 	}
 	return nil
