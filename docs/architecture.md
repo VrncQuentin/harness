@@ -199,28 +199,44 @@ component against that handle.
 
 Responsibilities:
 - `Root` wraps an open directory for relative access (`ReadFile`, `Stat`,
-  `Lstat`, `Readlink`, `Open`, `OpenRead`, `ReadDir`, `MkdirAll`, `Remove`,
-  `RemoveAll`, `CreateExclusive`, `AppendSync`, `OpenAppend`, `OpenReadWrite`,
-  `WriteStreamAtomic`, `OpenChild`, `Clone`, `Walk`). `internal/git`'s
-  `DiffWorktree` pins the worktree with it; `internal/memory` pins a project
-  repo for the lifetime of its reader and both ends of a repo copy with it.
-- `Root.Walk` descends through a pinned handle per directory and describes each
-  entry with `Lstat` through its parent, so a traversal never resolves one name
-  twice. It is depth-bounded: `os.Root` follows an in-root symlink, so a link
+  `Lstat`, `Readlink`, `OpenRead`, `ReadDir`, `MkdirAll`, `Remove`,
+  `RemoveAll`, `CreateExclusive`, `AppendSync`, `OpenAppend`,
+  `WriteStreamAtomic`, `OpenChild`, `Clone`, `Walk`, `IsNotDirectory`).
+  `internal/git`'s `DiffWorktree` pins the worktree with it; `internal/memory`
+  pins a project repo for the lifetime of its reader and both ends of a repo
+  copy with it. There is no raw `Open` returning an `*os.File`: the only read
+  handle is `OpenRead`, returning a `File` — see below for why.
+- `Root.Walk` pins each subdirectory before describing or entering it, so what
+  is reported to the visitor and what is recursed into are the same handle
+  rather than two separate resolutions of one name. Which entries are even
+  candidates for that pin is decided by the directory-listing's own entry type,
+  not by a later `Stat`: a symbolic link is a distinct type from a directory
+  even when its target is one, so a link is Lstat'd and reported without an
+  `OpenChild` attempt ever being made, preserving "a link is reported as a link
+  and not descended into" even for one that only appears after the listing.
+  Walk is depth-bounded: `os.Root` follows an in-root symlink, so a link
   pointing at one of its own ancestors is a cycle that would otherwise not
   terminate.
 - `Root.AppendSync` / `Root.OpenAppend` are the append-only capability the
   session log and the retrieval trace use. There is deliberately no general
   `OpenFile`: exposing the flag set would put `O_TRUNC` one argument away from
   an operation whose whole guarantee is that previous records survive.
-- `Root.OpenReadWrite` returns a `File` for a multi-step mutation — `Size`,
-  `ReadAt`, `Append`, `Truncate`, `Sync` — and does not truncate on open. The
-  vector index measures, appends, and rolls back through one handle, because
-  reopening between the steps would let the length measured, the bytes written,
-  and the length truncated back to belong to three different files.
-- `File` and `AppendFile` expose no pathname accessor. `os.File.Name` on a file
-  opened through an `os.Root` reports the root path joined with the relative
-  name, which is an authorized read convertible into an unauthorized reopen.
+- `Root.WriteStreamAtomic` pins `rel`'s destination directory once, before the
+  temporary file is created, and the create, the failure-path remove, and the
+  final rename all resolve against that one handle rather than the directory
+  component a second and third time. Re-resolving it on each of those calls
+  would let a directory swapped in between them redirect the rename: list the
+  directory once the temp file is visible (its random name is unpredictable
+  only until then), move it aside, plant a file under the same name in a
+  replacement, and the rename publishes the planted content under the caller's
+  requested name.
+- `File`, returned only by `OpenRead`, is read-only and exposes no pathname
+  accessor: `os.File.Name` on a file opened through an `os.Root` reports the
+  root path joined with the relative name, an authorized read that could be
+  turned back into an unauthorized direct reopen. There is no read-write
+  variant, and no in-place mutation capability (no `Append`, no `Truncate`) —
+  see the vector index below for why in-place mutation through a rooted handle
+  is exactly the operation this package avoids, not merely discourages.
 - `Root.Clone` hands out a second independent handle on the same directory, for
   a component that needs a root for its own lifetime without inheriting somebody
   else's `Close`.
@@ -231,6 +247,19 @@ Responsibilities:
   as this one — is reasoning about something that need not be what is held open.
 - `Set` is the sandbox-root list. `Set.Open` uses `OpenIdentified` on the
   configured root, then picks the owner by containment and returns a `Target`.
+  The caller-supplied path is resolved to a target identity once per candidate
+  root, immediately alongside that root's own pin, rather than once before the
+  loop starts: a target resolved up front and compared against roots pinned
+  afterward is authorized against an identity that predates every root's own
+  pin, which is a wider gap than resolving it fresh next to whichever pin it is
+  actually being checked against.
+- `memory.ValidateProjectRepo` and `memory.OpenValidatedDirReader` share one
+  pin-and-check sequence; the latter hands back the reader still holding the
+  same pin instead of closing it and making a caller reopen the root by name a
+  second time to get a long-lived handle. Validating and then reopening
+  separately is the exact pattern this package's design rule prohibits, and
+  `internal/runtime`'s startup path used to do it before both project repos
+  were folded into one `OpenValidatedDirReader` call per repo.
 - `Target` carries the caller's display spelling — locators and tool output stay
   in the terms the caller asked in — while `Read`, `ReadDir`, `MkdirAllParent`,
   `WriteAtomic`, and `CreateExclusive` go through the handle.
@@ -328,7 +357,7 @@ this table.
 | `internal/governor/governor.go` `tooloutDir` | `os.MkdirAll` | Bootstrap of the spill root. Everything below it is addressed through a pinned handle by `writeSpill`. |
 | `internal/retrieval/trace.go` `NewNDJSONSink` | `os.MkdirAll` | Bootstrap of the trace root, pinned on the next line; the daily file, the listing, and the retention deletes all go through that handle. |
 | `internal/memory/project_repo.go` `copyTreeWithoutGitHooked` | `os.MkdirAll` | Bootstrap of the copy destination, pinned immediately after and then checked for identity and containment before anything is written. |
-| `internal/git/git.go` `Init` | `os.MkdirAll` | Bootstrap of a repository root, immediately followed by `go-git`, which addresses its storage by pathname and cannot take a handle. Identity is enforced with `pathid` in `newRepo` and by the C2 checks around the git tools. |
+| `internal/git/git.go` `Init` | `os.MkdirAll` | Bootstrap of a repository root, immediately followed by `go-git`, which addresses its storage by pathname and cannot take a handle. Identity is enforced with `pathid` in `newRepo` and by the C2 checks around the git tools. `internal/runtime`'s session-manager wiring additionally confirms, via `memory.DirReader.SamePhysicalLocation`, that the go-git repo it just opened by path is still the same directory the project memory reader is pinned to — the closest check available given `go-git` cannot be handed a handle to bind to directly. |
 | `internal/db/db.go` `PeekUIPort` | `os.Stat` | The SQLite driver takes a DSN string, so the path is a pathname either way. The stat only decides whether to attempt the open; a wrong answer costs the fallback UI port. |
 | `internal/runtime/setup.go` `validateFilePath` | `os.Stat` | User-chosen model and binary paths anywhere on the machine, with no configured tree to contain them, each handed to `os/exec` afterwards. Produces a checklist message; no read, write, or authorization follows. |
 | `internal/runtime/project_health.go` `CheckProjectDirectories` | `os.Stat` | An attached project directory is a root in its own right. Produces a UI warning only; the tools that operate inside those directories run their own `pathid` containment check per call. |
@@ -428,6 +457,16 @@ Mediates all reads and writes to git-backed project memory repos.
 - `PromoteFact(text string)` → append to `facts.md` in the active project repo + commit
 - `AppendAgentNote(agent, text string)` → append to `agents/<n>/notes.md` in the active repo + commit
 - Both exposed in the UI memory page
+- If the commit fails, `PromotionService` reads the target file back before rolling
+  back and only restores or removes it when the content still matches what this
+  call itself wrote. The file is not locked while the commit is in flight, so a
+  second promotion to the same path can land in the window between the write and
+  a failed commit; rolling back by name alone, on the strength of what this call
+  remembers writing, would erase that other promotion instead of this one's.
+- The UI handler reads the memory store and the committer (and the dedup checker
+  and its threshold) from one snapshot of the published service deps, not from
+  separate reads, so a config reload landing mid-request cannot make the write
+  and the commit act on two different generations of the memory service graph.
 
 **Cross-agent reads:** explicit only. An agent may request episodes from another agent's directory. Not automatic.
 
@@ -457,10 +496,29 @@ Index rebuild: walk episode files in the project memory repo and re-embed any SH
 Manages flat vector indices stored as `vectors.bin` plus `manifest.json` pairs under a project's `index/` tree.
 
 Responsibilities:
-- Create and open index directories.
+- Create and open index directories, addressed by a directory the caller has
+  already pinned through `internal/rootfs` — `internal/memoryops` resolves the
+  index's repo-relative location through the project memory repo's own handle
+  rather than by an absolute `<repo>/index/_episodes` pathname, which can
+  already be a link leading somewhere else before the index ever opens it.
 - Append vectors idempotently by content SHA.
 - Perform cosine-similarity flat scans for top-K search.
 - Keep the on-disk format isolated from prompt and memory logic.
+
+`Upsert` never opens `vectors.bin` read-write and mutates it in place. It
+assembles the whole new file — the bytes already on disk plus this call's
+addition — in memory and publishes it in one `WriteStreamAtomic` call, which
+replaces the directory entry rather than writing through whatever it names.
+An in-place append-then-truncate-on-failure was tried first and reopens the
+hard-link corruption class this migration exists to close: if the `vectors.bin`
+*entry* is a hard link to a file outside the repo — a different name for the
+same inode, which no containment check can distinguish from the genuine file,
+because a hard link is not a link a root can refuse — appending writes through
+it, and a rollback truncate can then shorten that outside file too. Publishing
+by rename removes the need for a rollback entirely: if the manifest write that
+follows fails, the newly published bytes are simply unreferenced by any
+manifest chunk, which `validateManifest` already tolerates and `Search` never
+reads — harmless trailing data, not a corruption to undo.
 
 Attached code repos are indexed by git state: each attached directory gets its own slot under the project memory repo at `index/<dir-slug>/`, and a new HEAD in one attached repo invalidates only that repo's slot. This keeps multi-repo projects unified without writing runtime memory into any source repo. (Directory-level indexing itself is deferred until directory semantic search becomes a user-facing feature — see the M5 note in the roadmap.)
 
