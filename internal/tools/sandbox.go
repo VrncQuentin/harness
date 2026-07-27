@@ -20,7 +20,7 @@ func validatePath(path string, roots []string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("tools: cannot resolve path: %w", err)
 	}
-	resolvedTarget, err := pathid.Resolve(abs)
+	target, err := pathid.Resolve(abs)
 	if err != nil {
 		return "", fmt.Errorf("tools: cannot resolve path %s: %w", path, err)
 	}
@@ -28,11 +28,11 @@ func validatePath(path string, roots []string) (string, error) {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}
-		resolvedRoot, err := pathid.Resolve(root)
+		rootID, err := pathid.Resolve(root)
 		if err != nil {
 			return "", fmt.Errorf("tools: resolve sandbox root %s: %w", root, err)
 		}
-		if pathid.WithinRoot(resolvedTarget, resolvedRoot) {
+		if rootID.Contains(target) {
 			return abs, nil
 		}
 	}

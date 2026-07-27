@@ -150,11 +150,18 @@ Responsibilities:
   because symlinks are the only reparse mechanism.
 - `Resolve` canonicalizes the deepest existing component and re-appends the
   components below it, so a path that does not exist yet is judged by where it
-  would land rather than by its parent.
-- `WithinRoot` and `Key` compare already-canonical paths, case-insensitively on
-  Windows.
-- `SameOrWithin` combines the two for the containment question the sandbox and
-  the C2 lock ask.
+  would land rather than by its parent. A relative input is made absolute
+  first, so the result is absolute on every OS.
+- `Resolve` returns an opaque `ID` rather than a string. Comparison lives on
+  the `ID` — `Equal`, `Contains`, `Key` — so there is no exported operation
+  with an "already resolved" precondition for a caller to forget.
+- `ID.Contains` is `filepath.Rel`-based, not prefix-based. A prefix test
+  rejects everything below a filesystem or volume root (`C:\`, `/` already end
+  in a separator), accepts a sibling sharing a textual prefix, and has no
+  answer for two different volumes.
+- `Same`, `SameOrWithin`, and `LockKey` are the high-level operations: repo
+  identity, sandbox/C2 containment, and the git mutation-lock key. `LockKey`
+  exists so no caller composes resolution and key derivation by hand.
 
 Design constraints:
 - **`filepath.EvalSymlinks` must not be used for containment or identity.** It

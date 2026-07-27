@@ -58,11 +58,11 @@ var repoMutationLocks sync.Map // lock key -> *sync.Mutex
 // hash to different keys, hand out two different mutexes, and leave concurrent
 // writes to one repository completely unserialized.
 func newRepo(repo *gogit.Repository, path string) (*Repo, error) {
-	resolved, err := pathid.Resolve(path)
+	key, err := pathid.LockKey(path)
 	if err != nil {
 		return nil, fmt.Errorf("git: identify repository %s: %w", path, err)
 	}
-	return &Repo{repo: repo, path: path, lockKey: pathid.Key(resolved)}, nil
+	return &Repo{repo: repo, path: path, lockKey: key}, nil
 }
 
 // lockRepo takes the repository-wide mutation lock and this handle's mutex, and
