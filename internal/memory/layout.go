@@ -265,11 +265,22 @@ func isMissingLayoutPath(err error) bool {
 
 // isNotDirectory reports whether err says the path exists but is not a
 // directory, which each platform spells its own way.
+//
+// It only chooses which message the status page shows. The decision that
+// matters — refusing to open a non-directory as a root — has already been made
+// by the time this is consulted, so a miss here costs a less specific error and
+// nothing else. That is what makes the string comparison acceptable: opening a
+// root on Windows fails with an unexported sentinel in package os rather than
+// an errno, and its message is the only handle on it.
 func isNotDirectory(err error) bool {
 	for _, errno := range notDirectoryErrnos {
 		if errors.Is(err, errno) {
 			return true
 		}
+	}
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) && pathErr.Err != nil {
+		return pathErr.Err.Error() == "not a directory"
 	}
 	return false
 }
