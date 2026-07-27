@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+
+	"github.com/VrncQuentin/harness/internal/pathid"
 )
 
 // Suggestions holds candidate values the /config form can offer on first run so
@@ -145,14 +147,29 @@ func dedupAbs(paths []string) []string {
 	return out
 }
 
+// canonicalPath returns the path to display for a suggestion and the key that
+// decides whether it duplicates one already collected.
+//
+// The key is the physical identity from internal/pathid, so two spellings of
+// one binary — a symlink on $PATH, a junction, an 8.3 alias, a different case
+// on Windows — collapse into a single suggestion instead of offering the user
+// the same file twice. filepath.EvalSymlinks, which this replaced, leaves a
+// junction unresolved and is case-sensitive, so neither collapsed.
+//
+// Detection is best-effort by contract: Detect returns no error, and a path it
+// cannot resolve is still a real candidate the user may want. So resolution
+// failure falls back to the lexical absolute path as the key. That fallback
+// only ever costs a duplicate row in a suggestion list; nothing here is a
+// boundary, which is why it is acceptable here and nowhere else in this
+// repository.
 func canonicalPath(p string) (display string, key string) {
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		abs = p
 	}
-	physical, err := filepath.EvalSymlinks(abs)
+	id, err := pathid.Resolve(abs)
 	if err != nil {
 		return abs, abs
 	}
-	return abs, physical
+	return abs, id.Key()
 }

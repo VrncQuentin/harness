@@ -16,7 +16,13 @@ const (
 type MemoryRepoManager interface {
 	EnsureProjectRepo(root string, global bool) error
 	MoveProjectRepo(src, dst string, global bool) error
-	SameProjectRepoPath(a, b string) bool
+	// SameProjectRepoPath answers whether two paths name one repository by
+	// physical identity. It returns an error when identity cannot be
+	// established, which Workflow must not fold into "different": the two
+	// branches that follow are "leave the repo alone" and "copy over the
+	// destination", and guessing between them on an unresolved path is how a
+	// repository gets copied onto itself.
+	SameProjectRepoPath(a, b string) (bool, error)
 }
 
 // WorkflowStore is the project metadata surface required by Workflow.
@@ -81,7 +87,17 @@ func (w *Workflow) Update(input UpdateInput, memoryRepoMode string) (Project, er
 		return Project{}, err
 	}
 
-	memoryRepoChanged := input.MemoryRepoPath != "" && current.MemoryRepoPath != "" && !w.Repos.SameProjectRepoPath(input.MemoryRepoPath, current.MemoryRepoPath)
+	// Identity is settled before the metadata update, not after it. Resolving
+	// later would leave a failure to answer "is this the same repository"
+	// stranded between a committed metadata change and an untouched repo.
+	memoryRepoChanged := false
+	if input.MemoryRepoPath != "" && current.MemoryRepoPath != "" {
+		same, err := w.Repos.SameProjectRepoPath(input.MemoryRepoPath, current.MemoryRepoPath)
+		if err != nil {
+			return Project{}, fmt.Errorf("identify memory repo path: %w", err)
+		}
+		memoryRepoChanged = !same
+	}
 	if memoryRepoChanged {
 		switch memoryRepoMode {
 		case MemoryRepoModeMove, MemoryRepoModeFresh:

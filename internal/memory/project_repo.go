@@ -8,10 +8,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 
 	gitw "github.com/VrncQuentin/harness/internal/git"
+	"github.com/VrncQuentin/harness/internal/pathid"
 	gogit "github.com/go-git/go-git/v6"
 )
 
@@ -28,7 +27,7 @@ func (ProjectRepoManager) MoveProjectRepo(src, dst string, global bool) error {
 	return MoveProjectRepo(src, dst, global)
 }
 
-func (ProjectRepoManager) SameProjectRepoPath(a, b string) bool {
+func (ProjectRepoManager) SameProjectRepoPath(a, b string) (bool, error) {
 	return SameProjectRepoPath(a, b)
 }
 
@@ -51,8 +50,21 @@ func EnsureProjectRepo(root string, global bool) error {
 
 // MoveProjectRepo copies one project memory repo to another path, excluding the
 // source .git directory, then initializes and commits the destination layout.
+//
+// Source and destination are compared by physical identity before anything is
+// copied, and an identity that cannot be established aborts the move. Both
+// matter because the copy is destructive at the destination: copyFile opens
+// every target with O_TRUNC, so a source and destination that name one
+// repository through different spellings — a junction, a symlink, an 8.3
+// alias, or a different case on Windows — would walk the tree truncating each
+// file to zero and then copying it onto itself. A lexical comparison sees two
+// different strings there and proceeds.
 func MoveProjectRepo(src, dst string, global bool) error {
-	if SameProjectRepoPath(src, dst) {
+	same, err := SameProjectRepoPath(src, dst)
+	if err != nil {
+		return fmt.Errorf("memory: identify project memory repo: %w", err)
+	}
+	if same {
 		return EnsureProjectRepo(dst, global)
 	}
 	if err := copyTreeWithoutGit(src, dst); err != nil {
@@ -154,15 +166,16 @@ func listRepoFiles(root string) ([]string, error) {
 }
 
 // SameProjectRepoPath reports whether two project repo paths identify the same
-// filesystem location using the current OS path case-sensitivity rules.
-func SameProjectRepoPath(a, b string) bool {
-	ac, aerr := filepath.Abs(filepath.Clean(a))
-	bc, berr := filepath.Abs(filepath.Clean(b))
-	if aerr != nil || berr != nil {
-		return filepath.Clean(a) == filepath.Clean(b)
-	}
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(ac, bc)
-	}
-	return ac == bc
+// project memory repository.
+//
+// Identity is physical, not lexical. The comparison this replaced made two
+// paths absolute and compared the strings, so a junction, a symlink, or an 8.3
+// alias of one repository compared unequal to the repository itself — and both
+// callers treat "different" as permission to overwrite the destination.
+//
+// It returns an error rather than a bare false when either side cannot be
+// resolved: an unlocatable path is not a path known to be somewhere else, and
+// the callers here mutate on the strength of the answer.
+func SameProjectRepoPath(a, b string) (bool, error) {
+	return pathid.Same(a, b)
 }

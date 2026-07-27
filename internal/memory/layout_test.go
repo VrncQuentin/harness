@@ -3,8 +3,10 @@ package memory
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -172,11 +174,33 @@ func TestEnsureProjectRepoInitializesAndScaffolds(t *testing.T) {
 	}
 }
 
+// mustLinkDir creates a directory link at link pointing at target, preferring a
+// symlink and falling back to a Windows junction, which needs no privilege and
+// is traversed the same way. The test is skipped when neither is available.
+func mustLinkDir(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err == nil {
+		return
+	} else if runtime.GOOS != "windows" {
+		t.Skipf("symlinks unavailable in this environment: %v", err)
+	}
+	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		t.Skipf("cannot create directory link: %v: %s", err, out)
+	}
+}
+
 func TestSameProjectRepoPathUsesOSPathIdentity(t *testing.T) {
 	base := t.TempDir()
 	a := filepath.Join(base, "Repo")
 	b := filepath.Join(base, "repo")
-	got := SameProjectRepoPath(a, b)
+	if err := os.MkdirAll(a, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	got, err := SameProjectRepoPath(a, b)
+	if err != nil {
+		t.Fatalf("SameProjectRepoPath: %v", err)
+	}
 	if runtime.GOOS == "windows" {
 		if !got {
 			t.Fatalf("SameProjectRepoPath(%q, %q) = false on Windows, want true", a, b)
@@ -185,6 +209,113 @@ func TestSameProjectRepoPathUsesOSPathIdentity(t *testing.T) {
 	}
 	if got {
 		t.Fatalf("SameProjectRepoPath(%q, %q) = true on %s, want false", a, b, runtime.GOOS)
+	}
+}
+
+// A link and the directory it points at are one repository. The lexical
+// comparison this replaced called them different, and "different" is what makes
+// MoveProjectRepo copy over a destination.
+func TestSameProjectRepoPathRecognisesAlias(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, real, alias)
+
+	same, err := SameProjectRepoPath(real, alias)
+	if err != nil {
+		t.Fatalf("SameProjectRepoPath: %v", err)
+	}
+	if !same {
+		t.Error("a link and its target were not recognised as one repository")
+	}
+
+	unrelated := filepath.Join(base, "unrelated")
+	if err := os.MkdirAll(unrelated, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	same, err = SameProjectRepoPath(real, unrelated)
+	if err != nil {
+		t.Fatalf("SameProjectRepoPath: %v", err)
+	}
+	if same {
+		t.Error("two distinct directories were recognised as one repository")
+	}
+}
+
+func TestSameProjectRepoPathFailsClosedOnUnresolvablePath(t *testing.T) {
+	base := t.TempDir()
+	if _, err := SameProjectRepoPath(filepath.Join(base, "bad\x00name"), base); err == nil {
+		t.Error("SameProjectRepoPath returned no error for a path it could not resolve")
+	}
+}
+
+// A destination that names the source through another spelling is the source.
+// Copying then walks the tree opening every destination file with O_TRUNC —
+// the same file — so the repository is emptied one file at a time and each
+// copy reads back from the file it has just truncated.
+//
+// Recognising the alias may either collapse the move into an ensure or refuse
+// it outright: go-git declines to open a repository through a reparse point.
+// Both outcomes are correct. What must never happen is the copy.
+func TestMoveProjectRepoDoesNotCopyARepoOntoItself(t *testing.T) {
+	const body = "keep me"
+
+	newRepo := func(t *testing.T) (base, src, notes string) {
+		t.Helper()
+		base = t.TempDir()
+		src = filepath.Join(base, "src")
+		if err := EnsureProjectRepo(src, false); err != nil {
+			t.Fatalf("EnsureProjectRepo: %v", err)
+		}
+		notes = filepath.Join(src, "notes.md")
+		if err := os.WriteFile(notes, []byte(body), 0o644); err != nil {
+			t.Fatalf("write notes: %v", err)
+		}
+		return base, src, notes
+	}
+	assertIntact := func(t *testing.T, notes string) {
+		t.Helper()
+		got, err := os.ReadFile(notes)
+		if err != nil {
+			t.Fatalf("read notes after the self-move: %v", err)
+		}
+		if string(got) != body {
+			t.Fatalf("notes.md = %q after moving the repo onto an alias of itself, want %q", got, body)
+		}
+	}
+
+	t.Run("directory link", func(t *testing.T) {
+		base, src, notes := newRepo(t)
+		alias := filepath.Join(base, "alias")
+		mustLinkDir(t, src, alias)
+
+		_ = MoveProjectRepo(src, alias, false)
+		assertIntact(t, notes)
+	})
+
+	t.Run("windows case alias", func(t *testing.T) {
+		if runtime.GOOS != "windows" {
+			t.Skip("windows path casing")
+		}
+		_, src, notes := newRepo(t)
+		if err := MoveProjectRepo(src, strings.ToUpper(src), false); err != nil {
+			t.Fatalf("MoveProjectRepo onto an upper-cased spelling of itself: %v", err)
+		}
+		assertIntact(t, notes)
+	})
+}
+
+func TestMoveProjectRepoFailsClosedOnUnresolvablePath(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	if err := MoveProjectRepo(src, filepath.Join(base, "bad\x00name"), false); err == nil {
+		t.Error("MoveProjectRepo proceeded with a destination it could not resolve")
 	}
 }
 func TestMoveProjectRepoCopiesWorkingTreeWithoutGitDir(t *testing.T) {

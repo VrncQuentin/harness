@@ -60,6 +60,7 @@ func (s *workflowStore) ListDirectories(string) ([]Directory, error) { return ni
 type workflowRepos struct {
 	ensureErr error
 	moveErr   error
+	sameErr   error
 	ensures   []string
 	moves     [][2]string
 }
@@ -72,7 +73,12 @@ func (r *workflowRepos) MoveProjectRepo(src, dst string, global bool) error {
 	r.moves = append(r.moves, [2]string{src, dst})
 	return r.moveErr
 }
-func (r *workflowRepos) SameProjectRepoPath(a, b string) bool { return a == b }
+func (r *workflowRepos) SameProjectRepoPath(a, b string) (bool, error) {
+	if r.sameErr != nil {
+		return false, r.sameErr
+	}
+	return a == b, nil
+}
 
 func TestWorkflowCreateRollsBackProjectWhenRepoInitFails(t *testing.T) {
 	store := newWorkflowStore()
@@ -121,5 +127,27 @@ func TestWorkflowUpdateRejectsMissingMoveModeBeforeMetadataChange(t *testing.T) 
 	}
 	if len(repos.ensures) != 0 || len(repos.moves) != 0 {
 		t.Fatalf("repo operations ran before mode validation: ensures=%v moves=%v", repos.ensures, repos.moves)
+	}
+}
+
+// An identity that cannot be resolved has to abort the whole update. Folding it
+// into "the paths differ" would run a move against a repository that might be
+// the destination itself; folding it into "the paths match" would silently drop
+// a repointing the user asked for. Either way the metadata must not move.
+func TestWorkflowUpdateAbortsWhenRepoIdentityCannotBeResolved(t *testing.T) {
+	store := newWorkflowStore(Project{Slug: "demo", DisplayName: "Demo", MemoryRepoPath: "/repo/old"})
+	repos := &workflowRepos{sameErr: errors.New("cannot resolve")}
+	workflow := NewWorkflow(store, repos)
+
+	_, err := workflow.Update(UpdateInput{Slug: "demo", DisplayName: "Renamed", MemoryRepoPath: "/repo/new"}, MemoryRepoModeMove)
+	if !errors.Is(err, repos.sameErr) {
+		t.Fatalf("Update error = %v, want the identity error", err)
+	}
+	got := store.projects["demo"]
+	if got.DisplayName != "Demo" || got.MemoryRepoPath != "/repo/old" {
+		t.Fatalf("metadata changed despite an unresolved repo identity: %+v", got)
+	}
+	if len(repos.ensures) != 0 || len(repos.moves) != 0 {
+		t.Fatalf("repo operations ran on an unresolved identity: ensures=%v moves=%v", repos.ensures, repos.moves)
 	}
 }
