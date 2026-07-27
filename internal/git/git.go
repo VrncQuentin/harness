@@ -33,9 +33,12 @@ const (
 type Repo struct {
 	repo *gogit.Repository
 	path string
-	// lockKey is the repository's physical identity, resolved once when the
-	// handle is opened. It selects the shared mutation lock, so two handles on
-	// the same repository must produce the same key however each was spelled.
+	// id is the repository's physical identity, resolved once — immediately
+	// after go-git opens the repository — rather than left for a caller to
+	// re-resolve independently later. lockKey is its comparison key; Identity
+	// exposes the full ID for callers that need to compare it against another
+	// component's own identity rather than reopen the path a second time.
+	id      pathid.ID
 	lockKey string
 	mu      sync.Mutex
 }
@@ -58,13 +61,26 @@ var repoMutationLocks sync.Map // lock key -> *sync.Mutex
 // leaves a Windows junction unresolved: a junction alias and its target would
 // hash to different keys, hand out two different mutexes, and leave concurrent
 // writes to one repository completely unserialized.
+//
+// The resolution happens here, immediately after go-git has opened the
+// repository, rather than being left to a caller to redo independently later.
+// go-git gives no way to ask what it actually opened, so this is the closest
+// approximation of that available: an identity taken as soon as possible after
+// the fact, not a fresh resolution of the same path at some arbitrary later
+// point that the repository's own physical location may have moved on from by
+// then.
 func newRepo(repo *gogit.Repository, path string) (*Repo, error) {
-	key, err := pathid.LockKey(path)
+	id, err := pathid.Resolve(path)
 	if err != nil {
 		return nil, fmt.Errorf("git: identify repository %s: %w", path, err)
 	}
-	return &Repo{repo: repo, path: path, lockKey: key}, nil
+	return &Repo{repo: repo, path: path, id: id, lockKey: id.Key()}, nil
 }
+
+// Identity returns the physical identity resolved when this handle was
+// opened, for a caller that needs to confirm another component — one it
+// cannot bind to this handle directly — is looking at the same repository.
+func (r *Repo) Identity() pathid.ID { return r.id }
 
 // lockRepo takes the repository-wide mutation lock and this handle's mutex, and
 // returns the function that releases both in the right order.

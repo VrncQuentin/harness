@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
@@ -116,7 +117,7 @@ func ProjectRepoScaffoldFiles(global bool) []string {
 // closes that window by handing back the same pin it validated, for callers
 // that need one.
 func ValidateProjectRepo(root string, global bool) error {
-	pinned, err := openValidatedRepoRoot(root, global)
+	pinned, _, err := openValidatedRepoRoot(root, global)
 	if err != nil {
 		return err
 	}
@@ -127,38 +128,49 @@ func ValidateProjectRepo(root string, global bool) error {
 // through that pin, and — only on success — returns a DirReader bound to the
 // very same handle rather than a second one opened afterwards by name. The
 // caller closes the result.
+//
+// The DirReader retains the physical identity resolved at pin time, so a
+// caller that separately opens the same configured path through an API that
+// cannot accept a rooted handle — go-git, notably — can compare that other
+// component's own resolved identity against DirReader.Identity() directly,
+// rather than re-resolving the path a further time later to make the
+// comparison. A fresh resolution at comparison time answers "what does this
+// path currently name", which is a different, and later, question than "is
+// this the same repository the reader was opened against and the other
+// component opened around the same moment".
 func OpenValidatedDirReader(root string, global bool) (*DirReader, error) {
-	pinned, err := openValidatedRepoRoot(root, global)
+	pinned, id, err := openValidatedRepoRoot(root, global)
 	if err != nil {
 		return nil, err
 	}
-	return &DirReader{root: pinned}, nil
+	return &DirReader{root: pinned, id: id}, nil
 }
 
-// openValidatedRepoRoot pins root and validates it, returning the still-open
-// pin on success and closing it on failure.
-func openValidatedRepoRoot(root string, global bool) (*rootfs.Root, error) {
+// openValidatedRepoRoot pins root, identifies it, and validates it, returning
+// the still-open pin and its identity on success and closing the pin on
+// failure.
+func openValidatedRepoRoot(root string, global bool) (*rootfs.Root, pathid.ID, error) {
 	if strings.TrimSpace(root) == "" {
-		return nil, errors.New("memory: project memory repo path is required")
+		return nil, pathid.ID{}, errors.New("memory: project memory repo path is required")
 	}
-	pinned, err := openRepoRoot(root)
+	pinned, id, err := openIdentifiedRepoRoot(root)
 	if err != nil {
-		return nil, err
+		return nil, pathid.ID{}, err
 	}
 	if err := validateGitDir(pinned, root); err != nil {
 		_ = pinned.Close()
-		return nil, err
+		return nil, pathid.ID{}, err
 	}
 	missing, err := missingItems(pinned, ExpectedProjectRepoLayout(global))
 	if err != nil {
 		_ = pinned.Close()
-		return nil, err
+		return nil, pathid.ID{}, err
 	}
 	if len(missing) > 0 {
 		_ = pinned.Close()
-		return nil, fmt.Errorf("memory: project repo layout incomplete: missing %s", layoutPaths(missing))
+		return nil, pathid.ID{}, fmt.Errorf("memory: project repo layout incomplete: missing %s", layoutPaths(missing))
 	}
-	return pinned, nil
+	return pinned, id, nil
 }
 
 // CreateMissing creates each item in items under root. Files are created
@@ -255,17 +267,25 @@ func createGitkeep(pinned *rootfs.Root, relDir string) error {
 // through the returned handle, so they all describe one directory even if the
 // name is re-pointed while the sequence runs.
 func openRepoRoot(root string) (*rootfs.Root, error) {
+	pinned, _, err := openIdentifiedRepoRoot(root)
+	return pinned, err
+}
+
+// openIdentifiedRepoRoot is openRepoRoot plus the physical identity resolved
+// at pin time, for a caller that will retain the pin and needs to compare it
+// against another component's identity later without a further resolution.
+func openIdentifiedRepoRoot(root string) (*rootfs.Root, pathid.ID, error) {
 	if strings.TrimSpace(root) == "" {
-		return nil, errors.New("memory: repo path is empty")
+		return nil, pathid.ID{}, errors.New("memory: repo path is empty")
 	}
-	pinned, err := rootfs.Open(root)
+	pinned, id, err := rootfs.OpenIdentified(root)
 	if err != nil {
 		if rootfs.IsNotDirectory(err) {
-			return nil, fmt.Errorf("memory: repo path is not a directory: %s", root)
+			return nil, pathid.ID{}, fmt.Errorf("memory: repo path is not a directory: %s", root)
 		}
-		return nil, fmt.Errorf("memory: open repo root %s: %w", root, err)
+		return nil, pathid.ID{}, fmt.Errorf("memory: open repo root %s: %w", root, err)
 	}
-	return pinned, nil
+	return pinned, id, nil
 }
 
 // validateGitDir checks the repo's .git through the pinned handle. root is

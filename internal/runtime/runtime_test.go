@@ -1167,6 +1167,64 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	}
 }
 
+// go-git addresses its own storage by pathname, independent of the rooted
+// handle sessionStore is pinned to, so buildSessionManagerWithClients compares
+// each side's own resolved identity rather than trusting that opening both
+// from the same configured string was enough. This proves the comparison
+// actually distinguishes a mismatch, not just the matching case every other
+// test here happens to exercise: roots.activeRoot names a *different*
+// physical repository than the one sessionStore is pinned to, and the build
+// must refuse rather than silently wiring a session manager whose git commits
+// land in one repository while every other read and write goes through
+// another.
+func TestBuildSessionManagerRefusesWhenGitRepoDoesNotMatchThePinnedReader(t *testing.T) {
+	pinnedRoot := initRuntimeProjectRepo(t)
+	otherRoot := initRuntimeProjectRepo(t)
+
+	cfg := config.Defaults()
+	cfg.Project.ActiveProjectSlug = "global"
+	rt := New(cfg, nil, LogRings{})
+	pinned := openTestRepo(t, pinnedRoot)
+	rt.globalMem = pinned
+	rt.activeMem = pinned
+
+	uiServer := ui.NewServer(0)
+	mgr, adapter := rt.buildSessionManagerWithClients(nil, uiServer, projectRepoRoots{
+		globalRoot: otherRoot,
+		activeRoot: otherRoot, // deliberately not pinnedRoot
+		activeSlug: "global",
+	}, pinned, openTestEpisodeIndex(t, pinned), rt.ensureInferenceClient(), nil)
+
+	if mgr != nil || adapter != nil {
+		t.Fatalf("expected a refusal when the git repo does not match the pinned reader, got mgr=%v adapter=%v", mgr, adapter)
+	}
+}
+
+// The matching case, alongside the mismatch case above, so a change that made
+// the identity check refuse everything (rather than only genuine mismatches)
+// would fail here instead of only showing up as every other test in this file
+// mysteriously breaking.
+func TestBuildSessionManagerAcceptsWhenGitRepoMatchesThePinnedReader(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+
+	cfg := config.Defaults()
+	cfg.Project.ActiveProjectSlug = "global"
+	rt := New(cfg, nil, LogRings{})
+	pinned := openTestRepo(t, root)
+	rt.globalMem = pinned
+	rt.activeMem = pinned
+
+	mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: "global",
+	}, pinned, openTestEpisodeIndex(t, pinned), rt.ensureInferenceClient(), nil)
+
+	if mgr == nil || adapter == nil {
+		t.Fatal("expected the matching case to succeed")
+	}
+}
+
 func initRuntimeProjectRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()

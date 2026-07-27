@@ -457,19 +457,15 @@ func (rt *Runtime) buildSessionManagerWithClients(
 		return nil, nil
 	}
 	// go-git addresses its storage by pathname and has no handle to bind to
-	// sessionStore's own pin, so this is the closest check available: confirm
-	// the repository go-git just opened by name is still the same physical
-	// directory sessionStore is pinned to, rather than trusting that opening
-	// both from the same configured string was enough. dr is nil for a test
-	// fake that does not implement the check; production always passes the
-	// real *memory.DirReader.
+	// sessionStore's own pin, so this is the closest check available: both
+	// sides' identities are compared as already-resolved values, each taken at
+	// its own open time, rather than by re-resolving roots.activeRoot a third
+	// time here — a fresh resolution at this later point would only confirm
+	// what the path currently names, not whether it named the same thing when
+	// go-git opened it moments before. dr is nil for a test fake that does not
+	// implement Identity; production always passes the real *memory.DirReader.
 	if dr, ok := sessionStore.(*memory.DirReader); ok {
-		same, err := dr.SamePhysicalLocation(roots.activeRoot)
-		if err != nil {
-			uiServer.AddStartupError(fmt.Errorf("session manager: confirm repository identity: %w", err))
-			return nil, nil
-		}
-		if !same {
+		if !dr.Identity().Equal(repo.Identity()) {
 			uiServer.AddStartupError(errors.New("session manager: git repository does not match the pinned memory repo"))
 			return nil, nil
 		}
@@ -533,11 +529,18 @@ func (rt *Runtime) SessionManager() *session.Manager {
 	return rt.sessionMg
 }
 
-// quiesceMemoryAndAPI cancels active task loops and flushes live sessions before
-// a memory/API rebuild drops the current adapters. Caller must hold rt.mu on
-// entry; the method releases it while waiting so session summarization can read
-// live config through summarizerPromptFn without deadlocking.
-func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context) {
+// quiesceMemoryAndAPI cancels active task loops, flushes live sessions, and
+// waits for in-flight UI requests tracked by trackGenRequest before a
+// memory/API rebuild drops the current generation's handles. Caller must hold
+// rt.mu on entry; the method releases it while waiting so session
+// summarization can read live config through summarizerPromptFn without
+// deadlocking, and so a tracked UI request blocked on rt.mu elsewhere can
+// finish rather than deadlock against this call.
+//
+// The UI drain covers only the handlers wrapped with trackGenRequest — see
+// that method's doc comment for which ones, and which are deliberately not
+// covered yet.
+func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context, uiServer *ui.Server) {
 	tasks := rt.taskRunner
 	mgr := rt.SessionManager()
 	if tasks == nil && mgr == nil {
@@ -556,6 +559,13 @@ func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context) {
 		flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		if err := mgr.FlushAll(flushCtx); err != nil {
 			slog.Warn("runtime reload: session flush", "err", err)
+		}
+		cancel()
+	}
+	if uiServer != nil {
+		drainCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := uiServer.DrainGenerationRequests(drainCtx); err != nil {
+			slog.Warn("runtime reload: UI request drain", "err", err)
 		}
 		cancel()
 	}

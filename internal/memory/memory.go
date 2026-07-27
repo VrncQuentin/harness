@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
@@ -122,6 +123,12 @@ type Entry struct {
 // the vector index could not hold one directory across its own steps.
 type DirReader struct {
 	root *rootfs.Root
+	// id is the repo's physical identity, resolved once at pin time. It lets
+	// a caller confirm a second component that opened the same configured
+	// path independently — one that cannot accept a rooted handle — ended up
+	// at the same repository, by comparing identities rather than by
+	// resolving the path a further time later.
+	id pathid.ID
 }
 
 // Compile-time assertions for the production memory repo interfaces.
@@ -140,11 +147,11 @@ var (
 // the repo cannot lead a later read or write out of it — os.Root resolves each
 // component against the open directory and refuses one that leaves.
 func OpenDirReader(root string) (*DirReader, error) {
-	pinned, err := rootfs.Open(root)
+	pinned, id, err := rootfs.OpenIdentified(root)
 	if err != nil {
 		return nil, fmt.Errorf("memory: open repo %s: %w", root, err)
 	}
-	return &DirReader{root: pinned}, nil
+	return &DirReader{root: pinned, id: id}, nil
 }
 
 // Close releases the pinned repo handle. The reader is unusable afterwards.
@@ -155,27 +162,22 @@ func (r *DirReader) Close() error {
 	return nil
 }
 
-// SamePhysicalLocation reports whether path currently names the same directory
-// this reader is pinned to.
+// Identity returns the physical identity resolved when this reader was
+// pinned.
 //
 // It exists for the one class of caller this reader's own pin cannot cover: a
 // second component that has to open the same repository by pathname because
 // its own API gives no other way in — go-git, specifically, whose storage is
 // addressed by path throughout and cannot be bound to a rootfs handle. Opening
-// that second component and this reader from the same configured string is not
-// enough on its own to know they ended up at the same place: the two opens
-// happen at different moments, and root can have changed between them. This
-// pins path fresh, compares it against the reader's own pin as two open
-// directory objects rather than as two strings, and closes the fresh pin
-// either way — it answers the question and holds nothing.
-func (r *DirReader) SamePhysicalLocation(path string) (bool, error) {
-	other, err := rootfs.Open(path)
-	if err != nil {
-		return false, err
-	}
-	defer other.Close() //nolint:errcheck // read-only handle, opened only to compare
-	return r.root.SameDir(other)
-}
+// that second component and this reader from the same configured string is
+// not enough on its own to know they ended up at the same place — the two
+// opens happen at different moments, and root can have changed between them —
+// so the comparison a caller makes with this should be against an identity
+// the *other* component resolved at its own open time too, not a fresh
+// resolution of the path taken later still: a later resolution only answers
+// what the path currently names, which is a different, later question than
+// whether the two components opened the same repository.
+func (r *DirReader) Identity() pathid.ID { return r.id }
 
 // SubRoot implements SubRooter. relPath is created if it is missing, then
 // pinned through the repo handle so the returned root is inside the repo by
