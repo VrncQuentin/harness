@@ -84,6 +84,30 @@ func Open(path string) (*Root, error) {
 	return &Root{root: r}, nil
 }
 
+// IsNotDirectory reports whether err says a path exists but is not a
+// directory, as returned by Open, OpenChild, or Set.Open. Each platform spells
+// this its own way: Unix reports ENOTDIR; opening a root on Windows goes
+// through the NT layer, which has no ENOTDIR equivalent among the errors
+// package syscall exports and is matched by message instead.
+//
+// A caller using this to choose between two error messages is fine — it only
+// picks which one a human reads. A caller that would use it to choose between
+// two different *actions* should not: the distinction it draws is between
+// "refused" and "refused, and here specifically is why", not between "safe"
+// and "unsafe". Open already refused both.
+func IsNotDirectory(err error) bool {
+	for _, errno := range notDirectoryErrnos {
+		if errors.Is(err, errno) {
+			return true
+		}
+	}
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) && pathErr.Err != nil {
+		return pathErr.Err.Error() == "not a directory"
+	}
+	return false
+}
+
 // Close releases the directory handle.
 func (r *Root) Close() error { return r.root.Close() }
 
@@ -100,8 +124,8 @@ func (r *Root) Lstat(rel string) (fs.FileInfo, error) { return r.root.Lstat(rel)
 // It is a read, and only a read. Nothing in this package pairs it with a
 // mutation of the same name: stat-by-name followed by mutate-by-name is two
 // resolutions of one name, and the operations that mutate — WriteStreamAtomic,
-// CreateExclusive, AppendSync, OpenReadWrite — each dereference the name once
-// themselves rather than acting on what a preceding Stat found.
+// CreateExclusive, AppendSync — each dereference the name once themselves
+// rather than acting on what a preceding Stat found.
 func (r *Root) Stat(rel string) (fs.FileInfo, error) { return r.root.Stat(rel) }
 
 // Readlink returns the target rel points at, without resolving it. A link
@@ -109,9 +133,6 @@ func (r *Root) Stat(rel string) (fs.FileInfo, error) { return r.root.Stat(rel) }
 // following one, and callers that represent a link by its target (git stores
 // one that way) need the value.
 func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel) }
-
-// Open opens rel for reading. The caller closes it.
-func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 
 // WriteStreamAtomic writes everything src yields to rel, through a temporary
 // file in the same directory that is then renamed over rel. Every step resolves
@@ -136,15 +157,50 @@ func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 // only against a concurrent reader, not against a crash: the rename can reach
 // the disk while the contents have not, leaving the name published over an
 // empty or partial file.
+//
+// rel's directory is pinned once, before the temp file is created, and every
+// later step — the create, the cleanup remove, and the final rename — resolves
+// against that one pinned handle rather than against rel's directory component
+// a second and third time. Re-resolving it on each call would let a directory
+// swapped in between them redirect the cleanup or the rename: the temp file's
+// random name is only unpredictable at the moment it is minted, and a reader
+// that lists the directory afterwards, moves it aside, and plants a file under
+// the same name in a replacement can otherwise make the final rename publish
+// that planted content instead of the bytes this call wrote.
 func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) error {
-	tmpRel, f, err := r.createTemp(filepath.Dir(rel), perm)
+	return r.writeStreamAtomicHooked(rel, src, perm, nil)
+}
+
+// writeStreamAtomicHooked is WriteStreamAtomic with a hook that runs
+// immediately after the destination directory is pinned and before anything
+// is created inside it, so a test can stage a replacement of that directory's
+// name in exactly the window the pin-once design exists to survive. The hook
+// is a parameter rather than package state for the same reason every other
+// hook in this package is: two tests setting shared state at once would each
+// run the other's hook. It is nil on every production path.
+func (r *Root) writeStreamAtomicHooked(rel string, src io.Reader, perm fs.FileMode, afterPin func()) error {
+	dirRel, base := filepath.Dir(rel), filepath.Base(rel)
+	dir := r
+	if dirRel != "." {
+		child, err := r.OpenChild(dirRel)
+		if err != nil {
+			return err
+		}
+		defer child.Close() //nolint:errcheck // read-only handle; the write below has its own error path
+		dir = child
+	}
+	if afterPin != nil {
+		afterPin()
+	}
+
+	tmpName, f, err := dir.createTemp(perm)
 	if err != nil {
 		return err
 	}
 	cleanup := true
 	defer func() {
 		if cleanup {
-			_ = r.root.Remove(tmpRel)
+			_ = dir.root.Remove(tmpName)
 		}
 	}()
 
@@ -159,7 +215,7 @@ func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) er
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := r.root.Rename(tmpRel, rel); err != nil {
+	if err := dir.root.Rename(tmpName, base); err != nil {
 		return err
 	}
 	cleanup = false
@@ -320,10 +376,12 @@ func (r *Root) Remove(rel string) error { return r.root.Remove(rel) }
 // the root rather than by pathname. A missing rel is not an error.
 func (r *Root) RemoveAll(rel string) error { return r.root.RemoveAll(rel) }
 
-// OpenRead opens rel for reading and returns a handle. Unlike Open it does not
-// hand back an *os.File, whose Name reports the root path joined with rel — an
-// absolute pathname that an authorized read could be turned back into an
-// unauthorized reopen.
+// OpenRead opens rel for reading and returns a handle. It does not hand back a
+// raw *os.File, whose Name reports the root path joined with rel — an
+// authorized read that a caller could turn back into an unauthorized reopen by
+// pathname. There is no read-write or mutating variant: a handle obtained here
+// cannot be used to overwrite or truncate what it reads, which is what keeps it
+// safe to hand to a caller that only asked to read.
 func (r *Root) OpenRead(rel string) (*File, error) {
 	f, err := r.root.OpenFile(rel, os.O_RDONLY, 0)
 	if err != nil {
@@ -332,28 +390,15 @@ func (r *Root) OpenRead(rel string) (*File, error) {
 	return &File{f: f}, nil
 }
 
-// OpenReadWrite opens rel for reading and writing, creating it if absent, and
-// returns a handle for a multi-step mutation.
-//
-// It does not truncate. A sequence that measures a file, extends it, and rolls
-// the extension back on failure has to be one handle from end to end: reopening
-// the name between the steps means the size that was measured, the bytes that
-// were appended, and the length truncated back to can each belong to a
-// different file. There is no O_TRUNC variant of this call for the same reason
-// — truncation is a step the caller takes through the handle, once it holds
-// the file it means to shorten.
-func (r *Root) OpenReadWrite(rel string, perm fs.FileMode) (*File, error) {
-	f, err := r.root.OpenFile(rel, os.O_RDWR|os.O_CREATE, perm)
-	if err != nil {
-		return nil, err
-	}
-	return &File{f: f}, nil
-}
-
-// File is an open file inside a Root. It carries the operations a multi-step
-// rooted mutation needs and nothing that would let a caller leave the handle:
+// File is an open, read-only file inside a Root. It carries only the read
+// operations a caller needs and nothing that would let it leave the handle:
 // there is no accessor for the file's pathname, because an authorized handle
-// must not be convertible into a pathname to reopen later.
+// must not be convertible into a pathname to reopen later, and no mutating
+// method, because in-place mutation is exactly the operation this package
+// avoids — see WriteStreamAtomic's doc comment for why opening a destination
+// read-write and truncating or appending into it can write through a hard link
+// to a file the caller never named. A caller that needs to change a file's
+// contents publishes a new version by rename instead.
 type File struct {
 	f *os.File
 }
@@ -368,29 +413,11 @@ func (f *File) Size() (int64, error) {
 	return info.Size(), nil
 }
 
+// Read implements io.Reader.
+func (f *File) Read(p []byte) (int, error) { return f.f.Read(p) }
+
 // ReadAt implements io.ReaderAt.
 func (f *File) ReadAt(p []byte, off int64) (int, error) { return f.f.ReadAt(p, off) }
-
-// Append writes p at the current end of the file.
-//
-// The seek is what makes this an append on a handle opened O_RDWR. O_APPEND
-// would put the kernel in charge of the position, but it also strips write
-// access on Windows down to FILE_APPEND_DATA, which is not enough to truncate —
-// and the caller that appends here is the same one that has to be able to roll
-// the append back through this handle.
-func (f *File) Append(p []byte) error {
-	if _, err := f.f.Seek(0, io.SeekEnd); err != nil {
-		return err
-	}
-	_, err := f.f.Write(p)
-	return err
-}
-
-// Truncate shortens (or extends) the file to size through the handle.
-func (f *File) Truncate(size int64) error { return f.f.Truncate(size) }
-
-// Sync flushes the file to stable storage.
-func (f *File) Sync() error { return f.f.Sync() }
 
 // Close releases the handle.
 func (f *File) Close() error { return f.f.Close() }
@@ -421,17 +448,27 @@ const maxWalkDepth = 64
 // Walk visits every entry below rel, depth-first, in filename order within each
 // directory.
 //
-// Each subdirectory is pinned and then descended through that same handle. The
-// alternative — reading a name, deciding it is a directory, and resolving the
-// name again to recurse — resolves one name twice, and between the two the
-// directory that was inspected can be renamed aside and another moved into its
-// place. Everything reported for a subtree therefore comes from the handle that
-// subtree was entered through.
+// A subtree is pinned once and everything about it — the metadata reported to
+// the visitor and the descent into it — comes from that one handle. The
+// alternative — describing an entry by name, then resolving the same name
+// again to recurse — dereferences the name twice, and between the two calls
+// the directory that was described can be renamed aside and a different one
+// put in its place, so what is reported and what is entered disagree. Pinning
+// before describing closes that: whatever OpenChild pins is what Stat then
+// describes and what the recursive call then reads, with no second
+// resolution in between.
 //
-// Entries are described with Lstat through the pinned parent, so a symbolic
-// link is reported as a link and is not descended into. An entry that
-// disappears between being listed and being described is skipped: it is gone,
-// which is a valid answer to "what is in this directory", not a failure.
+// A directory entry's *type*, from the initial listing, is what decides
+// whether to attempt that pin at all — not the later Stat. That type comes
+// from the same call that named the entry, so a symbolic link (a distinct
+// type, even when it targets a directory) is never mistaken for a directory
+// and is Lstat'd and reported without an OpenChild attempt, preserving "a link
+// is reported as a link and not descended into" even for a link that only
+// appears after the listing: OpenChild is not attempted for it in the first
+// place. An entry that disappears, or changes to something OpenChild refuses,
+// between the listing and the pin is skipped rather than treated as an error —
+// it is gone or has become something this walk does not enter, which is a
+// valid answer to "what is here", not a failure.
 func (r *Root) Walk(rel string, visit WalkFunc) error {
 	start := r
 	if rel != "" && rel != "." {
@@ -459,6 +496,15 @@ func (r *Root) walk(prefix string, visit WalkFunc, depth int) error {
 		if prefix != "" {
 			relPath = filepath.Join(prefix, name)
 		}
+		if entry.IsDir() {
+			if err := r.walkDir(name, relPath, visit, depth); err != nil {
+				return err
+			}
+			continue
+		}
+		// Not a directory per the listing's own type bits — a file, or a
+		// symbolic link even when its target is a directory. Nothing will be
+		// entered, so a plain Lstat by name is both correct and sufficient.
 		info, err := r.root.Lstat(name)
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -466,31 +512,46 @@ func (r *Root) walk(prefix string, visit WalkFunc, depth int) error {
 			}
 			return err
 		}
-		skip, err := visit(WalkEntry{Rel: relPath, Name: name, Info: info})
-		if err != nil {
-			return err
-		}
-		if skip || !info.IsDir() {
-			continue
-		}
-		if err := r.walkChild(name, relPath, visit, depth); err != nil {
+		if _, err := visit(WalkEntry{Rel: relPath, Name: name, Info: info}); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// walkChild pins one subdirectory and descends through that handle, keeping the
-// close on the success and failure paths alike.
-func (r *Root) walkChild(name, relPath string, visit WalkFunc, depth int) error {
+// walkDir pins one subdirectory, describes it through that same handle, and —
+// unless the visitor skips it — descends through it. name is only ever passed
+// here when the initial listing already reported it as a directory; the pin is
+// what turns that into a description and a descent that necessarily agree.
+func (r *Root) walkDir(name, relPath string, visit WalkFunc, depth int) error {
 	child, err := r.OpenChild(name)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
+		// The entry stopped being an openable directory between the listing
+		// and this call — replaced by a file, or by a link leaving the root,
+		// both of which OpenChild refuses. Either way there is nothing here
+		// this walk can enter, which is the same "it is gone" case as
+		// ErrNotExist from this walk's point of view.
+		if IsNotDirectory(err) {
+			return nil
+		}
 		return err
 	}
 	defer child.Close() //nolint:errcheck // read-only handle
+
+	info, err := child.root.Stat(".")
+	if err != nil {
+		return err
+	}
+	skip, err := visit(WalkEntry{Rel: relPath, Name: name, Info: info})
+	if err != nil {
+		return err
+	}
+	if skip {
+		return nil
+	}
 	return child.walk(relPath, visit, depth+1)
 }
 
@@ -518,14 +579,20 @@ func (s Set) Open(path string) (*Target, error) {
 // The hook is a parameter rather than package state so a test can stage the
 // replacement this ordering exists to survive without two parallel tests ever
 // seeing each other's hook. It is nil on every production path.
+//
+// The target is resolved fresh inside the loop, once per candidate root,
+// rather than once before the loop starts. Resolving it once up front and then
+// comparing it against roots pinned afterwards would authorize a target
+// identity that predates every root's own pin: a root swapped out between that
+// single resolution and a later iteration's pin is then judged against a
+// target identity that is stale relative to it, rather than against one taken
+// close to the same moment. Resolving the target again for each root keeps the
+// two readings adjacent in time for whichever root ultimately matches, which
+// is the one comparison that is authorized.
 func (s Set) open(path string, afterPin func()) (*Target, error) {
 	display, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("rootfs: cannot make %s absolute: %w", path, err)
-	}
-	target, err := pathid.Resolve(display)
-	if err != nil {
-		return nil, fmt.Errorf("rootfs: cannot resolve %s: %w", path, err)
 	}
 	for _, root := range s {
 		if strings.TrimSpace(root) == "" {
@@ -542,6 +609,11 @@ func (s Set) open(path string, afterPin func()) (*Target, error) {
 				continue
 			}
 			return nil, err
+		}
+		target, err := pathid.Resolve(display)
+		if err != nil {
+			_ = pinned.Close()
+			return nil, fmt.Errorf("rootfs: cannot resolve %s: %w", path, err)
 		}
 		if !rootID.Contains(target) {
 			_ = pinned.Close()
@@ -745,18 +817,24 @@ func (t *Target) pathError(err error) error {
 // left behind by a crash is recognisable rather than mysterious.
 const tempNamePrefix = ".harness-write-"
 
-// createTemp opens a new, uniquely named file in dir, relative to the root.
+// createTemp opens a new, uniquely named file directly inside r.
 //
 // os.CreateTemp cannot be used here: it takes a pathname, which is exactly
 // what the root exists to keep out of the decision. The retry loop plays the
 // same role as its own — O_EXCL makes the create fail rather than truncate if
 // the name is taken, so a collision costs another attempt and never someone
 // else's file.
-func (r *Root) createTemp(dir string, perm fs.FileMode) (string, *os.File, error) {
+//
+// The caller is r itself — the destination directory, already pinned — rather
+// than a directory named relative to some other root. Naming the destination
+// separately from opening it is exactly the pattern this method exists to
+// avoid: whatever r holds open is where the temp file lands, with no second
+// resolution of a directory path in between.
+func (r *Root) createTemp(perm fs.FileMode) (string, *os.File, error) {
 	const attempts = 1000
 	for range attempts {
-		rel := filepath.Join(dir, tempNamePrefix+rand.Text())
-		f, err := r.root.OpenFile(rel, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
+		name := tempNamePrefix + rand.Text()
+		f, err := r.root.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, perm)
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}
@@ -768,10 +846,10 @@ func (r *Root) createTemp(dir string, perm fs.FileMode) (string, *os.File, error
 		// would leave the renamed file more restrictive than asked for.
 		if err := f.Chmod(perm); err != nil {
 			_ = f.Close()
-			_ = r.root.Remove(rel)
+			_ = r.root.Remove(name)
 			return "", nil, err
 		}
-		return rel, f, nil
+		return name, f, nil
 	}
-	return "", nil, fmt.Errorf("rootfs: no free temporary name in %s after %d attempts", dir, attempts)
+	return "", nil, fmt.Errorf("rootfs: no free temporary name after %d attempts", attempts)
 }

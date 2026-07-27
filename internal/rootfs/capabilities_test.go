@@ -274,16 +274,18 @@ func TestRoot_AppendSyncPreservesExistingContent(t *testing.T) {
 	}
 }
 
-// OpenReadWrite must not truncate: the index measures the file before it
-// appends, and a truncating open would make that measurement zero.
-func TestRoot_OpenReadWriteDoesNotTruncate(t *testing.T) {
+// OpenRead must not truncate: a reader has no business shortening what it
+// reads, and nothing about opening for read implies O_TRUNC — but the type
+// exists precisely so that guarantee cannot be violated by a caller passing
+// the wrong flag, because there is no flag to pass.
+func TestRoot_OpenReadDoesNotTruncate(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "vectors.bin"), []byte("0123456789"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	f, err := openRoot(t, dir).OpenReadWrite("vectors.bin", 0o644)
+	f, err := openRoot(t, dir).OpenRead("vectors.bin")
 	if err != nil {
-		t.Fatalf("OpenReadWrite: %v", err)
+		t.Fatalf("OpenRead: %v", err)
 	}
 	defer func() { _ = f.Close() }()
 	size, err := f.Size()
@@ -295,38 +297,62 @@ func TestRoot_OpenReadWriteDoesNotTruncate(t *testing.T) {
 	}
 }
 
-// The measure/append/roll-back sequence has to hold on one handle: appending
-// then truncating back must leave exactly what was there before.
-func TestRoot_AppendThenTruncateRollsBackThroughOneHandle(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "vectors.bin"), []byte("keep"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
+// WriteStreamAtomic pins rel's destination directory once and performs the
+// temp create, the failure-path remove, and the final rename all against that
+// one handle. Re-resolving the directory component on each of those calls —
+// the shape this replaced — would let a directory swapped in between them
+// redirect the rename: list the directory once the temp file exists (its name
+// is unpredictable only until it is visible), move the directory aside, plant
+// a file under the same name in a replacement, and the rename publishes the
+// planted content under the caller's requested name instead of what this call
+// wrote.
+//
+// The hook stages exactly that replacement, in the one window where the fix
+// is observable: after the destination directory is pinned and before
+// anything is created inside it. The root itself is pinned through a
+// symlinked name — the same shape TestRoot_WalkKeepsDescendingInsideThePinnedTreeAfterTheRootIsRepointed
+// already proved survives a repoint of that name — so this test isolates the
+// one thing it does not already cover: that a directory *inside* an
+// already-pinned root is resolved once for the whole write, not once per call.
+func TestRoot_WriteStreamAtomicPinsDestinationDirectoryOnce(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(filepath.Join(real, "sub"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
 	}
-	f, err := openRoot(t, dir).OpenReadWrite("vectors.bin", 0o644)
-	if err != nil {
-		t.Fatalf("OpenReadWrite: %v", err)
+	evil := filepath.Join(base, "evil")
+	if err := os.MkdirAll(filepath.Join(evil, "sub"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
 	}
-	defer func() { _ = f.Close() }()
+	name := filepath.Join(base, "link")
+	linkDir(t, real, name)
 
-	start, err := f.Size()
+	r := openRoot(t, name)
+	repointed := false
+	const content = "the genuine write"
+	err := r.writeStreamAtomicHooked("sub/file.txt", strings.NewReader(content), 0o644, func() {
+		repointed = true
+		if err := os.Remove(name); err != nil {
+			t.Skipf("cannot re-point the root's name here: %v", err)
+		}
+		linkDir(t, evil, name)
+	})
 	if err != nil {
-		t.Fatalf("Size: %v", err)
+		t.Fatalf("WriteStreamAtomic: %v", err)
 	}
-	if err := f.Append([]byte("appended-and-rolled-back")); err != nil {
-		t.Fatalf("Append: %v", err)
+	if !repointed {
+		t.Fatal("the hook never ran; the re-point window was not exercised")
 	}
-	if err := f.Truncate(start); err != nil {
-		t.Fatalf("Truncate: %v", err)
-	}
-	if err := f.Sync(); err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
-	got, err := os.ReadFile(filepath.Join(dir, "vectors.bin"))
+
+	got, err := os.ReadFile(filepath.Join(real, "sub", "file.txt"))
 	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+		t.Fatalf("the write did not land in the directory pinned before the re-point: %v", err)
 	}
-	if string(got) != "keep" {
-		t.Fatalf("rollback left %q, want %q", got, "keep")
+	if string(got) != content {
+		t.Fatalf("content = %q, want %q", got, content)
+	}
+	if _, err := os.Stat(filepath.Join(evil, "sub", "file.txt")); err == nil {
+		t.Fatal("the write followed the re-pointed name into the replacement directory")
 	}
 }
 
