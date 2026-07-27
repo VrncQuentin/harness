@@ -78,7 +78,15 @@ func TestRoot_WalkRefusesADirectoryReplacedByAnInRootSymlinkAfterListing(t *test
 			if err := os.RemoveAll(zdir); err != nil {
 				t.Fatalf("RemoveAll zdir: %v", err)
 			}
-			if err := os.Symlink(target, zdir); err != nil {
+			// The target must be relative, not absolute: os.Root refuses an
+			// absolute link target unconditionally — the same rule that
+			// refuses a Windows junction, which always stores one — so an
+			// absolute-target symlink here would be rejected regardless of
+			// whether this fix exists, proving nothing about the property
+			// under test. A relative target, resolved against the symlink's
+			// own parent directory ("root"), is what os.Root actually follows
+			// when it stays in-root.
+			if err := os.Symlink(filepath.Join("aaa", "elsewhere"), zdir); err != nil {
 				t.Skipf("file symlinks unavailable in this environment: %v", err)
 			}
 		}
