@@ -113,11 +113,6 @@ func (t *editTool) createFile(c CallInfo, path, content string) Result {
 		return Result{Error: err.Error()}
 	}
 	defer file.Close() //nolint:errcheck // root handle, no buffered writes
-	if _, err := file.Stat(); err == nil {
-		return Result{Error: fmt.Sprintf("edit: %s already exists — whole-file mode only creates new files; use ast_find + anchored edit", file.Display())}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Result{Error: fmt.Sprintf("edit: %v", err)}
-	}
 	// The parents are created through the same pinned root as the write. The
 	// previous version created them by pathname and then re-ran the sandbox
 	// check, because a MkdirAll that followed a link could otherwise have moved
@@ -126,7 +121,16 @@ func (t *editTool) createFile(c CallInfo, path, content string) Result {
 	if err := file.MkdirAllParent(0o755); err != nil {
 		return Result{Error: fmt.Sprintf("edit: create parent directories: %v", err)}
 	}
-	if err := file.WriteAtomic([]byte(content), editFileMode); err != nil {
+	// "Only creates new files" is enforced by the create itself, not by a Stat
+	// before it. Checking first and then publishing by rename is a check/use
+	// race: a file that appears in between is silently replaced by the rename,
+	// and the caller is told a new file was created. O_EXCL makes the existence
+	// check and the claim on the name one operation, so the loser of a race
+	// gets an error rather than the winner losing their content.
+	if err := file.CreateExclusive([]byte(content), editFileMode); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return Result{Error: fmt.Sprintf("edit: %s already exists — whole-file mode only creates new files; use ast_find + anchored edit", file.Display())}
+		}
 		return Result{Error: fmt.Sprintf("edit: %v", err)}
 	}
 	return t.verifyAfterMutate(file, 1, []byte(content), "created "+file.Display())

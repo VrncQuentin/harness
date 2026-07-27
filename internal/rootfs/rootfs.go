@@ -46,6 +46,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/VrncQuentin/harness/internal/pathid"
@@ -57,8 +58,17 @@ import (
 var ErrOutsideRoots = errors.New("rootfs: path is outside every root")
 
 // Root is an open directory. Every operation names a path relative to it, and
-// no operation can reach outside it — including through a symlink, a Windows
-// junction, or a replacement of the directory's name after it was opened.
+// no operation can reach outside it by pathname — including through a symlink,
+// a Windows junction, or a replacement of the directory's name after it was
+// opened.
+//
+// "Outside" means outside the directory tree, not outside the filesystem. On
+// Linux os.Root does not stop a path from crossing a bind mount, an ordinary
+// mount point, or into /proc; a mount staged inside the root is reachable
+// through it. Mount-based escapes are outside this package's threat model —
+// staging one needs privileges that already defeat the sandbox — and closing
+// them would need openat2 with RESOLVE_NO_XDEV, which has no Windows
+// counterpart.
 type Root struct {
 	root *os.Root
 	name string
@@ -107,6 +117,16 @@ type Set []string
 //
 // The caller closes the returned Target.
 func (s Set) Open(path string) (*Target, error) {
+	return s.open(path, nil)
+}
+
+// open is Open with a hook that runs immediately after a root is pinned and
+// before anything is authorized against it.
+//
+// The hook is a parameter rather than package state so a test can stage the
+// replacement this ordering exists to survive without two parallel tests ever
+// seeing each other's hook. It is nil on every production path.
+func (s Set) open(path string, afterPin func()) (*Target, error) {
 	display, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("rootfs: cannot make %s absolute: %w", path, err)
@@ -119,28 +139,95 @@ func (s Set) Open(path string) (*Target, error) {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}
-		rootID, err := pathid.Resolve(root)
+		pinned, rootID, err := pinRoot(root, afterPin)
 		if err != nil {
-			return nil, fmt.Errorf("rootfs: cannot resolve root %s: %w", root, err)
+			return nil, err
+		}
+		if pinned == nil {
+			continue // configured but absent: it cannot own anything
 		}
 		if !rootID.Contains(target) {
+			_ = pinned.Close()
 			continue
 		}
 		rel, err := filepath.Rel(rootID.Path(), target.Path())
 		if err != nil {
 			// Unreachable: Contains has already established a relative route.
+			_ = pinned.Close()
 			return nil, fmt.Errorf("rootfs: %s relative to %s: %w", target, rootID, err)
 		}
-		// The root is pinned by its physical path rather than by the spelling
-		// the user configured, so an alias repointed between the resolution
-		// above and this open cannot redirect the root itself.
-		opened, err := Open(rootID.Path())
-		if err != nil {
-			return nil, err
-		}
-		return &Target{root: opened, rel: rel, display: display}, nil
+		return &Target{root: pinned, rel: rel, display: display}, nil
 	}
 	return nil, fmt.Errorf("%w: %s", ErrOutsideRoots, path)
+}
+
+// pinRoot opens root and returns it together with the identity it was
+// authorized as, or (nil, zero, nil) when root does not exist.
+//
+// The order is the whole point. The configured name is dereferenced exactly
+// once, by the open, and everything afterwards is checked against the directory
+// that open pinned. Resolving first and pinning second — which is what this
+// replaced — left a window in which the resolved directory could be renamed
+// aside and another put in its place: the open then pinned the replacement, and
+// the relative path authorized against the original was applied inside it.
+//
+// Resolving after the pin does not close that window on its own, because the
+// resolution reads the same name the attacker controls. The SameFile check is
+// what closes it: the identity used for authorization has to be the directory
+// actually held open, and a name that has moved on since the pin fails the
+// comparison and refuses the call.
+//
+// What remains is the case where the configured name already meant the
+// attacker's directory when it was opened. That is not a check/use race —
+// any implementation must dereference the configured name at some instant, and
+// this one dereferences it once.
+func pinRoot(root string, afterPin func()) (*Root, pathid.ID, error) {
+	pinned, err := Open(root)
+	if err != nil {
+		// Absent is not a failure: a root that is not there cannot own the
+		// target, and one unavailable root must not disable the others. Every
+		// other failure — permission, I/O — is returned, matching pathid: a
+		// root whose state cannot be established is not a root known to be
+		// irrelevant.
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, pathid.ID{}, nil
+		}
+		return nil, pathid.ID{}, err
+	}
+	if afterPin != nil {
+		afterPin()
+	}
+	rootID, err := pathid.Resolve(root)
+	if err != nil {
+		_ = pinned.Close()
+		return nil, pathid.ID{}, fmt.Errorf("rootfs: cannot resolve root %s: %w", root, err)
+	}
+	same, err := pinned.isDir(rootID)
+	if err != nil {
+		_ = pinned.Close()
+		return nil, pathid.ID{}, fmt.Errorf("rootfs: cannot confirm root %s: %w", root, err)
+	}
+	if !same {
+		_ = pinned.Close()
+		return nil, pathid.ID{}, fmt.Errorf("rootfs: root %s changed while it was being opened", root)
+	}
+	return pinned, rootID, nil
+}
+
+// isDir reports whether the pinned directory is the one id names. Both sides
+// are compared as filesystem objects rather than as pathnames, which is the
+// only comparison that can tell a pinned directory apart from a replacement
+// that has taken over its name.
+func (r *Root) isDir(id pathid.ID) (bool, error) {
+	pinnedInfo, err := r.root.Stat(".")
+	if err != nil {
+		return false, err
+	}
+	namedInfo, err := os.Stat(id.Path())
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(pinnedInfo, namedInfo), nil
 }
 
 // Target is a path inside a pinned root, ready to be operated on. It carries
@@ -169,7 +256,14 @@ func (t *Target) Read() ([]byte, error) {
 	return data, nil
 }
 
-// ReadDir lists the directory's entries.
+// ReadDir lists the directory's entries, sorted by filename.
+//
+// The sort is not incidental. os.Root has no ReadDir, so this reads through an
+// open handle, and File.ReadDir returns entries in filesystem order — which
+// varies by filesystem and by the order files were created. os.ReadDir, which
+// the tool layer used before, sorts. Callers render this straight into tool
+// output, so unsorted entries would make a directory listing differ between two
+// identical calls.
 func (t *Target) ReadDir() ([]os.DirEntry, error) {
 	f, err := t.root.root.Open(t.rel)
 	if err != nil {
@@ -180,6 +274,9 @@ func (t *Target) ReadDir() ([]os.DirEntry, error) {
 	if err != nil {
 		return nil, t.pathError(err)
 	}
+	slices.SortFunc(entries, func(a, b os.DirEntry) int {
+		return strings.Compare(a.Name(), b.Name())
+	})
 	return entries, nil
 }
 
@@ -234,6 +331,45 @@ func (t *Target) WriteAtomic(data []byte, perm fs.FileMode) error {
 		return t.pathError(err)
 	}
 	cleanup = false
+	return nil
+}
+
+// CreateExclusive writes data to the target, failing with fs.ErrExist if
+// anything is already there.
+//
+// This is a different operation from WriteAtomic, not a variant of it, and the
+// difference is which guarantee is worth more. WriteAtomic publishes by rename,
+// which replaces whatever holds the name at that instant — correct for editing
+// a file that is meant to exist, and destructive for creating one that is not.
+// A create guarded by a preceding existence check is a check/use race: another
+// writer that lands between the two loses its file to the rename, silently.
+//
+// O_EXCL is the atomic no-replace primitive, so creation and the claim on the
+// name are one step. The cost is that the write is no longer crash-atomic: an
+// interrupted call can leave a short file. That is the right trade for a path
+// that held nothing beforehand — a partial new file loses only what this call
+// was writing, while a rename loses somebody else's work.
+func (t *Target) CreateExclusive(data []byte, perm fs.FileMode) error {
+	f, err := t.root.root.OpenFile(t.rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return t.pathError(err)
+	}
+	// The mode is applied to the open handle because a umask can reduce the
+	// permission requested at create time.
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		_ = t.root.root.Remove(t.rel)
+		return t.pathError(err)
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = t.root.root.Remove(t.rel)
+		return t.pathError(err)
+	}
+	if err := f.Close(); err != nil {
+		_ = t.root.root.Remove(t.rel)
+		return t.pathError(err)
+	}
 	return nil
 }
 

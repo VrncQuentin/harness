@@ -2,10 +2,12 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -220,6 +222,79 @@ func TestEdit_VerifiesAgainstTheWrittenFile(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, newHash) {
 		t.Errorf("reported hash does not match the file on disk (%s):\n%s", newHash, res.Content)
+	}
+}
+
+// Whole-file mode claims to create only. A Stat followed by a rename does not
+// deliver that: a file appearing between the two is replaced by the rename, and
+// the caller is told it created a new file. The claim on the name and the
+// existence check have to be one operation.
+func TestEdit_CreateNeverOverwritesAConcurrentCreate(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "contended.txt")
+	tool := newEditTool(t)
+	ci := CallInfo{SandboxRoots: []string{root}}
+
+	const writers = 8
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		created []string
+		refused int
+	)
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := fmt.Sprintf("writer-%d\n", i)
+			res := tool.Execute(context.Background(), ci, map[string]any{"path": path, "content": body})
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case res.Error == "":
+				created = append(created, body)
+			case strings.Contains(res.Error, "already exists"):
+				refused++
+			default:
+				t.Errorf("unexpected error: %s", res.Error)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if len(created) != 1 {
+		t.Fatalf("%d callers were told they created the file, want exactly 1: %q", len(created), created)
+	}
+	if refused != writers-1 {
+		t.Errorf("%d callers were refused, want %d", refused, writers-1)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != created[0] {
+		t.Errorf("file holds %q but %q was told it created it", got, created[0])
+	}
+}
+
+// The refusal must leave the existing file exactly as it was — the point of
+// refusing is the content on disk, not the message.
+func TestEdit_CreateLeavesAnExistingFileUntouched(t *testing.T) {
+	root := t.TempDir()
+	existing := writeSandboxFile(t, root, "exists.txt", "theirs\n")
+	tool := newEditTool(t)
+
+	res := tool.Execute(context.Background(), CallInfo{SandboxRoots: []string{root}},
+		map[string]any{"path": existing, "content": "mine\n"})
+	if res.Error == "" {
+		t.Fatal("whole-file mode overwrote an existing file")
+	}
+	got, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != "theirs\n" {
+		t.Errorf("file = %q, want the untouched %q", got, "theirs\n")
 	}
 }
 

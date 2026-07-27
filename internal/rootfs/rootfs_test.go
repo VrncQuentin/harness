@@ -2,12 +2,15 @@ package rootfs
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -120,6 +123,41 @@ func TestSetOpenListsTheRootItself(t *testing.T) {
 	}
 	if len(entries) != 2 {
 		t.Errorf("ReadDir returned %d entries, want 2", len(entries))
+	}
+}
+
+// A directory listing goes straight into tool output, so two identical calls
+// have to produce identical text. File.ReadDir hands back filesystem order; the
+// os.ReadDir this replaced sorted.
+func TestTargetReadDirIsSortedByName(t *testing.T) {
+	root := t.TempDir()
+	// Created in an order that is neither sorted nor reverse-sorted, so a
+	// filesystem that happens to return creation order still fails an
+	// unsorted implementation.
+	for _, name := range []string{"middle.txt", "zeta.txt", "alpha.txt", "beta.txt"} {
+		writeFile(t, filepath.Join(root, name), name)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "adir"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	target, err := Set{root}.Open(root)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer target.Close() //nolint:errcheck // test cleanup
+
+	entries, err := target.ReadDir()
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	want := []string{"adir", "alpha.txt", "beta.txt", "middle.txt", "zeta.txt"}
+	if !slices.Equal(got, want) {
+		t.Errorf("ReadDir = %v, want %v", got, want)
 	}
 }
 
@@ -331,6 +369,102 @@ func TestTargetRefusesALeafSwappedForAnEscapingLink(t *testing.T) {
 	}
 }
 
+// The window the review found: the root used to be resolved and authorized
+// first and pinned afterwards, so a replacement staged in between was pinned
+// instead, and the relative path authorized against the original was applied
+// inside it. The pin now comes first and the identity is checked against the
+// directory actually held open.
+//
+// The hook fires in exactly that window. Two ways to stage a replacement, one
+// of which works on each platform.
+func TestSetOpenRefusesARootReplacedWhileItIsAuthorized(t *testing.T) {
+	const secret = "SECRET-REACHED-BY-REPLACING-THE-ROOT"
+
+	// A link as the configured root, re-pointed after the pin. The pin follows
+	// the link to the real directory, so re-pointing the link itself is not
+	// blocked by the open handle and this runs everywhere.
+	t.Run("configured root re-pointed", func(t *testing.T) {
+		base := t.TempDir()
+		real := filepath.Join(base, "real")
+		writeFile(t, filepath.Join(real, "f.txt"), "genuine")
+		evil := filepath.Join(base, "evil")
+		writeFile(t, filepath.Join(evil, "f.txt"), secret)
+		root := filepath.Join(base, "root")
+		mustLinkDir(t, real, root)
+
+		swapped := false
+		target, err := Set{root}.open(filepath.Join(root, "f.txt"), func() {
+			if swapped {
+				return
+			}
+			swapped = true
+			if rmErr := os.Remove(root); rmErr != nil {
+				t.Fatalf("Remove root link: %v", rmErr)
+			}
+			mustLinkDir(t, evil, root)
+		})
+		if !swapped {
+			t.Fatal("the hook never ran; the window was not exercised")
+		}
+		if err == nil {
+			data, readErr := target.Read()
+			_ = target.Close()
+			if string(data) == secret {
+				t.Fatalf("a root replaced during authorization disclosed the attacker's file (read err %v)", readErr)
+			}
+			t.Fatalf("Open accepted a root that changed under it; it read %q", data)
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("secret leaked through the error path: %v", err)
+		}
+		// Specifically the identity check, not an incidental failure.
+		if !strings.Contains(err.Error(), "changed while it was being opened") {
+			t.Errorf("err = %v, want the pinned-root identity refusal", err)
+		}
+	})
+
+	// The same-name replacement: move the real directory aside and put the
+	// attacker's under the name that was pinned. Renaming a directory with an
+	// open handle is refused on Windows — where that refusal is itself the
+	// defense — and permitted on Linux.
+	t.Run("same-name replacement", func(t *testing.T) {
+		base := t.TempDir()
+		root := filepath.Join(base, "root")
+		writeFile(t, filepath.Join(root, "f.txt"), "genuine")
+		evil := filepath.Join(base, "evil")
+		writeFile(t, filepath.Join(evil, "f.txt"), secret)
+
+		staged := false
+		swapFailed := ""
+		target, err := Set{root}.open(filepath.Join(root, "f.txt"), func() {
+			if staged || swapFailed != "" {
+				return
+			}
+			if rnErr := os.Rename(root, filepath.Join(base, "moved-aside")); rnErr != nil {
+				swapFailed = rnErr.Error()
+				return
+			}
+			if rnErr := os.Rename(evil, root); rnErr != nil {
+				t.Fatalf("Rename evil into place: %v", rnErr)
+			}
+			staged = true
+		})
+		if !staged {
+			if err == nil {
+				_ = target.Close()
+			}
+			t.Skipf("cannot rename a pinned directory here, which is itself the defense: %s", swapFailed)
+		}
+		if err == nil {
+			data, _ := target.Read()
+			_ = target.Close()
+			if string(data) == secret {
+				t.Fatal("a same-name replacement during authorization redirected the read")
+			}
+		}
+	})
+}
+
 // The pathname is not part of the decision after the root is pinned: moving the
 // real directory aside and putting an attacker's directory under the same name
 // must not redirect anything.
@@ -419,6 +553,88 @@ func TestTargetWriteAtomicCreatesThroughMissingParents(t *testing.T) {
 	}
 	if string(got) != "created" {
 		t.Errorf("file = %q, want %q", got, "created")
+	}
+}
+
+// WriteAtomic publishes by rename and replaces whatever holds the name.
+// CreateExclusive must not — it is the operation a create-only mode needs, and
+// the difference is somebody else's file.
+func TestTargetCreateExclusiveDoesNotReplace(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "existing.txt")
+	writeFile(t, existing, "theirs")
+
+	target, err := Set{root}.Open(existing)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer target.Close() //nolint:errcheck // test cleanup
+
+	err = target.CreateExclusive([]byte("mine"), 0o644)
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("CreateExclusive over an existing file = %v, want fs.ErrExist", err)
+	}
+	got, readErr := os.ReadFile(existing)
+	if readErr != nil {
+		t.Fatalf("ReadFile: %v", readErr)
+	}
+	if string(got) != "theirs" {
+		t.Errorf("file = %q, want the existing content %q", got, "theirs")
+	}
+
+	// The same call on a free name succeeds.
+	fresh, err := Set{root}.Open(filepath.Join(root, "fresh.txt"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer fresh.Close() //nolint:errcheck // test cleanup
+	if err := fresh.CreateExclusive([]byte("mine"), 0o644); err != nil {
+		t.Fatalf("CreateExclusive on a free name: %v", err)
+	}
+}
+
+// Exactly one of a set of racing creates may win, and the file must hold that
+// winner's bytes. A check-then-rename lets every caller believe it created the
+// file while only the last one's content survives.
+func TestTargetCreateExclusiveIsExclusiveUnderConcurrency(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "contended.txt")
+
+	const writers = 8
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		winners []string
+	)
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body := fmt.Sprintf("writer-%d", i)
+			target, err := Set{root}.Open(path)
+			if err != nil {
+				return
+			}
+			defer target.Close() //nolint:errcheck // test cleanup
+			if err := target.CreateExclusive([]byte(body), 0o644); err != nil {
+				return
+			}
+			mu.Lock()
+			winners = append(winners, body)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	if len(winners) != 1 {
+		t.Fatalf("%d writers reported creating the file, want exactly 1: %v", len(winners), winners)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != winners[0] {
+		t.Errorf("file = %q but %q was told it created it", got, winners[0])
 	}
 }
 
