@@ -4,10 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
-
-	"github.com/VrncQuentin/harness/internal/pathid"
 )
 
 // TooloutScheme prefixes the handles the governor's tee-on-failure emits for
@@ -23,7 +20,8 @@ func isTooloutLocator(locator string) bool {
 	return strings.HasPrefix(locator, TooloutScheme)
 }
 
-// resolveToolout maps a toolout:<id> handle onto the file the governor wrote.
+// resolveToolout validates a toolout:<id> handle and returns the bare id, for
+// opening relative to the spill directory handle.
 //
 // The spill directory sits under the harness home, outside every sandbox root,
 // so this deliberately does not go through validatePath — a sandbox check would
@@ -37,8 +35,9 @@ func isTooloutLocator(locator string) bool {
 // It is not sufficient on its own. A lexically perfect name says nothing about
 // where the file it names actually is: a symlink or reparse point called
 // deadbeefdeadbeef inside the spill directory would be followed straight out of
-// it. openToolout supplies the physical half, and callers must use it rather
-// than opening this path themselves.
+// it. openToolout supplies the physical half by resolving the id through an
+// open handle on the directory, and callers must use it rather than joining
+// this id onto a path themselves.
 func resolveToolout(dir, locator string) (string, error) {
 	id, ok := strings.CutPrefix(locator, TooloutScheme)
 	if !ok {
@@ -50,63 +49,53 @@ func resolveToolout(dir, locator string) (string, error) {
 	if !validTooloutID(id) {
 		return "", fmt.Errorf("tools: %q is not a valid toolout id — expected lowercase hex", id)
 	}
-
-	return filepath.Join(dir, id), nil
+	return id, nil
 }
 
-// openToolout opens the file a toolout handle addresses and returns it only if
-// the opened handle is physically inside the spill directory.
+// openToolout opens the file a toolout handle addresses, resolving it relative
+// to an open handle on the spill directory rather than by pathname.
 //
-// Both sides of the comparison are taken from open handles, and in that order:
-// the root's identity is pinned first, then the target is opened and judged
-// against it.
+// os.Root holds the directory open and resolves each component against that
+// handle, so containment is an ancestry relationship rather than a comparison
+// of strings. Two earlier attempts were both weaker than they looked:
 //
-// Neither half is optional. Canonicalizing the target's path and reopening it
-// by name checks one resolution and reads another, so whatever the name meant
-// during the check can be replaced before the open. But pinning only the target
-// leaves the other side moving: with the root resolved afterwards, swapping the
-// spill directory in between lets an already-open outside target be compared
-// against a root that has just been pointed at the same outside place, and pass.
-// Fixing the target and then measuring it against a root fixed earlier closes
-// both.
+//   - Canonicalizing the target's path and reopening it by name checks one
+//     resolution and reads another, so whatever the name meant during the check
+//     can be replaced before the open.
+//   - Canonicalizing an open target against a pinned root path fixes the target
+//     but still compares pathnames. A pathname is not an identity: rename the
+//     real directory aside, move an attacker's directory into the name it
+//     vacated, and the target opens inside the attacker's directory while
+//     canonicalizing to a path that sits under the pinned string. The
+//     comparison agrees with itself and admits the file.
+//
+// Resolving through the handle removes the pathname from the decision
+// altogether. It also refuses symlinked and junctioned leaves, and any
+// traversal, without a separate check.
 //
 // The rest of the tool layer still resolves and reopens by path; this is the
 // one place that reads outside every sandbox root, which is why it does not.
 func openToolout(dir, locator string) (*os.File, error) {
-	path, err := resolveToolout(dir, locator)
+	id, err := resolveToolout(dir, locator)
 	if err != nil {
 		return nil, err
 	}
 
-	// Pin the root before anything else. %v rather than %w keeps a missing
-	// spill directory from being reported as a missing spill file.
-	//nolint:gosec // dir is the configured spill directory
-	rootFile, err := os.Open(dir)
+	// %v rather than %w keeps a missing spill directory from being reported as
+	// a missing spill file.
+	root, err := os.OpenRoot(dir)
 	if err != nil {
 		return nil, fmt.Errorf("tools: toolout directory unavailable: %v", err)
 	}
-	defer rootFile.Close() //nolint:errcheck // read-only handle used for identity
-	root, err := pathid.CanonicalFile(rootFile)
-	if err != nil {
-		return nil, fmt.Errorf("tools: cannot identify the toolout directory: %w", err)
-	}
+	defer root.Close() //nolint:errcheck // read-only handle
+
 	if tooloutSwapHook != nil {
 		tooloutSwapHook()
 	}
 
-	//nolint:gosec // dir joined with an id validated as bare lowercase hex
-	f, err := os.Open(path)
+	f, err := root.Open(id)
 	if err != nil {
 		return nil, err
-	}
-	opened, err := pathid.CanonicalFile(f)
-	if err != nil {
-		_ = f.Close()
-		return nil, fmt.Errorf("tools: cannot identify %s: %w", locator, err)
-	}
-	if !pathid.WithinRoot(opened, root) {
-		_ = f.Close()
-		return nil, fmt.Errorf("tools: %s resolves outside the toolout directory", locator)
 	}
 	return f, nil
 }

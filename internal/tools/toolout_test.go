@@ -44,7 +44,7 @@ func TestResolveToolout_RejectsAnythingButHex(t *testing.T) {
 				t.Fatalf("resolved %q to %q, want a rejection", tt.locator, got)
 			}
 			if got != "" {
-				t.Errorf("returned path %q alongside an error", got)
+				t.Errorf("returned id %q alongside an error", got)
 			}
 		})
 	}
@@ -59,8 +59,10 @@ func TestResolveToolout_AcceptsGeneratedIDs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveToolout: %v", err)
 	}
-	if want := filepath.Join(dir, id); got != want {
-		t.Errorf("got %q, want %q", got, want)
+	// The bare id, for opening relative to the directory handle rather than
+	// joining onto a path.
+	if got != id {
+		t.Errorf("got %q, want %q", got, id)
 	}
 }
 
@@ -187,8 +189,9 @@ func TestRead_TooloutRefusesLinkedLeaf(t *testing.T) {
 			_ = f.Close()
 			t.Fatal("a leaf resolving outside the spill directory was accepted")
 		}
-		if !strings.Contains(err.Error(), "outside the toolout directory") {
-			t.Errorf("err = %v, want the containment refusal", err)
+		// os.Root supplies the refusal; the wording is its own.
+		if !strings.Contains(err.Error(), "escapes") {
+			t.Errorf("err = %v, want a containment refusal", err)
 		}
 	})
 
@@ -507,10 +510,61 @@ func TestRead_TooloutRootPinnedBeforeTargetOpen(t *testing.T) {
 	if !swapped {
 		t.Fatal("the hook never ran; the ordering was not exercised")
 	}
+	// The directory handle still refers to the original directory, so the read
+	// either serves the genuine spill or fails. What it must never do is follow
+	// the name to the attacker's replacement.
 	if strings.Contains(res.Content, secret) {
 		t.Errorf("a repointed root disclosed content from outside the pinned directory:\n%s", res.Content)
 	}
-	if res.Error == "" {
-		t.Errorf("read succeeded after the root was repointed, content %q", res.Content)
+}
+
+// The attack a pathname comparison cannot see: the replacement directory takes
+// over the original name, so the target's canonical path still sits under the
+// pinned string and containment agrees with itself.
+//
+// Renaming a directory while a handle on it is open is refused on Windows and
+// permitted on Linux, so this runs on Linux and skips elsewhere. That is also
+// why the junction cases cannot stand in for it — they change the canonical
+// pathname, and this one deliberately does not.
+func TestRead_TooloutSameNameDirectoryReplacement(t *testing.T) {
+	base := t.TempDir()
+	const id = "8888777766665555"
+	const secret = "SECRET-VIA-SAME-NAME-REPLACEMENT"
+
+	root := filepath.Join(base, "toolout")
+	writeSpill(t, root, id, "the genuine spill\n")
+	evil := filepath.Join(base, "evil")
+	writeSpill(t, evil, id, secret)
+
+	moved := filepath.Join(base, "moved-aside")
+	swapped := false
+	tooloutSwapHook = func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		// Take the real directory out of the way and put the attacker's
+		// directory under the exact name that was pinned.
+		if err := os.Rename(root, moved); err != nil {
+			t.Skipf("cannot rename a directory with an open handle here: %v", err)
+		}
+		if err := os.Rename(evil, root); err != nil {
+			t.Fatalf("Rename evil into place: %v", err)
+		}
+	}
+	t.Cleanup(func() { tooloutSwapHook = nil })
+
+	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, TooloutDir: root}
+	res := (&readTool{}).Execute(context.Background(), ci,
+		map[string]any{"locator": TooloutScheme + id})
+
+	if !swapped {
+		t.Fatal("the hook never ran; the replacement was not staged")
+	}
+	if strings.Contains(res.Content, secret) {
+		t.Errorf("same-name replacement disclosed the attacker's file:\n%s", res.Content)
+	}
+	if res.Error != "" && strings.Contains(res.Error, secret) {
+		t.Errorf("secret leaked through the error path: %s", res.Error)
 	}
 }
