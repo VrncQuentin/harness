@@ -101,10 +101,17 @@ func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel
 // Open opens rel for reading. The caller closes it.
 func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 
-// Create opens rel for writing, creating it or truncating what is there. The
-// caller closes it.
-func (r *Root) Create(rel string, perm fs.FileMode) (*os.File, error) {
-	return r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+// OpenWrite opens rel for writing, creating it if it is absent, and
+// deliberately does not truncate. The caller closes it.
+//
+// Truncation is left to the caller because O_TRUNC destroys the file before the
+// caller can look at it, and looking at it is sometimes the whole point. Two
+// directories proven distinct can still hold hard links to one inode, so a copy
+// that opens its destination with O_TRUNC can empty its own source and only
+// then discover they were the same file. Open first, compare the handles with
+// os.SameFile, and truncate only once they differ.
+func (r *Root) OpenWrite(rel string, perm fs.FileMode) (*os.File, error) {
+	return r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE, perm)
 }
 
 // MkdirAll creates rel and any missing parents inside the root.
@@ -378,6 +385,15 @@ func (t *Target) WriteAtomic(data []byte, perm fs.FileMode) error {
 // interrupted call can leave a short file. That is the right trade for a path
 // that held nothing beforehand — a partial new file loses only what this call
 // was writing, while a rename loses somebody else's work.
+//
+// A failed write leaves that partial file rather than cleaning it up, and the
+// omission is deliberate. Removing it means removing a name, and by the time
+// the handle is closed the name may belong to somebody else's file — so tidying
+// up after a failure of ours would delete a file that was never ours. There is
+// no portable way to unlink the exact object a handle refers to, and an
+// identity check before the remove is the same race one step smaller. The
+// documented trade above already permits a short file; it does not permit
+// deleting a stranger's.
 func (t *Target) CreateExclusive(data []byte, perm fs.FileMode) error {
 	f, err := t.root.root.OpenFile(t.rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
 	if err != nil {
@@ -387,16 +403,13 @@ func (t *Target) CreateExclusive(data []byte, perm fs.FileMode) error {
 	// permission requested at create time.
 	if err := f.Chmod(perm); err != nil {
 		_ = f.Close()
-		_ = t.root.root.Remove(t.rel)
 		return t.pathError(err)
 	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
-		_ = t.root.root.Remove(t.rel)
 		return t.pathError(err)
 	}
 	if err := f.Close(); err != nil {
-		_ = t.root.root.Remove(t.rel)
 		return t.pathError(err)
 	}
 	return nil

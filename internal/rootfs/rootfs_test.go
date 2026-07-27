@@ -453,6 +453,13 @@ func TestSetOpenRefusesARootReplacedWhileItIsAuthorized(t *testing.T) {
 			if err == nil {
 				_ = target.Close()
 			}
+			// Only Windows may decline to stage this, and there the refusal to
+			// rename a pinned directory is the defense. Anywhere else a skip
+			// would be an untested assertion that looks identical to a passing
+			// one, so it fails instead.
+			if runtime.GOOS != "windows" {
+				t.Fatalf("could not stage the replacement this test exists to survive: %s", swapFailed)
+			}
 			t.Skipf("cannot rename a pinned directory here, which is itself the defense: %s", swapFailed)
 		}
 		if err == nil {
@@ -485,6 +492,11 @@ func TestTargetIgnoresSameNameRootReplacement(t *testing.T) {
 	defer target.Close() //nolint:errcheck // test cleanup
 
 	if err := os.Rename(root, filepath.Join(base, "moved-aside")); err != nil {
+		// See TestSetOpenRefusesARootReplacedWhileItIsAuthorized: a skip
+		// anywhere but Windows would hide an assertion that never ran.
+		if runtime.GOOS != "windows" {
+			t.Fatalf("could not rename the pinned directory aside: %v", err)
+		}
 		t.Skipf("cannot rename a directory with an open handle here: %v", err)
 	}
 	if err := os.Rename(evil, root); err != nil {

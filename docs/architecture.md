@@ -199,7 +199,7 @@ component against that handle.
 
 Responsibilities:
 - `Root` wraps an open directory for relative access (`ReadFile`, `Lstat`,
-  `Readlink`, `Open`, `Create`, `ReadDir`, `MkdirAll`). `internal/git`'s
+  `Readlink`, `Open`, `OpenWrite`, `ReadDir`, `MkdirAll`). `internal/git`'s
   `DiffWorktree` pins the worktree with it; `internal/memory` pins both ends of
   a project-repo copy with it.
 - `Set` is the sandbox-root list. `Set.Open` pins the configured root **first**,
@@ -207,16 +207,22 @@ Responsibilities:
   to authorize against is the directory actually held open, and only then picks
   the owner by physical identity (`pathid`) and returns a `Target`.
 - `Target` carries the caller's display spelling — locators and tool output stay
-  in the terms the caller asked in — while `Read`, `ReadDir`, `Stat`,
-  `MkdirAllParent`, `WriteAtomic`, and `CreateExclusive` go through the handle.
+  in the terms the caller asked in — while `Read`, `ReadDir`, `MkdirAllParent`,
+  `WriteAtomic`, and `CreateExclusive` go through the handle.
 - `WriteAtomic` (temp file + rename) and `CreateExclusive` (`O_EXCL`) are
   different operations, not variants. A rename replaces whatever holds the name,
   which is right for editing an existing file and destructive for creating a new
   one, so `edit`'s whole-file mode uses the latter and has no preceding
-  existence check to race against.
-- `Root.SameDir` compares two open directories as filesystem objects. A caller
-  copying between them can take a false as a guarantee for the whole copy: a
-  rename moves a name, never the object a handle holds.
+  existence check to race against. A failed `CreateExclusive` leaves its partial
+  file: cleaning up means removing a *name*, which by then may belong to someone
+  else's file.
+- `OpenWrite` does not truncate. Truncation is a separate step the caller takes
+  after it has compared the open handles, because O_TRUNC destroys the file
+  before anyone can look at it.
+- `Root.SameDir` compares two open directories as filesystem objects. It settles
+  the directories only — hard links mean two distinct directories can still hold
+  one inode, so a copy also compares each source and destination file with
+  `os.SameFile` before truncating anything.
 - `ReadDir` sorts by filename. `os.Root` has no `ReadDir`, and `File.ReadDir`
   returns filesystem order where the `os.ReadDir` it replaced sorted — tool
   output has to be stable across identical calls.

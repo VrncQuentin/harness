@@ -98,19 +98,28 @@ func MoveProjectRepo(src, dst string, global bool) error {
 // copyTreeWithoutGit copies the working tree at src into dst, excluding the
 // source .git directory.
 //
-// Both ends are pinned before a byte moves, and the refusal below compares the
-// two open directories rather than their names. That is what makes the copy
-// safe rather than merely checked: MoveProjectRepo's name-based comparison
-// happens once, and between it and the first write the destination name can be
-// re-pointed at the source — after which every destination file is opened with
-// O_TRUNC and the source is emptied one file at a time. A handle cannot be
-// re-pointed. Once these two refer to different directories they refer to
-// different directories for the rest of the copy, whatever happens to the names
-// meanwhile.
+// The copy refuses three overlapping ways for the destination to be the source.
+// They are separate checks because each catches something the others cannot:
+//
+//   - Containment, before the destination is created. A destination inside the
+//     source is not the source, so no identity comparison rejects it — but
+//     creating it adds an entry to a tree that is about to be walked, and the
+//     walk copies it into itself until a path length or recursion limit stops
+//     it. This has to run before MkdirAll, because MkdirAll is what creates the
+//     entry.
+//   - Directory identity, from the two pinned handles. This catches the aliases
+//     and races a name comparison cannot: a handle cannot be re-pointed, so two
+//     roots proven distinct stay distinct for the rest of the copy.
+//   - File identity, per file, in copyFileBetweenRoots. Distinct directories can
+//     still hold hard links to one inode, and no directory-level check can see
+//     that.
 //
 // Pinning both ends also confines the copy: a link inside either tree that
 // leaves it is refused rather than read through or written through.
 func copyTreeWithoutGit(src, dst string) error {
+	if err := rejectDestinationInsideSource(src, dst); err != nil {
+		return err
+	}
 	srcRoot, err := rootfs.Open(src)
 	if err != nil {
 		return fmt.Errorf("memory: open source repo %s: %w", src, err)
@@ -133,6 +142,31 @@ func copyTreeWithoutGit(src, dst string) error {
 		return fmt.Errorf("memory: refusing to copy project memory repo %s onto itself, reached as %s", src, dst)
 	}
 	return copyTreeBetweenRoots(srcRoot, dstRoot, ".")
+}
+
+// rejectDestinationInsideSource refuses a destination that is the source or
+// sits below it, before anything is created.
+//
+// The reverse arrangement — a source below the destination — needs no check
+// here. It cannot recurse, because creating the destination adds nothing to the
+// source tree being walked, and the only harm left is a file landing on a file,
+// which the per-file identity comparison refuses.
+func rejectDestinationInsideSource(src, dst string) error {
+	srcID, err := pathid.Resolve(src)
+	if err != nil {
+		return fmt.Errorf("memory: identify source repo %s: %w", src, err)
+	}
+	dstID, err := pathid.Resolve(dst)
+	if err != nil {
+		return fmt.Errorf("memory: identify destination repo %s: %w", dst, err)
+	}
+	if srcID.Equal(dstID) {
+		return fmt.Errorf("memory: refusing to copy project memory repo %s onto itself, reached as %s", src, dst)
+	}
+	if srcID.Contains(dstID) {
+		return fmt.Errorf("memory: refusing to copy project memory repo %s into itself at %s", src, dst)
+	}
+	return nil
 }
 
 // copyTreeBetweenRoots copies the entries of rel from one pinned repo to the
@@ -166,6 +200,14 @@ func copyTreeBetweenRoots(srcRoot, dstRoot *rootfs.Root, rel string) error {
 // copyFileBetweenRoots streams one file from the source repo to the same
 // relative path in the destination repo.
 //
+// The destination is opened without O_TRUNC and compared against the source as
+// a filesystem object before a single byte is discarded. Two directories proven
+// distinct can still hold hard links to one inode — SameDir answers a question
+// about directories, and says nothing about the files inside them. Opening with
+// O_TRUNC would empty the source file and only then start reading it, so the
+// copy would report success having written a repository full of nothing.
+// Truncation is therefore the step after the comparison, never part of the open.
+//
 // A link that leaves either tree fails the open and aborts the move rather than
 // being skipped. Silently dropping a file from an operation the user asked for
 // as a move is data loss; refusing is recoverable and says which path is the
@@ -176,12 +218,28 @@ func copyFileBetweenRoots(srcRoot, dstRoot *rootfs.Root, rel string) error {
 		return fmt.Errorf("memory: read %s from source repo: %w", rel, err)
 	}
 	defer func() { _ = in.Close() }()
-	out, err := dstRoot.Create(rel, 0o644)
+	out, err := dstRoot.OpenWrite(rel, 0o644)
 	if err != nil {
 		return fmt.Errorf("memory: write %s to destination repo: %w", rel, err)
 	}
+	defer func() { _ = out.Close() }()
+
+	inInfo, err := in.Stat()
+	if err != nil {
+		return fmt.Errorf("memory: describe %s in source repo: %w", rel, err)
+	}
+	outInfo, err := out.Stat()
+	if err != nil {
+		return fmt.Errorf("memory: describe %s in destination repo: %w", rel, err)
+	}
+	if os.SameFile(inInfo, outInfo) {
+		return fmt.Errorf("memory: refusing to copy %s onto itself — source and destination are the same file", rel)
+	}
+
+	if err := out.Truncate(0); err != nil {
+		return fmt.Errorf("memory: truncate %s in destination repo: %w", rel, err)
+	}
 	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
 		return fmt.Errorf("memory: copy %s: %w", rel, err)
 	}
 	if err := out.Close(); err != nil {

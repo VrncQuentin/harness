@@ -346,6 +346,82 @@ func TestCopyTreeWithoutGitRefusesAnAliasedDestination(t *testing.T) {
 	}
 }
 
+// Two directories proven distinct can still hold hard links to one inode.
+// SameDir answers a question about directories and cannot see that
+// src/notes.md and dst/notes.md are one file, so opening the destination with
+// O_TRUNC empties the source and only then begins reading it — the copy then
+// reports success having written a repository full of nothing.
+func TestCopyTreeWithoutGitRefusesAHardLinkedFile(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	const body = "keep me"
+	notes := filepath.Join(src, "notes.md")
+	if err := os.WriteFile(notes, []byte(body), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+
+	dst := filepath.Join(base, "dst")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.Link(notes, filepath.Join(dst, "notes.md")); err != nil {
+		t.Skipf("hard links unavailable in this environment: %v", err)
+	}
+
+	err := copyTreeWithoutGit(src, dst)
+	if err == nil {
+		t.Error("copied a file onto a hard link of itself")
+	} else if !strings.Contains(err.Error(), "same file") {
+		t.Errorf("err = %v, want the same-file refusal", err)
+	}
+	got, readErr := os.ReadFile(notes)
+	if readErr != nil {
+		t.Fatalf("read notes after the refused copy: %v", readErr)
+	}
+	if string(got) != body {
+		t.Fatalf("notes.md = %q after copying onto a hard link of itself, want %q", got, body)
+	}
+}
+
+// A destination inside the source is not the source, so no identity comparison
+// rejects it — but creating it adds an entry to the tree about to be walked,
+// and the walk copies it into itself until a path length or recursion limit
+// stops it. The refusal therefore has to come before the destination exists.
+func TestCopyTreeWithoutGitRefusesADestinationInsideTheSource(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	const body = "keep me"
+	notes := filepath.Join(src, "notes.md")
+	if err := os.WriteFile(notes, []byte(body), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+
+	err := copyTreeWithoutGit(src, filepath.Join(src, "nested", "dst"))
+	if err == nil {
+		t.Fatal("copied a project memory repo into itself")
+	}
+	if !strings.Contains(err.Error(), "into itself") {
+		t.Errorf("err = %v, want the copy-into-itself refusal", err)
+	}
+	// Refused before the destination was created, not after.
+	if _, statErr := os.Stat(filepath.Join(src, "nested")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("the destination was created inside the source before the refusal: %v", statErr)
+	}
+	got, readErr := os.ReadFile(notes)
+	if readErr != nil {
+		t.Fatalf("read notes after the refused copy: %v", readErr)
+	}
+	if string(got) != body {
+		t.Errorf("notes.md = %q, want %q", got, body)
+	}
+}
+
 // The refusal must not cost the ordinary case: a genuine move still copies the
 // whole working tree, including nested directories, and still leaves the source
 // .git behind.
