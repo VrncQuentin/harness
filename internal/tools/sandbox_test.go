@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -137,6 +138,97 @@ func TestValidatePathRejectsSiblingWithSharedPrefix(t *testing.T) {
 
 	if _, err := validatePath(outside, []string{root}); !errors.Is(err, ErrSandboxViolation) {
 		t.Fatalf("validatePath sibling error = %v, want ErrSandboxViolation", err)
+	}
+}
+
+// Every tool that reads or writes file content resolves through an open handle
+// on the owning sandbox root, so an escaping link is refused by the same
+// mechanism regardless of which tool asked. The assertion is on the disclosure,
+// not on the wording: what matters is that the secret never appears.
+func TestRootedToolsRefuseAnEscapingLink(t *testing.T) {
+	const secret = "SECRET-OUTSIDE-THE-SANDBOX"
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.go"), []byte("package p // "+secret+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile secret: %v", err)
+	}
+	mustLinkDir(t, outside, filepath.Join(root, "leakdir"))
+	leaked := filepath.Join(root, "leakdir", "secret.go")
+
+	ci := CallInfo{SandboxRoots: []string{root}}
+	parsers := newASTTestRegistry(t)
+
+	tests := []struct {
+		name string
+		run  func() Result
+	}{
+		{name: "read", run: func() Result {
+			return (&readTool{}).Execute(context.Background(), ci, map[string]any{"path": leaked})
+		}},
+		{name: "read by locator", run: func() Result {
+			return (&readTool{}).Execute(context.Background(), ci, map[string]any{"locator": FormatLocator(leaked, 1, 1)})
+		}},
+		{name: "file_list", run: func() Result {
+			return (&fileListTool{}).Execute(context.Background(), ci, map[string]any{"path": filepath.Join(root, "leakdir")})
+		}},
+		{name: "ast_map", run: func() Result {
+			return (&astMapTool{parsers: parsers}).Execute(context.Background(), ci, map[string]any{"path": leaked})
+		}},
+		{name: "ast_find", run: func() Result {
+			return (&astFindTool{parsers: parsers}).Execute(context.Background(), ci,
+				map[string]any{"path": leaked, "query": secret, "mode": "content"})
+		}},
+		{name: "edit whole-file", run: func() Result {
+			return (&editTool{parsers: parsers}).Execute(context.Background(), ci,
+				map[string]any{"path": filepath.Join(root, "leakdir", "planted.go"), "content": "package p\n"})
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := tt.run()
+			if res.Error == "" {
+				t.Errorf("call succeeded, want a refusal; content:\n%s", res.Content)
+			}
+			if strings.Contains(res.Content, secret) || strings.Contains(res.Error, secret) {
+				t.Errorf("disclosed content from outside the sandbox:\n%s\n%s", res.Content, res.Error)
+			}
+		})
+	}
+	// The write attempt must not have landed outside the sandbox either.
+	if _, err := os.Stat(filepath.Join(outside, "planted.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("edit wrote a file outside the sandbox: %v", err)
+	}
+}
+
+// The sandbox root may be reached through a link, and the tools must still work
+// inside it — resolving the root is not allowed to lock the user out of it.
+func TestRootedToolsWorkThroughALinkedRoot(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "a.txt"), []byte("body\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	linked := filepath.Join(base, "linked")
+	mustLinkDir(t, real, linked)
+
+	ci := CallInfo{SandboxRoots: []string{linked}}
+	res := (&readTool{}).Execute(context.Background(), ci, map[string]any{"path": filepath.Join(linked, "a.txt")})
+	if res.Error != "" {
+		t.Fatalf("read through a linked root: %s", res.Error)
+	}
+	if res.Content != "body\n" {
+		t.Errorf("Content = %q, want %q", res.Content, "body\n")
+	}
+
+	res = (&fileListTool{}).Execute(context.Background(), ci, map[string]any{"path": linked})
+	if res.Error != "" {
+		t.Fatalf("file_list through a linked root: %s", res.Error)
+	}
+	if !strings.Contains(res.Content, "a.txt") {
+		t.Errorf("Content = %q, want it to list a.txt", res.Content)
 	}
 }
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -168,6 +169,50 @@ func TestDetect_DedupAbs(t *testing.T) {
 	out := dedupAbs(in)
 	if len(out) != 2 {
 		t.Errorf("expected 2 unique paths, got %d (%v)", len(out), out)
+	}
+}
+
+// Two spellings of one binary are one suggestion. A link on $PATH beside the
+// same file found under binDir is the common case, and offering both invites
+// the user to configure a path that a later junction change silently repoints.
+func TestDetect_DedupCollapsesPhysicalAliases(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	binary := filepath.Join(real, "llama-server")
+	if err := os.WriteFile(binary, nil, 0o755); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skipf("symlinks unavailable in this environment: %v", err)
+		}
+		out, jErr := exec.Command("cmd", "/c", "mklink", "/J", alias, real).CombinedOutput()
+		if jErr != nil {
+			t.Skipf("cannot create directory link: %v: %s", jErr, out)
+		}
+	}
+
+	out := dedupAbs([]string{binary, filepath.Join(alias, "llama-server")})
+	if len(out) != 1 {
+		t.Errorf("dedupAbs kept %d entries for one physical file: %v", len(out), out)
+	}
+	if len(out) > 0 && out[0] != binary {
+		t.Errorf("dedupAbs kept %q, want the first spelling %q", out[0], binary)
+	}
+}
+
+// Detection is best-effort by contract, so a path that cannot be resolved is
+// still offered — keyed lexically rather than dropped.
+func TestDetect_DedupKeepsUnresolvablePaths(t *testing.T) {
+	base := t.TempDir()
+	bad := filepath.Join(base, "bad\x00name")
+	out := dedupAbs([]string{bad, bad})
+	if len(out) != 1 {
+		t.Errorf("dedupAbs kept %d entries for one unresolvable path: %v", len(out), out)
 	}
 }
 

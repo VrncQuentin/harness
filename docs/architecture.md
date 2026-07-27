@@ -128,6 +128,12 @@ Defines the local tool surface available to the agent loop.
 
 Responsibilities:
 - Register tools by id, JSON Schema parameters, description, and execute function.
+- Enforce the sandbox through `internal/rootfs`: tools that read or write file
+  content (`read`, `file_list`, `ast_map`, `ast_find`, `edit`) operate through an
+  open handle on the owning sandbox root. Tools that hand a path to something
+  outside the package — a subprocess working directory, a `go-git` repository —
+  validate it with `internal/pathid` instead, because there is no handle to give
+  them.
 - Pass a typed `CallInfo` to each tool: active project slug, sandbox roots, memory repo paths (C2 scope list), session id, caller identity, HTTP client, optional `MemoryQuery` closure, and optional `GHTokenFn` closure (reads `GITHUB_TOKEN` at call time — never stored).
 - Record how tool output was produced with `OriginClass` (`extraction` / `inference`). M12 MR1 adds per-hit memory-content origin; origin metadata never bypasses approvals, sandboxing, or verification.
 
@@ -150,11 +156,22 @@ Responsibilities:
   because symlinks are the only reparse mechanism.
 - `Resolve` canonicalizes the deepest existing component and re-appends the
   components below it, so a path that does not exist yet is judged by where it
-  would land rather than by its parent.
-- `WithinRoot` and `Key` compare already-canonical paths, case-insensitively on
-  Windows.
-- `SameOrWithin` combines the two for the containment question the sandbox and
-  the C2 lock ask.
+  would land rather than by its parent. A relative input is made absolute
+  first, so the result is absolute on every OS.
+- `Resolve` returns an opaque `ID` rather than a string. Comparison lives on
+  the `ID` — `Equal`, `Contains`, `Key` — so there is no exported operation
+  with an "already resolved" precondition for a caller to forget.
+- `ID.Contains` is `filepath.Rel`-based, not prefix-based. A prefix test
+  rejects everything below a filesystem or volume root (`C:\`, `/` already end
+  in a separator), accepts a sibling sharing a textual prefix, and has no
+  answer for two different volumes.
+- `Same`, `SameOrWithin`, and `LockKey` are the high-level operations: repo
+  identity, sandbox/C2 containment, and the git mutation-lock key. `LockKey`
+  exists so no caller composes resolution and key derivation by hand.
+- Key maps and locks with `ID.Key`, never with the `ID` itself. Go compares
+  every field including the display path, and `Resolve` re-appends a
+  not-yet-created tail in the caller's case, so one identity can produce two
+  structs.
 
 Design constraints:
 - **`filepath.EvalSymlinks` must not be used for containment or identity.** It
@@ -165,6 +182,92 @@ Design constraints:
   resolution failure is returned. A caller cannot distinguish an unresolvable
   path from a safe one, so the unknown case must be a refusal rather than a
   lexical guess.
+
+### Rooted Filesystem Access (`internal/rootfs`)
+The other half of the pair. `internal/pathid` decides *where* a path is;
+`internal/rootfs` acts on that place rather than on the name that led to it.
+Both are needed and neither substitutes for the other.
+
+Validating a pathname and then reopening it checks one resolution and acts on
+another. Canonicalizing the opened target and comparing it against a pinned
+root path is no better: rename the real root aside, move an attacker's
+directory into the name it vacated, and the target opens inside the attacker's
+directory while canonicalizing to a path under the pinned string — the
+comparison agrees with itself and admits the file. `os.Root` removes the
+pathname from the decision by holding the directory open and resolving every
+component against that handle.
+
+Responsibilities:
+- `Root` wraps an open directory for relative access (`ReadFile`, `Lstat`,
+  `Readlink`, `Open`, `OpenWrite`, `ReadDir`, `MkdirAll`). `internal/git`'s
+  `DiffWorktree` pins the worktree with it; `internal/memory` pins both ends of
+  a project-repo copy with it.
+- `OpenIdentified` pins a directory and returns it **with** the physical
+  identity that directory has been confirmed to have. The pairing is the point:
+  an identity resolved separately from a pin describes a name, so any later
+  reasoning about the handle — is it inside that other directory, is it the same
+  as this one — is reasoning about something that need not be what is held open.
+- `Set` is the sandbox-root list. `Set.Open` uses `OpenIdentified` on the
+  configured root, then picks the owner by containment and returns a `Target`.
+- `Target` carries the caller's display spelling — locators and tool output stay
+  in the terms the caller asked in — while `Read`, `ReadDir`, `MkdirAllParent`,
+  `WriteAtomic`, and `CreateExclusive` go through the handle.
+- `WriteAtomic` (temp file + rename) and `CreateExclusive` (`O_EXCL`) are
+  different operations, not variants. A rename replaces whatever holds the name,
+  which is right for editing an existing file and destructive for creating a new
+  one, so `edit`'s whole-file mode uses the latter and has no preceding
+  existence check to race against. A failed `CreateExclusive` leaves its partial
+  file: cleaning up means removing a *name*, which by then may belong to someone
+  else's file.
+- `OpenWrite` does not truncate. Truncation is a separate step the caller takes
+  after it has compared the open handles, because O_TRUNC destroys the file
+  before anyone can look at it.
+- `Root.SameDir` compares two open directories as filesystem objects. It settles
+  the directories only: it says nothing about the files inside them, nor about
+  one being inside the other.
+- `Root.OpenChild` pins a subdirectory as a `Root` of its own, so a traversal
+  that inspects a directory and then descends into it uses one handle rather
+  than resolving the same name twice.
+- `Root.WriteStreamAtomic` publishes by rename. Replacing a directory *entry*
+  leaves the inode that held the name alone, which is the only way to write into
+  a tree whose entries may be hard links to files elsewhere — truncating in
+  place writes *through* the link, and comparing the pair being copied cannot
+  detect it, because the destination entry may link to a different source file
+  than the one being read.
+- The repo copy layers checks rather than relying on any single one: the two
+  trees must be disjoint by name, disjoint again against handle-bound identities
+  once both ends are pinned, distinct as directories, and disjoint level by
+  level during the walk — every newly pinned source directory against every
+  pinned destination directory and vice versa, which is what catches a directory
+  being moved from one tree into the other mid-copy. Files need no comparison,
+  because they are published by rename.
+- `ReadDir` sorts by filename. `os.Root` has no `ReadDir`, and `File.ReadDir`
+  returns filesystem order where the `os.ReadDir` it replaced sorted — tool
+  output has to be stable across identical calls.
+
+Design constraints:
+- **Pin before authorizing.** Resolving a root and pinning it afterwards leaves
+  a window in which the resolved directory is replaced, so the open pins the
+  replacement while the authorization describes the original. Dereferencing the
+  configured name once, then binding the identity to that handle, is what closes
+  it. A configured name that already meant the wrong directory at pin time is
+  not a race and is not defended against.
+- **`os.Root` is a containment boundary, not a ban on links.** It follows a
+  symlink whose target stays inside the root. It refuses an absolute link
+  target unconditionally, so a Windows junction is never traversed through a
+  root; `Set` sidesteps that by addressing the target through the physical path
+  `pathid` resolved.
+- **Containment is within a directory tree, not within a filesystem.** On Linux
+  `os.Root` does not stop traversal across bind mounts, ordinary mount points,
+  or into `/proc`. Mount-based escapes are outside the threat model — staging
+  one needs privileges that already defeat the sandbox — and closing them would
+  need `openat2` with `RESOLVE_NO_XDEV`, which has no Windows counterpart.
+- **It does not sandbox subprocesses.** `exec`, `go_test`, and `go_lint`
+  validate their working directory with `pathid` and nothing more; command
+  containment is a separate problem. `go-git` likewise takes a pathname, so
+  repository opening keeps the explicit identity and C2 checks around it.
+- The toolout spill directory is outside every sandbox root, so it opens its own
+  `os.Root` in `internal/tools` rather than going through `Set`.
 
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).

@@ -3,17 +3,20 @@ package memory
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 
 	gitw "github.com/VrncQuentin/harness/internal/git"
+	"github.com/VrncQuentin/harness/internal/pathid"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 	gogit "github.com/go-git/go-git/v6"
 )
+
+// gitDirName is the repository metadata directory, which a working-tree copy
+// must never carry across: the destination gets its own.
+const gitDirName = ".git"
 
 // EnsureProjectRepo initializes a project memory repo and fills in
 // any missing scaffold entries. Existing git repos are opened as-is; missing
@@ -28,7 +31,7 @@ func (ProjectRepoManager) MoveProjectRepo(src, dst string, global bool) error {
 	return MoveProjectRepo(src, dst, global)
 }
 
-func (ProjectRepoManager) SameProjectRepoPath(a, b string) bool {
+func (ProjectRepoManager) SameProjectRepoPath(a, b string) (bool, error) {
 	return SameProjectRepoPath(a, b)
 }
 
@@ -51,8 +54,19 @@ func EnsureProjectRepo(root string, global bool) error {
 
 // MoveProjectRepo copies one project memory repo to another path, excluding the
 // source .git directory, then initializes and commits the destination layout.
+//
+// Source and destination are compared by physical identity before anything is
+// copied, and an identity that cannot be established aborts the move. Identity
+// has to be physical because a lexical comparison sees two different strings
+// where a junction, a symlink, an 8.3 alias, or a different case on Windows
+// names one repository — and then the copy proceeds to rewrite the repository
+// with itself.
 func MoveProjectRepo(src, dst string, global bool) error {
-	if SameProjectRepoPath(src, dst) {
+	same, err := SameProjectRepoPath(src, dst)
+	if err != nil {
+		return fmt.Errorf("memory: identify project memory repo: %w", err)
+	}
+	if same {
 		return EnsureProjectRepo(dst, global)
 	}
 	if err := copyTreeWithoutGit(src, dst); err != nil {
@@ -78,55 +92,295 @@ func MoveProjectRepo(src, dst string, global bool) error {
 	return nil
 }
 
+// copyTreeWithoutGit copies the working tree at src into dst, excluding the
+// source .git directory.
+//
+// The copy refuses every way the destination can turn out to be, or to sit
+// inside, the source. They are separate checks because each catches something
+// the others cannot:
+//
+//   - Disjointness by name, before anything is created. Neither tree may be the
+//     other or contain it. This runs first only so the ordinary mistake is
+//     refused without touching the filesystem; on its own it proves nothing,
+//     because it is a fact about names and the handles are opened afterwards.
+//   - Disjointness again, after both ends are pinned, against identities that
+//     have each been confirmed to describe the directory actually held open.
+//     This is the one that counts. Between the first check and MkdirAll the
+//     destination's name can be re-pointed into the source — the early check
+//     passed, MkdirAll creates the entry inside the source, and the two handles
+//     are still different directories, so no identity comparison objects.
+//   - Directory identity, from the two pinned handles: the destination *is* the
+//     source, reached by another name.
+//   - Level by level during the traversal, against a stack of pinned handles for
+//     each tree. A one-time proof says where the two trees were; this says what
+//     is in hand at every level, in both directions, which is what catches a
+//     directory being moved from one tree into the other while the copy runs.
+//
+// Files need no comparison at all, because they are published by rename rather
+// than by truncating the destination — see copyFileBetweenRoots.
+//
+// Pinning both ends also confines the copy: a link inside either tree that
+// leaves it is refused rather than read through or written through.
 func copyTreeWithoutGit(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("source is not a directory: %s", src)
-	}
-	return filepath.WalkDir(src, func(srcPath string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.Name() == ".git" && d.IsDir() {
-			return filepath.SkipDir
-		}
-		rel, err := filepath.Rel(src, srcPath)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		dstPath := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(dstPath, 0o755)
-		}
-		return copyFile(srcPath, dstPath)
-	})
+	return copyTreeWithoutGitHooked(src, dst, nil)
 }
 
-func copyFile(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+// copyTreeWithoutGitHooked is copyTreeWithoutGit with a hook that runs between
+// the name-based containment check and the creation of the destination, so a
+// test can stage a re-point in exactly that window. Nil on every production
+// path.
+func copyTreeWithoutGitHooked(src, dst string, afterCheck func()) error {
+	if err := refuseByName(src, dst); err != nil {
 		return err
 	}
-	in, err := os.Open(src)
+	if afterCheck != nil {
+		afterCheck()
+	}
+
+	srcRoot, srcID, err := rootfs.OpenIdentified(src)
 	if err != nil {
+		return fmt.Errorf("memory: open source repo %s: %w", src, err)
+	}
+	defer srcRoot.Close() //nolint:errcheck // read-only handle
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		return fmt.Errorf("memory: create destination %s: %w", dst, err)
+	}
+	dstRoot, dstID, err := rootfs.OpenIdentified(dst)
+	if err != nil {
+		return fmt.Errorf("memory: open destination repo %s: %w", dst, err)
+	}
+	defer dstRoot.Close() //nolint:errcheck // closed after the copy
+
+	// A destination created inside the source during the window above is left
+	// where it is. Removing it means removing a name, and the name may no longer
+	// be the empty directory that was just created — the same reason
+	// CreateExclusive leaves its partial file behind.
+	if err := refuseContainment(srcID, dstID, src, dst); err != nil {
 		return err
+	}
+	same, err := srcRoot.SameDir(dstRoot)
+	if err != nil {
+		return fmt.Errorf("memory: compare source and destination repo: %w", err)
+	}
+	if same {
+		return fmt.Errorf("memory: refusing to copy project memory repo %s onto itself, reached as %s", src, dst)
+	}
+	return (&repoCopy{
+		srcStack: []*rootfs.Root{srcRoot},
+		dstStack: []*rootfs.Root{dstRoot},
+	}).copyDir(".")
+}
+
+// maxCopyDepth bounds the traversal. A project memory repo is a handful of
+// levels deep, so this is unreachable in normal use.
+//
+// It exists because the failure mode it guards is not a wrong answer but a
+// non-answer: with the destination-entry check removed, the traversal descends
+// forever, creating directories as it goes. That is worse than an error in
+// every way — nothing to read, nothing to report, and a filesystem filling up.
+// A bound turns any arrangement nobody anticipated into a diagnosable failure.
+const maxCopyDepth = 64
+
+// refuseByName resolves both sides and applies refuseContainment to the result.
+// It is the cheap early pass; its answer is about names, and is superseded by
+// the same test against handle-bound identities once both ends are pinned.
+func refuseByName(src, dst string) error {
+	srcID, err := pathid.Resolve(src)
+	if err != nil {
+		return fmt.Errorf("memory: identify source repo %s: %w", src, err)
+	}
+	dstID, err := pathid.Resolve(dst)
+	if err != nil {
+		return fmt.Errorf("memory: identify destination repo %s: %w", dst, err)
+	}
+	return refuseContainment(srcID, dstID, src, dst)
+}
+
+// refuseContainment requires the two trees to be disjoint: neither the same
+// directory, nor one inside the other.
+//
+// An earlier version checked only for a destination inside the source, on the
+// reasoning that the reverse cannot recurse and that a file landing on a file is
+// caught per-file. Both halves of that were wrong. Take src = /repos/inner and
+// dst = /repos: the walk reaches src/inner and writes it to dst/inner, which is
+// src — so source files are overwritten with the contents of their own
+// subdirectory. The per-file comparison does not object, because it refuses only
+// a file being copied onto *itself*, and these are different files.
+//
+// Requiring disjoint trees is also a property that can be stated and tested,
+// where "this direction is safe because…" needs a fresh case analysis every time
+// the traversal changes.
+func refuseContainment(srcID, dstID pathid.ID, src, dst string) error {
+	if srcID.Equal(dstID) {
+		return fmt.Errorf("memory: refusing to copy project memory repo %s onto itself, reached as %s", src, dst)
+	}
+	if srcID.Contains(dstID) {
+		return fmt.Errorf("memory: refusing to copy project memory repo %s into itself at %s", src, dst)
+	}
+	if dstID.Contains(srcID) {
+		return fmt.Errorf("memory: refusing to copy project memory repo %s into %s, which contains it", src, dst)
+	}
+	return nil
+}
+
+// repoCopy walks the two trees with a stack of pinned handles for each, one per
+// level from the top down to the level being copied.
+//
+// The stacks are what keep the trees disjoint for the whole copy rather than at
+// one instant. Comparing a newly pinned source subdirectory against the
+// destination root alone is not enough in either direction: the destination can
+// be moved into the source, and — on a platform that allows renaming a directory
+// somebody holds open — a pinned *source ancestor* can be moved into the name
+// the destination child is about to be opened under. The second one is worse,
+// because the copy then writes a subdirectory over its own parent, and the
+// per-file check passes: those are different files at different relative paths.
+//
+// So every newly pinned source directory is checked against every pinned
+// destination directory, and every newly pinned destination directory against
+// every pinned source directory including the one just added.
+type repoCopy struct {
+	// srcStack and dstStack hold one pinned handle per level, top-level root
+	// first. The last entry of each is the level currently being copied.
+	srcStack []*rootfs.Root
+	dstStack []*rootfs.Root
+	// afterChildCheck runs after a source subdirectory has been pinned and
+	// cleared and before the destination counterpart is pinned, so a test can
+	// stage a swap in that window. Nil on every production path.
+	afterChildCheck func(rel string)
+}
+
+// anySameDir reports whether candidate is any of the directories in stack.
+func anySameDir(candidate *rootfs.Root, stack []*rootfs.Root) (bool, error) {
+	for _, pinned := range stack {
+		same, err := candidate.SameDir(pinned)
+		if err != nil {
+			return false, err
+		}
+		if same {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// copyDir copies the contents of the pinned srcDir into the pinned dstDir,
+// recursing into subdirectories and skipping the source .git. rel names the
+// level for diagnostics only; every operation addresses a single component
+// through the handles for this level, never a path from the top.
+//
+// Each subdirectory is pinned before it is judged, and the walk descends
+// through that same handle. Checking a name and then re-resolving it to recurse
+// would be two resolutions of one name, and the window between them is enough
+// to rename the checked directory aside and move another into its place: the
+// check clears the original and the descent enters the impostor, which when it
+// is the destination means copying it into itself. Holding the handle removes
+// the second resolution, so what was cleared is what is entered.
+//
+// Holding it is not the same as locking it. Windows does allow this directory
+// to be renamed while the walk has it open; the handle keeps following it, which
+// is the point — the walk stays with the directory, not with the name.
+func (c *repoCopy) copyDir(rel string) error {
+	depth := len(c.srcStack) - 1
+	if depth > maxCopyDepth {
+		return fmt.Errorf("memory: project memory repo nests deeper than %d levels at %s — refusing to continue", maxCopyDepth, rel)
+	}
+	srcDir := c.srcStack[depth]
+	dstDir := c.dstStack[len(c.dstStack)-1]
+	entries, err := srcDir.ReadDir(".")
+	if err != nil {
+		return fmt.Errorf("memory: read %s in source repo: %w", rel, err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if name == gitDirName && entry.IsDir() {
+			continue
+		}
+		if !entry.IsDir() {
+			if err := copyFileBetweenRoots(srcDir, dstDir, name, filepath.Join(rel, name)); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := c.copyChildDir(name, filepath.Join(rel, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyChildDir pins one source subdirectory and its destination counterpart,
+// proves each is disjoint from every level of the other tree already pinned,
+// and descends through those two handles.
+func (c *repoCopy) copyChildDir(name, rel string) error {
+	srcDir := c.srcStack[len(c.srcStack)-1]
+	dstDir := c.dstStack[len(c.dstStack)-1]
+
+	srcChild, err := srcDir.OpenChild(name)
+	if err != nil {
+		return fmt.Errorf("memory: open %s in source repo: %w", rel, err)
+	}
+	defer srcChild.Close() //nolint:errcheck // read-only handle
+	inDestination, err := anySameDir(srcChild, c.dstStack)
+	if err != nil {
+		return fmt.Errorf("memory: compare %s against the destination repo: %w", rel, err)
+	}
+	if inDestination {
+		return fmt.Errorf("memory: refusing to copy project memory repo into its own destination at %s", rel)
+	}
+
+	if c.afterChildCheck != nil {
+		c.afterChildCheck(rel)
+	}
+
+	if err := dstDir.MkdirAll(name, 0o755); err != nil {
+		return fmt.Errorf("memory: create %s in destination repo: %w", rel, err)
+	}
+	dstChild, err := dstDir.OpenChild(name)
+	if err != nil {
+		return fmt.Errorf("memory: open %s in destination repo: %w", rel, err)
+	}
+	defer dstChild.Close() //nolint:errcheck // closed after this level
+
+	// srcChild joins the source stack before the destination is judged, so the
+	// destination cannot turn out to be the very directory about to be read.
+	c.srcStack = append(c.srcStack, srcChild)
+	defer func() { c.srcStack = c.srcStack[:len(c.srcStack)-1] }()
+	inSource, err := anySameDir(dstChild, c.srcStack)
+	if err != nil {
+		return fmt.Errorf("memory: compare %s against the source repo: %w", rel, err)
+	}
+	if inSource {
+		return fmt.Errorf("memory: refusing to copy project memory repo onto its own source at %s", rel)
+	}
+
+	c.dstStack = append(c.dstStack, dstChild)
+	defer func() { c.dstStack = c.dstStack[:len(c.dstStack)-1] }()
+	return c.copyDir(rel)
+}
+
+// copyFileBetweenRoots streams one file from the source repo to the same name in
+// the destination repo, publishing it by rename.
+//
+// The rename is what protects the source. An earlier version opened the
+// destination and truncated it once it had checked the two were not the same
+// file — which is not enough, because a destination entry can be a hard link to
+// a *different* source file than the one being read. Two different inodes, so
+// the comparison passes, and the truncate empties a source file the copy has not
+// reached yet. Replacing the entry never writes through a link at all, so no
+// comparison is needed and none of the source's links are disturbed.
+//
+// A link that leaves either tree fails the open and aborts the move rather than
+// being skipped. Silently dropping a file from an operation the user asked for
+// as a move is data loss; refusing is recoverable and says which path is the
+// problem.
+func copyFileBetweenRoots(srcDir, dstDir *rootfs.Root, name, rel string) error {
+	in, err := srcDir.Open(name)
+	if err != nil {
+		return fmt.Errorf("memory: read %s from source repo: %w", rel, err)
 	}
 	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	if err := out.Close(); err != nil {
-		return err
+	if err := dstDir.WriteStreamAtomic(name, in, 0o644); err != nil {
+		return fmt.Errorf("memory: write %s to destination repo: %w", rel, err)
 	}
 	return nil
 }
@@ -137,7 +391,7 @@ func listRepoFiles(root string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		if d.Name() == ".git" && d.IsDir() {
+		if d.Name() == gitDirName && d.IsDir() {
 			return filepath.SkipDir
 		}
 		if d.IsDir() {
@@ -154,15 +408,16 @@ func listRepoFiles(root string) ([]string, error) {
 }
 
 // SameProjectRepoPath reports whether two project repo paths identify the same
-// filesystem location using the current OS path case-sensitivity rules.
-func SameProjectRepoPath(a, b string) bool {
-	ac, aerr := filepath.Abs(filepath.Clean(a))
-	bc, berr := filepath.Abs(filepath.Clean(b))
-	if aerr != nil || berr != nil {
-		return filepath.Clean(a) == filepath.Clean(b)
-	}
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(ac, bc)
-	}
-	return ac == bc
+// project memory repository.
+//
+// Identity is physical, not lexical. The comparison this replaced made two
+// paths absolute and compared the strings, so a junction, a symlink, or an 8.3
+// alias of one repository compared unequal to the repository itself — and both
+// callers treat "different" as permission to overwrite the destination.
+//
+// It returns an error rather than a bare false when either side cannot be
+// resolved: an unlocatable path is not a path known to be somewhere else, and
+// the callers here mutate on the strength of the answer.
+func SameProjectRepoPath(a, b string) (bool, error) {
+	return pathid.Same(a, b)
 }

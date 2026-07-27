@@ -67,12 +67,13 @@ func (t *astFindTool) Execute(ctx context.Context, c CallInfo, args map[string]a
 	if mode == "" {
 		mode = "symbol"
 	}
-	absPath, err := validatePath(rawPath, c.SandboxRoots)
+	file, err := openTarget(rawPath, c.SandboxRoots)
 	if err != nil {
 		return Result{Error: err.Error()}
 	}
-	//nolint:gosec
-	src, err := os.ReadFile(absPath)
+	defer file.Close() //nolint:errcheck // read-only root handle
+	absPath := file.Display()
+	src, err := file.Read()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Result{Error: ErrPathNotFound.Error() + ": " + absPath}

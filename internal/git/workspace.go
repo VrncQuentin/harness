@@ -22,6 +22,8 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/storer"
 	udiff "github.com/go-git/go-git/v6/utils/diff"
 	"github.com/sergi/go-diff/diffmatchpatch"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 // HeadSHA returns the SHA of the current HEAD commit.
@@ -471,6 +473,15 @@ func (r *Repo) DiffWorktree(ctx context.Context) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// The worktree is pinned once for the whole diff and every status path is
+	// resolved against that handle, so no entry can be read through a link that
+	// leaves the repository.
+	root, err := rootfs.Open(r.path)
+	if err != nil {
+		return "", fmt.Errorf("git: pin worktree %s: %w", r.path, err)
+	}
+	defer root.Close() //nolint:errcheck // read-only handle
+
 	var headTree *object.Tree
 	if head, err := r.repo.Head(); err == nil {
 		if c, err := r.repo.CommitObject(head.Hash()); err == nil {
@@ -485,7 +496,7 @@ func (r *Repo) DiffWorktree(ctx context.Context) (string, error) {
 			return "", err
 		}
 		before := r.headContent(headTree, entry.Path)
-		after, isBinary := worktreeContent(r.path, entry.Path)
+		after, isBinary := worktreeContent(root, entry.Path)
 		if before == after {
 			continue
 		}
@@ -514,25 +525,37 @@ func (r *Repo) headContent(tree *object.Tree, path string) string {
 	return content
 }
 
-// worktreeContent returns the on-disk content for the repo-relative relPath.
+// worktreeContent returns the on-disk content for the repo-relative relPath,
+// read through the pinned worktree root.
 //
-// Nothing here dereferences a symlink. A symlink is reported the way git
-// stores one — the link target as the blob content — and a regular file whose
-// resolved parent lies outside root is skipped. Reading through links would
-// let a link committed inside the repo pull file content from anywhere on the
-// filesystem into the diff, escaping the tool sandbox that only ever checked
-// the repository root.
-func worktreeContent(root, relPath string) (content string, isBinary bool) {
-	absPath, ok := worktreeSafePath(root, relPath)
+// Nothing here dereferences a symlink. A symlink is reported the way git stores
+// one — the link target as the blob content — and never as the bytes it points
+// at. Dereferencing would let a link committed inside the repo pull file
+// content from anywhere on the filesystem into the diff, escaping the tool
+// sandbox that only ever checked the repository root.
+//
+// Containment of the path's own components is the root's job. This replaced a
+// hand-written walk that Lstat'd every intermediate component and refused any
+// reparse point, which was stricter than necessary in one direction — a
+// relative directory symlink pointing elsewhere inside the repo was refused,
+// though git itself would follow it — and weaker in another, because each
+// component was checked by name and then traversed by name again.
+//
+// A link with an absolute target is refused by os.Root whether or not it points
+// back inside the root, so a Windows junction is never traversed here: junctions
+// always store an absolute target. That is the same outcome the old walk gave.
+func worktreeContent(root *rootfs.Root, relPath string) (content string, isBinary bool) {
+	rel, ok := worktreeRelPath(relPath)
 	if !ok {
 		return "", false
 	}
-	fi, err := os.Lstat(absPath)
+	fi, err := root.Lstat(rel)
 	if err != nil {
-		return "", false // deleted from worktree
+		// Deleted from the worktree, or unreachable without leaving the root.
+		return "", false
 	}
 	if fi.Mode()&os.ModeSymlink != 0 {
-		target, rlErr := os.Readlink(absPath)
+		target, rlErr := root.Readlink(rel)
 		if rlErr != nil {
 			return "", false
 		}
@@ -543,7 +566,7 @@ func worktreeContent(root, relPath string) (content string, isBinary bool) {
 		// no diffable content of its own.
 		return "", false
 	}
-	data, err := os.ReadFile(absPath)
+	data, err := root.ReadFile(rel)
 	if err != nil {
 		return "", false
 	}
@@ -553,44 +576,22 @@ func worktreeContent(root, relPath string) (content string, isBinary bool) {
 	return string(data), false
 }
 
-// worktreeSafePath joins a repo-relative status path onto root and reports
-// whether every directory component below root is a real directory. Any
-// intermediate component that is a reparse point — a symlink, or on Windows a
-// junction or mount point — is refused, because reading through one would leave
-// the repository entirely.
+// worktreeRelPath converts a repo-relative status path into a name that can be
+// resolved through the worktree root handle, or reports that it cannot be.
 //
-// The check rejects rather than resolves deliberately. filepath.EvalSymlinks
-// returns a junction path unchanged instead of resolving it, and errors on any
-// path below a junction even where os.ReadFile succeeds, so a containment
-// comparison built on it silently accepts an out-of-repo read on Windows.
-// Lstat's mode bits are the reliable signal.
-func worktreeSafePath(root, relPath string) (string, bool) {
+// Only the shapes that are not repo-relative at all are refused here: the
+// repository itself, an absolute path, and anything that climbs out of it.
+// Status paths never climb, so one that does is malformed rather than merely
+// out of scope. Everything else is the root's decision.
+func worktreeRelPath(relPath string) (string, bool) {
 	clean := filepath.Clean(filepath.FromSlash(relPath))
 	if clean == "." || clean == string(filepath.Separator) || filepath.IsAbs(clean) {
 		return "", false
 	}
-	current := root
-	components := strings.Split(clean, string(filepath.Separator))
-	for i, part := range components {
-		if part == "" || part == "." {
-			continue
-		}
-		if part == ".." {
-			return "", false // status paths never climb; refuse if one does
-		}
-		current = filepath.Join(current, part)
-		if i == len(components)-1 {
-			break // the leaf is classified by the caller
-		}
-		fi, err := os.Lstat(current)
-		if err != nil {
-			return "", false
-		}
-		if fi.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || !fi.IsDir() {
-			return "", false
-		}
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", false
 	}
-	return current, true
+	return clean, true
 }
 
 // --- minimal diff.Patch implementation over utils/diff chunks ---
