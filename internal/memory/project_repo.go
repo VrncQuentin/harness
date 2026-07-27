@@ -377,7 +377,7 @@ func (c *repoCopy) copyChildDir(name, rel string) error {
 // as a move is data loss; refusing is recoverable and says which path is the
 // problem.
 func copyFileBetweenRoots(srcDir, dstDir *rootfs.Root, name, rel string) error {
-	in, err := srcDir.Open(name)
+	in, err := srcDir.OpenRead(name)
 	if err != nil {
 		return fmt.Errorf("memory: read %s from source repo: %w", rel, err)
 	}

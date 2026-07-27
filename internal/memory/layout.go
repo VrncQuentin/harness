@@ -106,26 +106,59 @@ func ProjectRepoScaffoldFiles(global bool) []string {
 // .git directory that is found and the layout that is inspected are known to
 // belong to the same repository. Validating by pathname twice would let the
 // name mean one repository for the git check and another for the layout check.
+//
+// This pins, validates, and closes — it answers "is root a valid repo right
+// now", nothing more. A caller that goes on to open a long-lived reader on the
+// same root afterwards would be doing exactly what this function itself
+// avoids: validating through one pin and then acting through a second one
+// taken later, with a window between them in which root can change and the
+// two pins end up describing different repositories. OpenValidatedDirReader
+// closes that window by handing back the same pin it validated, for callers
+// that need one.
 func ValidateProjectRepo(root string, global bool) error {
+	pinned, err := openValidatedRepoRoot(root, global)
+	if err != nil {
+		return err
+	}
+	return pinned.Close()
+}
+
+// OpenValidatedDirReader pins root, validates it as a project memory repo
+// through that pin, and — only on success — returns a DirReader bound to the
+// very same handle rather than a second one opened afterwards by name. The
+// caller closes the result.
+func OpenValidatedDirReader(root string, global bool) (*DirReader, error) {
+	pinned, err := openValidatedRepoRoot(root, global)
+	if err != nil {
+		return nil, err
+	}
+	return &DirReader{root: pinned}, nil
+}
+
+// openValidatedRepoRoot pins root and validates it, returning the still-open
+// pin on success and closing it on failure.
+func openValidatedRepoRoot(root string, global bool) (*rootfs.Root, error) {
 	if strings.TrimSpace(root) == "" {
-		return errors.New("memory: project memory repo path is required")
+		return nil, errors.New("memory: project memory repo path is required")
 	}
 	pinned, err := openRepoRoot(root)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer pinned.Close() //nolint:errcheck // read-only handle
 	if err := validateGitDir(pinned, root); err != nil {
-		return err
+		_ = pinned.Close()
+		return nil, err
 	}
 	missing, err := missingItems(pinned, ExpectedProjectRepoLayout(global))
 	if err != nil {
-		return err
+		_ = pinned.Close()
+		return nil, err
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("memory: project repo layout incomplete: missing %s", layoutPaths(missing))
+		_ = pinned.Close()
+		return nil, fmt.Errorf("memory: project repo layout incomplete: missing %s", layoutPaths(missing))
 	}
-	return nil
+	return pinned, nil
 }
 
 // CreateMissing creates each item in items under root. Files are created
@@ -227,7 +260,7 @@ func openRepoRoot(root string) (*rootfs.Root, error) {
 	}
 	pinned, err := rootfs.Open(root)
 	if err != nil {
-		if isNotDirectory(err) {
+		if rootfs.IsNotDirectory(err) {
 			return nil, fmt.Errorf("memory: repo path is not a directory: %s", root)
 		}
 		return nil, fmt.Errorf("memory: open repo root %s: %w", root, err)
@@ -261,26 +294,4 @@ func layoutPaths(items []LayoutItem) string {
 
 func isMissingLayoutPath(err error) bool {
 	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
-}
-
-// isNotDirectory reports whether err says the path exists but is not a
-// directory, which each platform spells its own way.
-//
-// It only chooses which message the status page shows. The decision that
-// matters — refusing to open a non-directory as a root — has already been made
-// by the time this is consulted, so a miss here costs a less specific error and
-// nothing else. That is what makes the string comparison acceptable: opening a
-// root on Windows fails with an unexported sentinel in package os rather than
-// an errno, and its message is the only handle on it.
-func isNotDirectory(err error) bool {
-	for _, errno := range notDirectoryErrnos {
-		if errors.Is(err, errno) {
-			return true
-		}
-	}
-	var pathErr *fs.PathError
-	if errors.As(err, &pathErr) && pathErr.Err != nil {
-		return pathErr.Err.Error() == "not a directory"
-	}
-	return false
 }

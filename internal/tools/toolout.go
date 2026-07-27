@@ -3,7 +3,6 @@ package tools
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/VrncQuentin/harness/internal/rootfs"
@@ -88,7 +87,12 @@ func resolveToolout(dir, locator string) (string, error) {
 // configured roots and reject it. It takes a standalone rootfs.Root on the
 // spill directory instead, which is the same capability without the root
 // selection.
-func openToolout(dir, locator string) (*os.File, error) {
+//
+// It returns a *rootfs.File rather than a raw *os.File. *os.File.Name reports
+// the root path joined with the relative id — an absolute pathname that an
+// authorized read of a cached spill could be turned back into an unauthorized
+// direct reopen. *rootfs.File exposes Read and nothing that leaks the name.
+func openToolout(dir, locator string) (*rootfs.File, error) {
 	return openTooloutHooked(dir, locator, nil)
 }
 
@@ -101,7 +105,7 @@ func openToolout(dir, locator string) (*os.File, error) {
 // only defence is a convention that every such test avoids t.Parallel — a rule
 // nothing enforces and a future test will not know about. Passed in, each call
 // sees its own. It is nil on every production path.
-func openTooloutHooked(dir, locator string, afterPin func()) (*os.File, error) {
+func openTooloutHooked(dir, locator string, afterPin func()) (*rootfs.File, error) {
 	id, err := resolveToolout(dir, locator)
 	if err != nil {
 		return nil, err
@@ -119,7 +123,7 @@ func openTooloutHooked(dir, locator string, afterPin func()) (*os.File, error) {
 		afterPin()
 	}
 
-	f, err := root.Open(id)
+	f, err := root.OpenRead(id)
 	if err != nil {
 		return nil, err
 	}

@@ -155,6 +155,28 @@ func (r *DirReader) Close() error {
 	return nil
 }
 
+// SamePhysicalLocation reports whether path currently names the same directory
+// this reader is pinned to.
+//
+// It exists for the one class of caller this reader's own pin cannot cover: a
+// second component that has to open the same repository by pathname because
+// its own API gives no other way in — go-git, specifically, whose storage is
+// addressed by path throughout and cannot be bound to a rootfs handle. Opening
+// that second component and this reader from the same configured string is not
+// enough on its own to know they ended up at the same place: the two opens
+// happen at different moments, and root can have changed between them. This
+// pins path fresh, compares it against the reader's own pin as two open
+// directory objects rather than as two strings, and closes the fresh pin
+// either way — it answers the question and holds nothing.
+func (r *DirReader) SamePhysicalLocation(path string) (bool, error) {
+	other, err := rootfs.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer other.Close() //nolint:errcheck // read-only handle, opened only to compare
+	return r.root.SameDir(other)
+}
+
 // SubRoot implements SubRooter. relPath is created if it is missing, then
 // pinned through the repo handle so the returned root is inside the repo by
 // construction rather than by a comparison somebody has to remember to make.

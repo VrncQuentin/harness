@@ -73,7 +73,7 @@ func (s PromotionService) appendAndCommit(relPath, text, commitMessage, commitCo
 		return fmt.Errorf("write %s: %w", relPath, err)
 	}
 	if _, err := s.Committer.Commit(commitMessage, []string{relPath}); err != nil {
-		if rollbackErr := s.rollback(relPath, previous, existed); rollbackErr != nil {
+		if rollbackErr := s.rollback(relPath, previous, updated, existed); rollbackErr != nil {
 			return fmt.Errorf("%s: %w; rollback: %v", commitContext, err, rollbackErr)
 		}
 		return fmt.Errorf("%s: %w", commitContext, err)
@@ -92,7 +92,35 @@ func (s PromotionService) readExisting(relPath string) ([]byte, bool, error) {
 	return nil, false, fmt.Errorf("read %s: %w", relPath, err)
 }
 
-func (s PromotionService) rollback(relPath string, previous []byte, existed bool) error {
+// rollback undoes this call's own write when the commit that was meant to
+// follow it fails. expected is the content this call published; rollback only
+// proceeds if the file still holds exactly that.
+//
+// A commit failure is rare, but the file is not locked while it is in flight,
+// and a second promotion to the same path (another agent note, a concurrent
+// fact) can land in between the write and the failed commit. Restoring or
+// removing by name alone, on the strength of what this call remembers having
+// written, would then destroy that other promotion's content — the same
+// unlink-what-the-name-now-holds hazard documented on CreateExclusive and
+// WriteStreamAtomic elsewhere in this codebase, applied here to a rollback
+// instead of a create. Reading the file back and comparing it to what this
+// call wrote is the check that closes it: if the content no longer matches,
+// somebody else has already written over this call's promotion, and rolling
+// back would erase their write instead of this one's, so the safe choice is to
+// leave the file exactly as it is and let the original commit error stand.
+func (s PromotionService) rollback(relPath string, previous, expected []byte, existed bool) error {
+	current, err := s.Store.Read(relPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			// Already gone by some other route; there is nothing of this
+			// call's to undo and nothing here to destroy.
+			return nil
+		}
+		return fmt.Errorf("read %s before rollback: %w", relPath, err)
+	}
+	if !bytes.Equal(current, expected) {
+		return nil
+	}
 	if existed {
 		return s.Store.WriteFile(relPath, previous)
 	}

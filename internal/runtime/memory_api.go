@@ -87,25 +87,15 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	}
 
 	svcDeps := ui.ServiceDeps{MemoryRepoPath: roots.activeRoot}
-	if err := memory.ValidateProjectRepo(roots.globalRoot, true); err != nil {
-		uiServer.SetServiceDeps(svcDeps)
-		uiServer.AddStartupError(fmt.Errorf("global memory repo: %w", err))
-		return false
-	}
-	if roots.activeSlug != project.GlobalSlug {
-		if err := memory.ValidateProjectRepo(roots.activeRoot, false); err != nil {
-			uiServer.SetServiceDeps(svcDeps)
-			uiServer.AddStartupError(fmt.Errorf("active memory repo: %w", err))
-			return false
-		}
-	}
 
-	// The two repo roots are pinned here and held for as long as this
-	// generation of the memory services is wired up. Every read and write below
-	// resolves through those handles, so nothing downstream re-resolves the
-	// configured pathname — which is what stops a link planted inside a repo
-	// from leading a later write out of it.
-	owned.globalMem, err = memory.OpenDirReader(roots.globalRoot)
+	// Validation and the long-lived pin are one call, not two: OpenValidatedDirReader
+	// pins root once and checks the layout through that same handle, then
+	// hands the reader back still holding it. Validating with one call and
+	// opening the reader with a second, separate call — as this used to do —
+	// would leave a window between them in which root can change, so the
+	// layout that was validated and the repo the reader ends up bound to are
+	// not provably the same directory.
+	owned.globalMem, err = memory.OpenValidatedDirReader(roots.globalRoot, true)
 	if err != nil {
 		uiServer.SetServiceDeps(svcDeps)
 		uiServer.AddStartupError(fmt.Errorf("global memory repo: %w", err))
@@ -117,7 +107,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		// be closed on every reload path.
 		owned.activeMem = owned.globalMem
 	} else {
-		owned.activeMem, err = memory.OpenDirReader(roots.activeRoot)
+		owned.activeMem, err = memory.OpenValidatedDirReader(roots.activeRoot, false)
 		if err != nil {
 			uiServer.SetServiceDeps(svcDeps)
 			uiServer.AddStartupError(fmt.Errorf("active memory repo: %w", err))
@@ -465,6 +455,24 @@ func (rt *Runtime) buildSessionManagerWithClients(
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
 		return nil, nil
+	}
+	// go-git addresses its storage by pathname and has no handle to bind to
+	// sessionStore's own pin, so this is the closest check available: confirm
+	// the repository go-git just opened by name is still the same physical
+	// directory sessionStore is pinned to, rather than trusting that opening
+	// both from the same configured string was enough. dr is nil for a test
+	// fake that does not implement the check; production always passes the
+	// real *memory.DirReader.
+	if dr, ok := sessionStore.(*memory.DirReader); ok {
+		same, err := dr.SamePhysicalLocation(roots.activeRoot)
+		if err != nil {
+			uiServer.AddStartupError(fmt.Errorf("session manager: confirm repository identity: %w", err))
+			return nil, nil
+		}
+		if !same {
+			uiServer.AddStartupError(errors.New("session manager: git repository does not match the pinned memory repo"))
+			return nil, nil
+		}
 	}
 	rt.gitRepo = repo
 
