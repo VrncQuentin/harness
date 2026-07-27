@@ -202,10 +202,13 @@ Responsibilities:
   `Readlink`, `Open`, `OpenWrite`, `ReadDir`, `MkdirAll`). `internal/git`'s
   `DiffWorktree` pins the worktree with it; `internal/memory` pins both ends of
   a project-repo copy with it.
-- `Set` is the sandbox-root list. `Set.Open` pins the configured root **first**,
-  then resolves it and confirms with `os.SameFile` that the identity it is about
-  to authorize against is the directory actually held open, and only then picks
-  the owner by physical identity (`pathid`) and returns a `Target`.
+- `OpenIdentified` pins a directory and returns it **with** the physical
+  identity that directory has been confirmed to have. The pairing is the point:
+  an identity resolved separately from a pin describes a name, so any later
+  reasoning about the handle — is it inside that other directory, is it the same
+  as this one — is reasoning about something that need not be what is held open.
+- `Set` is the sandbox-root list. `Set.Open` uses `OpenIdentified` on the
+  configured root, then picks the owner by containment and returns a `Target`.
 - `Target` carries the caller's display spelling — locators and tool output stay
   in the terms the caller asked in — while `Read`, `ReadDir`, `MkdirAllParent`,
   `WriteAtomic`, and `CreateExclusive` go through the handle.
@@ -219,10 +222,14 @@ Responsibilities:
 - `OpenWrite` does not truncate. Truncation is a separate step the caller takes
   after it has compared the open handles, because O_TRUNC destroys the file
   before anyone can look at it.
-- `Root.SameDir` compares two open directories as filesystem objects. It settles
-  the directories only — hard links mean two distinct directories can still hold
-  one inode, so a copy also compares each source and destination file with
-  `os.SameFile` before truncating anything.
+- `Root.SameDir` compares two open directories as filesystem objects, and
+  `SameDirAt` asks the same of one entry inside a root. `SameDir` settles the
+  directories only: hard links mean two distinct directories can still hold one
+  inode, and being distinct says nothing about one being inside the other. The
+  repo copy therefore layers checks rather than relying on any single one —
+  containment by name, containment again against handle-bound identities,
+  directory identity, `SameDirAt` on every directory it is about to descend
+  into, and `os.SameFile` on every file before truncating it.
 - `ReadDir` sorts by filename. `os.Root` has no `ReadDir`, and `File.ReadDir`
   returns filesystem order where the `os.ReadDir` it replaced sorted — tool
   output has to be stable across identical calls.

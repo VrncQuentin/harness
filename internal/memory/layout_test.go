@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 func TestCreateMissing_All(t *testing.T) {
@@ -419,6 +421,105 @@ func TestCopyTreeWithoutGitRefusesADestinationInsideTheSource(t *testing.T) {
 	}
 	if string(got) != body {
 		t.Errorf("notes.md = %q, want %q", got, body)
+	}
+}
+
+// The name-based containment check proves something about names, and the
+// handles are opened afterwards. Re-pointing the destination into the source in
+// that window defeats it on its own: the early check passed against a
+// destination outside the source, MkdirAll then creates the entry inside the
+// source, and the two pinned directories are still genuinely different — so no
+// identity comparison objects and the walk copies the source into itself.
+//
+// The hook stages exactly that re-point, so the reproduction does not depend on
+// winning a race.
+func TestCopyTreeWithoutGitRefusesADestinationRepointedIntoTheSource(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	const body = "keep me"
+	notes := filepath.Join(src, "notes.md")
+	if err := os.WriteFile(notes, []byte(body), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, outside, alias)
+
+	swapped := false
+	err := copyTreeWithoutGitHooked(src, filepath.Join(alias, "nested"), func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		if rmErr := os.Remove(alias); rmErr != nil {
+			t.Fatalf("Remove alias: %v", rmErr)
+		}
+		mustLinkDir(t, src, alias)
+	})
+	if !swapped {
+		t.Fatal("the hook never ran; the window was not exercised")
+	}
+	if err == nil {
+		t.Fatal("copied a project memory repo into a destination re-pointed inside it")
+	}
+	if !strings.Contains(err.Error(), "into itself") {
+		t.Errorf("err = %v, want the copy-into-itself refusal", err)
+	}
+	// The tell-tale of the recursion this prevents.
+	if _, statErr := os.Stat(filepath.Join(src, "nested", "nested")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("the copy recursed into its own destination: %v", statErr)
+	}
+	got, readErr := os.ReadFile(notes)
+	if readErr != nil {
+		t.Fatalf("read notes after the refused copy: %v", readErr)
+	}
+	if string(got) != body {
+		t.Errorf("notes.md = %q, want %q", got, body)
+	}
+}
+
+// The traversal never descends into the destination, whoever moves it where.
+// The containment checks answer where the destination was before the walk
+// began; this answers for the directory actually in hand.
+func TestCopyTreeBetweenRootsRefusesToDescendIntoTheDestination(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := os.MkdirAll(filepath.Join(src, "dst"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const body = "keep me"
+	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+
+	srcRoot, _, err := rootfs.OpenIdentified(src)
+	if err != nil {
+		t.Fatalf("OpenIdentified(src): %v", err)
+	}
+	defer srcRoot.Close() //nolint:errcheck // test cleanup
+	// Pinned directly, so the traversal meets its own destination as an entry
+	// without any containment check having had the chance to object.
+	dstRoot, _, err := rootfs.OpenIdentified(filepath.Join(src, "dst"))
+	if err != nil {
+		t.Fatalf("OpenIdentified(dst): %v", err)
+	}
+	defer dstRoot.Close() //nolint:errcheck // test cleanup
+
+	err = copyTreeBetweenRoots(srcRoot, dstRoot, ".", 0)
+	if err == nil {
+		t.Fatal("the traversal descended into its own destination")
+	}
+	if !strings.Contains(err.Error(), "its own destination") {
+		t.Errorf("err = %v, want the destination-entry refusal", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(src, "dst", "dst")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("the copy recursed into its own destination: %v", statErr)
 	}
 }
 

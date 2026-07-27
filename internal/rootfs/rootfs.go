@@ -141,11 +141,27 @@ func (r *Root) ReadDir(rel string) ([]os.DirEntry, error) {
 //
 // It compares filesystem objects, not pathnames, and both are already open, so
 // the answer cannot be invalidated afterwards: a rename moves a name, never the
-// object a handle holds. A caller that copies from one root to the other can
-// take a false here as a guarantee that the copy cannot land on its own source,
-// however the two names are re-pointed while it runs.
+// object a handle holds.
+//
+// It settles the two directories and nothing else. A false result is not a
+// guarantee that a copy between them cannot land on its own source: hard links
+// mean two distinct directories can hold one inode, so the files have to be
+// compared as well — see the per-file check in internal/memory's repo copy.
+// Nor does it say anything about where the directories are relative to each
+// other; one can be inside the other and still be a different object.
 func (r *Root) SameDir(other *Root) (bool, error) {
-	mine, err := r.root.Stat(".")
+	return r.SameDirAt(".", other)
+}
+
+// SameDirAt reports whether rel, resolved through r, is the directory other is
+// pinned on. SameDir is this with rel of ".".
+//
+// It exists so a traversal can ask "is this entry the destination?" of every
+// directory it is about to descend into, rather than proving once beforehand
+// that the destination is elsewhere. A one-time proof is about where things
+// were; this is about the entry actually in hand.
+func (r *Root) SameDirAt(rel string, other *Root) (bool, error) {
+	mine, err := r.root.Stat(rel)
 	if err != nil {
 		return false, err
 	}
@@ -193,12 +209,17 @@ func (s Set) open(path string, afterPin func()) (*Target, error) {
 		if strings.TrimSpace(root) == "" {
 			continue
 		}
-		pinned, rootID, err := pinRoot(root, afterPin)
+		pinned, rootID, err := openIdentified(root, afterPin)
 		if err != nil {
+			// Absent is not a failure: a root that is not there cannot own the
+			// target, and one unavailable root must not disable the others.
+			// Every other failure — permission, I/O, an identity that no longer
+			// matches the pin — is returned, matching pathid: a root whose state
+			// cannot be established is not a root known to be irrelevant.
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
 			return nil, err
-		}
-		if pinned == nil {
-			continue // configured but absent: it cannot own anything
 		}
 		if !rootID.Contains(target) {
 			_ = pinned.Close()
@@ -215,57 +236,62 @@ func (s Set) open(path string, afterPin func()) (*Target, error) {
 	return nil, fmt.Errorf("%w: %s", ErrOutsideRoots, path)
 }
 
-// pinRoot opens root and returns it together with the identity it was
-// authorized as, or (nil, zero, nil) when root does not exist.
+// OpenIdentified pins the directory at path and returns it together with the
+// physical identity that the pinned directory has been confirmed to have.
 //
-// The order is the whole point. The configured name is dereferenced exactly
-// once, by the open, and everything afterwards is checked against the directory
-// that open pinned. Resolving first and pinning second — which is what this
-// replaced — left a window in which the resolved directory could be renamed
-// aside and another put in its place: the open then pinned the replacement, and
-// the relative path authorized against the original was applied inside it.
+// The pairing is the point. An identity resolved separately from a pin is an
+// identity of a name, and a caller that then reasons about the handle — is it
+// inside that other directory, is it the same as this one — is reasoning about
+// whatever the name meant, which need not be what it holds open. Returned
+// together, the two are known to describe one directory.
 //
-// Resolving after the pin does not close that window on its own, because the
-// resolution reads the same name the attacker controls. The SameFile check is
-// what closes it: the identity used for authorization has to be the directory
-// actually held open, and a name that has moved on since the pin fails the
-// comparison and refuses the call.
+// The order is the rest of it. The name is dereferenced exactly once, by the
+// open, and everything afterwards is checked against what that open pinned.
+// Resolving first and pinning second leaves a window in which the resolved
+// directory is renamed aside and another put in its place: the open then pins
+// the replacement, and every conclusion drawn from the resolution is about a
+// directory that is no longer involved. Resolving after the pin does not close
+// that on its own, because the resolution reads the same name an attacker
+// controls — the SameFile check is what closes it, and a name that has moved on
+// since the pin fails the comparison and refuses the call.
 //
-// What remains is the case where the configured name already meant the
-// attacker's directory when it was opened. That is not a check/use race —
-// any implementation must dereference the configured name at some instant, and
-// this one dereferences it once.
-func pinRoot(root string, afterPin func()) (*Root, pathid.ID, error) {
-	pinned, err := Open(root)
+// What remains is the case where the name already meant the attacker's
+// directory when it was opened. That is not a check/use race: any
+// implementation must dereference the name at some instant, and this one
+// dereferences it once.
+//
+// The caller closes the returned Root.
+func OpenIdentified(path string) (*Root, pathid.ID, error) {
+	return openIdentified(path, nil)
+}
+
+// openIdentified is OpenIdentified with a hook that runs in the window between
+// the pin and the resolution, so a test can stage the replacement the SameFile
+// check exists to catch. The hook is a parameter rather than package state so
+// parallel tests cannot see each other's. It is nil on every production path.
+func openIdentified(path string, afterPin func()) (*Root, pathid.ID, error) {
+	pinned, err := Open(path)
 	if err != nil {
-		// Absent is not a failure: a root that is not there cannot own the
-		// target, and one unavailable root must not disable the others. Every
-		// other failure — permission, I/O — is returned, matching pathid: a
-		// root whose state cannot be established is not a root known to be
-		// irrelevant.
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, pathid.ID{}, nil
-		}
 		return nil, pathid.ID{}, err
 	}
 	if afterPin != nil {
 		afterPin()
 	}
-	rootID, err := pathid.Resolve(root)
+	id, err := pathid.Resolve(path)
 	if err != nil {
 		_ = pinned.Close()
-		return nil, pathid.ID{}, fmt.Errorf("rootfs: cannot resolve root %s: %w", root, err)
+		return nil, pathid.ID{}, fmt.Errorf("rootfs: cannot resolve root %s: %w", path, err)
 	}
-	same, err := pinned.matches(rootID)
+	same, err := pinned.matches(id)
 	if err != nil {
 		_ = pinned.Close()
-		return nil, pathid.ID{}, fmt.Errorf("rootfs: cannot confirm root %s: %w", root, err)
+		return nil, pathid.ID{}, fmt.Errorf("rootfs: cannot confirm root %s: %w", path, err)
 	}
 	if !same {
 		_ = pinned.Close()
-		return nil, pathid.ID{}, fmt.Errorf("rootfs: root %s changed while it was being opened", root)
+		return nil, pathid.ID{}, fmt.Errorf("rootfs: root %s changed while it was being opened", path)
 	}
-	return pinned, rootID, nil
+	return pinned, id, nil
 }
 
 // matches reports whether the pinned directory is the one id names. Both sides
