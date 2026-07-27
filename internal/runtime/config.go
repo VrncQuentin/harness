@@ -102,6 +102,9 @@ func (rt *Runtime) ApplyConfig(
 			rt.stopMemoryAndAPI(uiServer)
 			if rt.startMemoryAndAPI(ctx, uiServer, metricsStore) {
 				result.LiveApplied = true
+				// The replacement is live, so the generation it replaced is
+				// now unreachable and its pinned handles can go.
+				snapshot.closeReplaced()
 			} else {
 				rt.restoreMemoryAndAPI(uiServer, snapshot)
 			}

@@ -18,6 +18,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/inference"
 	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 type stubEmbedder struct {
@@ -44,7 +45,7 @@ func writeRepo(t *testing.T, files map[string]string) *memory.DirReader {
 			t.Fatalf("WriteFile: %v", err)
 		}
 	}
-	return memory.NewDirReader(root)
+	return openTestRepo(t, root)
 }
 
 // newAssembler wires up a DiskAssembler with a disk-backed registry.
@@ -853,7 +854,7 @@ func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
 	cfg.RecencyWeight = 0.5
 
 	idxDir := t.TempDir()
-	idx, err := index.Create(idxDir, 2)
+	idx, err := index.Create(pinDir(t, idxDir), "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -924,7 +925,7 @@ func TestAssemble_BlendedRetrievalTrimDropsLowestScore(t *testing.T) {
 	cfg.RecencyWeight = 0.0
 
 	idxDir := t.TempDir()
-	idx, err := index.Create(idxDir, 2)
+	idx, err := index.Create(pinDir(t, idxDir), "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -969,7 +970,7 @@ func TestAssemble_BlendedRetrievalUsesBestChunkScore(t *testing.T) {
 	cfg.RecencyWeight = 0.0
 
 	idxDir := t.TempDir()
-	idx, err := index.Create(idxDir, 2)
+	idx, err := index.Create(pinDir(t, idxDir), "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1016,7 +1017,7 @@ func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
 	cfg.RecencyWeight = 1.0
 
 	idxDir := t.TempDir()
-	idx, err := index.Create(idxDir, 2)
+	idx, err := index.Create(pinDir(t, idxDir), "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1054,4 +1055,27 @@ func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
 	if strings.Contains(sys, "01.md") {
 		t.Errorf("oldest episode 01 should be dropped; got:\n%s", sys)
 	}
+}
+
+// openTestRepo pins a project memory repo for a test and closes it on cleanup.
+func openTestRepo(t *testing.T, root string) *memory.DirReader {
+	t.Helper()
+	r, err := memory.OpenDirReader(root)
+	if err != nil {
+		t.Fatalf("OpenDirReader %s: %v", root, err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
+}
+
+// pinDir opens dir as a rooted capability for a test that builds a bare index
+// without a project memory repo around it.
+func pinDir(t *testing.T, dir string) *rootfs.Root {
+	t.Helper()
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatalf("rootfs.Open %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
 }

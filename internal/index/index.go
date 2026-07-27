@@ -4,6 +4,7 @@
 package index
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -11,11 +12,10 @@ import (
 	"io"
 	"io/fs"
 	"math"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 
+	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/vector"
 )
 
@@ -55,52 +55,68 @@ type Searcher interface {
 
 // Index manages one vectors.bin + manifest.json pair on disk. Safe for
 // concurrent use.
+//
+// The index is addressed through a directory handle, not a pathname, and the
+// handle is one the caller obtained by resolving the index's location through
+// the project memory repo's own handle. That distinction is the whole point:
+// pinning "<repo>/index/_episodes" as a name pins whatever the name leads to,
+// and "index" or "_episodes" can already be a symlink or a junction pointing
+// out of the repository — the pin would then be perfectly sound and perfectly
+// outside the repo. Resolving the relative location through the repo's handle
+// is what makes "inside the repo" true by construction.
+//
+// The handle is borrowed, not owned: whoever pinned the directory closes it,
+// and it must outlive the Index.
 type Index struct {
-	mu       sync.Mutex
-	dir      string
+	mu sync.Mutex
+	// dir is the pinned index directory.
+	dir *rootfs.Root
+	// name is the index's repo-relative location, for diagnostics only. It is
+	// never resolved.
+	name     string
 	dim      int
 	manifest Manifest
 }
 
-// Open reads an existing index at dir, or returns a zero-vector
-// ErrNotExist when the directory or files are missing.
-func Open(dir string) (*Index, error) {
-	idx := &Index{dir: dir}
-	mf, err := os.ReadFile(filepath.Join(dir, manifestFile))
+// Open reads the existing index in the pinned directory dir, or returns an
+// error satisfying errors.Is(err, fs.ErrNotExist) when its files are missing.
+// name labels the index in diagnostics and is never resolved.
+func Open(dir *rootfs.Root, name string) (*Index, error) {
+	idx := &Index{dir: dir, name: name}
+	mf, err := dir.ReadFile(manifestFile)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("index: open %s: %w", dir, fs.ErrNotExist)
+			return nil, fmt.Errorf("index: open %s: %w", name, fs.ErrNotExist)
 		}
-		return nil, fmt.Errorf("index: read manifest %s: %w", dir, err)
+		return nil, fmt.Errorf("index: read manifest %s: %w", name, err)
 	}
 	if err := json.Unmarshal(mf, &idx.manifest); err != nil {
-		return nil, fmt.Errorf("index: parse manifest %s: %w", dir, err)
+		return nil, fmt.Errorf("index: parse manifest %s: %w", name, err)
 	}
-	if err := validateManifest(dir, idx.manifest); err != nil {
+	if err := idx.validateManifest(idx.manifest); err != nil {
 		return nil, err
 	}
 	idx.dim = idx.manifest.Dim
 	return idx, nil
 }
 
-// Create initializes a new index at dir. Existing indices are overwritten.
-func Create(dir string, dim int) (*Index, error) {
+// Create initializes a new index in the pinned directory dir. Existing indices
+// are overwritten. name labels the index in diagnostics.
+func Create(dir *rootfs.Root, name string, dim int) (*Index, error) {
 	if dim <= 0 {
 		return nil, fmt.Errorf("index: invalid dimension %d", dim)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("index: mkdir %s: %w", dir, err)
-	}
 	idx := &Index{
-		dir: dir,
-		dim: dim,
+		dir:  dir,
+		name: name,
+		dim:  dim,
 		manifest: Manifest{
 			Dim:    dim,
 			Chunks: nil,
 		},
 	}
-	if err := writeFileAtomic(filepath.Join(dir, vectorsFile), nil, 0o644); err != nil {
-		return nil, fmt.Errorf("index: write vectors %s: %w", dir, err)
+	if err := idx.dir.WriteStreamAtomic(vectorsFile, bytes.NewReader(nil), 0o644); err != nil {
+		return nil, fmt.Errorf("index: write vectors %s: %w", name, err)
 	}
 	if err := idx.writeManifest(); err != nil {
 		return nil, err
@@ -118,6 +134,12 @@ func (idx *Index) Add(sha string, vectors [][]float32) error {
 // no-op; changed source content replaces its old vectors. Result identifiers
 // are the source path, which makes equal episode basenames in different agent
 // directories distinct.
+// The vector file is opened once and held for the whole sequence — measure the
+// current end, append there, and on a manifest failure truncate back to where
+// it started. Reopening the file between those steps would let the length that
+// was measured, the bytes that were written, and the length rolled back to
+// belong to three different files; holding one handle makes the rollback undo
+// this call's own append and nothing else.
 func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -132,19 +154,27 @@ func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error 
 			break
 		}
 	}
-	offset, err := idx.vectorFileSize()
-	if err != nil {
-		idx.manifest = previous
-		return err
-	}
 	for _, v := range vectors {
 		if len(v) != idx.dim {
 			idx.manifest = previous
 			return fmt.Errorf("index: dimension mismatch: got %d, want %d", len(v), idx.dim)
 		}
 	}
+
+	f, err := idx.dir.OpenReadWrite(vectorsFile, 0o644)
+	if err != nil {
+		idx.manifest = previous
+		return fmt.Errorf("index: open vectors: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	offset, err := f.Size()
+	if err != nil {
+		idx.manifest = previous
+		return fmt.Errorf("index: stat vectors: %w", err)
+	}
 	entry := Entry{SHA: source, Source: source, ContentHash: contentHash, Offset: offset, Length: len(vectors)}
-	if err := idx.appendVectors(vectors); err != nil {
+	if err := appendVectors(f, vectors, idx.dim); err != nil {
 		idx.manifest = previous
 		return err
 	}
@@ -152,7 +182,7 @@ func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error 
 	idx.manifest.Count += len(vectors)
 	if err := idx.writeManifest(); err != nil {
 		idx.manifest = previous
-		if truncateErr := idx.truncateVectors(offset); truncateErr != nil {
+		if truncateErr := rollbackVectors(f, offset); truncateErr != nil {
 			return fmt.Errorf("%w; rollback vectors: %v", err, truncateErr)
 		}
 		return err
@@ -168,7 +198,7 @@ func (idx *Index) Search(query []float32, k int) ([]Result, error) {
 	if len(query) != idx.dim {
 		return nil, fmt.Errorf("index: query dim mismatch: got %d, want %d", len(query), idx.dim)
 	}
-	f, err := os.Open(filepath.Join(idx.dir, vectorsFile))
+	f, err := idx.dir.OpenRead(vectorsFile)
 	if err != nil {
 		return nil, fmt.Errorf("index: open vectors: %w", err)
 	}
@@ -238,23 +268,27 @@ func (idx *Index) ContainsCurrent(source, contentHash string) bool {
 	return false
 }
 
-func (idx *Index) vectorFileSize() (int64, error) {
-	info, err := os.Stat(filepath.Join(idx.dir, vectorsFile))
-	if err != nil {
-		return 0, fmt.Errorf("index: stat vectors: %w", err)
+// appendVectors writes the vectors at the end of the open file and fsyncs.
+func appendVectors(f *rootfs.File, vectors [][]float32, dim int) error {
+	buf := make([]byte, len(vectors)*dim*4)
+	pos := 0
+	for _, v := range vectors {
+		for _, val := range v {
+			binary.LittleEndian.PutUint32(buf[pos:], math.Float32bits(val))
+			pos += 4
+		}
 	}
-	if info.IsDir() {
-		return 0, fmt.Errorf("index: vectors path is a directory")
+	if err := f.Append(buf); err != nil {
+		return fmt.Errorf("index: write vectors: %w", err)
 	}
-	return info.Size(), nil
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("index: sync vectors: %w", err)
+	}
+	return nil
 }
 
-func (idx *Index) truncateVectors(size int64) error {
-	f, err := os.OpenFile(filepath.Join(idx.dir, vectorsFile), os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("index: open vectors for rollback: %w", err)
-	}
-	defer func() { _ = f.Close() }()
+// rollbackVectors undoes an append through the same handle it was made on.
+func rollbackVectors(f *rootfs.File, size int64) error {
 	if err := f.Truncate(size); err != nil {
 		return fmt.Errorf("index: truncate vectors: %w", err)
 	}
@@ -264,49 +298,26 @@ func (idx *Index) truncateVectors(size int64) error {
 	return nil
 }
 
-func (idx *Index) appendVectors(vectors [][]float32) error {
-	f, err := os.OpenFile(filepath.Join(idx.dir, vectorsFile), os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("index: open vectors for append: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	buf := make([]byte, len(vectors)*idx.dim*4)
-	pos := 0
-	for _, v := range vectors {
-		for _, val := range v {
-			binary.LittleEndian.PutUint32(buf[pos:], math.Float32bits(val))
-			pos += 4
-		}
-	}
-	if _, err := f.Write(buf); err != nil {
-		return fmt.Errorf("index: write vectors: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("index: sync vectors: %w", err)
-	}
-	return nil
-}
-
 func (idx *Index) writeManifest() error {
 	data, err := json.MarshalIndent(idx.manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("index: marshal manifest: %w", err)
 	}
-	if err := writeFileAtomic(filepath.Join(idx.dir, manifestFile), data, 0o644); err != nil {
+	if err := idx.dir.WriteStreamAtomic(manifestFile, bytes.NewReader(data), 0o644); err != nil {
 		return fmt.Errorf("index: write manifest: %w", err)
 	}
 	return nil
 }
 
-func validateManifest(dir string, manifest Manifest) error {
+func (idx *Index) validateManifest(manifest Manifest) error {
+	dir := idx.name
 	if manifest.Dim <= 0 {
 		return fmt.Errorf("index: invalid manifest dimension %d in %s", manifest.Dim, dir)
 	}
 	if manifest.Count < 0 {
 		return fmt.Errorf("index: invalid manifest count %d in %s", manifest.Count, dir)
 	}
-	info, err := os.Stat(filepath.Join(dir, vectorsFile))
+	info, err := idx.dir.Stat(vectorsFile)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("index: manifest exists but vectors are missing in %s", dir)
@@ -339,40 +350,6 @@ func validateManifest(dir string, manifest Manifest) error {
 	}
 	if count != manifest.Count {
 		return fmt.Errorf("index: manifest count %d does not match chunk lengths %d in %s", manifest.Count, count, dir)
-	}
-	return nil
-}
-
-func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
-			return err
-		}
-		if retryErr := os.Rename(tmpName, path); retryErr != nil {
-			return retryErr
-		}
 	}
 	return nil
 }

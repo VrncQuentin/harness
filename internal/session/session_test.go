@@ -112,16 +112,16 @@ func initRepo(t *testing.T) (string, *git.Repo) {
 func newTestManager(t *testing.T, fi *fakeInference) (*Manager, *memory.DirReader, string, *fakeMetrics) {
 	t.Helper()
 	dir, repo := initRepo(t)
-	reader := memory.NewDirReader(dir)
+	reader := openTestRepo(t, dir)
 	metricsRec := &fakeMetrics{}
 	mgr, err := NewManager(ManagerDeps{
-		Repo:               repo,
-		Writer:             reader,
-		Reader:             reader,
-		Inference:          fi,
-		Metrics:            metricsRec,
-		SummarizerPrompt:   func() string { return "test prompt" },
-		ResolveAbsRepoPath: dir,
+		Repo:             repo,
+		Writer:           reader,
+		Reader:           reader,
+		Appender:         reader,
+		Inference:        fi,
+		Metrics:          metricsRec,
+		SummarizerPrompt: func() string { return "test prompt" },
 	}, project.GlobalSlug)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -232,8 +232,7 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 	}
 
 	// Sessions log has one entry.
-	logPath := filepath.Join(dir, "sessions.jsonl")
-	records, err := ReadAll(logPath)
+	records, err := ReadAll(openTestRepo(t, dir), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -293,8 +292,7 @@ func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 	}
 
 	// Sessions log has two records (append-only).
-	logPath := filepath.Join(dir, "sessions.jsonl")
-	records, err := ReadAll(logPath)
+	records, err := ReadAll(openTestRepo(t, dir), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -359,7 +357,7 @@ func TestManager_ConcurrentSavesSerializeSaveSeq(t *testing.T) {
 		t.Fatalf("concurrent save seqs = %#v, want exactly 1 and 2", seenSeq)
 	}
 
-	records, err := ReadAll(filepath.Join(dir, "sessions.jsonl"))
+	records, err := ReadAll(openTestRepo(t, dir), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -457,8 +455,7 @@ func TestManager_FlushAllSavesEveryLiveSession(t *testing.T) {
 		t.Fatalf("FlushAll: %v", err)
 	}
 
-	logPath := filepath.Join(dir, "sessions.jsonl")
-	records, err := ReadAll(logPath)
+	records, err := ReadAll(openTestRepo(t, dir), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}

@@ -15,6 +15,14 @@ import (
 // automatically.
 func newTestRepo(t *testing.T, files map[string]string) *DirReader {
 	t.Helper()
+	r, _ := newTestRepoAt(t, files)
+	return r
+}
+
+// newTestRepoAt is newTestRepo for the tests that also need the repo's path on
+// disk, to inspect the result of an operation from outside the reader.
+func newTestRepoAt(t *testing.T, files map[string]string) (*DirReader, string) {
+	t.Helper()
 	root := t.TempDir()
 	for rel, body := range files {
 		abs := filepath.Join(root, filepath.FromSlash(rel))
@@ -25,7 +33,12 @@ func newTestRepo(t *testing.T, files map[string]string) *DirReader {
 			t.Fatalf("WriteFile %s: %v", abs, err)
 		}
 	}
-	return NewDirReader(root)
+	r, err := OpenDirReader(root)
+	if err != nil {
+		t.Fatalf("OpenDirReader %s: %v", root, err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r, root
 }
 
 func TestDirReader_Read(t *testing.T) {
@@ -243,7 +256,7 @@ func TestDirReader_WriteFileCreatesNew(t *testing.T) {
 }
 
 func TestDirReader_WriteFileOverwritesAtomic(t *testing.T) {
-	r := newTestRepo(t, map[string]string{
+	r, root := newTestRepoAt(t, map[string]string{
 		"agents/coder/persona.md": "old",
 	})
 	if err := r.WriteFile("agents/coder/persona.md", []byte("new")); err != nil {
@@ -258,7 +271,7 @@ func TestDirReader_WriteFileOverwritesAtomic(t *testing.T) {
 	}
 
 	// Confirm the atomic rename did not leave a .harness-* tempfile behind.
-	parent := filepath.Join(r.root, "agents", "coder")
+	parent := filepath.Join(root, "agents", "coder")
 	entries, err := os.ReadDir(parent)
 	if err != nil {
 		t.Fatalf("ReadDir parent: %v", err)
@@ -319,7 +332,7 @@ func TestDirReader_WriteFileOverDirectoryFails(t *testing.T) {
 }
 
 func TestDirReader_RemoveAllRemovesSubtree(t *testing.T) {
-	r := newTestRepo(t, map[string]string{
+	r, root := newTestRepoAt(t, map[string]string{
 		"agents/coder/persona.md":          "p",
 		"agents/coder/notes.md":            "n",
 		"agents/coder/episodes/2026-01.md": "e1",
@@ -335,7 +348,7 @@ func TestDirReader_RemoveAllRemovesSubtree(t *testing.T) {
 	if !reflect.DeepEqual(got, []string{"reviewer"}) {
 		t.Errorf("ListDirs after RemoveAll = %v, want [reviewer]", got)
 	}
-	if _, err := os.Stat(filepath.Join(r.root, "agents", "coder")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "agents", "coder")); !os.IsNotExist(err) {
 		t.Errorf("agents/coder still exists: stat err = %v", err)
 	}
 }
@@ -440,14 +453,24 @@ func TestDirReader_WalkSkipsGitDir(t *testing.T) {
 	}
 }
 
-func TestDirReader_WalkMissingRoot(t *testing.T) {
-	r := NewDirReader(filepath.Join(t.TempDir(), "does-not-exist"))
-	got, err := r.Walk("")
+func TestDirReader_WalkMissingSubtree(t *testing.T) {
+	r := newTestRepo(t, nil)
+	got, err := r.Walk("does-not-exist")
 	if err != nil {
-		t.Fatalf("Walk on missing root: %v", err)
+		t.Fatalf("Walk on missing subtree: %v", err)
 	}
 	if len(got) != 0 {
-		t.Errorf("Walk on missing root = %v, want empty", got)
+		t.Errorf("Walk on missing subtree = %v, want empty", got)
+	}
+}
+
+// The repo root is pinned when the reader is opened, so a root that is not
+// there is refused up front rather than surfacing later as an empty repo. The
+// distinction matters: an empty repo reads as "nothing saved yet", while a
+// missing one is a setup error the status page has to show.
+func TestOpenDirReader_MissingRoot(t *testing.T) {
+	if _, err := OpenDirReader(filepath.Join(t.TempDir(), "does-not-exist")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("OpenDirReader on missing root = %v, want fs.ErrNotExist", err)
 	}
 }
 

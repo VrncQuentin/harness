@@ -21,11 +21,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 
 	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/embedder"
+	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/memoryops"
 )
 
@@ -53,6 +55,10 @@ func run() error {
 		return fmt.Errorf("repo, embedder, and queries are required")
 	}
 
+	// The labeled query set is a file the operator names on the command line.
+	// It is not inside any harness-managed tree, so there is no root to resolve
+	// it through and nothing for a rooted open to contain — see the filesystem
+	// access ledger in docs/architecture.md.
 	f, err := os.Open(*queriesFile)
 	if err != nil {
 		return fmt.Errorf("open queries: %w", err)
@@ -79,11 +85,19 @@ func run() error {
 		return fmt.Errorf("no queries found in %s", *queriesFile)
 	}
 
-	indexDir := memoryops.EpisodeIndexDir(*repoPath)
-	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir)
+	// The repo is pinned once; the index and the episode listing below both go
+	// through that handle, exactly as the harness does at runtime.
+	mem, err := memory.OpenDirReader(*repoPath)
+	if err != nil {
+		return fmt.Errorf("open project repo: %w", err)
+	}
+	defer func() { _ = mem.Close() }()
+
+	episodeIndex, err := memoryops.NewEpisodeIndex(mem, memoryops.EpisodeIndexRootRel)
 	if err != nil {
 		return fmt.Errorf("open episode index: %w", err)
 	}
+	defer func() { _ = episodeIndex.Close() }()
 
 	emb := embedder.NewClient(*embedderURL, http.DefaultClient)
 	scorer := &memoryops.EpisodeScorer{
@@ -92,25 +106,13 @@ func run() error {
 		Index:    episodeIndex,
 	}
 
-	// Glob all episode paths from the repo directory.
-	pattern := filepath.Join(*repoPath, "episodes", "*", "*.md")
-	absPaths, err := filepath.Glob(pattern)
+	paths, err := episodePaths(mem)
 	if err != nil {
-		return fmt.Errorf("glob episodes: %w", err)
+		return err
 	}
-	if len(absPaths) == 0 {
+	if len(paths) == 0 {
 		return fmt.Errorf("no episodes found in %s", *repoPath)
 	}
-	// Convert to repo-relative paths for scoring (scorer expects repo-relative).
-	paths := make([]string, len(absPaths))
-	for i, p := range absPaths {
-		rel, err := filepath.Rel(*repoPath, p)
-		if err != nil {
-			return err
-		}
-		paths[i] = filepath.ToSlash(rel)
-	}
-	sort.Strings(paths)
 
 	ctx := context.Background()
 	var sumMRR, sumRecall float64
@@ -171,4 +173,24 @@ func run() error {
 	n := float64(evaluated)
 	fmt.Printf("\nmean MRR=%.4f  mean Recall@%d=%.4f  (n=%d)\n", sumMRR/n, *k, sumRecall/n, evaluated)
 	return nil
+}
+
+// episodePaths lists every episode markdown file as a repo-relative path,
+// enumerated through the pinned repo handle. The scorer keys on repo-relative
+// paths, so this never needs an absolute one.
+func episodePaths(mem *memory.DirReader) ([]string, error) {
+	agents, err := mem.ListDirs("episodes")
+	if err != nil {
+		return nil, fmt.Errorf("list episode agents: %w", err)
+	}
+	var paths []string
+	for _, agent := range agents {
+		matches, err := mem.Glob(path.Join("episodes", agent, "*.md"))
+		if err != nil {
+			return nil, fmt.Errorf("list episodes for %s: %w", agent, err)
+		}
+		paths = append(paths, matches...)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }

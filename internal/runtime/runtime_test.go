@@ -20,6 +20,7 @@ import (
 	gitw "github.com/VrncQuentin/harness/internal/git"
 	"github.com/VrncQuentin/harness/internal/inference"
 	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/memoryops"
 	"github.com/VrncQuentin/harness/internal/proc"
 	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/prompt"
@@ -239,8 +240,9 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	loaded := cfg
 	loaded.Project.ActiveProjectSlug = "missing"
 
-	mem := memory.NewDirReader(root)
+	mem := openTestRepo(t, root)
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	releaseMemHandles(t, rt)
 	rt.started = true
 	rt.globalMem = mem
 	rt.activeMem = mem
@@ -271,6 +273,7 @@ func TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange(t *testing.T
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 
 	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	releaseMemHandles(t, rt)
 	rt.started = true
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
@@ -299,6 +302,7 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 	store := &runtimeConfigStore{cfg: &cfg, saved: true}
 
 	rt := New(cfg, store, LogRings{})
+	releaseMemHandles(t, rt)
 	rt.started = true
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
@@ -355,6 +359,7 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			tc.mutate(&loaded)
 
 			rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+			releaseMemHandles(t, rt)
 			rt.started = true
 			rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 				project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
@@ -394,6 +399,7 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 		summary:   "saved partial task",
 	}
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	releaseMemHandles(t, rt)
 	rt.started = true
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
@@ -401,11 +407,12 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 	rt.inferClient = client
 	rt.reqQueue = startRuntimeTestQueue(t, client)
 
+	sessionStore := openTestRepo(t, root)
 	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
-	}, client, nil)
+	}, sessionStore, openTestEpisodeIndex(t, sessionStore), client, nil)
 	rt.setSessionManager(mgr)
 	rt.taskRunner = &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: rt.reqQueue}
 
@@ -764,11 +771,12 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	rt := New(cfg, nil, LogRings{})
 	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
 
+	store := openTestRepo(t, root)
 	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, store, openTestEpisodeIndex(t, store), rt.ensureInferenceClient(), nil)
 	rt.setSessionManager(mgr)
 
 	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
@@ -811,11 +819,12 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
+	store := openTestRepo(t, root)
 	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, store, openTestEpisodeIndex(t, store), rt.ensureInferenceClient(), nil)
 	if mgr == nil {
 		t.Fatal("buildSessionManager returned nil")
 	}
@@ -874,11 +883,12 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 	rt := New(cfg, nil, LogRings{})
 	rt.inferClient = &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
 
+	store := openTestRepo(t, root)
 	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, store, openTestEpisodeIndex(t, store), rt.ensureInferenceClient(), nil)
 	rt.setSessionManager(mgr)
 
 	s := mgr.Start("coder")
@@ -1050,7 +1060,7 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Agent.Active = "coder"
 	cfg.Project.ActiveProjectSlug = "global"
-	mem := memory.NewDirReader(root)
+	mem := openTestRepo(t, root)
 	active := "coder"
 	reg := agent.NewDiskRegistry(mem,
 		func() string { return active },
@@ -1121,14 +1131,14 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, nil, LogRings{})
-	rt.globalMem = memory.NewDirReader(root)
+	rt.globalMem = openTestRepo(t, root)
 	rt.activeMem = rt.globalMem
 
 	mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, rt.globalMem, openTestEpisodeIndex(t, rt.globalMem), rt.ensureInferenceClient(), nil)
 	if mgr == nil || adapter == nil {
 		t.Fatal("buildSessionManager returned nil manager")
 	}
@@ -1438,7 +1448,7 @@ func newMemoryRepo(t *testing.T, files map[string]string) *memory.DirReader {
 			t.Fatalf("WriteFile %s: %v", abs, err)
 		}
 	}
-	return memory.NewDirReader(root)
+	return openTestRepo(t, root)
 }
 
 func freeTCPPort(t *testing.T) int {
@@ -1453,4 +1463,43 @@ func freeTCPPort(t *testing.T) int {
 		t.Fatalf("listener addr is %T, want *net.TCPAddr", ln.Addr())
 	}
 	return addr.Port
+}
+
+// openTestRepo pins a project memory repo for a test and closes it on cleanup.
+func openTestRepo(t *testing.T, root string) *memory.DirReader {
+	t.Helper()
+	r, err := memory.OpenDirReader(root)
+	if err != nil {
+		t.Fatalf("OpenDirReader %s: %v", root, err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
+}
+
+// openTestEpisodeIndex opens the shared episode index inside a pinned repo, the
+// way startMemoryAndAPI does.
+func openTestEpisodeIndex(t *testing.T, mem memory.Repo) *memoryops.EpisodeIndex {
+	t.Helper()
+	idx, err := memoryops.NewEpisodeIndex(mem, memoryops.EpisodeIndexRootRel)
+	if err != nil {
+		t.Fatalf("NewEpisodeIndex: %v", err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+	return idx
+}
+
+// releaseMemHandles closes whatever repo and index handles a runtime ends a
+// test holding. Production closes them in Runtime.Stop or when a reload
+// replaces them; a test that builds the graph and walks away would otherwise
+// leave open directory handles, which on Windows keep t.TempDir from being
+// removed.
+func releaseMemHandles(t *testing.T, rt *Runtime) {
+	t.Helper()
+	t.Cleanup(func() {
+		rt.mu.Lock()
+		owned := rt.memHandles
+		rt.memHandles = memoryHandles{}
+		rt.mu.Unlock()
+		owned.close()
+	})
 }

@@ -10,8 +10,8 @@ import (
 )
 
 func TestReadAll_MissingFileReturnsEmpty(t *testing.T) {
-	dir := t.TempDir()
-	got, err := ReadAll(filepath.Join(dir, "sessions.jsonl"))
+	repo := openTestRepo(t, t.TempDir())
+	got, err := ReadAll(repo, "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -22,7 +22,8 @@ func TestReadAll_MissingFileReturnsEmpty(t *testing.T) {
 
 func TestAppendRecordAndReadAll(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sessions.jsonl")
+	repo := openTestRepo(t, dir)
+	const rel = "sessions.jsonl"
 
 	rec := Record{
 		ID:          "2026-04-26T22-15-03Z",
@@ -33,16 +34,16 @@ func TestAppendRecordAndReadAll(t *testing.T) {
 		SaveSeq:     1,
 		EpisodePath: "episodes/coder/2026-04-26T22-15-03Z.md",
 	}
-	if err := AppendRecord(path, rec); err != nil {
+	if err := AppendRecord(repo, rel, rec); err != nil {
 		t.Fatalf("AppendRecord: %v", err)
 	}
 	rec.SaveSeq = 2
 	rec.SavedAt = rec.SavedAt.Add(time.Minute)
-	if err := AppendRecord(path, rec); err != nil {
+	if err := AppendRecord(repo, rel, rec); err != nil {
 		t.Fatalf("AppendRecord 2: %v", err)
 	}
 
-	got, err := ReadAll(path)
+	got, err := ReadAll(repo, rel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -63,7 +64,9 @@ func TestReadAll_SkipsGarbledLine(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sessions.jsonl")
+	repo := openTestRepo(t, dir)
+	const rel = "sessions.jsonl"
+	path := filepath.Join(dir, rel)
 	good := Record{
 		ID:        "2026-04-26T22-15-03Z",
 		Agent:     "coder",
@@ -72,7 +75,7 @@ func TestReadAll_SkipsGarbledLine(t *testing.T) {
 		SavedAt:   time.Date(2026, 4, 26, 22, 15, 3, 0, time.UTC),
 		SaveSeq:   1,
 	}
-	if err := AppendRecord(path, good); err != nil {
+	if err := AppendRecord(repo, rel, good); err != nil {
 		t.Fatalf("AppendRecord: %v", err)
 	}
 	// Corrupt the file: append garbage that is not valid JSON.
@@ -85,7 +88,7 @@ func TestReadAll_SkipsGarbledLine(t *testing.T) {
 	}
 	_ = f.Close()
 
-	got, err := ReadAll(path)
+	got, err := ReadAll(repo, rel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}

@@ -31,7 +31,7 @@ func newRepoWithAgentsRoot(t *testing.T, files map[string]string) (*memory.DirRe
 			t.Fatalf("WriteFile: %v", err)
 		}
 	}
-	return memory.NewDirReader(root), root
+	return openTestRepo(t, root), root
 }
 
 // activeState is a trivial in-memory stand-in for the active-agent
@@ -582,4 +582,15 @@ func TestDiskRegistry_DeletePropagatesActiveClearError(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(root, "agents", "coder")); statErr != nil {
 		t.Errorf("agents/coder removed despite setActive failure: stat err = %v", statErr)
 	}
+}
+
+// openTestRepo pins a project memory repo for a test and closes it on cleanup.
+func openTestRepo(t *testing.T, root string) *memory.DirReader {
+	t.Helper()
+	r, err := memory.OpenDirReader(root)
+	if err != nil {
+		t.Fatalf("OpenDirReader %s: %v", root, err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
 }

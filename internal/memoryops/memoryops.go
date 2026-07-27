@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"sort"
 	"strings"
@@ -17,7 +16,6 @@ import (
 	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/embedder"
 	gitw "github.com/VrncQuentin/harness/internal/git"
-	"github.com/VrncQuentin/harness/internal/index"
 	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/retrieval"
 	"github.com/VrncQuentin/harness/internal/session"
@@ -140,23 +138,21 @@ func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, query string, episode
 // EpisodeRebuilder walks episode files, embeds missing episode IDs, updates the
 // active project's episode index, and commits the updated index files. The
 // operation is idempotent: already-indexed episodes are skipped.
+//
+// The rebuilder writes through the same EpisodeIndex the retrieval paths read,
+// rather than opening a second handle on the same directory. Two handles would
+// mean two in-memory manifests over one pair of files, and whichever wrote last
+// would silently drop the other's entries.
 type EpisodeRebuilder struct {
-	Mem       memory.Repo
-	Embedder  embedder.Client
-	Index     *index.Index
-	IndexDir  string
-	Repo      *gitw.Repo
-	OnRebuilt func(*index.Index)
+	Mem      memory.Repo
+	Embedder embedder.Client
+	Index    *EpisodeIndex
+	Repo     *gitw.Repo
 }
 
 func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 	if rb.Index == nil {
-		idx, err := index.Open(rb.IndexDir)
-		if err == nil {
-			rb.Index = idx
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("index rebuild: open index %s: %w", rb.IndexDir, err)
-		}
+		return errors.New("index rebuild: episode index is not available")
 	}
 
 	episodesRoot := "episodes"
@@ -194,7 +190,7 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		content := string(body)
 		hash := contentHash(content)
 		id := retrieval.EpisodeID(p)
-		if rb.Index != nil && rb.Index.ContainsCurrent(id, hash) {
+		if rb.Index.ContainsCurrent(id, hash) {
 			continue
 		}
 		chunks := chunkSummary(content)
@@ -230,16 +226,6 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 			return fmt.Errorf("index rebuild: vector %d dimension mismatch: got %d, want %d", i, len(v), dim)
 		}
 	}
-	if rb.Index == nil {
-		idx, err := index.Create(rb.IndexDir, dim)
-		if err != nil {
-			return fmt.Errorf("index rebuild: create index %s: %w", rb.IndexDir, err)
-		}
-		rb.Index = idx
-	}
-	if rb.Index.Dim() != dim {
-		return fmt.Errorf("index rebuild: dimension mismatch: index has %d, got %d", rb.Index.Dim(), dim)
-	}
 
 	offset := 0
 	for _, w := range work {
@@ -265,9 +251,6 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 	}
 
 	slog.Info("index rebuild complete", "new_episodes", len(work))
-	if rb.OnRebuilt != nil {
-		rb.OnRebuilt(rb.Index)
-	}
 	return nil
 }
 

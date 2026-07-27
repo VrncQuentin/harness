@@ -121,6 +121,14 @@ func (rt *Runtime) Stop() {
 	if q != nil {
 		q.Stop()
 	}
+
+	// The pinned memory-repo and index handles go last: the session flush above
+	// writes through them.
+	rt.mu.Lock()
+	owned := rt.memHandles
+	rt.memHandles = memoryHandles{}
+	rt.mu.Unlock()
+	owned.close()
 }
 
 // WaitManagers waits for process manager goroutines to exit after their context

@@ -51,6 +51,10 @@ type Runtime struct {
 	reqQueue *queue.Queue
 	started  bool
 
+	// memHandles owns the directory handles the current memory graph pins.
+	// The interface fields below point at the same objects; this one exists so
+	// shutdown and reload know what to close.
+	memHandles memoryHandles
 	globalMem  memory.Repo
 	activeMem  memory.Repo
 	agentReg   *agent.DiskRegistry

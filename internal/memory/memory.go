@@ -4,14 +4,16 @@
 package memory
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 // Reader is the minimum surface the prompt assembler needs from the memory
@@ -53,6 +55,30 @@ type Walker interface {
 	Walk(relPath string) ([]Entry, error)
 }
 
+// Appender is the capability the append-only session log needs: add to the end
+// of a file and make the addition durable, without any way to shorten or
+// replace what is already there.
+type Appender interface {
+	// AppendFile appends data to relPath, creating the file and its parent
+	// directories when they are missing, and fsyncs before returning. It
+	// never truncates.
+	AppendFile(relPath string, data []byte) error
+}
+
+// SubRooter hands out an independent rooted capability on a directory inside
+// the repo, for a component that needs one for its own lifetime.
+//
+// It returns a handle rather than a path on purpose. A component handed
+// "<repo>/index/_episodes" and left to pin it itself pins whatever that name
+// resolves to, which need not be inside the repo at all — the name can already
+// be a link out of it. Resolving the relative name through the repo's own
+// handle is what keeps the answer inside.
+type SubRooter interface {
+	// SubRoot pins relPath under the repo root, creating it if it does not
+	// exist yet. The caller owns and closes the returned root.
+	SubRoot(relPath string) (*rootfs.Root, error)
+}
+
 // Repo is the full production memory repository surface. Narrower consumers may
 // still accept Reader, but runtime wiring and mutable memory features use Repo
 // so missing capabilities fail at compile time instead of at request time.
@@ -60,6 +86,8 @@ type Repo interface {
 	Reader
 	FileWriter
 	Walker
+	Appender
+	SubRooter
 	ListDirs(relPath string) ([]string, error)
 	MkdirAll(relPath string) error
 	RemoveAll(relPath string) error
@@ -73,13 +101,27 @@ type Entry struct {
 	Size int64
 }
 
-// DirReader serves files from a directory on the local filesystem. It is
-// the concrete Reader used in production; tests can use an in-memory fake
-// that implements the same interface.
+// DirReader serves files from one project memory repo through a directory
+// handle pinned for its lifetime. It is the concrete Reader used in production;
+// tests can use an in-memory fake that implements the same interface.
+//
+// The repo root is opened once, by OpenDirReader, and every operation resolves
+// its relative path against that open directory. The root's *pathname* is not
+// retained, and that is the point rather than an economy: keeping it would
+// leave a second way to reach the repo that skips the handle, and the first
+// caller in a hurry would use it. What the reader can reach is therefore fixed
+// at the moment it was opened — renaming the repo's directory, or replacing the
+// name with a link somewhere else, moves the name and not the handle.
+//
+// It follows that the reader owns an OS resource and must be closed. The
+// runtime holds one per active project repo for as long as that project is
+// wired up, and closes it when the service graph is torn down or rebuilt. A
+// per-operation pin was the alternative and is weaker: it would re-resolve the
+// configured root on every read, so every call would be a fresh opportunity for
+// the name to mean something else, and multi-step work like the session log or
+// the vector index could not hold one directory across its own steps.
 type DirReader struct {
-	// root is the absolute path of the memory repo. It is joined with the
-	// relative paths passed to Read/Glob and mutation helpers.
-	root string
+	root *rootfs.Root
 }
 
 // Compile-time assertions for the production memory repo interfaces.
@@ -90,18 +132,53 @@ var (
 	_ Walker     = (*DirReader)(nil)
 )
 
-// NewDirReader returns a DirReader rooted at root.
-func NewDirReader(root string) *DirReader {
-	return &DirReader{root: root}
+// OpenDirReader pins the project memory repo at root and returns a reader that
+// performs every operation through that handle. The caller closes it.
+//
+// The pin is the authorization. Nothing below the returned reader consults the
+// pathname again, so an intermediate symlink or Windows junction planted inside
+// the repo cannot lead a later read or write out of it — os.Root resolves each
+// component against the open directory and refuses one that leaves.
+func OpenDirReader(root string) (*DirReader, error) {
+	pinned, err := rootfs.Open(root)
+	if err != nil {
+		return nil, fmt.Errorf("memory: open repo %s: %w", root, err)
+	}
+	return &DirReader{root: pinned}, nil
+}
+
+// Close releases the pinned repo handle. The reader is unusable afterwards.
+func (r *DirReader) Close() error {
+	if err := r.root.Close(); err != nil {
+		return fmt.Errorf("memory: close repo: %w", err)
+	}
+	return nil
+}
+
+// SubRoot implements SubRooter. relPath is created if it is missing, then
+// pinned through the repo handle so the returned root is inside the repo by
+// construction rather than by a comparison somebody has to remember to make.
+func (r *DirReader) SubRoot(relPath string) (*rootfs.Root, error) {
+	if err := checkRel(relPath); err != nil {
+		return nil, fmt.Errorf("memory: subroot %s: %w", relPath, err)
+	}
+	rel := filepath.FromSlash(relPath)
+	if err := r.root.MkdirAll(rel, 0o755); err != nil {
+		return nil, fmt.Errorf("memory: subroot %s: %w", relPath, err)
+	}
+	sub, err := r.root.OpenChild(rel)
+	if err != nil {
+		return nil, fmt.Errorf("memory: subroot %s: %w", relPath, err)
+	}
+	return sub, nil
 }
 
 // Read implements Reader.
 func (r *DirReader) Read(relPath string) ([]byte, error) {
-	abs, err := r.resolve(relPath)
-	if err != nil {
+	if err := checkRel(relPath); err != nil {
 		return nil, err
 	}
-	b, err := os.ReadFile(abs)
+	b, err := r.root.ReadFile(filepath.FromSlash(relPath))
 	if err != nil {
 		return nil, fmt.Errorf("memory: read %s: %w", relPath, err)
 	}
@@ -110,17 +187,8 @@ func (r *DirReader) Read(relPath string) ([]byte, error) {
 
 // ListDirs returns direct subdirectories of relPath.
 func (r *DirReader) ListDirs(relPath string) ([]string, error) {
-	if relPath != "" {
-		if err := checkRel(relPath); err != nil {
-			return nil, err
-		}
-	}
-	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
-	entries, err := os.ReadDir(abs)
+	entries, err := r.readDir(relPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("memory: list dirs %s: %w", relPath, err)
 	}
 	out := make([]string, 0, len(entries))
@@ -138,64 +206,61 @@ func (r *DirReader) MkdirAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return err
 	}
-	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(abs, 0o755); err != nil {
+	if err := r.root.MkdirAll(filepath.FromSlash(relPath), 0o755); err != nil {
 		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
 	}
 	return nil
 }
 
-// WriteFile implements FileWriter. It writes via a temp file in the
-// same directory followed by os.Rename so readers never observe a partial
-// write mid-flight.
+// WriteFile implements FileWriter. It publishes through a temporary file in the
+// destination's own directory followed by a rename, both resolved through the
+// pinned repo handle, so readers never observe a partial write and the rename
+// cannot be redirected outside the repo.
 func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
-	parent := filepath.Dir(abs)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	rel := filepath.FromSlash(relPath)
+	if parent := filepath.Dir(rel); parent != "." {
+		if err := r.root.MkdirAll(parent, 0o755); err != nil {
+			return fmt.Errorf("memory: write %s: %w", relPath, err)
+		}
 	}
-
-	tmp, err := os.CreateTemp(parent, ".harness-*")
-	if err != nil {
-		return fmt.Errorf("memory: write %s: %w", relPath, err)
-	}
-	tmpPath := tmp.Name()
-	// cleanup runs on every error path before the rename succeeds; once
-	// the rename lands the temp file no longer exists under tmpPath.
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		cleanup()
-		return fmt.Errorf("memory: write %s: %w", relPath, err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("memory: write %s: %w", relPath, err)
-	}
-	if err := os.Rename(tmpPath, abs); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := r.root.WriteStreamAtomic(rel, bytes.NewReader(data), 0o644); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
 	return nil
 }
 
-// RemoveAll refuses paths that resolve to
-// the repo root itself so a caller cannot wipe the whole memory repo
-// by passing "." or "" past the validator.
+// AppendFile implements Appender.
+func (r *DirReader) AppendFile(relPath string, data []byte) error {
+	if err := checkRel(relPath); err != nil {
+		return fmt.Errorf("memory: append %s: %w", relPath, err)
+	}
+	rel := filepath.FromSlash(relPath)
+	if parent := filepath.Dir(rel); parent != "." {
+		if err := r.root.MkdirAll(parent, 0o755); err != nil {
+			return fmt.Errorf("memory: append %s: %w", relPath, err)
+		}
+	}
+	if err := r.root.AppendSync(rel, data, 0o644); err != nil {
+		return fmt.Errorf("memory: append %s: %w", relPath, err)
+	}
+	return nil
+}
+
+// RemoveAll deletes relPath and everything below it. It refuses a path that
+// names the repo root itself so a caller cannot wipe the whole memory repo by
+// passing "." or "" past the validator.
 func (r *DirReader) RemoveAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
-	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
-	if abs == r.root {
+	rel := filepath.FromSlash(relPath)
+	if cleaned := filepath.Clean(rel); cleaned == "." || cleaned == string(filepath.Separator) {
 		return fmt.Errorf("memory: remove %s: refusing to remove repo root", relPath)
 	}
-	if err := os.RemoveAll(abs); err != nil {
+	if err := r.root.RemoveAll(rel); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
 	return nil
@@ -211,12 +276,8 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 	// parent does not exist we treat it as an empty set so a bare repo
 	// without any agent episodes folder doesn't error out.
 	dir, file := path.Split(pattern)
-	absDir := filepath.Join(r.root, filepath.FromSlash(dir))
-	entries, err := os.ReadDir(absDir)
+	entries, err := r.readDir(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("memory: glob %s: %w", pattern, err)
 	}
 
@@ -239,45 +300,38 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 }
 
 // Walk implements Walker. The .git directory is pruned so the editor
-// never sees git plumbing, even when memory/ is a real git repo.
+// never sees git plumbing, even when the repo is a real git repo.
+//
+// The traversal descends through a pinned handle per directory rather than
+// re-resolving each subdirectory's name, so a directory swapped in partway
+// through cannot make the walk report entries from outside the repo.
 func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	if relPath != "" {
 		if err := checkRel(relPath); err != nil {
 			return nil, err
 		}
 	}
-	absRoot := filepath.Join(r.root, filepath.FromSlash(relPath))
+	prefix := path.Clean(filepath.ToSlash(relPath))
+	if prefix == "." || prefix == "/" {
+		prefix = ""
+	}
 	var out []Entry
-	err := filepath.WalkDir(absRoot, func(absPath string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	err := r.root.Walk(filepath.FromSlash(relPath), func(entry rootfs.WalkEntry) (bool, error) {
+		relSlash := filepath.ToSlash(entry.Rel)
+		if prefix != "" {
+			relSlash = path.Join(prefix, relSlash)
 		}
-		if absPath == absRoot {
-			return nil
-		}
-		rel, err := filepath.Rel(r.root, absPath)
-		if err != nil {
-			return err
-		}
-		relSlash := filepath.ToSlash(rel)
-		// Prune .git anywhere under the repo - the memory directory is
+		// Prune .git anywhere under the repo — the memory directory is
 		// itself a git repo and we never want plumbing in the UI.
-		if d.Name() == ".git" {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
+		if entry.Name == gitDirName {
+			return true, nil
 		}
 		out = append(out, Entry{
 			Path: relSlash,
-			Dir:  d.IsDir(),
-			Size: info.Size(),
+			Dir:  entry.Info.IsDir(),
+			Size: entry.Info.Size(),
 		})
-		return nil
+		return false, nil
 	})
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -289,17 +343,36 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	return out, nil
 }
 
-// resolve turns a forward-slash relative path into an absolute OS path.
-// It rejects empty, absolute, and traversing inputs explicitly so no
-// caller can read a file outside Root by mistake or malice.
-func (r *DirReader) resolve(relPath string) (string, error) {
-	if err := checkRel(relPath); err != nil {
-		return "", err
+// readDir lists relPath through the pinned repo handle, reporting a missing
+// directory as an empty listing so callers tolerate a partially scaffolded
+// repo. An empty relPath names the repo root.
+func (r *DirReader) readDir(relPath string) ([]fs.DirEntry, error) {
+	if relPath != "" {
+		if err := checkRel(relPath); err != nil {
+			return nil, err
+		}
 	}
-	return filepath.Join(r.root, filepath.FromSlash(relPath)), nil
+	rel := filepath.FromSlash(relPath)
+	if rel == "" {
+		rel = "."
+	}
+	entries, err := r.root.ReadDir(rel)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return entries, nil
 }
 
-// checkRel rejects empty, absolute, and traversing paths. We work on the
+// checkRel rejects empty, absolute, and traversing paths.
+//
+// It is a lexical pre-filter and no longer the containment boundary: the pinned
+// root is. It stays because it produces a precise error for the ordinary
+// mistake — a caller passing an absolute path or a "../" — where the root would
+// report a generic resolution failure, and because rejecting those shapes at
+// the edge keeps them out of the paths built below. We work on the
 // forward-slash string directly so OS-specific separators on Windows
 // don't let "a\\..\\b" slip past path.Clean.
 func checkRel(rel string) error {

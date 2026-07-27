@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/VrncQuentin/harness/internal/index"
 	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/session"
 )
@@ -20,35 +19,28 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if err := os.WriteFile(episodePath, []byte("episode body"), 0o644); err != nil {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
-	indexDir := EpisodeIndexDir(root)
-	called := false
+	mem := openTestRepo(t, root)
+	idxService := openTestIndex(t, mem)
 	rb := &EpisodeRebuilder{
-		Mem:      memory.NewDirReader(root),
+		Mem:      mem,
 		Embedder: stubEmbedder{vec: []float32{1, 0}},
-		IndexDir: indexDir,
-		OnRebuilt: func(idx *index.Index) {
-			called = true
-			if !idx.Contains("episodes/coder/ep1") {
-				t.Errorf("rebuilt index missing ep1")
-			}
-		},
+		Index:    idxService,
 	}
 
 	if err := rb.Rebuild(context.Background()); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	if rb.Index == nil {
-		t.Fatal("rebuilder did not retain created index")
+	if !idxService.Ready() {
+		t.Fatal("rebuilder did not create the index")
 	}
-	if !called {
-		t.Fatal("onRebuilt callback was not called")
+	if !idxService.Contains("episodes/coder/ep1") {
+		t.Fatal("rebuilt index missing ep1")
 	}
-	opened, err := index.Open(indexDir)
-	if err != nil {
-		t.Fatalf("Open rebuilt index: %v", err)
-	}
-	if !opened.Contains("episodes/coder/ep1") {
-		t.Fatal("rebuilt index does not contain ep1")
+	// Re-open from disk so the assertion is about what was persisted rather
+	// than about the in-memory manifest.
+	reopened := openTestIndex(t, mem)
+	if !reopened.Contains("episodes/coder/ep1") {
+		t.Fatal("rebuilt index does not contain ep1 on disk")
 	}
 }
 
@@ -61,7 +53,7 @@ func TestEpisodeRebuilderRejectsCorruptIndex(t *testing.T) {
 	if err := os.WriteFile(episodePath, []byte("episode body"), 0o644); err != nil {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
-	indexDir := EpisodeIndexDir(root)
+	indexDir := filepath.Join(root, filepath.FromSlash(EpisodeIndexRootRel))
 	if err := os.MkdirAll(indexDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll index dir: %v", err)
 	}
@@ -70,13 +62,8 @@ func TestEpisodeRebuilderRejectsCorruptIndex(t *testing.T) {
 		t.Fatalf("WriteFile corrupt manifest: %v", err)
 	}
 
-	rb := &EpisodeRebuilder{
-		Mem:      memory.NewDirReader(root),
-		Embedder: stubEmbedder{vec: []float32{1, 0}},
-		IndexDir: indexDir,
-	}
-
-	if err := rb.Rebuild(context.Background()); err == nil {
+	mem := openTestRepo(t, root)
+	if _, err := NewEpisodeIndex(mem, EpisodeIndexRootRel); err == nil {
 		t.Fatal("expected corrupt index error")
 	}
 	got, err := os.ReadFile(manifestPath)
@@ -85,9 +72,6 @@ func TestEpisodeRebuilderRejectsCorruptIndex(t *testing.T) {
 	}
 	if string(got) != `{"dim":2,` {
 		t.Fatalf("corrupt manifest was overwritten: %q", got)
-	}
-	if rb.Index != nil {
-		t.Fatal("rebuilder retained an index after corrupt open")
 	}
 }
 
@@ -126,21 +110,17 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 	if err := os.WriteFile(episodePath, []byte("episode body"), 0o644); err != nil {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
-	indexDir := EpisodeIndexDir(root)
-	idx, err := index.Create(indexDir, 2)
-	if err != nil {
-		t.Fatalf("Create index: %v", err)
-	}
+	mem := openTestRepo(t, root)
+	idx := openTestIndex(t, mem)
 	if err := idx.Upsert("episodes/coder/ep1", contentHash("episode body"), [][]float32{{1, 0}}); err != nil {
 		t.Fatalf("seed index: %v", err)
 	}
 
 	emb := &countingEmbedder{vec: []float32{1, 0}}
 	rb := &EpisodeRebuilder{
-		Mem:      memory.NewDirReader(root),
+		Mem:      mem,
 		Embedder: emb,
 		Index:    idx,
-		IndexDir: indexDir,
 	}
 	if err := rb.Rebuild(context.Background()); err != nil {
 		t.Fatalf("Rebuild: %v", err)
@@ -165,10 +145,8 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
 
-	idxService, err := NewEpisodeIndex(EpisodeIndexDir(root))
-	if err != nil {
-		t.Fatalf("NewEpisodeIndex: %v", err)
-	}
+	mem := openTestRepo(t, root)
+	idxService := openTestIndex(t, mem)
 	emb := &countingEmbedder{vec: []float32{1, 0}}
 	hook := AfterSaveEmbed(emb, idxService, nil)
 	res := session.SaveResult{
@@ -187,10 +165,9 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 	}
 
 	rb := &EpisodeRebuilder{
-		Mem:      memory.NewDirReader(root),
+		Mem:      mem,
 		Embedder: emb,
-		Index:    idxService.Current(),
-		IndexDir: EpisodeIndexDir(root),
+		Index:    idxService,
 	}
 	if err := rb.Rebuild(context.Background()); err != nil {
 		t.Fatalf("Rebuild: %v", err)
@@ -201,10 +178,7 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 }
 
 func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
-	service, err := NewEpisodeIndex(EpisodeIndexDir(t.TempDir()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	service := openTestIndex(t, openTestRepo(t, t.TempDir()))
 	if got, err := service.Search([]float32{1, 0}, 1); err != nil || len(got) != 0 {
 		t.Fatalf("empty index Search = %v, %v", got, err)
 	}
@@ -218,4 +192,27 @@ func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
 	if len(results) != 1 || results[0].SHA != "episodes/coder/one" {
 		t.Fatalf("shared service did not expose post-save entry: %+v", results)
 	}
+}
+
+// openTestRepo pins a project memory repo for a test and closes it on cleanup.
+func openTestRepo(t *testing.T, root string) *memory.DirReader {
+	t.Helper()
+	r, err := memory.OpenDirReader(root)
+	if err != nil {
+		t.Fatalf("OpenDirReader %s: %v", root, err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
+}
+
+// openTestIndex opens the episode index inside a pinned repo, the same way the
+// runtime does, and closes it on cleanup.
+func openTestIndex(t *testing.T, mem memory.Repo) *EpisodeIndex {
+	t.Helper()
+	idx, err := NewEpisodeIndex(mem, EpisodeIndexRootRel)
+	if err != nil {
+		t.Fatalf("NewEpisodeIndex: %v", err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+	return idx
 }

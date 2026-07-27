@@ -6,14 +6,30 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
+
+// pin opens dir as a rooted capability for the duration of a test. Production
+// callers get theirs by resolving the index's location through the project
+// memory repo's handle; a test that only exercises the index itself needs the
+// same shape without a repo around it.
+func pin(t *testing.T, dir string) *rootfs.Root {
+	t.Helper()
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatalf("rootfs.Open %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
+}
 
 func TestIndex_CreatePersistsEmptyIndex(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Create(dir, 2); err != nil {
+	if _, err := Create(pin(t, dir), "index", 2); err != nil {
 		t.Fatal(err)
 	}
-	opened, err := Open(dir)
+	opened, err := Open(pin(t, dir), "index")
 	if err != nil {
 		t.Fatalf("Open newly created index: %v", err)
 	}
@@ -31,7 +47,7 @@ func TestIndex_OpenRejectsManifestWithoutVectors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, manifestFile), []byte(`{"dim":2,"count":1,"chunks":[{"sha":"sha","offset":0,"length":1}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Open(dir)
+	_, err := Open(pin(t, dir), "index")
 	if err == nil {
 		t.Fatal("expected missing vectors to be rejected")
 	}
@@ -42,7 +58,7 @@ func TestIndex_OpenRejectsManifestWithoutVectors(t *testing.T) {
 
 func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	idx, err := Create(pin(t, dir), "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,14 +68,14 @@ func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 	if err := os.Truncate(filepath.Join(dir, vectorsFile), 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(dir); err == nil {
+	if _, err := Open(pin(t, dir), "index"); err == nil {
 		t.Fatal("expected manifest entry extending past vectors file to be rejected")
 	}
 }
 
 func TestIndex_UpsertManifestFailureRollsBackVectors(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	idx, err := Create(pin(t, dir), "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +114,7 @@ func TestIndex_UpsertManifestFailureRollsBackVectors(t *testing.T) {
 
 func TestIndex_AddSearchRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 4)
+	idx, err := Create(pin(t, dir), "index", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +153,7 @@ func TestIndex_AddSearchRoundTrip(t *testing.T) {
 
 func TestIndex_AddDimensionMismatch(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 3)
+	idx, err := Create(pin(t, dir), "index", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +165,7 @@ func TestIndex_AddDimensionMismatch(t *testing.T) {
 
 func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	idx, err := Create(pin(t, dir), "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +192,7 @@ func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
 		t.Fatalf("second Add: %v", err)
 	}
 
-	opened, err := Open(dir)
+	opened, err := Open(pin(t, dir), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +205,7 @@ func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
 }
 func TestIndex_SearchDimensionMismatch(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 4)
+	idx, err := Create(pin(t, dir), "index", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +217,7 @@ func TestIndex_SearchDimensionMismatch(t *testing.T) {
 
 func TestIndex_OpenAndSearch(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	idx, err := Create(pin(t, dir), "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +226,7 @@ func TestIndex_OpenAndSearch(t *testing.T) {
 	}
 
 	// Re-open and verify.
-	idx2, err := Open(dir)
+	idx2, err := Open(pin(t, dir), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +240,7 @@ func TestIndex_OpenAndSearch(t *testing.T) {
 }
 
 func TestIndex_OpenMissing(t *testing.T) {
-	_, err := Open("/nonexistent/index/path")
+	_, err := Open(pin(t, t.TempDir()), "index")
 	if err == nil {
 		t.Fatal("expected error for missing index")
 	}
@@ -232,7 +248,7 @@ func TestIndex_OpenMissing(t *testing.T) {
 
 func TestIndex_Contains(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 3)
+	idx, err := Create(pin(t, dir), "index", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +262,7 @@ func TestIndex_Contains(t *testing.T) {
 		t.Error("expected sha-xyz to not be found")
 	}
 	// Re-open and check persistence.
-	idx2, err := Open(dir)
+	idx2, err := Open(pin(t, dir), "index")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +273,7 @@ func TestIndex_Contains(t *testing.T) {
 
 func TestIndex_ContainsCurrentMatchesSourceAndContentHash(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	idx, err := Create(pin(t, dir), "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +296,7 @@ func TestIndex_ContainsCurrentMatchesSourceAndContentHash(t *testing.T) {
 
 func TestIndex_UpsertReplacesSourceAndKeepsAgentPathsDistinct(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	idx, err := Create(pin(t, dir), "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}

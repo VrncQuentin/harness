@@ -62,14 +62,14 @@ func scaffoldMemoryRepo(t *testing.T, agentName string) (string, *git.Repo) {
 func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 	t.Helper()
 	root, repo := scaffoldMemoryRepo(t, "coder")
-	reader := memory.NewDirReader(root)
+	reader := openTestRepo(t, root)
 	mgr, err := NewManager(ManagerDeps{
-		Repo:               repo,
-		Writer:             reader,
-		Reader:             reader,
-		Inference:          fi,
-		SummarizerPrompt:   func() string { return "test" },
-		ResolveAbsRepoPath: root,
+		Repo:             repo,
+		Writer:           reader,
+		Reader:           reader,
+		Appender:         reader,
+		Inference:        fi,
+		SummarizerPrompt: func() string { return "test" },
 	}, project.GlobalSlug)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -166,7 +166,7 @@ func TestSavedEpisodeVisibleToPromptRecency(t *testing.T) {
 	// Fresh assembler from the same memory repo. The recency layer
 	// reads episodes/<agent>/*.md, which is exactly
 	// what the session writer produces.
-	reader := memory.NewDirReader(root)
+	reader := openTestRepo(t, root)
 	active := "coder"
 	reg := agent.NewDiskRegistry(reader, func() string { return active }, func(name string) error { active = name; return nil })
 	cfg := config.PromptConfig{RecencyN: 5}
@@ -235,8 +235,7 @@ func TestTenSessionsCreateTenEpisodeCommits(t *testing.T) {
 	}
 
 	// 10 records in sessions.jsonl.
-	logPath := filepath.Join(root, "sessions.jsonl")
-	records, err := ReadAll(logPath)
+	records, err := ReadAll(openTestRepo(t, root), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -268,7 +267,7 @@ func TestGarbledSessionLogIsTolerated(t *testing.T) {
 	}
 	_ = f.Close()
 
-	records, err := ReadAll(logPath)
+	records, err := ReadAll(openTestRepo(t, root), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll on corrupted log: %v", err)
 	}
@@ -289,7 +288,7 @@ func TestEpisodeVisibleToMemoryWalker(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	reader := memory.NewDirReader(root)
+	reader := openTestRepo(t, root)
 	entries, err := reader.Walk("episodes")
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
@@ -327,4 +326,15 @@ func TestSidecarMissingResumeError(t *testing.T) {
 	if _, err := mgr.Resume(s.ID); err == nil {
 		t.Fatal("expected error when sidecar is missing")
 	}
+}
+
+// openTestRepo pins a project memory repo for a test and closes it on cleanup.
+func openTestRepo(t *testing.T, root string) *memory.DirReader {
+	t.Helper()
+	r, err := memory.OpenDirReader(root)
+	if err != nil {
+		t.Fatalf("OpenDirReader %s: %v", root, err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	return r
 }

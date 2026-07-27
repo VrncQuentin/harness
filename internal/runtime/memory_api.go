@@ -65,7 +65,17 @@ func (a *uiRetrievalScorerAdapter) ScoreEpisodes(ctx context.Context, query stri
 //
 // metricsStore may be nil; the session manager simply skips metric
 // emission in that case.
-func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store) bool {
+func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store) (started bool) {
+	// Everything this generation of the memory graph pins is collected as it is
+	// opened, so a start that gives up partway closes exactly what it took and
+	// a rebuild closes exactly the generation it replaced.
+	var owned memoryHandles
+	defer func() {
+		if !started {
+			owned.close()
+		}
+	}()
+
 	roots, err := rt.resolveProjectRepoRootsForSlug(rt.cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.SetServiceDeps(ui.ServiceDeps{})
@@ -90,21 +100,50 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		}
 	}
 
-	rt.globalMem = memory.NewDirReader(roots.globalRoot)
-	rt.activeMem = memory.NewDirReader(roots.activeRoot)
+	// The two repo roots are pinned here and held for as long as this
+	// generation of the memory services is wired up. Every read and write below
+	// resolves through those handles, so nothing downstream re-resolves the
+	// configured pathname — which is what stops a link planted inside a repo
+	// from leading a later write out of it.
+	owned.globalMem, err = memory.OpenDirReader(roots.globalRoot)
+	if err != nil {
+		uiServer.SetServiceDeps(svcDeps)
+		uiServer.AddStartupError(fmt.Errorf("global memory repo: %w", err))
+		return false
+	}
+	if roots.activeSlug == project.GlobalSlug {
+		// One repo reached by two names would otherwise be pinned twice. Both
+		// handles would be valid; taking a second one only doubles what has to
+		// be closed on every reload path.
+		owned.activeMem = owned.globalMem
+	} else {
+		owned.activeMem, err = memory.OpenDirReader(roots.activeRoot)
+		if err != nil {
+			uiServer.SetServiceDeps(svcDeps)
+			uiServer.AddStartupError(fmt.Errorf("active memory repo: %w", err))
+			return false
+		}
+	}
+	rt.globalMem = owned.globalMem
+	rt.activeMem = owned.activeMem
 	rt.agentReg = agent.NewDiskRegistry(rt.globalMem, rt.getActiveAgent, rt.setActiveAgent)
 	rt.assembler = prompt.NewProjectDiskAssembler(rt.globalMem, rt.activeMem, rt.agentReg, rt.effectivePromptFor(&rt.cfg)).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
 
 	// The project-scoped service owns one index handle for prompt retrieval,
 	// scoring, save hooks, and rebuilding. Missing indexes are created lazily;
 	// malformed indexes surface as setup errors instead of being discarded.
-	indexDir := memoryops.EpisodeIndexDir(roots.activeRoot)
-	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir)
+	//
+	// It is located by a repo-relative name resolved through the active repo's
+	// own handle, never by an absolute "<repo>/index/_episodes" pathname: that
+	// name can already lead out of the repo, and pinning it would then pin
+	// somewhere else entirely.
+	episodeIndex, err := memoryops.NewEpisodeIndex(owned.activeMem, memoryops.EpisodeIndexRootRel)
 	if err != nil {
 		uiServer.SetServiceDeps(svcDeps)
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 		return false
 	}
+	owned.episodes = episodeIndex
 	embedClient := rt.newEmbedderClient()
 	rt.assembler = rt.assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 	svcDeps.RetrievalScorer = &uiRetrievalScorerAdapter{scorer: &memoryops.EpisodeScorer{
@@ -119,7 +158,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	// A failure to open the git repo surfaces as a startup error and
 	// silently disables save/resume so the rest of the harness stays
 	// usable.
-	sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient, episodeIndex)
+	sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, owned.activeMem, episodeIndex, rt.ensureInferenceClient(), embedClient)
 	rt.setSessionManager(sessionMgr)
 	if sessionAdapter != nil {
 		svcDeps.SessionStore = sessionAdapter
@@ -137,12 +176,10 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
 	svcDeps.IndexRebuilder = &memoryops.EpisodeRebuilder{
-		Mem:       rt.activeMem,
-		Embedder:  embedClient,
-		Index:     episodeIndex.Current(),
-		IndexDir:  indexDir,
-		Repo:      rt.gitRepo,
-		OnRebuilt: episodeIndex.Replace,
+		Mem:      rt.activeMem,
+		Embedder: embedClient,
+		Index:    episodeIndex,
+		Repo:     rt.gitRepo,
 	}
 	if rt.reqQueue != nil {
 		svcDeps.ChatRunner = &chatRunnerAdapter{
@@ -279,6 +316,9 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.taskRunner = taskAdapter
 	svcDeps.TaskRunner = taskAdapter
 	uiServer.SetServiceDeps(svcDeps)
+	// Transfer ownership: from here the runtime closes these, and the deferred
+	// cleanup above no longer applies because the start succeeded.
+	rt.memHandles = owned
 	return true
 }
 
@@ -292,7 +332,41 @@ func (rt *Runtime) memoryAPIUnavailable() bool {
 		(rt.cfg.API.Enabled && rt.apiServer == nil)
 }
 
+// memoryHandles collects the OS handles one generation of the memory service
+// graph pins for its lifetime.
+//
+// They are gathered in one place because the reload path replaces the whole
+// graph at once and can still fall back to the previous one: the handles being
+// replaced must stay open until the replacement is known to have started, and
+// must then be closed exactly once. Closing them inside stopMemoryAndAPI would
+// be too early — that runs before the new graph is built, and a failed build
+// restores the old references, which would then be closed handles.
+type memoryHandles struct {
+	globalMem *memory.DirReader
+	activeMem *memory.DirReader
+	episodes  *memoryops.EpisodeIndex
+}
+
+func (h memoryHandles) close() {
+	if h.episodes != nil {
+		if err := h.episodes.Close(); err != nil {
+			slog.Warn("closing episode index", "err", err)
+		}
+	}
+	if h.activeMem != nil && h.activeMem != h.globalMem {
+		if err := h.activeMem.Close(); err != nil {
+			slog.Warn("closing active memory repo", "err", err)
+		}
+	}
+	if h.globalMem != nil {
+		if err := h.globalMem.Close(); err != nil {
+			slog.Warn("closing global memory repo", "err", err)
+		}
+	}
+}
+
 type memoryAPISnapshot struct {
+	owned       memoryHandles
 	globalMem   memory.Repo
 	activeMem   memory.Repo
 	agentReg    *agent.DiskRegistry
@@ -306,6 +380,7 @@ type memoryAPISnapshot struct {
 
 func (rt *Runtime) snapshotMemoryAndAPI(uiServer *ui.Server) memoryAPISnapshot {
 	return memoryAPISnapshot{
+		owned:       rt.memHandles,
 		globalMem:   rt.globalMem,
 		activeMem:   rt.activeMem,
 		agentReg:    rt.agentReg,
@@ -318,7 +393,13 @@ func (rt *Runtime) snapshotMemoryAndAPI(uiServer *ui.Server) memoryAPISnapshot {
 	}
 }
 
+// closeReplaced releases the handles a snapshot was holding. It is called only
+// once the replacement graph has started, because until then the snapshot is
+// still the fallback.
+func (snap memoryAPISnapshot) closeReplaced() { snap.owned.close() }
+
 func (rt *Runtime) restoreMemoryAndAPI(uiServer *ui.Server, snap memoryAPISnapshot) {
+	rt.memHandles = snap.owned
 	rt.globalMem = snap.globalMem
 	rt.activeMem = snap.activeMem
 	rt.agentReg = snap.agentReg
@@ -368,42 +449,44 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 	}, nil
 }
 
-func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndexes ...*memoryops.EpisodeIndex) (*session.Manager, *uiSessionStoreAdapter) {
-	repoPath := roots.activeRoot
-	repo, err := gitw.Open(repoPath)
+// buildSessionManagerWithClients wires the session manager onto the already
+// pinned active-project repo handle. sessionStore is that handle; episodeIndex
+// is the one shared index for the project.
+func (rt *Runtime) buildSessionManagerWithClients(
+	metricsStore metrics.Store,
+	uiServer *ui.Server,
+	roots projectRepoRoots,
+	sessionStore memory.Repo,
+	episodeIndex *memoryops.EpisodeIndex,
+	infClient inference.Client,
+	embedClient embedder.Client,
+) (*session.Manager, *uiSessionStoreAdapter) {
+	repo, err := gitw.Open(roots.activeRoot)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
 		return nil, nil
 	}
 	rt.gitRepo = repo
 
-	var episodeIndex *memoryops.EpisodeIndex
-	if len(episodeIndexes) > 0 {
-		episodeIndex = episodeIndexes[0]
-	}
-	if episodeIndex == nil {
-		episodeIndex, err = memoryops.NewEpisodeIndex(memoryops.EpisodeIndexDir(repoPath))
-		if err != nil {
-			uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
-			return nil, nil
-		}
-	}
-
 	var rec session.MetricsRecorder
 	if metricsStore != nil {
 		rec = metrics.NewRecorder(metricsStore)
 	}
 
-	sessionStore := memory.NewDirReader(repoPath)
+	// The session manager reads and writes through the repo handle already
+	// pinned for the active project rather than opening a second one on the
+	// same path. Two handles would be two chances for the name to have meant
+	// something different, and the log the manager appends to has to be the
+	// same file the memory reader serves.
 	mgr, err := session.NewManager(session.ManagerDeps{
-		Repo:               repo,
-		Writer:             sessionStore,
-		Reader:             sessionStore,
-		Inference:          infClient,
-		Metrics:            rec,
-		SummarizerPrompt:   rt.summarizerPromptFn(),
-		ResolveAbsRepoPath: repoPath,
-		AfterSave:          memoryops.AfterSaveEmbed(embedClient, episodeIndex, rt.gitRepo),
+		Repo:             repo,
+		Writer:           sessionStore,
+		Reader:           sessionStore,
+		Appender:         sessionStore,
+		Inference:        infClient,
+		Metrics:          rec,
+		SummarizerPrompt: rt.summarizerPromptFn(),
+		AfterSave:        memoryops.AfterSaveEmbed(embedClient, episodeIndex, rt.gitRepo),
 	}, rt.cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
@@ -474,11 +557,17 @@ func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context) {
 // stopMemoryAndAPI tears down memory, sessions, task, and API services. Caller
 // must hold rt.mu and should call quiesceMemoryAndAPI first when replacing live
 // services during reload.
+//
+// It drops references and does not close the pinned repo handles. Ownership of
+// those belongs to whoever took the snapshot: on the reload path the previous
+// generation stays open until the replacement has started, because a failed
+// start restores it.
 func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	if rt.apiServer != nil {
 		rt.apiServer.Stop()
 		rt.apiServer = nil
 	}
+	rt.memHandles = memoryHandles{}
 	rt.globalMem = nil
 	rt.activeMem = nil
 	rt.agentReg = nil

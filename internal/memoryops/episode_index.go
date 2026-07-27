@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"io/fs"
 	"path"
-	"path/filepath"
 	"sync"
 
 	"github.com/VrncQuentin/harness/internal/index"
+	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 const (
@@ -16,11 +17,6 @@ const (
 	EpisodeIndexVectorsRel  = "index/_episodes/vectors.bin"
 	EpisodeIndexManifestRel = "index/_episodes/manifest.json"
 )
-
-// EpisodeIndexDir returns the filesystem path to a project's episode index.
-func EpisodeIndexDir(projectRoot string) string {
-	return filepath.Join(projectRoot, filepath.FromSlash(EpisodeIndexRootRel))
-}
 
 // EpisodeIndexCommitPaths returns repo-relative paths touched by episode index updates.
 func EpisodeIndexCommitPaths() []string {
@@ -30,21 +26,47 @@ func EpisodeIndexCommitPaths() []string {
 // EpisodeIndex owns the synchronized index handle for one project. Every
 // retrieval and mutation path shares this handle, so newly saved episodes are
 // visible immediately without a runtime restart.
+//
+// It owns the pinned index directory for its own lifetime. The index files are
+// written lazily — not until the first embedding succeeds — so the directory
+// handle has to outlive construction, and tying its lifetime to whichever
+// caller happened to build this would make the index's correctness depend on
+// somebody else's Close.
 type EpisodeIndex struct {
 	mu  sync.Mutex
-	dir string
+	dir *rootfs.Root
+	rel string
 	idx *index.Index
 }
 
-// NewEpisodeIndex opens an existing index. A missing index is created lazily
-// after the first successful embedding; malformed indexes are returned to the
-// caller instead of being mistaken for a missing one.
-func NewEpisodeIndex(dir string) (*EpisodeIndex, error) {
-	idx, err := index.Open(dir)
+// NewEpisodeIndex opens the episode index at rel inside repo, a pinned project
+// memory repo. rel is resolved through the repo's handle, so the directory the
+// index ends up writing to is inside the repo by construction rather than by a
+// comparison. A missing index is created on the first successful embedding;
+// a malformed one is returned to the caller instead of being mistaken for a
+// missing one. The caller closes the result.
+func NewEpisodeIndex(repo memory.SubRooter, rel string) (*EpisodeIndex, error) {
+	dir, err := repo.SubRoot(rel)
+	if err != nil {
+		return nil, fmt.Errorf("episode index: pin %s: %w", rel, err)
+	}
+	idx, err := index.Open(dir, rel)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		_ = dir.Close()
 		return nil, err
 	}
-	return &EpisodeIndex{dir: dir, idx: idx}, nil
+	return &EpisodeIndex{dir: dir, rel: rel, idx: idx}, nil
+}
+
+// Close releases the pinned index directory.
+func (e *EpisodeIndex) Close() error {
+	e.mu.Lock()
+	e.idx = nil
+	e.mu.Unlock()
+	if err := e.dir.Close(); err != nil {
+		return fmt.Errorf("episode index: close %s: %w", e.rel, err)
+	}
+	return nil
 }
 
 // Search implements index.Searcher. A missing index produces no semantic
@@ -82,9 +104,9 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.idx == nil {
-		idx, err := index.Create(e.dir, dim)
+		idx, err := index.Create(e.dir, e.rel, dim)
 		if err != nil {
-			return fmt.Errorf("episode index: create %s: %w", e.dir, err)
+			return fmt.Errorf("episode index: create %s: %w", e.rel, err)
 		}
 		e.idx = idx
 	}
@@ -94,16 +116,18 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 	return e.idx.Upsert(source, contentHash, vectors)
 }
 
-// Current returns the shared concrete handle for migration and test helpers.
-func (e *EpisodeIndex) Current() *index.Index {
+// ContainsCurrent reports whether source is present with the supplied content
+// hash. A missing index contains nothing.
+func (e *EpisodeIndex) ContainsCurrent(source, contentHash string) bool {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.idx
+	idx := e.idx
+	e.mu.Unlock()
+	return idx != nil && idx.ContainsCurrent(source, contentHash)
 }
 
-// Replace adopts a handle created by the explicit rebuild workflow.
-func (e *EpisodeIndex) Replace(idx *index.Index) {
+// Ready reports whether an index exists on disk yet.
+func (e *EpisodeIndex) Ready() bool {
 	e.mu.Lock()
-	e.idx = idx
-	e.mu.Unlock()
+	defer e.mu.Unlock()
+	return e.idx != nil
 }
