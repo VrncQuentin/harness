@@ -72,15 +72,15 @@ func (t *readTool) Execute(ctx context.Context, c CallInfo, args map[string]any)
 	if err != nil {
 		return Result{Error: "read: " + err.Error()}
 	}
-	absPath, err := validatePath(target, c.SandboxRoots)
+	file, err := openTarget(target, c.SandboxRoots)
 	if err != nil {
 		return Result{Error: err.Error()}
 	}
-	//nolint:gosec
-	data, err := os.ReadFile(absPath)
+	defer file.Close() //nolint:errcheck // read-only root handle
+	data, err := file.Read()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return Result{Error: ErrPathNotFound.Error() + ": " + absPath}
+			return Result{Error: ErrPathNotFound.Error() + ": " + file.Display()}
 		}
 		return Result{Error: fmt.Sprintf("read: %v", err)}
 	}

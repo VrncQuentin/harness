@@ -45,16 +45,17 @@ func (t *astMapTool) Execute(ctx context.Context, c CallInfo, args map[string]an
 	if !ok || rawPath == "" {
 		return Result{Error: "ast_map: missing or invalid path argument"}
 	}
-	absPath, err := validatePath(rawPath, c.SandboxRoots)
+	file, err := openTarget(rawPath, c.SandboxRoots)
 	if err != nil {
 		return Result{Error: err.Error()}
 	}
+	defer file.Close() //nolint:errcheck // read-only root handle
+	absPath := file.Display()
 	front, ok := t.parsers.ForPath(absPath)
 	if !ok {
 		return Result{Error: fmt.Sprintf("ast_map: unsupported file type %q — supported languages: %s", absPath, strings.Join(t.parsers.Languages(), ", "))}
 	}
-	//nolint:gosec
-	src, err := os.ReadFile(absPath)
+	src, err := file.Read()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Result{Error: ErrPathNotFound.Error() + ": " + absPath}

@@ -70,11 +70,20 @@ func resolveToolout(dir, locator string) (string, error) {
 //     comparison agrees with itself and admits the file.
 //
 // Resolving through the handle removes the pathname from the decision
-// altogether. It also refuses symlinked and junctioned leaves, and any
-// traversal, without a separate check.
+// altogether. Any traversal, and any link or junction whose target leaves the
+// directory, is refused without a separate check.
 //
-// The rest of the tool layer still resolves and reopens by path; this is the
-// one place that reads outside every sandbox root, which is why it does not.
+// What it does not do is refuse every link. os.Root follows a symlink or a
+// junction that stays inside the root; its guarantee is containment, not the
+// absence of links. That is the policy this tool wants — the spill directory
+// holds files the harness itself wrote, and a link within it still names one of
+// them — so nothing stricter is imposed. A caller that did want "no linked
+// leaf at all" would have to Lstat the leaf through the root and refuse it
+// explicitly, and would have to say so in a test.
+//
+// This is the one read that happens outside every sandbox root, so it cannot
+// use the sandbox's rooted access in internal/rootfs; it opens its own root on
+// the spill directory instead.
 func openToolout(dir, locator string) (*os.File, error) {
 	id, err := resolveToolout(dir, locator)
 	if err != nil {
@@ -108,6 +117,9 @@ func openToolout(dir, locator string) (*os.File, error) {
 // outside the function. Without it the ordering could be argued from reading
 // the code but not demonstrated, and an argument is what the previous version
 // of this comment offered while the code did something weaker.
+//
+// It is package-level mutable state, so the tests that set it must not call
+// t.Parallel: two of them running at once would each see the other's hook.
 var tooloutSwapHook func()
 
 // tooloutIDMaxLen bounds the accepted id length. B3 emits 16 hex characters;

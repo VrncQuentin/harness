@@ -35,14 +35,15 @@ func (t *fileListTool) Execute(ctx context.Context, c CallInfo, args map[string]
 	if !ok || rawPath == "" {
 		return Result{Error: "file_list: missing or invalid path argument"}
 	}
-	absPath, err := validatePath(rawPath, c.SandboxRoots)
+	dir, err := openTarget(rawPath, c.SandboxRoots)
 	if err != nil {
 		return Result{Error: err.Error()}
 	}
-	entries, err := os.ReadDir(absPath)
+	defer dir.Close() //nolint:errcheck // read-only root handle
+	entries, err := dir.ReadDir()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return Result{Error: ErrPathNotFound.Error() + ": " + absPath}
+			return Result{Error: ErrPathNotFound.Error() + ": " + dir.Display()}
 		}
 		return Result{Error: fmt.Sprintf("file_list: %v", err)}
 	}

@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/VrncQuentin/harness/internal/parser"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 // editTool implements the edit tool: hash-anchored line operations on
@@ -78,15 +78,15 @@ func (t *editTool) editAnchored(c CallInfo, locator, anchor, content string) Res
 	if anchor == "" {
 		return Result{Error: "edit: anchor_hash is required — take it from ast_map/ast_find output"}
 	}
-	absPath, err := validatePath(path, c.SandboxRoots)
+	file, err := openTarget(path, c.SandboxRoots)
 	if err != nil {
 		return Result{Error: err.Error()}
 	}
-	//nolint:gosec
-	src, err := os.ReadFile(absPath)
+	defer file.Close() //nolint:errcheck // root handle, no buffered writes
+	src, err := file.Read()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return Result{Error: ErrPathNotFound.Error() + ": " + absPath}
+			return Result{Error: ErrPathNotFound.Error() + ": " + file.Display()}
 		}
 		return Result{Error: fmt.Sprintf("edit: %v", err)}
 	}
@@ -101,39 +101,49 @@ func (t *editTool) editAnchored(c CallInfo, locator, anchor, content string) Res
 	}
 
 	updated, replacement := spliceSpan(src, start, end, content)
-	if err := writeFileAtomic(absPath, updated); err != nil {
+	if err := file.WriteAtomic(updated, editFileMode); err != nil {
 		return Result{Error: fmt.Sprintf("edit: %v", err)}
 	}
-	return t.verifyAfterMutate(absPath, start, replacement, "edited "+FormatLocator(absPath, start, end))
+	return t.verifyAfterMutate(file, start, replacement, "edited "+FormatLocator(file.Display(), start, end))
 }
 
 func (t *editTool) createFile(c CallInfo, path, content string) Result {
-	absPath, err := validatePath(path, c.SandboxRoots)
+	file, err := openTarget(path, c.SandboxRoots)
 	if err != nil {
 		return Result{Error: err.Error()}
 	}
-	if _, err := os.Stat(absPath); err == nil {
-		return Result{Error: fmt.Sprintf("edit: %s already exists — whole-file mode only creates new files; use ast_find + anchored edit", absPath)}
+	defer file.Close() //nolint:errcheck // root handle, no buffered writes
+	if _, err := file.Stat(); err == nil {
+		return Result{Error: fmt.Sprintf("edit: %s already exists — whole-file mode only creates new files; use ast_find + anchored edit", file.Display())}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Result{Error: fmt.Sprintf("edit: %v", err)}
 	}
-	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+	// The parents are created through the same pinned root as the write. The
+	// previous version created them by pathname and then re-ran the sandbox
+	// check, because a MkdirAll that followed a link could otherwise have moved
+	// the file it was about to write outside the sandbox. Inside the root there
+	// is nowhere for it to go, so the second check has nothing left to catch.
+	if err := file.MkdirAllParent(0o755); err != nil {
 		return Result{Error: fmt.Sprintf("edit: create parent directories: %v", err)}
 	}
-	if _, err := validatePath(absPath, c.SandboxRoots); err != nil {
-		return Result{Error: err.Error()}
-	}
-	if err := writeFileAtomic(absPath, []byte(content)); err != nil {
+	if err := file.WriteAtomic([]byte(content), editFileMode); err != nil {
 		return Result{Error: fmt.Sprintf("edit: %v", err)}
 	}
-	return t.verifyAfterMutate(absPath, 1, []byte(content), "created "+absPath)
+	return t.verifyAfterMutate(file, 1, []byte(content), "created "+file.Display())
 }
+
+// editFileMode is the permission an edited or created file is left with.
+const editFileMode = 0o644
 
 // verifyAfterMutate re-reads the file, confirms the written span matches the
 // requested bytes, and re-parses supported languages. It is not optional.
-func (t *editTool) verifyAfterMutate(absPath string, start int, replacement []byte, action string) Result {
-	//nolint:gosec
-	after, err := os.ReadFile(absPath)
+//
+// The re-read goes back through the same pinned root as the write, so what is
+// verified is the file that was written rather than whatever the pathname
+// resolves to by the time the check runs.
+func (t *editTool) verifyAfterMutate(file *rootfs.Target, start int, replacement []byte, action string) Result {
+	absPath := file.Display()
+	after, err := file.Read()
 	if err != nil {
 		return Result{Error: fmt.Sprintf("edit: verify re-read: %v", err)}
 	}
@@ -185,29 +195,6 @@ func spliceSpan(src []byte, start, end int, content string) (updated, replacemen
 		out = append(out, line...)
 	}
 	return out, replacement
-}
-
-// writeFileAtomic writes content via a temp file and rename so a crash never
-// leaves a half-written file.
-func writeFileAtomic(path string, content []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".harness-write-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if err := tmp.Chmod(0o644); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
 }
 
 // countLines counts the lines in b, where a trailing newline does not open

@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -150,6 +152,75 @@ func TestEdit_CreateNewFile(t *testing.T) {
 	data, err := os.ReadFile(path)
 	if err != nil || string(data) != "hello\n" {
 		t.Fatalf("created file = %q, err %v", data, err)
+	}
+}
+
+// The write goes through a temporary file and a rename inside the pinned root,
+// so the directory must be left holding the edited file and nothing else. A
+// stray .harness-write-* would mean the rename did not consume it, and would
+// then show up in git status and in every file_list of the directory.
+func TestEdit_LeavesNoTemporaryFileBehind(t *testing.T) {
+	root := t.TempDir()
+	path := writeSandboxFile(t, root, "sample.go", astToolsSrc)
+	tool := newEditTool(t)
+	locator, hash := anchorFor(t, path, 3, 5)
+	ci := CallInfo{SandboxRoots: []string{root}}
+
+	if res := tool.Execute(context.Background(), ci, map[string]any{
+		"locator": locator, "anchor_hash": hash, "content": "func Alpha() int {\n\treturn 42\n}\n",
+	}); res.Error != "" {
+		t.Fatalf("anchored edit: %s", res.Error)
+	}
+	if res := tool.Execute(context.Background(), ci, map[string]any{
+		"path": filepath.Join(root, "created.txt"), "content": "new\n",
+	}); res.Error != "" {
+		t.Fatalf("create: %s", res.Error)
+	}
+
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	sort.Strings(got)
+	want := []string{"created.txt", "sample.go"}
+	if !slices.Equal(got, want) {
+		t.Errorf("root contains %v, want exactly %v", got, want)
+	}
+}
+
+// Verification re-reads through the same pinned root as the write, so an edit
+// that reports success has been confirmed against the file it actually wrote.
+func TestEdit_VerifiesAgainstTheWrittenFile(t *testing.T) {
+	root := t.TempDir()
+	path := writeSandboxFile(t, root, "sample.go", astToolsSrc)
+	tool := newEditTool(t)
+	locator, hash := anchorFor(t, path, 3, 5)
+
+	res := tool.Execute(context.Background(), CallInfo{SandboxRoots: []string{root}}, map[string]any{
+		"locator": locator, "anchor_hash": hash, "content": "func Alpha() int {\n\treturn 42\n}\n",
+	})
+	if res.Error != "" {
+		t.Fatalf("Execute error: %s", res.Error)
+	}
+	if !strings.Contains(res.Content, "content OK") {
+		t.Fatalf("Content missing the verification result:\n%s", res.Content)
+	}
+	// The reported anchor must address the bytes now on disk, or the next
+	// anchored edit built on it would be rejected.
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	newHash, err := SpanHash(after, 3, 5)
+	if err != nil {
+		t.Fatalf("SpanHash: %v", err)
+	}
+	if !strings.Contains(res.Content, newHash) {
+		t.Errorf("reported hash does not match the file on disk (%s):\n%s", newHash, res.Content)
 	}
 }
 
