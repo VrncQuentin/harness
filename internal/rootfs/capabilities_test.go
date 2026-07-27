@@ -76,6 +76,98 @@ func TestRoot_WalkDoesNotFollowALinkOutOfTheRoot(t *testing.T) {
 	}
 }
 
+// The pinned-descent property, staged where it is actually observable.
+//
+// A link *leaf* proves nothing here: Lstat reports it as a link and the walk
+// declines to descend either way, so a traversal that re-resolved names from
+// the top would pass that test unchanged. What separates the two designs is
+// what happens when the name the walk started from stops meaning the same
+// directory partway through. Re-pointing it between one level and the next
+// sends a name-rejoining descent into the replacement; a descent through pinned
+// child handles stays in the directory it is already holding.
+func TestRoot_WalkKeepsDescendingInsideThePinnedTreeAfterTheRootIsRepointed(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	evil := filepath.Join(base, "evil")
+	if err := os.MkdirAll(filepath.Join(real, "sub"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(evil, "sub"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// "aaa.txt" sorts before "sub", so the walk visits it first and the
+	// re-point below lands between the enumeration and the descent.
+	if err := os.WriteFile(filepath.Join(real, "aaa.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "sub", "inside.txt"), []byte("i"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(evil, "sub", "secret.txt"), []byte("s"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	name := filepath.Join(base, "link")
+	linkDir(t, real, name)
+	r := openRoot(t, name)
+
+	repointed := false
+	var seen []string
+	err := r.Walk("", func(e WalkEntry) (bool, error) {
+		seen = append(seen, filepath.ToSlash(e.Rel))
+		if e.Name == "sub" && !repointed {
+			repointed = true
+			if err := os.Remove(name); err != nil {
+				t.Skipf("cannot re-point the walked root here: %v", err)
+			}
+			linkDir(t, evil, name)
+		}
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if !repointed {
+		t.Fatal("the re-point never happened; the window was not exercised")
+	}
+	if slicesContains(seen, "sub/secret.txt") {
+		t.Fatalf("the walk descended into the replacement directory: %v", seen)
+	}
+	if !slicesContains(seen, "sub/inside.txt") {
+		t.Fatalf("the walk lost the pinned subtree: %v", seen)
+	}
+}
+
+// AppendSync resolves its target through the root, so an append addressed
+// through a directory link that leaves the root is refused rather than
+// extending a file outside it.
+func TestRoot_AppendSyncDoesNotFollowALinkOutOfTheRoot(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	outside := filepath.Join(base, "outside")
+	for _, dir := range []string{root, outside} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+	}
+	const bait = "OUTSIDE"
+	if err := os.WriteFile(filepath.Join(outside, "log"), []byte(bait), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	linkDir(t, outside, filepath.Join(root, "linked"))
+
+	if err := openRoot(t, root).AppendSync("linked/log", []byte("appended"), 0o644); err == nil {
+		t.Error("an append through a link out of the root was accepted")
+	}
+	got, err := os.ReadFile(filepath.Join(outside, "log"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != bait {
+		t.Fatalf("the append reached a file outside the root: %q", got)
+	}
+}
+
 // Walk reports a symbolic link as a link rather than descending into it, which
 // is what filepath.WalkDir did and what the memory repo's Walk contract
 // promises. A junction stands in where symlinks need a privilege.
