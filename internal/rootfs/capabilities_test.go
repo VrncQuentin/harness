@@ -36,6 +36,79 @@ func openRoot(t *testing.T, dir string) *Root {
 	return r
 }
 
+// A directory entry's type from the initial listing only says what it was at
+// listing time. os.Root follows an in-root symlink rather than refusing it, so
+// a name entered as a real directory in the listing but replaced by an
+// in-root symlink before the walk reaches it would be opened — and, without a
+// fresh check, entered — on the strength of stale metadata alone.
+//
+// This stages exactly that: the visitor for an entry that sorts first
+// ("aaa") removes a directory that sorts later ("zdir") and replaces it with
+// a symlink to a third, nested directory holding bait content, before the
+// walk ever reaches "zdir". The walk must report "zdir" as the link it now is
+// and must not read the bait content through it.
+func TestRoot_WalkRefusesADirectoryReplacedByAnInRootSymlinkAfterListing(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	// Nested one level down so it is not itself a sibling the walk would
+	// separately enumerate at the top level.
+	target := filepath.Join(root, "aaa", "elsewhere")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const secret = "SECRET-REACHED-BY-A-POST-LISTING-SYMLINK"
+	if err := os.WriteFile(filepath.Join(target, "bait.txt"), []byte(secret), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	zdir := filepath.Join(root, "zdir")
+	if err := os.MkdirAll(zdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(zdir, "real.txt"), []byte("the genuine zdir"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	r := openRoot(t, root)
+	swapped := false
+	var sawZdirAsLink bool
+	var disclosedSecret bool
+	err := r.Walk("", func(e WalkEntry) (bool, error) {
+		if e.Name == "aaa" && !swapped {
+			swapped = true
+			if err := os.RemoveAll(zdir); err != nil {
+				t.Fatalf("RemoveAll zdir: %v", err)
+			}
+			if err := os.Symlink(target, zdir); err != nil {
+				t.Skipf("file symlinks unavailable in this environment: %v", err)
+			}
+		}
+		if e.Name == "zdir" {
+			if e.Info.Mode()&fs.ModeSymlink != 0 {
+				sawZdirAsLink = true
+			}
+		}
+		if e.Name == "bait.txt" && filepath.Base(filepath.Dir(e.Rel)) == "zdir" {
+			// Reached "bait.txt" by descending through "zdir" as though it
+			// were still the real directory — the walk followed the
+			// replacement symlink into its target.
+			disclosedSecret = true
+		}
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if !swapped {
+		t.Fatal("the swap never ran; the window was not exercised")
+	}
+	if disclosedSecret {
+		t.Fatal("the walk descended through a directory that had become a symlink after listing, disclosing the target's content")
+	}
+	if !sawZdirAsLink {
+		t.Fatal("zdir was not reported as a link even though it had become one before the walk reached it")
+	}
+}
+
 // A walk that inspects a child's name and then resolves the name again to
 // descend can be sent somewhere else in between. Descending through a pinned
 // handle means what was inspected is what is entered — and in particular a
@@ -301,58 +374,67 @@ func TestRoot_OpenReadDoesNotTruncate(t *testing.T) {
 // temp create, the failure-path remove, and the final rename all against that
 // one handle. Re-resolving the directory component on each of those calls —
 // the shape this replaced — would let a directory swapped in between them
-// redirect the rename: list the directory once the temp file exists (its name
-// is unpredictable only until it is visible), move the directory aside, plant
-// a file under the same name in a replacement, and the rename publishes the
-// planted content under the caller's requested name instead of what this call
-// wrote.
+// redirect the operation.
 //
-// The hook stages exactly that replacement, in the one window where the fix
-// is observable: after the destination directory is pinned and before
-// anything is created inside it. The root itself is pinned through a
-// symlinked name — the same shape TestRoot_WalkKeepsDescendingInsideThePinnedTreeAfterTheRootIsRepointed
-// already proved survives a repoint of that name — so this test isolates the
-// one thing it does not already cover: that a directory *inside* an
-// already-pinned root is resolved once for the whole write, not once per call.
+// The swap has to hit the destination *subdirectory itself* ("sub") to
+// discriminate the two implementations, not the root's own outer name: a
+// pinned os.Root handle already survives its own name changing (proven
+// separately by TestRoot_WalkKeepsDescendingInsideThePinnedTreeAfterTheRootIsRepointed),
+// so repointing an outer symlinked name that "real" is reached through says
+// nothing about whether "sub", *inside* the already-pinned root, is resolved
+// once or three times. The hook here therefore swaps "sub" itself: it fires
+// right after WriteStreamAtomic pins the destination directory and before
+// createTemp ever touches it, so a create/rename shape that re-resolved "sub"
+// from the outer root on each call would createTemp, and then rename, against
+// the replacement — landing the write there instead of in the directory that
+// was actually pinned.
 func TestRoot_WriteStreamAtomicPinsDestinationDirectoryOnce(t *testing.T) {
 	base := t.TempDir()
 	real := filepath.Join(base, "real")
-	if err := os.MkdirAll(filepath.Join(real, "sub"), 0o755); err != nil {
+	if err := os.MkdirAll(real, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	evil := filepath.Join(base, "evil")
-	if err := os.MkdirAll(filepath.Join(evil, "sub"), 0o755); err != nil {
+	sub := filepath.Join(real, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	name := filepath.Join(base, "link")
-	linkDir(t, real, name)
+	movedAside := filepath.Join(base, "sub-moved-aside")
+	replacement := filepath.Join(base, "sub-replacement")
+	if err := os.MkdirAll(replacement, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
 
-	r := openRoot(t, name)
-	repointed := false
+	r := openRoot(t, real)
+	swapped := false
 	const content = "the genuine write"
 	err := r.writeStreamAtomicHooked("sub/file.txt", strings.NewReader(content), 0o644, func() {
-		repointed = true
-		if err := os.Remove(name); err != nil {
-			t.Skipf("cannot re-point the root's name here: %v", err)
+		swapped = true
+		// Take the pinned subdirectory's name out of the way and put an
+		// entirely different, empty directory under the exact name that was
+		// just pinned.
+		if err := os.Rename(sub, movedAside); err != nil {
+			t.Skipf("cannot rename the pinned subdirectory here: %v", err)
 		}
-		linkDir(t, evil, name)
+		if err := os.Rename(replacement, sub); err != nil {
+			t.Fatalf("rename replacement into place: %v", err)
+		}
 	})
 	if err != nil {
 		t.Fatalf("WriteStreamAtomic: %v", err)
 	}
-	if !repointed {
-		t.Fatal("the hook never ran; the re-point window was not exercised")
+	if !swapped {
+		t.Fatal("the hook never ran; the swap window was not exercised")
 	}
 
-	got, err := os.ReadFile(filepath.Join(real, "sub", "file.txt"))
+	if _, err := os.Stat(filepath.Join(sub, "file.txt")); err == nil {
+		t.Fatal("the write landed in the replacement directory installed under the pinned name, not in the directory that was actually pinned")
+	}
+	got, err := os.ReadFile(filepath.Join(movedAside, "file.txt"))
 	if err != nil {
-		t.Fatalf("the write did not land in the directory pinned before the re-point: %v", err)
+		t.Fatalf("the write did not land in the directory pinned before the swap (moved aside afterward): %v", err)
 	}
 	if string(got) != content {
 		t.Fatalf("content = %q, want %q", got, content)
-	}
-	if _, err := os.Stat(filepath.Join(evil, "sub", "file.txt")); err == nil {
-		t.Fatal("the write followed the re-pointed name into the replacement directory")
 	}
 }
 

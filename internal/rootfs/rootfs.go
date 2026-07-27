@@ -459,16 +459,22 @@ const maxWalkDepth = 64
 // resolution in between.
 //
 // A directory entry's *type*, from the initial listing, is what decides
-// whether to attempt that pin at all — not the later Stat. That type comes
-// from the same call that named the entry, so a symbolic link (a distinct
-// type, even when it targets a directory) is never mistaken for a directory
-// and is Lstat'd and reported without an OpenChild attempt, preserving "a link
-// is reported as a link and not descended into" even for a link that only
-// appears after the listing: OpenChild is not attempted for it in the first
-// place. An entry that disappears, or changes to something OpenChild refuses,
-// between the listing and the pin is skipped rather than treated as an error —
-// it is gone or has become something this walk does not enter, which is a
-// valid answer to "what is here", not a failure.
+// whether to attempt that pin at all. A symbolic link present at listing time
+// (a distinct type, even when it targets a directory) is never mistaken for a
+// directory: it is Lstat'd and reported without an OpenChild attempt. That
+// listing is a snapshot, though, and os.Root follows an in-root symlink rather
+// than refusing it — so a name that was a real directory when listed and
+// becomes a symlink before the pin runs would be opened successfully by
+// OpenChild if that were the only check. It is not: walkDir Lstat's the same
+// name through the parent immediately after pinning it, which does not follow
+// links, and refuses to describe or enter the pinned child unless that Lstat
+// still shows a directory. "A link is reported as a link and not descended
+// into" is enforced by type at listing time and re-checked at the pin, not by
+// type at listing time alone. An entry that disappears, or changes to
+// something OpenChild refuses, between the listing and the pin is skipped
+// rather than treated as an error — it is gone or has become something this
+// walk does not enter, which is a valid answer to "what is here", not a
+// failure.
 func (r *Root) Walk(rel string, visit WalkFunc) error {
 	start := r
 	if rel != "" && rel != "." {
@@ -521,8 +527,20 @@ func (r *Root) walk(prefix string, visit WalkFunc, depth int) error {
 
 // walkDir pins one subdirectory, describes it through that same handle, and —
 // unless the visitor skips it — descends through it. name is only ever passed
-// here when the initial listing already reported it as a directory; the pin is
-// what turns that into a description and a descent that necessarily agree.
+// here when the initial listing already reported it as a directory.
+//
+// That listing is a snapshot, not a live fact: os.Root follows an in-root
+// symlink rather than refusing it, so a name that was a real directory when
+// listed and becomes an in-root symlink before this call runs is still opened
+// successfully by OpenChild — the pin alone does not tell descend and describe
+// apart from follow-a-link-that-only-just-appeared. What closes that is the
+// Lstat immediately below: it names the same "name" through the parent, which
+// does not follow links, so it reports the entry as it is *now*, at the moment
+// this is about to be treated as a directory — not as the earlier listing
+// recorded it. A symlink there, however it got there, is reported as a link
+// through the parent's own description and never entered, matching how a
+// symlink present at listing time is handled by the caller's non-directory
+// branch.
 func (r *Root) walkDir(name, relPath string, visit WalkFunc, depth int) error {
 	child, err := r.OpenChild(name)
 	if err != nil {
@@ -537,6 +555,20 @@ func (r *Root) walkDir(name, relPath string, visit WalkFunc, depth int) error {
 		if IsNotDirectory(err) {
 			return nil
 		}
+		return err
+	}
+
+	parentInfo, err := r.root.Lstat(name)
+	if err != nil {
+		_ = child.Close()
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if parentInfo.Mode()&fs.ModeSymlink != 0 {
+		_ = child.Close()
+		_, err := visit(WalkEntry{Rel: relPath, Name: name, Info: parentInfo})
 		return err
 	}
 	defer child.Close() //nolint:errcheck // read-only handle
@@ -573,12 +605,15 @@ func (s Set) Open(path string) (*Target, error) {
 	return s.open(path, nil)
 }
 
-// open is Open with a hook that runs immediately after a root is pinned and
-// before anything is authorized against it.
+// open is Open with two hooks, each nil on every production path: afterPin
+// runs immediately after a root is pinned and before anything is authorized
+// against it (inside openIdentified, between its own pin and its own
+// identity check); afterRootVerify runs once that root has been pinned *and*
+// verified, immediately before the target is resolved against it.
 //
-// The hook is a parameter rather than package state so a test can stage the
-// replacement this ordering exists to survive without two parallel tests ever
-// seeing each other's hook. It is nil on every production path.
+// The hooks are parameters rather than package state so a test can stage a
+// replacement in one of these windows without two parallel tests ever seeing
+// each other's hook.
 //
 // The target is resolved fresh inside the loop, once per candidate root,
 // rather than once before the loop starts. Resolving it once up front and then
@@ -589,7 +624,25 @@ func (s Set) Open(path string) (*Target, error) {
 // close to the same moment. Resolving the target again for each root keeps the
 // two readings adjacent in time for whichever root ultimately matches, which
 // is the one comparison that is authorized.
+//
+// Narrowing that window does not, on its own, bound what a Target ends up
+// reaching — os.Root does that. Whatever rootID.Contains admits still has to
+// name something reachable through pinned's own os.Root handle at rel, and
+// os.Root re-resolves rel from that handle at the moment of the actual read
+// or write, independent of anything Contains decided earlier. A root repointed
+// in the afterRootVerify window changes what target resolves to, but Contains
+// then requires that new target to sit inside rootID's *already-fixed*
+// identity — the root that was pinned and verified before the repoint — so a
+// replacement that is not itself nested inside that root is refused outright,
+// and the one case where containment could still pass (the replacement
+// happens to be reachable from inside the pinned root already) reads or
+// writes only inside that same pinned root, never outside it. See
+// TestSetOpenTargetRepointedAfterRootVerifyStaysBoundToThePinnedRoot.
 func (s Set) open(path string, afterPin func()) (*Target, error) {
+	return s.openHooked(path, afterPin, nil)
+}
+
+func (s Set) openHooked(path string, afterPin func(), afterRootVerify func()) (*Target, error) {
 	display, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("rootfs: cannot make %s absolute: %w", path, err)
@@ -599,6 +652,9 @@ func (s Set) open(path string, afterPin func()) (*Target, error) {
 			continue
 		}
 		pinned, rootID, err := openIdentified(root, afterPin)
+		if afterRootVerify != nil {
+			afterRootVerify()
+		}
 		if err != nil {
 			// Absent is not a failure: a root that is not there cannot own the
 			// target, and one unavailable root must not disable the others.

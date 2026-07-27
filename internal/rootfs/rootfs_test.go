@@ -472,6 +472,89 @@ func TestSetOpenRefusesARootReplacedWhileItIsAuthorized(t *testing.T) {
 	})
 }
 
+// Set.open resolves the root once (pinned and identity-verified) and the
+// target separately, afterward. A root repointed in the gap between those two
+// steps changes what the target resolves to, but Contains still measures the
+// new target against the *old* root's fixed identity. This proves the
+// resulting Target is bounded by that old root either way: a repointed root
+// that is not itself reachable from inside the original is refused outright,
+// and the one case that passes containment — the repointed root already sits
+// inside the original root's own tree — reads only from inside that original
+// root, never from the replacement's own separate location.
+func TestSetOpenTargetRepointedAfterRootVerifyStaysBoundToThePinnedRoot(t *testing.T) {
+	t.Run("unrelated replacement is refused, not redirected", func(t *testing.T) {
+		base := t.TempDir()
+		original := filepath.Join(base, "original")
+		writeFile(t, filepath.Join(original, "notes.md"), "legit")
+		unrelated := filepath.Join(base, "unrelated")
+		const secret = "SECRET-IN-UNRELATED-DIRECTORY"
+		writeFile(t, filepath.Join(unrelated, "notes.md"), secret)
+
+		root := filepath.Join(base, "root")
+		mustLinkDir(t, original, root)
+
+		repointed := false
+		target, err := Set{root}.openHooked(filepath.Join(root, "notes.md"), nil, func() {
+			if repointed {
+				return
+			}
+			repointed = true
+			if rmErr := os.Remove(root); rmErr != nil {
+				t.Skipf("cannot repoint the root name here: %v", rmErr)
+			}
+			mustLinkDir(t, unrelated, root)
+		})
+		if !repointed {
+			t.Fatal("the hook never ran; the window was not exercised")
+		}
+		if err == nil {
+			data, _ := target.Read()
+			_ = target.Close()
+			if string(data) == secret {
+				t.Fatal("a root repointed after verification, to a directory outside it, disclosed that directory's content")
+			}
+			t.Fatalf("Open accepted a root repointed to an unrelated directory; it read %q", data)
+		}
+	})
+
+	t.Run("replacement nested inside the pinned root stays confined to it", func(t *testing.T) {
+		base := t.TempDir()
+		original := filepath.Join(base, "original")
+		nested := filepath.Join(original, "nested")
+		writeFile(t, filepath.Join(nested, "notes.md"), "confined-to-original")
+		writeFile(t, filepath.Join(original, "notes.md"), "top-level-of-original")
+
+		root := filepath.Join(base, "root")
+		mustLinkDir(t, original, root)
+
+		repointed := false
+		target, err := Set{root}.openHooked(filepath.Join(root, "notes.md"), nil, func() {
+			if repointed {
+				return
+			}
+			repointed = true
+			if rmErr := os.Remove(root); rmErr != nil {
+				t.Skipf("cannot repoint the root name here: %v", rmErr)
+			}
+			mustLinkDir(t, nested, root)
+		})
+		if !repointed {
+			t.Fatal("the hook never ran; the window was not exercised")
+		}
+		if err != nil {
+			// Refusing outright is also an acceptable outcome; the property
+			// under test is "never discloses anything outside original".
+			return
+		}
+		data, rerr := target.Read()
+		_ = target.Close()
+		t.Logf("read: data=%q err=%v", data, rerr)
+		if rerr == nil && string(data) != "confined-to-original" {
+			t.Fatalf("read %q, want either a refusal or content that lives inside the originally pinned root", data)
+		}
+	})
+}
+
 // The pathname is not part of the decision after the root is pinned: moving the
 // real directory aside and putting an attacker's directory under the same name
 // must not redirect anything.
