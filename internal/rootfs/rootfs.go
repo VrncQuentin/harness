@@ -25,7 +25,14 @@
 // os.Root follows symbolic links that stay inside the root; its guarantee is
 // that they cannot leave it. It is a containment boundary, not a ban on links.
 // A caller that needs a stricter policy — refusing a linked leaf even when its
-// target is in-root — has to express that itself.
+// target is in-root — has to express that itself. One link shape is refused
+// unconditionally: an absolute target, which is what a Windows junction always
+// stores, so a junction is never traversed here even when it points back inside
+// the root.
+//
+// Set sidesteps that for its own callers by addressing the target through the
+// physical path pathid resolved rather than the spelling the caller used, so a
+// junction on the way in is resolved away before the root ever sees it.
 //
 // This package deliberately does not sandbox subprocesses. A pinned handle
 // constrains the operations here and nothing a child process does; command

@@ -253,6 +253,31 @@ func TestSetOpenAllowsLinkedRoot(t *testing.T) {
 	_ = viaReal.Close()
 }
 
+// A link inside the root pointing back inside it must not lock the caller out
+// of the file it names. os.Root refuses an absolute link target — which is what
+// a Windows junction always stores — so Set addresses the target by the physical
+// path pathid resolved rather than by the spelling that went through the link.
+func TestSetOpenResolvesAnInRootLinkAway(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	writeFile(t, filepath.Join(real, "a.txt"), "in root")
+	mustLinkDir(t, real, filepath.Join(root, "alias"))
+
+	target, err := Set{root}.Open(filepath.Join(root, "alias", "a.txt"))
+	if err != nil {
+		t.Fatalf("Open through an in-root link: %v", err)
+	}
+	defer target.Close() //nolint:errcheck // test cleanup
+
+	data, err := target.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(data) != "in root" {
+		t.Errorf("Read = %q, want %q", data, "in root")
+	}
+}
+
 func TestTargetReadReportsMissingFileAgainstTheDisplayPath(t *testing.T) {
 	root := t.TempDir()
 	missing := filepath.Join(root, "missing.txt")

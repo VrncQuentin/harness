@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/go-git/go-git/v6/plumbing"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 func newWorkspaceRepo(t *testing.T) *Repo {
@@ -101,14 +103,33 @@ func mustLinkDir(t *testing.T, target, link string) {
 	}
 }
 
+// pinWorktree opens dir the way DiffWorktree does, so the helper tests below
+// exercise the same rooted access the diff path uses.
+func pinWorktree(t *testing.T, dir string) *rootfs.Root {
+	t.Helper()
+	root, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatalf("rootfs.Open(%s): %v", dir, err)
+	}
+	t.Cleanup(func() { _ = root.Close() })
+	return root
+}
+
 func TestWorktreeContent(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("hello\n"), 0o644); err != nil {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "real.txt"), []byte("hello\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "bin.dat"), []byte{'a', 0, 'b'}, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "bin.dat"), []byte{'a', 0, 'b'}, 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "nested.txt"), []byte("nested\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	root := pinWorktree(t, dir)
 
 	tests := []struct {
 		name        string
@@ -117,8 +138,12 @@ func TestWorktreeContent(t *testing.T) {
 		wantBinary  bool
 	}{
 		{name: "regular file", relPath: "real.txt", wantContent: "hello\n"},
+		{name: "nested file", relPath: "sub/nested.txt", wantContent: "nested\n"},
 		{name: "binary file", relPath: "bin.dat", wantBinary: true},
 		{name: "missing file", relPath: "gone.txt"},
+		{name: "the repository itself", relPath: "."},
+		{name: "a path that climbs out", relPath: "../outside.txt"},
+		{name: "an absolute path", relPath: filepath.Join(t.TempDir(), "elsewhere.txt")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -134,17 +159,18 @@ func TestWorktreeContent(t *testing.T) {
 }
 
 func TestWorktreeContent_RejectsPathBelowLinkedParent(t *testing.T) {
-	root := t.TempDir()
+	dir := t.TempDir()
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte(outOfSandboxSecret), 0o600); err != nil {
 		t.Fatalf("WriteFile secret: %v", err)
 	}
-	mustLinkDir(t, outside, filepath.Join(root, "leakdir"))
+	mustLinkDir(t, outside, filepath.Join(dir, "leakdir"))
 
 	// Positive control: the escape defense must not reject in-root reads.
-	if err := os.WriteFile(filepath.Join(root, "real.txt"), []byte("in root\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "real.txt"), []byte("in root\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+	root := pinWorktree(t, dir)
 	if content, _ := worktreeContent(root, "real.txt"); content != "in root\n" {
 		t.Fatalf("in-root read = %q, want %q", content, "in root\n")
 	}
@@ -159,6 +185,32 @@ func TestWorktreeContent_RejectsPathBelowLinkedParent(t *testing.T) {
 	// reported irregular and contributes nothing.
 	if content, _ := worktreeContent(root, "leakdir"); strings.Contains(content, outOfSandboxSecret) {
 		t.Errorf("directory link content = %q, leaked content from outside the repo", content)
+	}
+}
+
+// A directory link that stays inside the repository is followed, because git
+// follows it too. The hand-written component walk this replaced refused every
+// reparse point, so in-repo content behind one was silently absent from the
+// diff. Containment, not the presence of a link, is the property under test.
+func TestWorktreeContent_FollowsInRepoLink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "nested.txt"), []byte("in repo\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// The link has to be relative: os.Root refuses an absolute link target even
+	// when it points back inside the root, and a Windows junction always stores
+	// an absolute target. So this is a symlink or nothing.
+	if err := os.Symlink("real", filepath.Join(dir, "alias")); err != nil {
+		t.Skipf("symlinks unavailable in this environment: %v", err)
+	}
+
+	root := pinWorktree(t, dir)
+	if content, _ := worktreeContent(root, "alias/nested.txt"); content != "in repo\n" {
+		t.Errorf("read through an in-repo link = %q, want %q", content, "in repo\n")
 	}
 }
 
