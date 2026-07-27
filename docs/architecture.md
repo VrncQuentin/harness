@@ -222,14 +222,17 @@ Responsibilities:
 - `OpenWrite` does not truncate. Truncation is a separate step the caller takes
   after it has compared the open handles, because O_TRUNC destroys the file
   before anyone can look at it.
-- `Root.SameDir` compares two open directories as filesystem objects, and
-  `SameDirAt` asks the same of one entry inside a root. `SameDir` settles the
-  directories only: hard links mean two distinct directories can still hold one
-  inode, and being distinct says nothing about one being inside the other. The
-  repo copy therefore layers checks rather than relying on any single one —
-  containment by name, containment again against handle-bound identities,
-  directory identity, `SameDirAt` on every directory it is about to descend
-  into, and `os.SameFile` on every file before truncating it.
+- `Root.SameDir` compares two open directories as filesystem objects. It settles
+  the directories only: hard links mean two distinct directories can still hold
+  one inode, and being distinct says nothing about one being inside the other.
+- `Root.OpenChild` pins a subdirectory as a `Root` of its own, so a traversal
+  that inspects a directory and then descends into it uses one handle rather
+  than resolving the same name twice.
+- The repo copy layers checks rather than relying on any single one: the two
+  trees must be disjoint by name, disjoint again against handle-bound identities
+  once both ends are pinned, distinct as directories, not the destination when
+  each subdirectory is pinned on the way down, and not the same file when each
+  file is opened — the last one before anything is truncated.
 - `ReadDir` sorts by filename. `os.Root` has no `ReadDir`, and `File.ReadDir`
   returns filesystem order where the `os.ReadDir` it replaced sorted — tool
   output has to be stable across identical calls.

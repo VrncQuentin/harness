@@ -511,7 +511,7 @@ func TestCopyTreeBetweenRootsRefusesToDescendIntoTheDestination(t *testing.T) {
 	}
 	defer dstRoot.Close() //nolint:errcheck // test cleanup
 
-	err = copyTreeBetweenRoots(srcRoot, dstRoot, ".", 0)
+	err = (&repoCopy{dstTop: dstRoot}).copyDir(srcRoot, dstRoot, ".", 0)
 	if err == nil {
 		t.Fatal("the traversal descended into its own destination")
 	}
@@ -520,6 +520,112 @@ func TestCopyTreeBetweenRootsRefusesToDescendIntoTheDestination(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(src, "dst", "dst")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("the copy recursed into its own destination: %v", statErr)
+	}
+}
+
+// Clearing a subdirectory by name and then re-resolving the same name to
+// descend is two resolutions of one name. In the window between them the
+// cleared directory can be renamed aside and another moved into its place, so
+// the check passes on one directory and the walk reads another — and when the
+// impostor is the destination, the walk copies it into itself.
+//
+// Pinning the child and descending through that handle removes the second
+// resolution. The hook fires in exactly the window that used to exist.
+//
+// The impostor here is an ordinary directory rather than the destination
+// itself, because the property under test is that the walk stays with what it
+// cleared; staging it with the destination would additionally require renaming a
+// directory the walk holds open, which Windows refuses.
+func TestCopyDirStaysWithTheChildItCleared(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	child := filepath.Join(src, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const body = "from the original child"
+	if err := os.WriteFile(filepath.Join(child, "original.txt"), []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	impostor := filepath.Join(base, "impostor")
+	if err := os.MkdirAll(impostor, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(impostor, "impostor.txt"), []byte("swapped in"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	dst := filepath.Join(base, "dst")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	srcRoot, _, err := rootfs.OpenIdentified(src)
+	if err != nil {
+		t.Fatalf("OpenIdentified(src): %v", err)
+	}
+	defer srcRoot.Close() //nolint:errcheck // test cleanup
+	dstRoot, _, err := rootfs.OpenIdentified(dst)
+	if err != nil {
+		t.Fatalf("OpenIdentified(dst): %v", err)
+	}
+	defer dstRoot.Close() //nolint:errcheck // test cleanup
+
+	staged := false
+	swapFailed := ""
+	copier := &repoCopy{dstTop: dstRoot, afterChildCheck: func(rel string) {
+		if staged || swapFailed != "" || rel != "child" {
+			return
+		}
+		if rnErr := os.Rename(child, filepath.Join(src, "child-moved")); rnErr != nil {
+			swapFailed = rnErr.Error()
+			return
+		}
+		if rnErr := os.Rename(impostor, child); rnErr != nil {
+			_ = os.Rename(filepath.Join(src, "child-moved"), child)
+			swapFailed = rnErr.Error()
+			return
+		}
+		staged = true
+	}}
+
+	err = copier.copyDir(srcRoot, dstRoot, ".", 0)
+	if !staged {
+		t.Fatalf("could not stage the swap this test exists to survive: %s", swapFailed)
+	}
+	if err != nil {
+		t.Fatalf("copyDir after the swap: %v", err)
+	}
+
+	// The walk must have read the directory it cleared, wherever its name went.
+	got, readErr := os.ReadFile(filepath.Join(dst, "child", "original.txt"))
+	if readErr != nil {
+		t.Fatalf("the copy did not follow the child it cleared: %v", readErr)
+	}
+	if string(got) != body {
+		t.Errorf("copied content = %q, want %q", got, body)
+	}
+	if _, statErr := os.Stat(filepath.Join(dst, "child", "impostor.txt")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("the walk read the directory that took over the name: %v", statErr)
+	}
+}
+
+// The two trees must be disjoint. A source below the destination was once
+// waved through on the reasoning that it cannot recurse; it can still lose
+// data, because the walk writes a source subdirectory over the source itself.
+func TestCopyTreeWithoutGitRefusesASourceInsideTheDestination(t *testing.T) {
+	base := t.TempDir()
+	dst := filepath.Join(base, "outer")
+	src := filepath.Join(dst, "inner")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+
+	err := copyTreeWithoutGit(src, dst)
+	if err == nil {
+		t.Fatal("copied a project memory repo into a directory that contains it")
+	}
+	if !strings.Contains(err.Error(), "which contains it") {
+		t.Errorf("err = %v, want the containing-destination refusal", err)
 	}
 }
 

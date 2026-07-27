@@ -155,11 +155,6 @@ func (r *Root) SameDir(other *Root) (bool, error) {
 
 // SameDirAt reports whether rel, resolved through r, is the directory other is
 // pinned on. SameDir is this with rel of ".".
-//
-// It exists so a traversal can ask "is this entry the destination?" of every
-// directory it is about to descend into, rather than proving once beforehand
-// that the destination is elsewhere. A one-time proof is about where things
-// were; this is about the entry actually in hand.
 func (r *Root) SameDirAt(rel string, other *Root) (bool, error) {
 	mine, err := r.root.Stat(rel)
 	if err != nil {
@@ -170,6 +165,23 @@ func (r *Root) SameDirAt(rel string, other *Root) (bool, error) {
 		return false, err
 	}
 	return os.SameFile(mine, theirs), nil
+}
+
+// OpenChild pins the directory at rel inside r and returns it as a Root in its
+// own right. The caller closes it.
+//
+// A traversal that means to inspect a subdirectory and then descend into it has
+// to hold it, not name it twice. Statting rel and then re-resolving the same rel
+// to recurse is two resolutions of one name: between them the directory can be
+// renamed aside and another moved into its place, so what was inspected and what
+// is entered are different directories. Pinning it once and both inspecting and
+// descending through that handle removes the second resolution entirely.
+func (r *Root) OpenChild(rel string) (*Root, error) {
+	child, err := r.root.OpenRoot(rel)
+	if err != nil {
+		return nil, err
+	}
+	return &Root{root: child}, nil
 }
 
 // Set is an ordered list of root directories. It converts a caller-supplied
