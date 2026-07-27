@@ -308,6 +308,80 @@ func TestMoveProjectRepoDoesNotCopyARepoOntoItself(t *testing.T) {
 	})
 }
 
+// MoveProjectRepo's name-based identity check runs once, before the copy. A
+// destination re-pointed at the source after that check leaves exactly the
+// state this test sets up: two names the check saw as different that now name
+// one directory. Calling the copy directly reproduces it without needing to win
+// a race.
+//
+// Without the handle comparison the copy opens every destination file with
+// O_TRUNC — the same file it is about to read — so the repository is emptied
+// one file at a time.
+func TestCopyTreeWithoutGitRefusesAnAliasedDestination(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	const body = "keep me"
+	notes := filepath.Join(src, "notes.md")
+	if err := os.WriteFile(notes, []byte(body), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, src, alias)
+
+	err := copyTreeWithoutGit(src, alias)
+	if err == nil {
+		t.Error("copied a project memory repo onto an alias of itself")
+	} else if !strings.Contains(err.Error(), "onto itself") {
+		t.Errorf("err = %v, want the self-copy refusal", err)
+	}
+	got, readErr := os.ReadFile(notes)
+	if readErr != nil {
+		t.Fatalf("read notes after the refused copy: %v", readErr)
+	}
+	if string(got) != body {
+		t.Fatalf("notes.md = %q after copying the repo onto an alias of itself, want %q", got, body)
+	}
+}
+
+// The refusal must not cost the ordinary case: a genuine move still copies the
+// whole working tree, including nested directories, and still leaves the source
+// .git behind.
+func TestCopyTreeWithoutGitCopiesNestedTree(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	nested := filepath.Join(src, "episodes", "coder")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "2026-01-01.md"), []byte("episode"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".git", "source-only"), []byte("do not copy"), 0o644); err != nil {
+		t.Fatalf("write git marker: %v", err)
+	}
+
+	dst := filepath.Join(base, "dst")
+	if err := copyTreeWithoutGit(src, dst); err != nil {
+		t.Fatalf("copyTreeWithoutGit: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "episodes", "coder", "2026-01-01.md"))
+	if err != nil {
+		t.Fatalf("read nested copy: %v", err)
+	}
+	if string(got) != "episode" {
+		t.Errorf("nested file = %q, want %q", got, "episode")
+	}
+	if _, err := os.Stat(filepath.Join(dst, ".git", "source-only")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("source .git was copied: %v", err)
+	}
+}
+
 func TestMoveProjectRepoFailsClosedOnUnresolvablePath(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")

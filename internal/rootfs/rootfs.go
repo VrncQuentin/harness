@@ -102,6 +102,57 @@ func (r *Root) Lstat(rel string) (fs.FileInfo, error) { return r.root.Lstat(rel)
 // one that way) need the value.
 func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel) }
 
+// Open opens rel for reading. The caller closes it.
+func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
+
+// Create opens rel for writing, creating it or truncating what is there. The
+// caller closes it.
+func (r *Root) Create(rel string, perm fs.FileMode) (*os.File, error) {
+	return r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+}
+
+// MkdirAll creates rel and any missing parents inside the root.
+func (r *Root) MkdirAll(rel string, perm fs.FileMode) error {
+	return r.root.MkdirAll(rel, perm)
+}
+
+// ReadDir lists the entries of rel, sorted by filename. "." is the root itself.
+// See Target.ReadDir for why the sort is load-bearing.
+func (r *Root) ReadDir(rel string) ([]os.DirEntry, error) {
+	f, err := r.root.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close() //nolint:errcheck // read-only handle
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		return nil, err
+	}
+	slices.SortFunc(entries, func(a, b os.DirEntry) int {
+		return strings.Compare(a.Name(), b.Name())
+	})
+	return entries, nil
+}
+
+// SameDir reports whether r and other are handles on one directory.
+//
+// It compares filesystem objects, not pathnames, and both are already open, so
+// the answer cannot be invalidated afterwards: a rename moves a name, never the
+// object a handle holds. A caller that copies from one root to the other can
+// take a false here as a guarantee that the copy cannot land on its own source,
+// however the two names are re-pointed while it runs.
+func (r *Root) SameDir(other *Root) (bool, error) {
+	mine, err := r.root.Stat(".")
+	if err != nil {
+		return false, err
+	}
+	theirs, err := other.root.Stat(".")
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(mine, theirs), nil
+}
+
 // Set is an ordered list of root directories. It converts a caller-supplied
 // path — absolute or relative, in any spelling — into an operation performed
 // inside whichever root physically owns it.
@@ -265,18 +316,10 @@ func (t *Target) Read() ([]byte, error) {
 // output, so unsorted entries would make a directory listing differ between two
 // identical calls.
 func (t *Target) ReadDir() ([]os.DirEntry, error) {
-	f, err := t.root.root.Open(t.rel)
+	entries, err := t.root.ReadDir(t.rel)
 	if err != nil {
 		return nil, t.pathError(err)
 	}
-	defer f.Close() //nolint:errcheck // read-only handle
-	entries, err := f.ReadDir(-1)
-	if err != nil {
-		return nil, t.pathError(err)
-	}
-	slices.SortFunc(entries, func(a, b os.DirEntry) int {
-		return strings.Compare(a.Name(), b.Name())
-	})
 	return entries, nil
 }
 
