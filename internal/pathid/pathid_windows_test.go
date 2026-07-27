@@ -38,7 +38,16 @@ func TestResolveIgnoresCaseOnWindows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if !upper.Contains(newID(filepath.Join(dir, "File.txt"))) {
+	// Both sides have to be resolved. newID only lower-cases; it does not
+	// canonicalize, so on a runner whose TEMP contains an 8.3 component
+	// (GitHub's Windows image gives RUNNER~1) the unresolved child keeps the
+	// short spelling while the resolved root carries the long one, and
+	// containment correctly reports two different places.
+	child, err := Resolve(filepath.Join(dir, "File.txt"))
+	if err != nil {
+		t.Fatalf("Resolve child: %v", err)
+	}
+	if !upper.Contains(child) {
 		t.Error("an upper-cased root does not contain its own file")
 	}
 }

@@ -255,7 +255,7 @@ func TestIDContainsWindowsVolumes(t *testing.T) {
 		{name: "different volume roots", root: `C:\`, path: `D:\`},
 		{name: "case-insensitive descendant", root: `C:\Srv\Project`, path: `c:\srv\project\a`, want: true},
 		{name: "UNC share holds a child", root: `\\server\share`, path: `\\server\share\a`, want: true},
-		{name: "different UNC shares", root: `\\server\share`, path: `\\server\other\a`},
+		{name: "different UNC shares", root: `\\server\share`, path: `\\server\second\a`},
 		{name: "UNC does not hold a drive path", root: `\\server\share`, path: `C:\a`},
 	}
 	for _, tt := range tests {
@@ -388,5 +388,37 @@ func TestLockKey(t *testing.T) {
 	}
 	if _, err := LockKey(filepath.Join(base, "bad\x00name")); err == nil {
 		t.Error("LockKey accepted a path it could not resolve")
+	}
+}
+
+// Two spellings of one not-yet-created file are the same identity but not the
+// same struct: Resolve re-appends the missing tail in the caller's case. Key is
+// the map key; the ID is not.
+func TestIDIsNotAMapKey(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("needs a case-insensitive filesystem")
+	}
+	dir := t.TempDir()
+	lower, err := Resolve(filepath.Join(dir, "missing.txt"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	upper, err := Resolve(filepath.Join(dir, "MISSING.TXT"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if !lower.Equal(upper) {
+		t.Fatalf("%s and %s are the same file but compared unequal", lower, upper)
+	}
+	if lower.Key() != upper.Key() {
+		t.Errorf("Key differs for one identity: %q vs %q", lower.Key(), upper.Key())
+	}
+	if lower == upper {
+		t.Skip("this platform happened to produce identical structs; the Key contract still stands")
+	}
+	byKey := map[string]int{lower.Key(): 1}
+	byKey[upper.Key()]++
+	if len(byKey) != 1 {
+		t.Errorf("keying by Key produced %d entries for one identity", len(byKey))
 	}
 }

@@ -34,13 +34,19 @@ import (
 //
 // Only Resolve produces a non-zero ID, so every comparison between IDs
 // compares two paths that have both been through physical resolution.
+//
+// Compare with Equal or Contains, and key maps and locks with Key. Do not use
+// == or an ID as a map key directly: Go compares every field, including the
+// display path, and two IDs can be Equal while their paths differ — Resolve
+// re-appends a not-yet-created tail in whatever case the caller spelled it, so
+// on Windows the same missing file addressed two ways yields one key and two
+// paths.
 type ID struct {
 	// path is absolute and physically resolved.
 	path string
 	// key is path reduced to a comparison key — lowercased on Windows, where
-	// the filesystem is case-insensitive. It is kept alongside path so an ID
-	// works as a map key directly and two spellings of one location produce
-	// one entry.
+	// the filesystem is case-insensitive. It, and not path, is what identity
+	// is decided on.
 	key string
 }
 
@@ -50,7 +56,8 @@ type ID struct {
 func (id ID) Path() string { return id.path }
 
 // Key returns a comparison key for the identity, for use where a map key or a
-// lock key is needed rather than a comparison.
+// lock key is needed rather than a comparison. It is the only correct way to
+// key on an ID; the struct itself is not a sound map key. See the type doc.
 func (id ID) Key() string { return id.key }
 
 // String implements fmt.Stringer.
