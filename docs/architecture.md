@@ -223,16 +223,24 @@ Responsibilities:
   after it has compared the open handles, because O_TRUNC destroys the file
   before anyone can look at it.
 - `Root.SameDir` compares two open directories as filesystem objects. It settles
-  the directories only: hard links mean two distinct directories can still hold
-  one inode, and being distinct says nothing about one being inside the other.
+  the directories only: it says nothing about the files inside them, nor about
+  one being inside the other.
 - `Root.OpenChild` pins a subdirectory as a `Root` of its own, so a traversal
   that inspects a directory and then descends into it uses one handle rather
   than resolving the same name twice.
+- `Root.WriteStreamAtomic` publishes by rename. Replacing a directory *entry*
+  leaves the inode that held the name alone, which is the only way to write into
+  a tree whose entries may be hard links to files elsewhere — truncating in
+  place writes *through* the link, and comparing the pair being copied cannot
+  detect it, because the destination entry may link to a different source file
+  than the one being read.
 - The repo copy layers checks rather than relying on any single one: the two
   trees must be disjoint by name, disjoint again against handle-bound identities
-  once both ends are pinned, distinct as directories, not the destination when
-  each subdirectory is pinned on the way down, and not the same file when each
-  file is opened — the last one before anything is truncated.
+  once both ends are pinned, distinct as directories, and disjoint level by
+  level during the walk — every newly pinned source directory against every
+  pinned destination directory and vice versa, which is what catches a directory
+  being moved from one tree into the other mid-copy. Files need no comparison,
+  because they are published by rename.
 - `ReadDir` sorts by filename. `os.Root` has no `ReadDir`, and `File.ReadDir`
   returns filesystem order where the `os.ReadDir` it replaced sorted — tool
   output has to be stable across identical calls.

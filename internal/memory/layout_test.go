@@ -348,12 +348,11 @@ func TestCopyTreeWithoutGitRefusesAnAliasedDestination(t *testing.T) {
 	}
 }
 
-// Two directories proven distinct can still hold hard links to one inode.
-// SameDir answers a question about directories and cannot see that
-// src/notes.md and dst/notes.md are one file, so opening the destination with
-// O_TRUNC empties the source and only then begins reading it — the copy then
-// reports success having written a repository full of nothing.
-func TestCopyTreeWithoutGitRefusesAHardLinkedFile(t *testing.T) {
+// A destination entry hard-linked to a source file must not be written through.
+// Publishing by rename replaces the entry and leaves the inode alone, so the
+// source keeps its content and the copy still succeeds — writing through the
+// link instead would empty the source file.
+func TestCopyTreeWithoutGitPreservesAHardLinkedSourceFile(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	if err := EnsureProjectRepo(src, false); err != nil {
@@ -373,18 +372,69 @@ func TestCopyTreeWithoutGitRefusesAHardLinkedFile(t *testing.T) {
 		t.Skipf("hard links unavailable in this environment: %v", err)
 	}
 
-	err := copyTreeWithoutGit(src, dst)
-	if err == nil {
-		t.Error("copied a file onto a hard link of itself")
-	} else if !strings.Contains(err.Error(), "same file") {
-		t.Errorf("err = %v, want the same-file refusal", err)
+	if err := copyTreeWithoutGit(src, dst); err != nil {
+		t.Fatalf("copyTreeWithoutGit: %v", err)
 	}
 	got, readErr := os.ReadFile(notes)
 	if readErr != nil {
-		t.Fatalf("read notes after the refused copy: %v", readErr)
+		t.Fatalf("read the source after the copy: %v", readErr)
 	}
 	if string(got) != body {
-		t.Fatalf("notes.md = %q after copying onto a hard link of itself, want %q", got, body)
+		t.Fatalf("source notes.md = %q, want %q — the copy wrote through the link", got, body)
+	}
+	copied, readErr := os.ReadFile(filepath.Join(dst, "notes.md"))
+	if readErr != nil {
+		t.Fatalf("read the destination after the copy: %v", readErr)
+	}
+	if string(copied) != body {
+		t.Errorf("destination notes.md = %q, want %q", copied, body)
+	}
+}
+
+// The case comparing the pair being copied cannot see: the destination entry is
+// a hard link to a *different* source file. Two different inodes, so a
+// source-versus-destination comparison passes, and truncating the destination
+// empties a source file the copy has not reached yet.
+func TestCopyTreeWithoutGitPreservesACrossLinkedSourceFile(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	const bodyA, bodyB = "A", "B"
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte(bodyA), 0o644); err != nil {
+		t.Fatalf("write a.txt: %v", err)
+	}
+	fileB := filepath.Join(src, "b.txt")
+	if err := os.WriteFile(fileB, []byte(bodyB), 0o644); err != nil {
+		t.Fatalf("write b.txt: %v", err)
+	}
+
+	dst := filepath.Join(base, "dst")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// dst/a.txt is b.txt under another name.
+	if err := os.Link(fileB, filepath.Join(dst, "a.txt")); err != nil {
+		t.Skipf("hard links unavailable in this environment: %v", err)
+	}
+
+	if err := copyTreeWithoutGit(src, dst); err != nil {
+		t.Fatalf("copyTreeWithoutGit: %v", err)
+	}
+	got, readErr := os.ReadFile(fileB)
+	if readErr != nil {
+		t.Fatalf("read b.txt after the copy: %v", readErr)
+	}
+	if string(got) != bodyB {
+		t.Fatalf("a different source file was overwritten through a destination hard link: b.txt = %q, want %q", got, bodyB)
+	}
+	copied, readErr := os.ReadFile(filepath.Join(dst, "a.txt"))
+	if readErr != nil {
+		t.Fatalf("read the destination after the copy: %v", readErr)
+	}
+	if string(copied) != bodyA {
+		t.Errorf("destination a.txt = %q, want %q", copied, bodyA)
 	}
 }
 
@@ -511,7 +561,7 @@ func TestCopyTreeBetweenRootsRefusesToDescendIntoTheDestination(t *testing.T) {
 	}
 	defer dstRoot.Close() //nolint:errcheck // test cleanup
 
-	err = (&repoCopy{dstTop: dstRoot}).copyDir(srcRoot, dstRoot, ".", 0)
+	err = (&repoCopy{srcStack: []*rootfs.Root{srcRoot}, dstStack: []*rootfs.Root{dstRoot}}).copyDir(".")
 	if err == nil {
 		t.Fatal("the traversal descended into its own destination")
 	}
@@ -572,7 +622,7 @@ func TestCopyDirStaysWithTheChildItCleared(t *testing.T) {
 
 	staged := false
 	swapFailed := ""
-	copier := &repoCopy{dstTop: dstRoot, afterChildCheck: func(rel string) {
+	copier := &repoCopy{srcStack: []*rootfs.Root{srcRoot}, dstStack: []*rootfs.Root{dstRoot}, afterChildCheck: func(rel string) {
 		if staged || swapFailed != "" || rel != "child" {
 			return
 		}
@@ -588,7 +638,7 @@ func TestCopyDirStaysWithTheChildItCleared(t *testing.T) {
 		staged = true
 	}}
 
-	err = copier.copyDir(srcRoot, dstRoot, ".", 0)
+	err = copier.copyDir(".")
 	if !staged {
 		t.Fatalf("could not stage the swap this test exists to survive: %s", swapFailed)
 	}
@@ -606,6 +656,141 @@ func TestCopyDirStaysWithTheChildItCleared(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(dst, "child", "impostor.txt")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("the walk read the directory that took over the name: %v", statErr)
+	}
+}
+
+// anySameDir is what keeps the two trees disjoint at every level, so it has to
+// find a match anywhere in the stack, not just at the end. Two handles opened on
+// one directory are the same directory, which needs no links to arrange and so
+// exercises the comparison on every platform.
+func TestAnySameDir(t *testing.T) {
+	base := t.TempDir()
+	var roots []*rootfs.Root
+	for _, name := range []string{"top", "middle", "bottom"} {
+		dir := filepath.Join(base, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		root, err := rootfs.Open(dir)
+		if err != nil {
+			t.Fatalf("Open(%s): %v", name, err)
+		}
+		defer root.Close() //nolint:errcheck // test cleanup
+		roots = append(roots, root)
+	}
+
+	for i, name := range []string{"top", "middle", "bottom"} {
+		candidate, err := rootfs.Open(filepath.Join(base, name))
+		if err != nil {
+			t.Fatalf("Open(%s): %v", name, err)
+		}
+		same, err := anySameDir(candidate, roots)
+		_ = candidate.Close()
+		if err != nil {
+			t.Fatalf("anySameDir: %v", err)
+		}
+		if !same {
+			t.Errorf("anySameDir missed a match at stack position %d (%s)", i, name)
+		}
+	}
+
+	unrelated := filepath.Join(base, "unrelated")
+	if err := os.MkdirAll(unrelated, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	candidate, err := rootfs.Open(unrelated)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer candidate.Close() //nolint:errcheck // test cleanup
+	same, err := anySameDir(candidate, roots)
+	if err != nil {
+		t.Fatalf("anySameDir: %v", err)
+	}
+	if same {
+		t.Error("anySameDir matched a directory that is in neither tree")
+	}
+}
+
+// The destination side needs the same protection as the source side. The source
+// child is pinned safely, but the destination counterpart is opened afterwards,
+// and in that window a pinned *source ancestor* can be moved into the name the
+// destination is about to be opened under. The copy then writes a subdirectory
+// over its own parent, and the per-file check cannot object: those are different
+// files at different relative paths.
+//
+// Every newly pinned destination directory is therefore checked against every
+// pinned source directory, which is what catches it.
+func TestCopyDirRefusesADestinationThatBecomesASourceAncestor(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	parent := filepath.Join(src, "parent")
+	child := filepath.Join(parent, "child")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const parentBody, childBody = "parent content", "child content"
+	if err := os.WriteFile(filepath.Join(parent, "keep.txt"), []byte(parentBody), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(child, "keep.txt"), []byte(childBody), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	dst := filepath.Join(base, "dst")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	srcRoot, _, err := rootfs.OpenIdentified(src)
+	if err != nil {
+		t.Fatalf("OpenIdentified(src): %v", err)
+	}
+	defer srcRoot.Close() //nolint:errcheck // test cleanup
+	dstRoot, _, err := rootfs.OpenIdentified(dst)
+	if err != nil {
+		t.Fatalf("OpenIdentified(dst): %v", err)
+	}
+	defer dstRoot.Close() //nolint:errcheck // test cleanup
+
+	staged := false
+	swapFailed := ""
+	copier := &repoCopy{
+		srcStack: []*rootfs.Root{srcRoot},
+		dstStack: []*rootfs.Root{dstRoot},
+		afterChildCheck: func(rel string) {
+			if staged || swapFailed != "" || rel != filepath.Join("parent", "child") {
+				return
+			}
+			// Move the pinned source parent under the name the destination
+			// child is about to be opened as.
+			if rnErr := os.Rename(parent, filepath.Join(dst, "parent", "child")); rnErr != nil {
+				swapFailed = rnErr.Error()
+				return
+			}
+			staged = true
+		},
+	}
+
+	err = copier.copyDir(".")
+	if !staged {
+		if runtime.GOOS != "windows" {
+			t.Fatalf("could not stage the ancestor move this test exists to survive: %s", swapFailed)
+		}
+		t.Skipf("cannot move a pinned ancestor here: %s", swapFailed)
+	}
+	if err == nil {
+		t.Fatal("the copy accepted a destination that had become a source ancestor")
+	}
+	if !strings.Contains(err.Error(), "its own source") {
+		t.Errorf("err = %v, want the destination-in-source refusal", err)
+	}
+	// The parent's own file must not have been overwritten by the child's.
+	got, readErr := os.ReadFile(filepath.Join(dst, "parent", "child", "keep.txt"))
+	if readErr != nil {
+		t.Fatalf("read the moved parent's file: %v", readErr)
+	}
+	if string(got) != parentBody {
+		t.Errorf("the copy wrote a subdirectory over its own parent: keep.txt = %q, want %q", got, parentBody)
 	}
 }
 

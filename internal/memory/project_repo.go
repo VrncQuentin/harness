@@ -3,7 +3,6 @@ package memory
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -57,13 +56,11 @@ func EnsureProjectRepo(root string, global bool) error {
 // source .git directory, then initializes and commits the destination layout.
 //
 // Source and destination are compared by physical identity before anything is
-// copied, and an identity that cannot be established aborts the move. Both
-// matter because the copy is destructive at the destination: copyFile opens
-// every target with O_TRUNC, so a source and destination that name one
-// repository through different spellings — a junction, a symlink, an 8.3
-// alias, or a different case on Windows — would walk the tree truncating each
-// file to zero and then copying it onto itself. A lexical comparison sees two
-// different strings there and proceeds.
+// copied, and an identity that cannot be established aborts the move. Identity
+// has to be physical because a lexical comparison sees two different strings
+// where a junction, a symlink, an 8.3 alias, or a different case on Windows
+// names one repository — and then the copy proceeds to rewrite the repository
+// with itself.
 func MoveProjectRepo(src, dst string, global bool) error {
 	same, err := SameProjectRepoPath(src, dst)
 	if err != nil {
@@ -114,11 +111,13 @@ func MoveProjectRepo(src, dst string, global bool) error {
 //     are still different directories, so no identity comparison objects.
 //   - Directory identity, from the two pinned handles: the destination *is* the
 //     source, reached by another name.
-//   - Entry identity, per directory, during traversal, against a subdirectory
-//     that has been pinned and is then descended into through that same handle.
-//     A one-time proof says where the destination was; this says what is in hand.
-//   - File identity, per file. Distinct directories can hold hard links to one
-//     inode, which no directory-level check can see.
+//   - Level by level during the traversal, against a stack of pinned handles for
+//     each tree. A one-time proof says where the two trees were; this says what
+//     is in hand at every level, in both directions, which is what catches a
+//     directory being moved from one tree into the other while the copy runs.
+//
+// Files need no comparison at all, because they are published by rename rather
+// than by truncating the destination — see copyFileBetweenRoots.
 //
 // Pinning both ends also confines the copy: a link inside either tree that
 // leaves it is refused rather than read through or written through.
@@ -166,7 +165,10 @@ func copyTreeWithoutGitHooked(src, dst string, afterCheck func()) error {
 	if same {
 		return fmt.Errorf("memory: refusing to copy project memory repo %s onto itself, reached as %s", src, dst)
 	}
-	return (&repoCopy{dstTop: dstRoot}).copyDir(srcRoot, dstRoot, ".", 0)
+	return (&repoCopy{
+		srcStack: []*rootfs.Root{srcRoot},
+		dstStack: []*rootfs.Root{dstRoot},
+	}).copyDir(".")
 }
 
 // maxCopyDepth bounds the traversal. A project memory repo is a handful of
@@ -221,18 +223,44 @@ func refuseContainment(srcID, dstID pathid.ID, src, dst string) error {
 	return nil
 }
 
-// repoCopy carries the state a directory walk needs beyond the two handles for
-// the level it is on.
+// repoCopy walks the two trees with a stack of pinned handles for each, one per
+// level from the top down to the level being copied.
+//
+// The stacks are what keep the trees disjoint for the whole copy rather than at
+// one instant. Comparing a newly pinned source subdirectory against the
+// destination root alone is not enough in either direction: the destination can
+// be moved into the source, and — on a platform that allows renaming a directory
+// somebody holds open — a pinned *source ancestor* can be moved into the name
+// the destination child is about to be opened under. The second one is worse,
+// because the copy then writes a subdirectory over its own parent, and the
+// per-file check passes: those are different files at different relative paths.
+//
+// So every newly pinned source directory is checked against every pinned
+// destination directory, and every newly pinned destination directory against
+// every pinned source directory including the one just added.
 type repoCopy struct {
-	// dstTop is the pinned destination root. Every source subdirectory is
-	// compared against it before the walk descends, so a destination moved into
-	// the source mid-copy is caught when it is met rather than by a proof taken
-	// before the walk began.
-	dstTop *rootfs.Root
+	// srcStack and dstStack hold one pinned handle per level, top-level root
+	// first. The last entry of each is the level currently being copied.
+	srcStack []*rootfs.Root
+	dstStack []*rootfs.Root
 	// afterChildCheck runs after a source subdirectory has been pinned and
-	// cleared and before the walk descends into it, so a test can stage a swap
-	// in that window. Nil on every production path.
-	afterChildCheck func(name string)
+	// cleared and before the destination counterpart is pinned, so a test can
+	// stage a swap in that window. Nil on every production path.
+	afterChildCheck func(rel string)
+}
+
+// anySameDir reports whether candidate is any of the directories in stack.
+func anySameDir(candidate *rootfs.Root, stack []*rootfs.Root) (bool, error) {
+	for _, pinned := range stack {
+		same, err := candidate.SameDir(pinned)
+		if err != nil {
+			return false, err
+		}
+		if same {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // copyDir copies the contents of the pinned srcDir into the pinned dstDir,
@@ -251,10 +279,13 @@ type repoCopy struct {
 // Holding it is not the same as locking it. Windows does allow this directory
 // to be renamed while the walk has it open; the handle keeps following it, which
 // is the point — the walk stays with the directory, not with the name.
-func (c *repoCopy) copyDir(srcDir, dstDir *rootfs.Root, rel string, depth int) error {
+func (c *repoCopy) copyDir(rel string) error {
+	depth := len(c.srcStack) - 1
 	if depth > maxCopyDepth {
 		return fmt.Errorf("memory: project memory repo nests deeper than %d levels at %s — refusing to continue", maxCopyDepth, rel)
 	}
+	srcDir := c.srcStack[depth]
+	dstDir := c.dstStack[len(c.dstStack)-1]
 	entries, err := srcDir.ReadDir(".")
 	if err != nil {
 		return fmt.Errorf("memory: read %s in source repo: %w", rel, err)
@@ -270,29 +301,33 @@ func (c *repoCopy) copyDir(srcDir, dstDir *rootfs.Root, rel string, depth int) e
 			}
 			continue
 		}
-		if err := c.copyChildDir(srcDir, dstDir, name, filepath.Join(rel, name), depth); err != nil {
+		if err := c.copyChildDir(name, filepath.Join(rel, name)); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// copyChildDir pins one source subdirectory, refuses it if it is the
-// destination, and descends into it through the handle it just pinned.
-func (c *repoCopy) copyChildDir(srcDir, dstDir *rootfs.Root, name, rel string, depth int) error {
+// copyChildDir pins one source subdirectory and its destination counterpart,
+// proves each is disjoint from every level of the other tree already pinned,
+// and descends through those two handles.
+func (c *repoCopy) copyChildDir(name, rel string) error {
+	srcDir := c.srcStack[len(c.srcStack)-1]
+	dstDir := c.dstStack[len(c.dstStack)-1]
+
 	srcChild, err := srcDir.OpenChild(name)
 	if err != nil {
 		return fmt.Errorf("memory: open %s in source repo: %w", rel, err)
 	}
 	defer srcChild.Close() //nolint:errcheck // read-only handle
-
-	isDestination, err := srcChild.SameDir(c.dstTop)
+	inDestination, err := anySameDir(srcChild, c.dstStack)
 	if err != nil {
 		return fmt.Errorf("memory: compare %s against the destination repo: %w", rel, err)
 	}
-	if isDestination {
+	if inDestination {
 		return fmt.Errorf("memory: refusing to copy project memory repo into its own destination at %s", rel)
 	}
+
 	if c.afterChildCheck != nil {
 		c.afterChildCheck(rel)
 	}
@@ -305,19 +340,34 @@ func (c *repoCopy) copyChildDir(srcDir, dstDir *rootfs.Root, name, rel string, d
 		return fmt.Errorf("memory: open %s in destination repo: %w", rel, err)
 	}
 	defer dstChild.Close() //nolint:errcheck // closed after this level
-	return c.copyDir(srcChild, dstChild, rel, depth+1)
+
+	// srcChild joins the source stack before the destination is judged, so the
+	// destination cannot turn out to be the very directory about to be read.
+	c.srcStack = append(c.srcStack, srcChild)
+	defer func() { c.srcStack = c.srcStack[:len(c.srcStack)-1] }()
+	inSource, err := anySameDir(dstChild, c.srcStack)
+	if err != nil {
+		return fmt.Errorf("memory: compare %s against the source repo: %w", rel, err)
+	}
+	if inSource {
+		return fmt.Errorf("memory: refusing to copy project memory repo onto its own source at %s", rel)
+	}
+
+	c.dstStack = append(c.dstStack, dstChild)
+	defer func() { c.dstStack = c.dstStack[:len(c.dstStack)-1] }()
+	return c.copyDir(rel)
 }
 
-// copyFileBetweenRoots streams one file from the source repo to the same
-// relative path in the destination repo.
+// copyFileBetweenRoots streams one file from the source repo to the same name in
+// the destination repo, publishing it by rename.
 //
-// The destination is opened without O_TRUNC and compared against the source as
-// a filesystem object before a single byte is discarded. Two directories proven
-// distinct can still hold hard links to one inode — SameDir answers a question
-// about directories, and says nothing about the files inside them. Opening with
-// O_TRUNC would empty the source file and only then start reading it, so the
-// copy would report success having written a repository full of nothing.
-// Truncation is therefore the step after the comparison, never part of the open.
+// The rename is what protects the source. An earlier version opened the
+// destination and truncated it once it had checked the two were not the same
+// file — which is not enough, because a destination entry can be a hard link to
+// a *different* source file than the one being read. Two different inodes, so
+// the comparison passes, and the truncate empties a source file the copy has not
+// reached yet. Replacing the entry never writes through a link at all, so no
+// comparison is needed and none of the source's links are disturbed.
 //
 // A link that leaves either tree fails the open and aborts the move rather than
 // being skipped. Silently dropping a file from an operation the user asked for
@@ -329,32 +379,8 @@ func copyFileBetweenRoots(srcDir, dstDir *rootfs.Root, name, rel string) error {
 		return fmt.Errorf("memory: read %s from source repo: %w", rel, err)
 	}
 	defer func() { _ = in.Close() }()
-	out, err := dstDir.OpenWrite(name, 0o644)
-	if err != nil {
+	if err := dstDir.WriteStreamAtomic(name, in, 0o644); err != nil {
 		return fmt.Errorf("memory: write %s to destination repo: %w", rel, err)
-	}
-	defer func() { _ = out.Close() }()
-
-	inInfo, err := in.Stat()
-	if err != nil {
-		return fmt.Errorf("memory: describe %s in source repo: %w", rel, err)
-	}
-	outInfo, err := out.Stat()
-	if err != nil {
-		return fmt.Errorf("memory: describe %s in destination repo: %w", rel, err)
-	}
-	if os.SameFile(inInfo, outInfo) {
-		return fmt.Errorf("memory: refusing to copy %s onto itself — source and destination are the same file", rel)
-	}
-
-	if err := out.Truncate(0); err != nil {
-		return fmt.Errorf("memory: truncate %s in destination repo: %w", rel, err)
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		return fmt.Errorf("memory: copy %s: %w", rel, err)
-	}
-	if err := out.Close(); err != nil {
-		return fmt.Errorf("memory: close %s in destination repo: %w", rel, err)
 	}
 	return nil
 }

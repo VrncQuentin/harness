@@ -40,9 +40,11 @@
 package rootfs
 
 import (
+	"bytes"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -101,17 +103,45 @@ func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel
 // Open opens rel for reading. The caller closes it.
 func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 
-// OpenWrite opens rel for writing, creating it if it is absent, and
-// deliberately does not truncate. The caller closes it.
+// WriteStreamAtomic writes everything src yields to rel, through a temporary
+// file in the same directory that is then renamed over rel. Every step resolves
+// through the pinned root.
 //
-// Truncation is left to the caller because O_TRUNC destroys the file before the
-// caller can look at it, and looking at it is sometimes the whole point. Two
-// directories proven distinct can still hold hard links to one inode, so a copy
-// that opens its destination with O_TRUNC can empty its own source and only
-// then discover they were the same file. Open first, compare the handles with
-// os.SameFile, and truncate only once they differ.
-func (r *Root) OpenWrite(rel string, perm fs.FileMode) (*os.File, error) {
-	return r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE, perm)
+// Publishing by rename replaces the directory *entry* and leaves the inode that
+// held the name alone. That is what makes it safe to write into a tree whose
+// entries may be hard links to files elsewhere. Opening the destination and
+// truncating it writes through the link instead: if the entry is a link to some
+// file in the source, that file is emptied — and the obvious guard, comparing
+// the pair being copied with os.SameFile, does not see it, because the
+// destination entry can be linked to a *different* source file than the one
+// being read. Only replacing the entry is safe against a link to anything.
+//
+// The temporary file is removed unless the rename consumes it, so a failed
+// write leaves neither a partial target nor a stray file.
+func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) error {
+	tmpRel, f, err := r.createTemp(filepath.Dir(rel), perm)
+	if err != nil {
+		return err
+	}
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = r.root.Remove(tmpRel)
+		}
+	}()
+
+	if _, err := io.Copy(f, src); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := r.root.Rename(tmpRel, rel); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
 }
 
 // MkdirAll creates rel and any missing parents inside the root.
@@ -143,20 +173,13 @@ func (r *Root) ReadDir(rel string) ([]os.DirEntry, error) {
 // the answer cannot be invalidated afterwards: a rename moves a name, never the
 // object a handle holds.
 //
-// It settles the two directories and nothing else. A false result is not a
-// guarantee that a copy between them cannot land on its own source: hard links
-// mean two distinct directories can hold one inode, so the files have to be
-// compared as well — see the per-file check in internal/memory's repo copy.
-// Nor does it say anything about where the directories are relative to each
-// other; one can be inside the other and still be a different object.
+// It settles the two directories and nothing else. It says nothing about the
+// files inside them, which can be hard links to files anywhere — the repo copy
+// handles that by replacing destination entries rather than writing through
+// them. Nor does it say anything about where the directories are relative to
+// each other; one can be inside the other and still be a different object.
 func (r *Root) SameDir(other *Root) (bool, error) {
-	return r.SameDirAt(".", other)
-}
-
-// SameDirAt reports whether rel, resolved through r, is the directory other is
-// pinned on. SameDir is this with rel of ".".
-func (r *Root) SameDirAt(rel string, other *Root) (bool, error) {
-	mine, err := r.root.Stat(rel)
+	mine, err := r.root.Stat(".")
 	if err != nil {
 		return false, err
 	}
@@ -381,30 +404,9 @@ func (t *Target) MkdirAllParent(perm fs.FileMode) error {
 // file behind. Both steps resolve through the pinned root, so the rename
 // cannot be redirected onto a path outside it.
 func (t *Target) WriteAtomic(data []byte, perm fs.FileMode) error {
-	tmpRel, f, err := t.root.createTemp(filepath.Dir(t.rel), perm)
-	if err != nil {
+	if err := t.root.WriteStreamAtomic(t.rel, bytes.NewReader(data), perm); err != nil {
 		return t.pathError(err)
 	}
-	// The temporary file is removed unless the rename consumes it, so a failed
-	// write leaves neither a partial target nor a stray file.
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = t.root.root.Remove(tmpRel)
-		}
-	}()
-
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return t.pathError(err)
-	}
-	if err := f.Close(); err != nil {
-		return t.pathError(err)
-	}
-	if err := t.root.root.Rename(tmpRel, t.rel); err != nil {
-		return t.pathError(err)
-	}
-	cleanup = false
 	return nil
 }
 
