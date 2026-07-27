@@ -90,7 +90,7 @@ func (rt *Runtime) ApplyConfig(
 			modelEndpointChanged ||
 			embedderEndpointChanged ||
 			needsMemoryAPIRetry {
-			rt.quiesceMemoryAndAPI(ctx)
+			rt.quiesceMemoryAndAPI(ctx, uiServer)
 			// Project switch optionally reloads llama-server before rebuilding
 			// memory services. Live work has already been quiesced above so it
 			// is committed under the previous project manager.

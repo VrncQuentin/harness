@@ -206,6 +206,65 @@ type Server struct {
 	// confirms the shutdown dialog. Wired by main to tray.Quit so the
 	// /shutdown endpoint and the tray menu converge on one exit path.
 	quitOnce sync.Once
+
+	// genReqs counts in-flight requests to handlers that read the
+	// currently-published memory/API service deps for their whole duration —
+	// a request holding a *memory.DirReader or *git.Repo reference obtained
+	// before a reload swapped deps.SetServiceDeps has to finish with the
+	// generation it started with, not have the runtime close that generation's
+	// handles underneath it mid-request. deps itself is swapped atomically, so
+	// no handler ever observes a half-rebuilt mix of adapters; genReqs is a
+	// second, separate guarantee about how long the *old* generation's
+	// underlying OS handles stay open once a new one has replaced it.
+	//
+	// Coverage is deliberately partial, not repository-wide: only
+	// handlePromoteFact and handleAppendNote are wrapped with trackGenRequest
+	// today, because those are the two handlers this generation-safety pass
+	// audited closely enough to be confident about. Other handlers that read
+	// MemoryStore, Committer, AgentRegistry, or SessionStore for a quick
+	// request/response (the /memory and /agents pages, notably) are not yet
+	// wrapped and remain exposed to the same narrow window: a reload landing
+	// exactly during one of their reads or writes can close the handle they
+	// are using. The failure mode is a request-scoped I/O error, not silent
+	// corruption or a boundary escape — Go's os.Root and os.File both refuse
+	// operations on an already-closed handle rather than reusing a
+	// reassigned descriptor — but it is a real, unclosed gap, not a solved
+	// one. SSE endpoints (/events, /chat/events, /task/events) must never be
+	// wrapped this way: they are long-lived by design, and a drain that waits
+	// for them would block on a connection that has no reason to end on its
+	// own, turning a reload into a hang.
+	genReqs sync.WaitGroup
+}
+
+// trackGenRequest wraps h so a call to DrainGenerationRequests waits for it to
+// finish before returning. Use only for handlers that complete promptly and
+// read generation-scoped deps (MemoryStore, Committer, and similar) for their
+// whole duration — never for a streaming/SSE handler, which by design does
+// not end on its own.
+func (s *Server) trackGenRequest(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.genReqs.Add(1)
+		defer s.genReqs.Done()
+		h(w, r)
+	}
+}
+
+// DrainGenerationRequests waits for every in-flight request wrapped by
+// trackGenRequest to finish, or for ctx to end, whichever comes first. The
+// runtime calls this before closing a memory/API generation's handles during a
+// reload, alongside the existing task-loop cancellation and session flush.
+func (s *Server) DrainGenerationRequests(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		s.genReqs.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // NewServer creates a new UI server on the given port. The config store is
@@ -613,8 +672,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/memory/save", s.handleMemorySave)
 	mux.HandleFunc("/memory/episodes", s.handleMemoryEpisodes)
 	mux.HandleFunc("/memory/episodes/view", s.handleMemoryEpisodeView)
-	mux.HandleFunc("/memory/promote", s.handlePromoteFact)
-	mux.HandleFunc("/memory/note", s.handleAppendNote)
+	mux.HandleFunc("/memory/promote", s.trackGenRequest(s.handlePromoteFact))
+	mux.HandleFunc("/memory/note", s.trackGenRequest(s.handleAppendNote))
 	mux.HandleFunc("/projects", s.handleProjects)
 	mux.HandleFunc("/projects/activate", s.handleProjectActivate)
 	mux.HandleFunc("/projects/hide", s.handleProjectHide)

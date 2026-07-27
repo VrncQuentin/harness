@@ -170,6 +170,75 @@ func setTaskRunnerForTest(s *Server, runner TaskRunner) {
 func setMemoryRepoPathForTest(s *Server, path string) {
 	setServiceDepsForTest(s, func(d *ServiceDeps) { d.MemoryRepoPath = path })
 }
+
+// DrainGenerationRequests has to actually wait for a tracked in-flight request
+// to finish, not just check whether one happens to be running at the moment
+// it is called — that distinction is the whole point: a reload's close-handles
+// step must not run concurrently with a request still using the handles it is
+// about to close.
+func TestDrainGenerationRequestsWaitsForATrackedRequestToFinish(t *testing.T) {
+	s := NewServer(3000)
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	handler := s.trackGenRequest(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+	})
+
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		handler(httptest.NewRecorder(), req)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tracked handler never started")
+	}
+
+	drainDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		drainDone <- s.DrainGenerationRequests(ctx)
+	}()
+
+	select {
+	case <-drainDone:
+		t.Fatal("DrainGenerationRequests returned before the in-flight request finished")
+	case <-time.After(100 * time.Millisecond):
+		// Still blocked, as it must be while the handler holds the release
+		// channel open.
+	}
+
+	close(release)
+
+	select {
+	case err := <-drainDone:
+		if err != nil {
+			t.Fatalf("DrainGenerationRequests: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DrainGenerationRequests did not return after the handler finished")
+	}
+}
+
+// A drain with no in-flight tracked requests must return immediately rather
+// than waiting out its context.
+func TestDrainGenerationRequestsReturnsImmediatelyWhenNothingIsInFlight(t *testing.T) {
+	s := NewServer(3000)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	if err := s.DrainGenerationRequests(ctx); err != nil {
+		t.Fatalf("DrainGenerationRequests: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("DrainGenerationRequests took %v with nothing in flight", elapsed)
+	}
+}
+
 func TestSetServiceDepsPublishesAndClearsSnapshot(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
