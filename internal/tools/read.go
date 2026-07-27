@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
+	"unicode/utf8"
 )
 
 // readTool implements the read tool: range- and locator-addressed reads.
@@ -59,7 +62,11 @@ func (t *readTool) Execute(ctx context.Context, c CallInfo, args map[string]any)
 		if _, present := args["end_line"]; present {
 			return Result{Error: "read: start_line/end_line do not address a toolout handle — page it with offset instead"}
 		}
-		return readToolout(c, locator, intArg(args, "offset"))
+		offset, err := integerArg(args, "offset")
+		if err != nil {
+			return Result{Error: "read: " + err.Error()}
+		}
+		return readToolout(c, locator, offset)
 	}
 	target, start, end, err := readTarget(args)
 	if err != nil {
@@ -109,22 +116,29 @@ func readToolout(c CallInfo, locator string, offset int) Result {
 	if offset < 0 {
 		return Result{Error: fmt.Sprintf("read: offset %d is negative", offset)}
 	}
-	path, err := resolveToolout(c.TooloutDir, locator)
-	if err != nil {
-		return Result{Error: "read: " + err.Error()}
-	}
-	//nolint:gosec // path is the spill dir joined with a validated hex id,
-	// checked to resolve physically inside the spill directory
-	data, err := os.ReadFile(path)
+	f, err := openToolout(c.TooloutDir, locator)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Result{Error: fmt.Sprintf("read: %s no longer exists — spilled output is cached, not permanent", locator)}
 		}
+		return Result{Error: "read: " + err.Error()}
+	}
+	defer f.Close() //nolint:errcheck // read-only handle
+
+	data, err := io.ReadAll(f)
+	if err != nil {
 		return Result{Error: fmt.Sprintf("read: %s: %v", locator, err)}
 	}
 
 	if offset > len(data) {
 		return Result{Error: fmt.Sprintf("read: offset %d is past the end of %s (%d bytes)", offset, locator, len(data))}
+	}
+	// Resuming inside a character would emit invalid UTF-8 as the first bytes
+	// of the page. Only offsets this tool handed out can be on a boundary by
+	// construction, so a hand-made one is checked rather than trusted.
+	if offset < len(data) && !utf8.RuneStart(data[offset]) {
+		return Result{Error: fmt.Sprintf(
+			"read: offset %d is inside a multi-byte character — resume from an offset this tool reported", offset)}
 	}
 
 	rest := data[offset:]
@@ -165,6 +179,37 @@ func readTarget(args map[string]any) (path string, start, end int, err error) {
 		return "", 0, 0, fmt.Errorf("invalid line range %d-%d", start, end)
 	}
 	return path, start, end, nil
+}
+
+// integerArg reads an argument that must be a whole number when present,
+// returning 0 when it is absent.
+//
+// Nothing validates a tool call's arguments against its schema between the
+// model and Execute, so a wrong type arrives here as a wrong type. intArg maps
+// anything it does not recognise to 0, which for an offset silently turns a
+// malformed continuation into a valid one addressing the start of the file —
+// the caller gets a plausible page and no indication it asked for something
+// else. A fractional number is refused for the same reason: truncating it
+// invents an offset the caller did not name.
+func integerArg(args map[string]any, key string) (int, error) {
+	raw, present := args[key]
+	if !present || raw == nil {
+		return 0, nil
+	}
+	switch v := raw.(type) {
+	case int:
+		return v, nil
+	case float64:
+		if v != math.Trunc(v) {
+			return 0, fmt.Errorf("%s must be a whole number, got %v", key, v)
+		}
+		if v > math.MaxInt32 || v < math.MinInt32 {
+			return 0, fmt.Errorf("%s is out of range: %v", key, v)
+		}
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("%s must be a number, got %T", key, raw)
+	}
 }
 
 // intArg reads an integer argument that arrives as a JSON number.

@@ -182,8 +182,9 @@ func TestRead_TooloutRefusesLinkedLeaf(t *testing.T) {
 		mustLinkDir(t, outside, link)
 		defer func() { _ = os.Remove(link) }()
 
-		_, err := resolveToolout(dir, TooloutScheme+id)
+		f, err := openToolout(dir, TooloutScheme+id)
 		if err == nil {
+			_ = f.Close()
 			t.Fatal("a leaf resolving outside the spill directory was accepted")
 		}
 		if !strings.Contains(err.Error(), "outside the toolout directory") {
@@ -227,7 +228,13 @@ func TestRead_TooloutPagingIsLosslessAndBounded(t *testing.T) {
 
 	// Deliberately hostile shape: one line far longer than a page, multi-byte
 	// characters straddling the cuts, and no trailing newline.
-	spill := strings.Repeat("é", tooloutPageLimit) + "\nshort line\n" +
+	//
+	// The rune is three bytes, not two. Two-byte runes sit on even offsets and
+	// the page limit is even, so every cut would land on a boundary naturally
+	// and the test would pass against raw byte slicing — proving nothing. At
+	// three bytes per rune the limit falls inside a character and the cut has
+	// to back up, which the offset assertion below checks actually happened.
+	spill := strings.Repeat("€", tooloutPageLimit) + "\nshort line\n" +
 		strings.Repeat("x", tooloutPageLimit*2) + "\ntail without newline"
 	writeSpill(t, dir, id, spill)
 
@@ -235,6 +242,7 @@ func TestRead_TooloutPagingIsLosslessAndBounded(t *testing.T) {
 
 	var reassembled strings.Builder
 	offset := 0
+	backedUp := false
 	for page := 0; ; page++ {
 		if page > 100 {
 			t.Fatal("paging did not terminate")
@@ -263,9 +271,18 @@ func TestRead_TooloutPagingIsLosslessAndBounded(t *testing.T) {
 		if next <= offset {
 			t.Fatalf("continuation offset %d did not advance past %d", next, offset)
 		}
+		// A page shorter than the nominal limit means the cut backed up off a
+		// character boundary, which is the behaviour under test. Without this
+		// the assertions below pass against raw byte slicing.
+		if next-offset < tooloutPageLimit {
+			backedUp = true
+		}
 		offset = next
 	}
 
+	if !backedUp {
+		t.Error("no cut ever backed up off a rune boundary; the test is not exercising rune-safe paging")
+	}
 	if got := reassembled.String(); got != spill {
 		t.Errorf("reassembled %d bytes, want the spilled %d — paging is lossy",
 			len(got), len(spill))
@@ -339,5 +356,66 @@ func TestRead_TooloutRejectsBadOffsets(t *testing.T) {
 		map[string]any{"locator": TooloutScheme + id, "offset": len("small\n")})
 	if res.Error != "" {
 		t.Errorf("offset at end-of-file rejected: %s", res.Error)
+	}
+}
+
+// Nothing validates a tool call's arguments against the schema between the
+// model and Execute, so a malformed offset arrives as-is. Mapping it to zero
+// turns a broken continuation into a valid one addressing the start of the
+// file: a plausible page, with no sign the caller asked for something else.
+func TestRead_TooloutRejectsMalformedOffsets(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "toolout")
+	const id = "9999888877776666"
+	writeSpill(t, dir, id, strings.Repeat("payload\n", 100))
+	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, TooloutDir: dir}
+
+	tests := []struct {
+		name   string
+		offset any
+	}{
+		{name: "string", offset: "16"},
+		{name: "fractional", offset: 12.5},
+		{name: "boolean", offset: true},
+		{name: "array", offset: []any{1}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := (&readTool{}).Execute(context.Background(), ci,
+				map[string]any{"locator": TooloutScheme + id, "offset": tt.offset})
+			if res.Error == "" {
+				t.Errorf("offset %#v accepted, returned %d bytes", tt.offset, len(res.Content))
+			}
+		})
+	}
+
+	// An explicit null is absence, not a malformed value.
+	res := (&readTool{}).Execute(context.Background(), ci,
+		map[string]any{"locator": TooloutScheme + id, "offset": nil})
+	if res.Error != "" {
+		t.Errorf("null offset rejected: %s", res.Error)
+	}
+}
+
+// An offset landing inside a character would put invalid UTF-8 at the head of
+// the page. Only offsets this tool reported are on a boundary by construction.
+func TestRead_TooloutRejectsMidRuneOffset(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "toolout")
+	const id = "5555444433332222"
+	writeSpill(t, dir, id, strings.Repeat("€", 50))
+	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, TooloutDir: dir}
+
+	res := (&readTool{}).Execute(context.Background(), ci,
+		map[string]any{"locator": TooloutScheme + id, "offset": 1})
+	if res.Error == "" {
+		t.Fatalf("mid-rune offset accepted, returned %q", res.Content)
+	}
+	if !utf8.ValidString(res.Content) {
+		t.Error("rejection still emitted invalid UTF-8")
+	}
+
+	// A boundary offset is fine.
+	if res := (&readTool{}).Execute(context.Background(), ci,
+		map[string]any{"locator": TooloutScheme + id, "offset": 3}); res.Error != "" {
+		t.Errorf("boundary offset rejected: %s", res.Error)
 	}
 }

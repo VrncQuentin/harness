@@ -233,3 +233,78 @@ func TestResolveGivesLinkAndTargetOneIdentity(t *testing.T) {
 		t.Errorf("link and target resolved to different identities:\n  target: %s\n  link:   %s", viaTarget, viaLink)
 	}
 }
+
+// CanonicalFile answers for the open description rather than a path, so a
+// caller can validate the exact handle it reads from instead of canonicalizing
+// a name and reopening it afterwards.
+func TestCanonicalFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only handle
+
+	got, err := CanonicalFile(f)
+	if err != nil {
+		t.Fatalf("CanonicalFile: %v", err)
+	}
+	want, err := Canonical(path)
+	if err != nil {
+		t.Fatalf("Canonical: %v", err)
+	}
+	if Key(got) != Key(want) {
+		t.Errorf("CanonicalFile = %q, want %q", got, want)
+	}
+	if strings.HasPrefix(got, `\?\`) {
+		t.Errorf("CanonicalFile = %q, still carries the extended-length prefix", got)
+	}
+
+	if _, err := CanonicalFile(nil); err == nil {
+		t.Error("CanonicalFile(nil) returned no error")
+	}
+}
+
+// A handle opened through a link must report where the file physically is, not
+// the name it was reached by — that is the whole point of validating the
+// handle.
+func TestCanonicalFileSeesThroughLinks(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		if runtime.GOOS != "windows" {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		out, jerr := exec.Command("cmd", "/c", "mklink", "/J", alias, real).CombinedOutput()
+		if jerr != nil {
+			t.Skipf("cannot create directory link: %v: %s", jerr, out)
+		}
+	}
+
+	f, err := os.Open(alias)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer f.Close() //nolint:errcheck // read-only handle
+
+	got, err := CanonicalFile(f)
+	if err != nil {
+		t.Fatalf("CanonicalFile: %v", err)
+	}
+	want, err := Canonical(real)
+	if err != nil {
+		t.Fatalf("Canonical: %v", err)
+	}
+	if Key(got) != Key(want) {
+		t.Errorf("handle opened via a link reported %q, want the physical %q", got, want)
+	}
+}

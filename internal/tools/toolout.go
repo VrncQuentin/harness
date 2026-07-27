@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -28,15 +29,16 @@ func isTooloutLocator(locator string) bool {
 // so this deliberately does not go through validatePath — a sandbox check would
 // reject every handle.
 //
-// Two checks stand in for it, and both are needed. The id is matched against
-// the shape B3 generates — lowercase hex and nothing else — so a separator, a
-// dot, a drive letter, or an absolute path is refused rather than joined onto
-// the directory. That is lexical only, and a lexically perfect name still says
-// nothing about where the file it names actually is: a symlink or reparse
-// point called deadbeefdeadbeef inside the spill directory would be followed
-// straight out of it. So the resolved leaf must also be physically inside the
-// resolved directory, established through internal/pathid for the same reason
-// it exists at all — filepath.EvalSymlinks cannot answer this on Windows.
+// This is the lexical half of the check: the id is matched against the shape
+// B3 generates — lowercase hex and nothing else — so a separator, a dot, a
+// drive letter, or an absolute path is refused rather than joined onto the
+// directory.
+//
+// It is not sufficient on its own. A lexically perfect name says nothing about
+// where the file it names actually is: a symlink or reparse point called
+// deadbeefdeadbeef inside the spill directory would be followed straight out of
+// it. openToolout supplies the physical half, and callers must use it rather
+// than opening this path themselves.
 func resolveToolout(dir, locator string) (string, error) {
 	id, ok := strings.CutPrefix(locator, TooloutScheme)
 	if !ok {
@@ -49,19 +51,47 @@ func resolveToolout(dir, locator string) (string, error) {
 		return "", fmt.Errorf("tools: %q is not a valid toolout id — expected lowercase hex", id)
 	}
 
-	target := filepath.Join(dir, id)
+	return filepath.Join(dir, id), nil
+}
+
+// openToolout opens the file a toolout handle addresses and returns it only if
+// the opened handle is physically inside the spill directory.
+//
+// Containment is established from the handle rather than from the path, and the
+// caller reads from that same handle. Canonicalizing a path and reopening it by
+// name afterwards checks one resolution and reads another: whatever the name
+// referred to during the check can be replaced before the open, and the read
+// follows the replacement. Validating the handle closes that window — the file
+// that was checked and the file that is read are the same object.
+//
+// The rest of the tool layer still resolves and reopens by path; this is the
+// one place that reads outside every sandbox root, which is why it does not.
+func openToolout(dir, locator string) (*os.File, error) {
+	path, err := resolveToolout(dir, locator)
+	if err != nil {
+		return nil, err
+	}
+	//nolint:gosec // dir joined with an id validated as bare lowercase hex
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
 	resolvedDir, err := pathid.Resolve(dir)
 	if err != nil {
-		return "", fmt.Errorf("tools: cannot resolve the toolout directory: %w", err)
+		_ = f.Close()
+		return nil, fmt.Errorf("tools: cannot resolve the toolout directory: %w", err)
 	}
-	resolvedTarget, err := pathid.Resolve(target)
+	opened, err := pathid.CanonicalFile(f)
 	if err != nil {
-		return "", fmt.Errorf("tools: cannot resolve %s: %w", locator, err)
+		_ = f.Close()
+		return nil, fmt.Errorf("tools: cannot identify %s: %w", locator, err)
 	}
-	if !pathid.WithinRoot(resolvedTarget, resolvedDir) {
-		return "", fmt.Errorf("tools: %s resolves outside the toolout directory", locator)
+	if !pathid.WithinRoot(opened, resolvedDir) {
+		_ = f.Close()
+		return nil, fmt.Errorf("tools: %s resolves outside the toolout directory", locator)
 	}
-	return target, nil
+	return f, nil
 }
 
 // tooloutIDMaxLen bounds the accepted id length. B3 emits 16 hex characters;
