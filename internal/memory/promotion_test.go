@@ -2,8 +2,10 @@ package memory
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -145,5 +147,77 @@ func TestPromotionServiceRollbackDoesNotRemoveAConcurrentlyWrittenNewFile(t *tes
 	}
 	if string(got) != concurrentWrite {
 		t.Fatalf("notes.md = %q, want the concurrent write %q", got, concurrentWrite)
+	}
+}
+
+// alwaysCommits is a PromotionCommitter that always succeeds, recording every
+// call. It stands in for the real git.Repo committer in a test that only
+// cares about the memory-repo layer's own read-modify-write serialization.
+type alwaysCommits struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *alwaysCommits) Commit(string, []string) (string, error) {
+	c.mu.Lock()
+	c.calls++
+	c.mu.Unlock()
+	return "sha", nil
+}
+
+// promotionLocks serializes appendAndCommit per repository identity, which is
+// what makes read-modify-write across many concurrent promotions to the same
+// file safe without a lower-level compare-and-swap primitive: each call's
+// read, append, and write happen as one critical section, so no other
+// promotion can read a stale baseline in between. This is the property a bare
+// read-back content check cannot provide on its own — it only detects a
+// collision after the fact, never prevents one.
+//
+// Without the lock, two goroutines racing PromoteFact would each read the same
+// baseline, each append their own line, and whichever WriteFile lands last
+// would silently discard the other's line — a lost update the content check
+// in rollback cannot see, because both writes succeed and neither commit
+// fails.
+func TestPromotionService_ConcurrentPromotionsToTheSameRepoDoNotLoseUpdates(t *testing.T) {
+	root := t.TempDir()
+	dr, err := OpenDirReader(root)
+	if err != nil {
+		t.Fatalf("OpenDirReader: %v", err)
+	}
+	defer func() { _ = dr.Close() }()
+
+	committer := &alwaysCommits{}
+	svc := PromotionService{Store: dr, Committer: committer}
+
+	const writers = 12
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := range writers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs <- svc.PromoteFact(fmt.Sprintf("fact-%02d", i))
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("PromoteFact: %v", err)
+		}
+	}
+
+	got, err := dr.Read("facts.md")
+	if err != nil {
+		t.Fatalf("Read facts.md: %v", err)
+	}
+	for i := range writers {
+		want := fmt.Sprintf("fact-%02d", i)
+		if !strings.Contains(string(got), want) {
+			t.Errorf("facts.md is missing %q — a concurrent promotion's update was lost:\n%s", want, got)
+		}
+	}
+	if committer.calls != writers {
+		t.Fatalf("commit calls = %d, want %d", committer.calls, writers)
 	}
 }

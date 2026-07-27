@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"sync"
 )
 
 // PromotionStore is the mutable memory repo surface required by promotion
@@ -26,9 +27,40 @@ type promotionRemover interface {
 
 // PromotionService owns append-and-commit memory promotions so UI handlers do
 // not need to coordinate file mutation, git commits, and rollback.
+//
+// A value is constructed fresh per request, so a mutex on the value itself
+// would not serialize anything: two concurrent promotions to the same repo
+// each get their own PromotionService and their own uncontended mutex.
+// promotionLocks holds the actual lock, keyed by the repo's physical identity
+// rather than by anything scoped to one request, which is what makes it shared
+// across every PromotionService instance that names the same repository —
+// mirroring the pattern internal/git already uses to serialize its own
+// mutations. Read-modify-write-commit-and-possible-rollback is one critical
+// section: a second promotion cannot see this one's write, its commit, or its
+// rollback partway through, which removes the read-then-clobber gap a
+// content check alone cannot close on its own.
 type PromotionService struct {
 	Store     PromotionStore
 	Committer PromotionCommitter
+}
+
+// promotionLocks serializes promotion read-modify-write-commit sequences per
+// repository, the same role internal/git.repoMutationLocks plays for git
+// mutations. It has to be keyed by physical identity, not by the configured
+// path spelling, for the same reason that package's lock is: two handles on
+// one repository reached by different names must contend for one lock, not
+// two.
+var promotionLocks sync.Map // identity key -> *sync.Mutex
+
+// promotionLockKey returns the key to serialize promotions on, and whether one
+// is available. A store that cannot report its own identity — a test fake,
+// most likely — gets no lock: production always passes a *DirReader.
+func promotionLockKey(store PromotionStore) (string, bool) {
+	dr, ok := store.(*DirReader)
+	if !ok {
+		return "", false
+	}
+	return dr.Identity().Key(), true
 }
 
 // PromoteFact appends text to facts.md and commits the change. If the commit
@@ -64,6 +96,16 @@ func (s PromotionService) appendAndCommit(relPath, text, commitMessage, commitCo
 	if s.Committer == nil {
 		return errors.New("committer not available")
 	}
+	if key, ok := promotionLockKey(s.Store); ok {
+		actual, _ := promotionLocks.LoadOrStore(key, &sync.Mutex{})
+		lock, ok := actual.(*sync.Mutex)
+		if !ok {
+			// Unreachable: only *sync.Mutex is ever stored.
+			lock = &sync.Mutex{}
+		}
+		lock.Lock()
+		defer lock.Unlock()
+	}
 	previous, existed, err := s.readExisting(relPath)
 	if err != nil {
 		return err
@@ -96,11 +138,15 @@ func (s PromotionService) readExisting(relPath string) ([]byte, bool, error) {
 // follow it fails. expected is the content this call published; rollback only
 // proceeds if the file still holds exactly that.
 //
-// A commit failure is rare, but the file is not locked while it is in flight,
-// and a second promotion to the same path (another agent note, a concurrent
-// fact) can land in between the write and the failed commit. Restoring or
-// removing by name alone, on the strength of what this call remembers having
-// written, would then destroy that other promotion's content — the same
+// appendAndCommit's promotionLocks hold already rules out a second promotion
+// landing here — this call's own read, write, and any rollback are one
+// critical section for that repository, so another PromotionService call
+// cannot interleave partway through. What the content check guards against is
+// a *different* writer to the same file that does not participate in that
+// lock — the UI's direct memory-file editor, most plausibly, since it writes
+// through the same Store without going through PromotionService at all.
+// Restoring or removing by name alone, on the strength of what this call
+// remembers having written, would destroy such a writer's content — the same
 // unlink-what-the-name-now-holds hazard documented on CreateExclusive and
 // WriteStreamAtomic elsewhere in this codebase, applied here to a rollback
 // instead of a create. Reading the file back and comparing it to what this
