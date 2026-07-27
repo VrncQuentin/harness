@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 // TooloutScheme prefixes the handles the governor's tee-on-failure emits for
@@ -81,10 +83,25 @@ func resolveToolout(dir, locator string) (string, error) {
 // leaf at all" would have to Lstat the leaf through the root and refuse it
 // explicitly, and would have to say so in a test.
 //
-// This is the one read that happens outside every sandbox root, so it cannot
-// use the sandbox's rooted access in internal/rootfs; it opens its own root on
-// the spill directory instead.
+// This is the one read that happens outside every sandbox root, so it cannot go
+// through the sandbox's rootfs.Set — that would resolve the path against the
+// configured roots and reject it. It takes a standalone rootfs.Root on the
+// spill directory instead, which is the same capability without the root
+// selection.
 func openToolout(dir, locator string) (*os.File, error) {
+	return openTooloutHooked(dir, locator, nil)
+}
+
+// openTooloutHooked is openToolout with a hook that runs between pinning the
+// spill root and opening the target, so a test can stage a replacement of the
+// directory in exactly that window.
+//
+// The hook is a parameter rather than package state because package state is
+// shared: two tests setting it at once would each run the other's hook, and the
+// only defence is a convention that every such test avoids t.Parallel — a rule
+// nothing enforces and a future test will not know about. Passed in, each call
+// sees its own. It is nil on every production path.
+func openTooloutHooked(dir, locator string, afterPin func()) (*os.File, error) {
 	id, err := resolveToolout(dir, locator)
 	if err != nil {
 		return nil, err
@@ -92,14 +109,14 @@ func openToolout(dir, locator string) (*os.File, error) {
 
 	// %v rather than %w keeps a missing spill directory from being reported as
 	// a missing spill file.
-	root, err := os.OpenRoot(dir)
+	root, err := rootfs.Open(dir)
 	if err != nil {
 		return nil, fmt.Errorf("tools: toolout directory unavailable: %v", err)
 	}
 	defer root.Close() //nolint:errcheck // read-only handle
 
-	if tooloutSwapHook != nil {
-		tooloutSwapHook()
+	if afterPin != nil {
+		afterPin()
 	}
 
 	f, err := root.Open(id)
@@ -108,19 +125,6 @@ func openToolout(dir, locator string) (*os.File, error) {
 	}
 	return f, nil
 }
-
-// tooloutSwapHook runs between pinning the spill root and opening the target.
-// It is nil in production.
-//
-// It exists because the ordering it guards is only observable when the spill
-// directory is replaced in exactly that window, which cannot be staged from
-// outside the function. Without it the ordering could be argued from reading
-// the code but not demonstrated, and an argument is what the previous version
-// of this comment offered while the code did something weaker.
-//
-// It is package-level mutable state, so the tests that set it must not call
-// t.Parallel: two of them running at once would each see the other's hook.
-var tooloutSwapHook func()
 
 // tooloutIDMaxLen bounds the accepted id length. B3 emits 16 hex characters;
 // the allowance leaves room for a wider digest without accepting arbitrary

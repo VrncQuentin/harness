@@ -1,12 +1,12 @@
 package governor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"os"
-	"path/filepath"
 
+	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/tools"
 )
 
@@ -40,8 +40,7 @@ func (g *Governor) applyB3(_ context.Context, toolID string, res tools.Result) t
 	}
 
 	id := tooloutID(toolID, spill)
-	path := filepath.Join(dir, id)
-	if err := os.WriteFile(path, []byte(spill), 0o644); err != nil {
+	if err := writeSpill(dir, id, spill); err != nil {
 		// Write failure — return unchanged.
 		return res
 	}
@@ -57,6 +56,29 @@ func (g *Governor) applyB3(_ context.Context, toolID string, res tools.Result) t
 	// records.
 	res.FullOutput = ""
 	return res
+}
+
+// writeSpill publishes content under id inside the spill directory.
+//
+// The directory is pinned and the id is resolved through that handle, so an
+// entry already sitting in the spill directory under that name — a symlink, a
+// junction — cannot send the write somewhere else. Publication is by rename, so
+// a pre-existing entry is *replaced* rather than written through: opening the
+// name and truncating would follow such a link and empty whatever it points at,
+// and would also let a reader see a half-written spill while the tee is still
+// copying megabytes of output into it.
+//
+// The pin is per-spill rather than held for the governor's lifetime. Spills are
+// rare — only failures above the threshold reach here — and the directory is a
+// cache the user may clear between calls, so a handle kept open would pin a
+// deleted directory and quietly write into nothing.
+func writeSpill(dir, id, content string) error {
+	root, err := rootfs.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close() //nolint:errcheck // failure to close a spill root loses nothing
+	return root.WriteStreamAtomic(id, bytes.NewReader([]byte(content)), 0o644)
 }
 
 // tooloutID returns a deterministic file ID for (toolID, content).

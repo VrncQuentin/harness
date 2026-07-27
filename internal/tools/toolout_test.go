@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -489,7 +490,7 @@ func TestRead_TooloutRootPinnedBeforeTargetOpen(t *testing.T) {
 	defer func() { _ = os.Remove(root) }()
 
 	swapped := false
-	tooloutSwapHook = func() {
+	got := readTooloutWithSwap(t, root, id, func() {
 		if swapped {
 			return
 		}
@@ -500,12 +501,7 @@ func TestRead_TooloutRootPinnedBeforeTargetOpen(t *testing.T) {
 			t.Fatalf("Remove root link: %v", err)
 		}
 		mustLinkDir(t, evilDir, root)
-	}
-	t.Cleanup(func() { tooloutSwapHook = nil })
-
-	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, TooloutDir: root}
-	res := (&readTool{}).Execute(context.Background(), ci,
-		map[string]any{"locator": TooloutScheme + id})
+	})
 
 	if !swapped {
 		t.Fatal("the hook never ran; the ordering was not exercised")
@@ -513,8 +509,8 @@ func TestRead_TooloutRootPinnedBeforeTargetOpen(t *testing.T) {
 	// The directory handle still refers to the original directory, so the read
 	// either serves the genuine spill or fails. What it must never do is follow
 	// the name to the attacker's replacement.
-	if strings.Contains(res.Content, secret) {
-		t.Errorf("a repointed root disclosed content from outside the pinned directory:\n%s", res.Content)
+	if strings.Contains(got, secret) {
+		t.Errorf("a repointed root disclosed content from outside the pinned directory:\n%s", got)
 	}
 }
 
@@ -538,7 +534,7 @@ func TestRead_TooloutSameNameDirectoryReplacement(t *testing.T) {
 
 	moved := filepath.Join(base, "moved-aside")
 	swapped := false
-	tooloutSwapHook = func() {
+	got := readTooloutWithSwap(t, root, id, func() {
 		if swapped {
 			return
 		}
@@ -551,20 +547,31 @@ func TestRead_TooloutSameNameDirectoryReplacement(t *testing.T) {
 		if err := os.Rename(evil, root); err != nil {
 			t.Fatalf("Rename evil into place: %v", err)
 		}
-	}
-	t.Cleanup(func() { tooloutSwapHook = nil })
-
-	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, TooloutDir: root}
-	res := (&readTool{}).Execute(context.Background(), ci,
-		map[string]any{"locator": TooloutScheme + id})
+	})
 
 	if !swapped {
 		t.Fatal("the hook never ran; the replacement was not staged")
 	}
-	if strings.Contains(res.Content, secret) {
-		t.Errorf("same-name replacement disclosed the attacker's file:\n%s", res.Content)
+	if strings.Contains(got, secret) {
+		t.Errorf("same-name replacement disclosed the attacker's file:\n%s", got)
 	}
-	if res.Error != "" && strings.Contains(res.Error, secret) {
-		t.Errorf("secret leaked through the error path: %s", res.Error)
+}
+
+// readTooloutWithSwap resolves a toolout handle with interference staged in the
+// window between pinning the spill root and opening the target, and returns
+// whatever the read produced. A failed open returns the empty string rather
+// than failing the test: refusing is one of the two acceptable outcomes, the
+// other being the genuine spill. Only the attacker's content is a failure.
+func readTooloutWithSwap(t *testing.T, dir, id string, afterPin func()) string {
+	t.Helper()
+	f, err := openTooloutHooked(dir, TooloutScheme+id, afterPin)
+	if err != nil {
+		return ""
 	}
+	defer func() { _ = f.Close() }()
+	body, err := io.ReadAll(f)
+	if err != nil {
+		return ""
+	}
+	return string(body)
 }
