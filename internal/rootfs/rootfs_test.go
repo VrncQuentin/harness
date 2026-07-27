@@ -158,7 +158,7 @@ func TestSetOpenRejectsEmptyRootList(t *testing.T) {
 	writeFile(t, filepath.Join(root, "a.txt"), "a")
 
 	for _, roots := range []Set{nil, {}, {"", "   "}} {
-		target, err := Set(roots).Open(filepath.Join(root, "a.txt"))
+		target, err := roots.Open(filepath.Join(root, "a.txt"))
 		if err == nil {
 			_ = target.Close()
 			t.Fatalf("roots %v accepted a path", roots)

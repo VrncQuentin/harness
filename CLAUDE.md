@@ -53,6 +53,7 @@ internal/
   queue/            ← bounded in-process request queue
   reqid/            ← request-id propagation via context
   retrieval/        ← blended semantic + recency episode scoring
+  rootfs/           ← rooted filesystem access (os.Root) for sandbox + worktree reads
   runtime/          ← mutable service graph, wiring, config re-apply
   session/          ← session lifecycle
   summarizerprompt/ ← session summarizer prompt template

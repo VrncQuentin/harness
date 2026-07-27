@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -185,7 +184,7 @@ func TestEdit_LeavesNoTemporaryFileBehind(t *testing.T) {
 	for _, e := range entries {
 		got = append(got, e.Name())
 	}
-	sort.Strings(got)
+	slices.Sort(got)
 	want := []string{"created.txt", "sample.go"}
 	if !slices.Equal(got, want) {
 		t.Errorf("root contains %v, want exactly %v", got, want)

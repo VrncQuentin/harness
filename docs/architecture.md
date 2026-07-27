@@ -128,6 +128,12 @@ Defines the local tool surface available to the agent loop.
 
 Responsibilities:
 - Register tools by id, JSON Schema parameters, description, and execute function.
+- Enforce the sandbox through `internal/rootfs`: tools that read or write file
+  content (`read`, `file_list`, `ast_map`, `ast_find`, `edit`) operate through an
+  open handle on the owning sandbox root. Tools that hand a path to something
+  outside the package — a subprocess working directory, a `go-git` repository —
+  validate it with `internal/pathid` instead, because there is no handle to give
+  them.
 - Pass a typed `CallInfo` to each tool: active project slug, sandbox roots, memory repo paths (C2 scope list), session id, caller identity, HTTP client, optional `MemoryQuery` closure, and optional `GHTokenFn` closure (reads `GITHUB_TOKEN` at call time — never stored).
 - Record how tool output was produced with `OriginClass` (`extraction` / `inference`). M12 MR1 adds per-hit memory-content origin; origin metadata never bypasses approvals, sandboxing, or verification.
 
@@ -172,6 +178,45 @@ Design constraints:
   resolution failure is returned. A caller cannot distinguish an unresolvable
   path from a safe one, so the unknown case must be a refusal rather than a
   lexical guess.
+
+### Rooted Filesystem Access (`internal/rootfs`)
+The other half of the pair. `internal/pathid` decides *where* a path is;
+`internal/rootfs` acts on that place rather than on the name that led to it.
+Both are needed and neither substitutes for the other.
+
+Validating a pathname and then reopening it checks one resolution and acts on
+another. Canonicalizing the opened target and comparing it against a pinned
+root path is no better: rename the real root aside, move an attacker's
+directory into the name it vacated, and the target opens inside the attacker's
+directory while canonicalizing to a path under the pinned string — the
+comparison agrees with itself and admits the file. `os.Root` removes the
+pathname from the decision by holding the directory open and resolving every
+component against that handle.
+
+Responsibilities:
+- `Root` wraps an open directory for repo-relative reads (`ReadFile`, `Lstat`,
+  `Readlink`). `internal/git`'s `DiffWorktree` pins the worktree with it.
+- `Set` is the sandbox-root list. `Set.Open` picks the owning root by physical
+  identity (`pathid`), pins it, and returns a `Target` addressed relative to it.
+- `Target` carries the caller's display spelling — locators and tool output stay
+  in the terms the caller asked in — while `Read`, `ReadDir`, `Stat`,
+  `MkdirAllParent`, and `WriteAtomic` all go through the handle.
+- `WriteAtomic` does the temp-file-and-rename inside the root, so `edit` keeps
+  its atomic write and its verify-after-mutate re-read confirms the file it
+  actually wrote.
+
+Design constraints:
+- **`os.Root` is a containment boundary, not a ban on links.** It follows a
+  symlink whose target stays inside the root. It refuses an absolute link
+  target unconditionally, so a Windows junction is never traversed through a
+  root; `Set` sidesteps that by addressing the target through the physical path
+  `pathid` resolved.
+- **It does not sandbox subprocesses.** `exec`, `go_test`, and `go_lint`
+  validate their working directory with `pathid` and nothing more; command
+  containment is a separate problem. `go-git` likewise takes a pathname, so
+  repository opening keeps the explicit identity and C2 checks around it.
+- The toolout spill directory is outside every sandbox root, so it opens its own
+  `os.Root` in `internal/tools` rather than going through `Set`.
 
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).
