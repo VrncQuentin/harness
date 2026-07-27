@@ -168,6 +168,10 @@ Responsibilities:
 - `Same`, `SameOrWithin`, and `LockKey` are the high-level operations: repo
   identity, sandbox/C2 containment, and the git mutation-lock key. `LockKey`
   exists so no caller composes resolution and key derivation by hand.
+- Key maps and locks with `ID.Key`, never with the `ID` itself. Go compares
+  every field including the display path, and `Resolve` re-appends a
+  not-yet-created tail in the caller's case, so one identity can produce two
+  structs.
 
 Design constraints:
 - **`filepath.EvalSymlinks` must not be used for containment or identity.** It
@@ -194,23 +198,46 @@ pathname from the decision by holding the directory open and resolving every
 component against that handle.
 
 Responsibilities:
-- `Root` wraps an open directory for repo-relative reads (`ReadFile`, `Lstat`,
-  `Readlink`). `internal/git`'s `DiffWorktree` pins the worktree with it.
-- `Set` is the sandbox-root list. `Set.Open` picks the owning root by physical
-  identity (`pathid`), pins it, and returns a `Target` addressed relative to it.
+- `Root` wraps an open directory for relative access (`ReadFile`, `Lstat`,
+  `Readlink`, `Open`, `Create`, `ReadDir`, `MkdirAll`). `internal/git`'s
+  `DiffWorktree` pins the worktree with it; `internal/memory` pins both ends of
+  a project-repo copy with it.
+- `Set` is the sandbox-root list. `Set.Open` pins the configured root **first**,
+  then resolves it and confirms with `os.SameFile` that the identity it is about
+  to authorize against is the directory actually held open, and only then picks
+  the owner by physical identity (`pathid`) and returns a `Target`.
 - `Target` carries the caller's display spelling — locators and tool output stay
   in the terms the caller asked in — while `Read`, `ReadDir`, `Stat`,
-  `MkdirAllParent`, and `WriteAtomic` all go through the handle.
-- `WriteAtomic` does the temp-file-and-rename inside the root, so `edit` keeps
-  its atomic write and its verify-after-mutate re-read confirms the file it
-  actually wrote.
+  `MkdirAllParent`, `WriteAtomic`, and `CreateExclusive` go through the handle.
+- `WriteAtomic` (temp file + rename) and `CreateExclusive` (`O_EXCL`) are
+  different operations, not variants. A rename replaces whatever holds the name,
+  which is right for editing an existing file and destructive for creating a new
+  one, so `edit`'s whole-file mode uses the latter and has no preceding
+  existence check to race against.
+- `Root.SameDir` compares two open directories as filesystem objects. A caller
+  copying between them can take a false as a guarantee for the whole copy: a
+  rename moves a name, never the object a handle holds.
+- `ReadDir` sorts by filename. `os.Root` has no `ReadDir`, and `File.ReadDir`
+  returns filesystem order where the `os.ReadDir` it replaced sorted — tool
+  output has to be stable across identical calls.
 
 Design constraints:
+- **Pin before authorizing.** Resolving a root and pinning it afterwards leaves
+  a window in which the resolved directory is replaced, so the open pins the
+  replacement while the authorization describes the original. Dereferencing the
+  configured name once, then binding the identity to that handle, is what closes
+  it. A configured name that already meant the wrong directory at pin time is
+  not a race and is not defended against.
 - **`os.Root` is a containment boundary, not a ban on links.** It follows a
   symlink whose target stays inside the root. It refuses an absolute link
   target unconditionally, so a Windows junction is never traversed through a
   root; `Set` sidesteps that by addressing the target through the physical path
   `pathid` resolved.
+- **Containment is within a directory tree, not within a filesystem.** On Linux
+  `os.Root` does not stop traversal across bind mounts, ordinary mount points,
+  or into `/proc`. Mount-based escapes are outside the threat model — staging
+  one needs privileges that already defeat the sandbox — and closing them would
+  need `openat2` with `RESOLVE_NO_XDEV`, which has no Windows counterpart.
 - **It does not sandbox subprocesses.** `exec`, `go_test`, and `go_lint`
   validate their working directory with `pathid` and nothing more; command
   containment is a separate problem. `go-git` likewise takes a pathname, so
