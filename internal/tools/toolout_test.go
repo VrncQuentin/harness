@@ -419,3 +419,98 @@ func TestRead_TooloutRejectsMidRuneOffset(t *testing.T) {
 		t.Errorf("boundary offset rejected: %s", res.Error)
 	}
 }
+
+// The spill root's identity is taken from an open handle, so a configured
+// directory reached through a link still resolves to the same place its
+// contents do. Comparing a handle-derived target against a spelling-derived
+// root would reject every genuine spill in such a setup.
+func TestRead_TooloutRootReachedThroughLink(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real-toolout")
+	const id = "7777666655554444"
+	writeSpill(t, realDir, id, "spilled through a linked root\n")
+
+	linkedRoot := filepath.Join(base, "linked-toolout")
+	mustLinkDir(t, realDir, linkedRoot)
+	defer func() { _ = os.Remove(linkedRoot) }()
+
+	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, TooloutDir: linkedRoot}
+	res := (&readTool{}).Execute(context.Background(), ci,
+		map[string]any{"locator": TooloutScheme + id})
+
+	if res.Error != "" {
+		t.Fatalf("spill under a linked root was refused: %s", res.Error)
+	}
+	if !strings.Contains(res.Content, "spilled through a linked root") {
+		t.Errorf("content = %q, want the spilled output", res.Content)
+	}
+}
+
+// A missing spill directory is a different condition from a missing spill file,
+// and saying so keeps the model from retrying a handle that was never the
+// problem.
+func TestRead_TooloutDirectoryMissing(t *testing.T) {
+	ci := CallInfo{
+		SandboxRoots: []string{t.TempDir()},
+		TooloutDir:   filepath.Join(t.TempDir(), "never-created"),
+	}
+	res := (&readTool{}).Execute(context.Background(), ci,
+		map[string]any{"locator": TooloutScheme + "abcdabcdabcdabcd"})
+
+	if res.Error == "" {
+		t.Fatal("expected an error for a missing spill directory")
+	}
+	if !strings.Contains(res.Error, "directory unavailable") {
+		t.Errorf("error = %q, want it to name the directory as the problem", res.Error)
+	}
+}
+
+// The spill root must be pinned before the target is opened. Resolving it
+// afterwards lets a replacement of the directory in between redirect the policy
+// root itself: the target opens outside, the root is then resolved to that same
+// outside place, and containment compares two consistent values and passes.
+//
+// The hook stages exactly that replacement, in the one window where it matters.
+func TestRead_TooloutRootPinnedBeforeTargetOpen(t *testing.T) {
+	base := t.TempDir()
+	const id = "3333222211110000"
+	const secret = "SECRET-REACHED-BY-REPOINTING-THE-ROOT"
+
+	realDir := filepath.Join(base, "real")
+	writeSpill(t, realDir, id, "the genuine spill\n")
+	evilDir := filepath.Join(base, "evil")
+	writeSpill(t, evilDir, id, secret)
+
+	root := filepath.Join(base, "root")
+	mustLinkDir(t, realDir, root)
+	defer func() { _ = os.Remove(root) }()
+
+	swapped := false
+	tooloutSwapHook = func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		// Re-point the configured directory at the attacker's, after the root
+		// has been pinned and before the target is opened.
+		if err := os.Remove(root); err != nil {
+			t.Fatalf("Remove root link: %v", err)
+		}
+		mustLinkDir(t, evilDir, root)
+	}
+	t.Cleanup(func() { tooloutSwapHook = nil })
+
+	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, TooloutDir: root}
+	res := (&readTool{}).Execute(context.Background(), ci,
+		map[string]any{"locator": TooloutScheme + id})
+
+	if !swapped {
+		t.Fatal("the hook never ran; the ordering was not exercised")
+	}
+	if strings.Contains(res.Content, secret) {
+		t.Errorf("a repointed root disclosed content from outside the pinned directory:\n%s", res.Content)
+	}
+	if res.Error == "" {
+		t.Errorf("read succeeded after the root was repointed, content %q", res.Content)
+	}
+}
