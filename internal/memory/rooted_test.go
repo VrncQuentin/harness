@@ -23,10 +23,14 @@ type escapeFixture struct {
 
 const baitBody = "OUTSIDE-THE-MEMORY-REPO"
 
-// newEscapeFixture builds repo/<linkName> as a link to an outside directory
-// holding bait.txt. Everything a test does afterwards addresses the repo
-// through the reader, never through root.
-func newEscapeFixture(t *testing.T, linkName string) escapeFixture {
+// escapeLinkName is the repo-relative directory every escape fixture plants as
+// a link to the outside directory.
+const escapeLinkName = "linked"
+
+// newEscapeFixture builds repo/linked as a link to an outside directory holding
+// bait.txt. Everything a test does afterwards addresses the repo through the
+// reader, never through root.
+func newEscapeFixture(t *testing.T) escapeFixture {
 	t.Helper()
 	base := t.TempDir()
 	root := filepath.Join(base, "repo")
@@ -40,7 +44,7 @@ func newEscapeFixture(t *testing.T, linkName string) escapeFixture {
 	if err := os.WriteFile(bait, []byte(baitBody), 0o644); err != nil {
 		t.Fatalf("WriteFile bait: %v", err)
 	}
-	mustLinkDir(t, outside, filepath.Join(root, linkName))
+	mustLinkDir(t, outside, filepath.Join(root, escapeLinkName))
 
 	repo, err := OpenDirReader(root)
 	if err != nil {
@@ -69,7 +73,7 @@ func (f escapeFixture) assertBaitIntact(t *testing.T) {
 // "linked/bait.txt" contains no "..", is not absolute, and passes checkRel
 // unchanged. Only resolving it through the pinned repo refuses it.
 func TestDirReader_IntermediateLinkCannotBeRead(t *testing.T) {
-	f := newEscapeFixture(t, "linked")
+	f := newEscapeFixture(t)
 
 	got, err := f.repo.Read("linked/bait.txt")
 	if err == nil {
@@ -107,7 +111,7 @@ func TestDirReader_IntermediateLinkCannotBeWrittenThrough(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newEscapeFixture(t, "linked")
+			f := newEscapeFixture(t)
 			if err := tt.call(f.repo); err == nil {
 				t.Errorf("%s through a link out of the repo was accepted", tt.name)
 			}
@@ -122,7 +126,7 @@ func TestDirReader_IntermediateLinkCannotBeWrittenThrough(t *testing.T) {
 // Listing has to be contained too. A ListDirs or Glob that follows the link
 // discloses the names of files outside the repo even if it never reads one.
 func TestDirReader_IntermediateLinkCannotBeEnumerated(t *testing.T) {
-	f := newEscapeFixture(t, "linked")
+	f := newEscapeFixture(t)
 
 	if dirs, err := f.repo.ListDirs("linked"); err == nil && len(dirs) > 0 {
 		t.Errorf("ListDirs enumerated outside the repo: %v", dirs)
@@ -236,7 +240,7 @@ func TestDirReader_WriteFileRefusesSymlinkedLeafOutsideRepo(t *testing.T) {
 // reaching an outside file *through a directory link*, which is the shape an
 // attacker can actually plant inside a repo the harness scaffolds.
 func TestDirReader_AppendFileCannotEscapeThroughLinkedDirectory(t *testing.T) {
-	f := newEscapeFixture(t, "linked")
+	f := newEscapeFixture(t)
 
 	if err := f.repo.AppendFile("linked/bait.txt", []byte("{\"id\":\"x\"}\n")); err == nil {
 		t.Error("append through a directory link out of the repo was accepted")
@@ -414,7 +418,7 @@ func TestDirReader_WalkOrderingAndGitPruningUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
-	var paths []string
+	paths := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if strings.HasPrefix(e.Path, ".git") {
 			t.Fatalf("Walk leaked git plumbing: %s", e.Path)
