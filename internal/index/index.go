@@ -134,12 +134,28 @@ func (idx *Index) Add(sha string, vectors [][]float32) error {
 // no-op; changed source content replaces its old vectors. Result identifiers
 // are the source path, which makes equal episode basenames in different agent
 // directories distinct.
-// The vector file is opened once and held for the whole sequence — measure the
-// current end, append there, and on a manifest failure truncate back to where
-// it started. Reopening the file between those steps would let the length that
-// was measured, the bytes that were written, and the length rolled back to
-// belong to three different files; holding one handle makes the rollback undo
-// this call's own append and nothing else.
+//
+// vectors.bin is never opened read-write and mutated in place. An earlier
+// version did — open, measure the current end, append there, and on a
+// manifest failure truncate back to where it started — which is exactly the
+// in-place-mutation shape WriteStreamAtomic's doc comment warns about
+// elsewhere in this codebase: if the vectors.bin *entry* is a hard link to a
+// file outside the repo, the append writes through the link and the rollback
+// truncate can then shorten that outside file too. There is no containment
+// check that catches this, because a hard link is not a link a root can
+// refuse — it is another name for the same inode, and os.Root has no way to
+// tell "the repo's vectors.bin" apart from "a stranger's file reached through
+// it" once both names refer to one object.
+//
+// Instead, the whole new vectors.bin — the bytes already on disk plus this
+// call's addition — is assembled in memory and published in one
+// WriteStreamAtomic call, which replaces the directory *entry* rather than
+// writing through whatever it names. If the manifest write that follows then
+// fails, the newly published bytes are simply unreferenced by any manifest
+// chunk: harmless trailing data that Search never reads and validateManifest
+// already tolerates, not a corruption to roll back. That is what removes the
+// rollback entirely, rather than making it safer: there is nothing left to
+// undo that could touch a file this call does not own.
 func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
@@ -161,30 +177,24 @@ func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error 
 		}
 	}
 
-	f, err := idx.dir.OpenReadWrite(vectorsFile, 0o644)
+	existing, err := idx.dir.ReadFile(vectorsFile)
 	if err != nil {
 		idx.manifest = previous
-		return fmt.Errorf("index: open vectors: %w", err)
+		return fmt.Errorf("index: read vectors: %w", err)
 	}
-	defer func() { _ = f.Close() }()
-
-	offset, err := f.Size()
-	if err != nil {
-		idx.manifest = previous
-		return fmt.Errorf("index: stat vectors: %w", err)
-	}
+	offset := int64(len(existing))
 	entry := Entry{SHA: source, Source: source, ContentHash: contentHash, Offset: offset, Length: len(vectors)}
-	if err := appendVectors(f, vectors, idx.dim); err != nil {
+
+	combined := append(existing, encodeVectors(vectors, idx.dim)...)
+	if err := idx.dir.WriteStreamAtomic(vectorsFile, bytes.NewReader(combined), 0o644); err != nil {
 		idx.manifest = previous
-		return err
+		return fmt.Errorf("index: write vectors: %w", err)
 	}
+
 	idx.manifest.Chunks = append(idx.manifest.Chunks, entry)
 	idx.manifest.Count += len(vectors)
 	if err := idx.writeManifest(); err != nil {
 		idx.manifest = previous
-		if truncateErr := rollbackVectors(f, offset); truncateErr != nil {
-			return fmt.Errorf("%w; rollback vectors: %v", err, truncateErr)
-		}
 		return err
 	}
 	return nil
@@ -268,8 +278,9 @@ func (idx *Index) ContainsCurrent(source, contentHash string) bool {
 	return false
 }
 
-// appendVectors writes the vectors at the end of the open file and fsyncs.
-func appendVectors(f *rootfs.File, vectors [][]float32, dim int) error {
+// encodeVectors serializes vectors into the little-endian float32 layout
+// vectors.bin uses.
+func encodeVectors(vectors [][]float32, dim int) []byte {
 	buf := make([]byte, len(vectors)*dim*4)
 	pos := 0
 	for _, v := range vectors {
@@ -278,24 +289,7 @@ func appendVectors(f *rootfs.File, vectors [][]float32, dim int) error {
 			pos += 4
 		}
 	}
-	if err := f.Append(buf); err != nil {
-		return fmt.Errorf("index: write vectors: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("index: sync vectors: %w", err)
-	}
-	return nil
-}
-
-// rollbackVectors undoes an append through the same handle it was made on.
-func rollbackVectors(f *rootfs.File, size int64) error {
-	if err := f.Truncate(size); err != nil {
-		return fmt.Errorf("index: truncate vectors: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("index: sync vectors rollback: %w", err)
-	}
-	return nil
+	return buf
 }
 
 func (idx *Index) writeManifest() error {

@@ -73,9 +73,18 @@ func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 	}
 }
 
-func TestIndex_UpsertManifestFailureRollsBackVectors(t *testing.T) {
+// A failed manifest write no longer rolls vectors.bin back by truncating it in
+// place — that would reopen the vectors.bin file read-write and shorten it,
+// which is exactly the operation that corrupts an outside file if the entry
+// happens to be a hard link to one. Upsert now publishes the whole new
+// vectors.bin (old content plus the addition) by rename before it ever touches
+// the manifest, so a manifest failure simply leaves those new bytes
+// unreferenced by any chunk: harmless, not a corruption, and nothing to roll
+// back.
+func TestIndex_UpsertManifestFailureLeavesVectorsPublishedButUnreferenced(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(pin(t, dir), "index", 2)
+	root := pin(t, dir)
+	idx, err := Create(root, "index", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,15 +109,82 @@ func TestIndex_UpsertManifestFailureRollsBackVectors(t *testing.T) {
 	if err := idx.Upsert("new", "new-content", [][]float32{{0, 1}}); err == nil {
 		t.Fatal("expected manifest write to fail")
 	}
+	if idx.Contains("new") {
+		t.Fatal("failed upsert remained in the in-memory manifest")
+	}
+
 	after, err := os.Stat(vectorsPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Size() != before.Size() {
-		t.Fatalf("vectors size after failed manifest write = %d, want %d", after.Size(), before.Size())
+	const oneVector = 2 * 4 // dim 2, float32
+	if want := before.Size() + oneVector; after.Size() != want {
+		t.Fatalf("vectors size after failed manifest write = %d, want %d (published, not rolled back)", after.Size(), want)
 	}
-	if idx.Contains("new") {
-		t.Fatal("failed upsert remained in memory")
+
+	// The extra bytes must not corrupt anything reopened afterward: the
+	// manifest directory is still blocked, so Open should fail the same way
+	// Create's caller would — but restoring a real manifest.json and
+	// reopening must see exactly the pre-failure state, with the orphaned
+	// bytes simply never referenced.
+	if err := os.RemoveAll(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.writeManifest(); err != nil {
+		t.Fatalf("writeManifest after clearing the block: %v", err)
+	}
+	reopened, err := Open(root, "index")
+	if err != nil {
+		t.Fatalf("Open after recovering the manifest: %v", err)
+	}
+	if reopened.Contains("new") {
+		t.Fatal("the orphaned vectors resurfaced as a manifest entry after reopening")
+	}
+	if !reopened.Contains("old") {
+		t.Fatal("the original entry was lost")
+	}
+}
+
+// A subsequent successful Upsert after a manifest-write failure must still
+// work correctly: the orphaned bytes left behind by the failed attempt must
+// not corrupt the offsets of vectors added afterward.
+func TestIndex_UpsertSucceedsAfterAPriorManifestFailure(t *testing.T) {
+	dir := t.TempDir()
+	root := pin(t, dir)
+	idx, err := Create(root, "index", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("old", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestPath := filepath.Join(dir, manifestFile)
+	if err := os.Remove(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(manifestPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Upsert("failed", "content", [][]float32{{0, 1}}); err == nil {
+		t.Fatal("expected manifest write to fail")
+	}
+	if err := os.RemoveAll(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.writeManifest(); err != nil {
+		t.Fatalf("writeManifest after clearing the block: %v", err)
+	}
+
+	if err := idx.Add("after", [][]float32{{1, 1}}); err != nil {
+		t.Fatalf("Add after a prior manifest failure: %v", err)
+	}
+	results, err := idx.Search([]float32{1, 1}, 1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(results) != 1 || results[0].SHA != "after" {
+		t.Fatalf("results = %+v, want [after]", results)
 	}
 }
 
@@ -324,5 +400,67 @@ func TestIndex_UpsertReplacesSourceAndKeepsAgentPathsDistinct(t *testing.T) {
 	}
 	if !idx.Contains(coder) || !idx.Contains(reviewer) {
 		t.Fatal("source-path identities were not retained")
+	}
+}
+
+// vectors.bin is a cache the harness itself created, but nothing stops another
+// name inside the index directory from being a hard link to it, or vectors.bin
+// itself from being a hard-linked *entry* pointing at a file elsewhere on the
+// same volume. An earlier version opened vectors.bin read-write and appended
+// to it in place, which writes through exactly that link: growing the shared
+// inode extends whatever else the link names too. Upsert now assembles the new
+// vectors.bin in memory and publishes it by rename, which replaces the
+// directory entry rather than writing through it, so a file hard-linked from
+// outside the index directory is untouched by an Upsert that only ever meant
+// to grow the index's own cache.
+func TestIndex_UpsertDoesNotCorruptAHardLinkedVectorsFile(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "index")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root := pin(t, dir)
+	idx, err := Create(root, "index", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("one", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second name for the same vectors.bin inode, sitting outside the index
+	// directory entirely — standing in for "some other file on the same
+	// volume that happens to share this inode by accident or attack".
+	outsideLink := filepath.Join(base, "outside-bait.bin")
+	if err := os.Link(filepath.Join(dir, vectorsFile), outsideLink); err != nil {
+		t.Fatalf("hard links are expected to work here: %v", err)
+	}
+	before, err := os.ReadFile(outsideLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := idx.Upsert("two", "second", [][]float32{{0, 1}}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	after, err := os.ReadFile(outsideLink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("Upsert wrote through a hard-linked vectors.bin entry: the file outside the index directory changed from %d to %d bytes", len(before), len(after))
+	}
+
+	// The index itself must still have grown correctly through the rename.
+	if !idx.Contains("one") || !idx.Contains("two") {
+		t.Fatal("Upsert did not record both entries in its own vectors.bin")
+	}
+	results, err := idx.Search([]float32{0, 1}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SHA != "two" {
+		t.Fatalf("results = %+v, want [two]", results)
 	}
 }
