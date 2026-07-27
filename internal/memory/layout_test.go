@@ -665,8 +665,9 @@ func TestCopyDirStaysWithTheChildItCleared(t *testing.T) {
 // exercises the comparison on every platform.
 func TestAnySameDir(t *testing.T) {
 	base := t.TempDir()
-	var roots []*rootfs.Root
-	for _, name := range []string{"top", "middle", "bottom"} {
+	names := []string{"top", "middle", "bottom"}
+	roots := make([]*rootfs.Root, 0, len(names))
+	for _, name := range names {
 		dir := filepath.Join(base, name)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("MkdirAll: %v", err)
@@ -679,7 +680,7 @@ func TestAnySameDir(t *testing.T) {
 		roots = append(roots, root)
 	}
 
-	for i, name := range []string{"top", "middle", "bottom"} {
+	for i, name := range names {
 		candidate, err := rootfs.Open(filepath.Join(base, name))
 		if err != nil {
 			t.Fatalf("Open(%s): %v", name, err)
