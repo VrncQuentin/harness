@@ -249,7 +249,7 @@ func pinRoot(root string, afterPin func()) (*Root, pathid.ID, error) {
 		_ = pinned.Close()
 		return nil, pathid.ID{}, fmt.Errorf("rootfs: cannot resolve root %s: %w", root, err)
 	}
-	same, err := pinned.isDir(rootID)
+	same, err := pinned.matches(rootID)
 	if err != nil {
 		_ = pinned.Close()
 		return nil, pathid.ID{}, fmt.Errorf("rootfs: cannot confirm root %s: %w", root, err)
@@ -261,11 +261,11 @@ func pinRoot(root string, afterPin func()) (*Root, pathid.ID, error) {
 	return pinned, rootID, nil
 }
 
-// isDir reports whether the pinned directory is the one id names. Both sides
+// matches reports whether the pinned directory is the one id names. Both sides
 // are compared as filesystem objects rather than as pathnames, which is the
 // only comparison that can tell a pinned directory apart from a replacement
 // that has taken over its name.
-func (r *Root) isDir(id pathid.ID) (bool, error) {
+func (r *Root) matches(id pathid.ID) (bool, error) {
 	pinnedInfo, err := r.root.Stat(".")
 	if err != nil {
 		return false, err
