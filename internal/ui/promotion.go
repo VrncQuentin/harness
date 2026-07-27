@@ -44,12 +44,20 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	store := s.memoryStore()
+	// One snapshot for the whole request. Reading the store and the committer
+	// through separate depsSnapshot() calls — as this used to do — lets a
+	// config reload land between them: SetServiceDeps replaces the snapshot
+	// atomically, so the two reads can straddle a reload and end up looking at
+	// two different generations of the memory service graph. Read once here
+	// and the request commits against the one repo it also wrote to, never a
+	// mix of the repo just replaced and the repo that replaced it.
+	deps := s.depsSnapshot()
+	store := deps.memStore
 	if store == nil {
 		http.Error(w, "memory store not available", http.StatusServiceUnavailable)
 		return
 	}
-	c := s.getCommitter()
+	c := deps.committer
 	if c == nil {
 		http.Error(w, "committer not available", http.StatusServiceUnavailable)
 		return
@@ -61,8 +69,8 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Dedup check (optional — skipped when checker or threshold is absent).
-	if checker := s.getDedupChecker(); checker != nil {
-		threshold := s.getPromotionDedupThreshold()
+	if checker := deps.dedup; checker != nil {
+		threshold := deps.promotionDedupThreshold
 		if threshold > 0 {
 			blocked, similar, score, err := checker.CheckSimilar(r.Context(), text, threshold)
 			if err != nil {
@@ -91,12 +99,16 @@ func (s *Server) handleAppendNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	store := s.memoryStore()
+	// See handlePromoteFact: one snapshot for the whole request, so the write
+	// and the commit that follows it act on the same generation of the memory
+	// service graph even if a reload lands mid-request.
+	deps := s.depsSnapshot()
+	store := deps.memStore
 	if store == nil {
 		http.Error(w, "memory store not available", http.StatusServiceUnavailable)
 		return
 	}
-	c := s.getCommitter()
+	c := deps.committer
 	if c == nil {
 		http.Error(w, "committer not available", http.StatusServiceUnavailable)
 		return
