@@ -231,13 +231,16 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 		t.Fatalf("expected .json sidecar to exist: %v", err)
 	}
 
-	// Sessions log has one entry.
+	// Sessions log has two entries for this session's first save: a
+	// provisional record (written before the summarizer runs, so the
+	// session is discoverable even if it fails) and the full record that
+	// supersedes it once the save actually succeeds.
 	records, err := ReadAll(openTestRepo(t, dir), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(records) != 1 {
-		t.Fatalf("expected 1 log record, got %d", len(records))
+	if len(records) != 2 {
+		t.Fatalf("expected 2 log records (provisional + final), got %d", len(records))
 	}
 
 	// Sidecar round-trips back to the same conversation.
@@ -308,6 +311,56 @@ func TestManager_SavePersistsSidecarEvenWhenSummarizerFails(t *testing.T) {
 	}
 }
 
+// TestManager_ResumeFindsSessionAfterFirstSaveSummarizerFailure proves the
+// stronger guarantee a durable sidecar alone does not: a brand-new session
+// whose first Save fails partway through (summarizer error, after the
+// sidecar write) must still be discoverable by a later Resume, not just
+// readable by someone salvaging bytes off disk by hand.
+func TestManager_ResumeFindsSessionAfterFirstSaveSummarizerFailure(t *testing.T) {
+	fi := newFakeInference()
+	fi.err = errors.New("llama-server unavailable")
+	mgr, reader, _, _ := newTestManager(t, fi)
+	s := mgr.Start("coder")
+
+	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hi"}); err != nil {
+		t.Fatalf("Append user: %v", err)
+	}
+	if err := mgr.Append(s.ID, inference.Message{Role: "assistant", Content: "hello"}); err != nil {
+		t.Fatalf("Append assistant: %v", err)
+	}
+
+	if _, err := mgr.Save(context.Background(), s.ID); err == nil {
+		t.Fatal("Save: want an error from the failing summarizer, got nil")
+	}
+
+	// Simulate a fresh manager (e.g. after a reload) that has never seen
+	// this session live in memory - it can only discover it through
+	// sessions.jsonl, exactly like the reviewer's "new resume picker".
+	fresh, err := NewManager(ManagerDeps{
+		Repo:             mgr.deps.Repo,
+		Writer:           reader,
+		Reader:           reader,
+		Appender:         reader,
+		Inference:        fi,
+		Metrics:          &fakeMetrics{},
+		SummarizerPrompt: func() string { return "test prompt" },
+	}, project.GlobalSlug)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	resumed, err := fresh.Resume(s.ID)
+	if err != nil {
+		t.Fatalf("Resume after failed first save: want success, got %v", err)
+	}
+	if len(resumed.Conversation) != 2 {
+		t.Fatalf("resumed conversation: want 2 messages, got %d", len(resumed.Conversation))
+	}
+	if resumed.Conversation[0].Content != "hi" || resumed.Conversation[1].Content != "hello" {
+		t.Fatalf("resumed conversation content mismatch: %+v", resumed.Conversation)
+	}
+}
+
 func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 	fi := newFakeInference(summaryTokens("first summary"), summaryTokens("second summary"))
 	mgr, reader, dir, fm := newTestManager(t, fi)
@@ -329,16 +382,20 @@ func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 		t.Errorf("save_seq: want 2, got %d", res.SaveSeq)
 	}
 
-	// Sessions log has two records (append-only).
+	// Sessions log has three records (append-only): the first save's
+	// provisional record plus its final one, then the second save's final
+	// record. Only a session's first save writes a provisional entry (see
+	// Save's own comment) -- the second save here is already known, so it
+	// contributes just the one record.
 	records, err := ReadAll(openTestRepo(t, dir), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(records) != 2 {
-		t.Fatalf("expected 2 log records, got %d", len(records))
+	if len(records) != 3 {
+		t.Fatalf("expected 3 log records (save 1's provisional + final, save 2's final), got %d", len(records))
 	}
-	if records[1].SaveSeq != 2 {
-		t.Errorf("second log entry seq: want 2, got %d", records[1].SaveSeq)
+	if records[2].SaveSeq != 2 {
+		t.Errorf("third log entry seq: want 2, got %d", records[2].SaveSeq)
 	}
 
 	// Episode markdown was overwritten with the latest summary.
@@ -395,15 +452,21 @@ func TestManager_ConcurrentSavesSerializeSaveSeq(t *testing.T) {
 		t.Fatalf("concurrent save seqs = %#v, want exactly 1 and 2", seenSeq)
 	}
 
+	// saveMu fully serializes the two "concurrent" Save calls, so whichever
+	// one actually runs first sees a brand-new session (no earlier record)
+	// and writes both a provisional and a final entry at seq 1; whichever
+	// runs second is already known by then and writes only its final entry
+	// at seq 2 -- three records in total, in that order, regardless of which
+	// goroutine happened to win the race for saveMu.
 	records, err := ReadAll(openTestRepo(t, dir), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(records) != 2 {
-		t.Fatalf("log records = %d, want 2", len(records))
+	if len(records) != 3 {
+		t.Fatalf("log records = %d, want 3", len(records))
 	}
-	if records[0].SaveSeq != 1 || records[1].SaveSeq != 2 {
-		t.Fatalf("log save seqs = %d,%d; want 1,2", records[0].SaveSeq, records[1].SaveSeq)
+	if records[0].SaveSeq != 1 || records[1].SaveSeq != 1 || records[2].SaveSeq != 2 {
+		t.Fatalf("log save seqs = %d,%d,%d; want 1,1,2", records[0].SaveSeq, records[1].SaveSeq, records[2].SaveSeq)
 	}
 }
 func TestManager_ResumeHydratesConversation(t *testing.T) {
@@ -493,12 +556,14 @@ func TestManager_FlushAllSavesEveryLiveSession(t *testing.T) {
 		t.Fatalf("FlushAll: %v", err)
 	}
 
+	// Both sessions are brand new, so each of the two saves FlushAll performs
+	// is a first save: a provisional record plus its final one, per session.
 	records, err := ReadAll(openTestRepo(t, dir), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(records) != 2 {
-		t.Fatalf("expected 2 log records, got %d", len(records))
+	if len(records) != 4 {
+		t.Fatalf("expected 4 log records (2 sessions x provisional+final), got %d", len(records))
 	}
 }
 

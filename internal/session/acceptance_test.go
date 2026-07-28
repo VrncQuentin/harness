@@ -234,13 +234,16 @@ func TestTenSessionsCreateTenEpisodeCommits(t *testing.T) {
 		t.Errorf("expected 10 commits, got %d", got)
 	}
 
-	// 10 records in sessions.jsonl.
+	// 20 records in sessions.jsonl: each of the 10 sessions is a first save,
+	// which writes a provisional record before the summarizer runs plus the
+	// final record once it succeeds (see Save's own comment on why only a
+	// first save needs the provisional one).
 	records, err := ReadAll(openTestRepo(t, root), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(records) != 10 {
-		t.Errorf("expected 10 sessions.jsonl records, got %d", len(records))
+	if len(records) != 20 {
+		t.Errorf("expected 20 sessions.jsonl records (10 sessions x provisional+final), got %d", len(records))
 	}
 }
 
@@ -267,12 +270,15 @@ func TestGarbledSessionLogIsTolerated(t *testing.T) {
 	}
 	_ = f.Close()
 
+	// The one save above is this session's first, so it wrote a provisional
+	// record plus its final one -- 2 parseable records, not 1 -- before the
+	// garbage line (which ReadAll must tolerate and skip) was appended.
 	records, err := ReadAll(openTestRepo(t, root), "sessions.jsonl")
 	if err != nil {
 		t.Fatalf("ReadAll on corrupted log: %v", err)
 	}
-	if len(records) != 1 {
-		t.Errorf("expected 1 parseable record, got %d", len(records))
+	if len(records) != 2 {
+		t.Errorf("expected 2 parseable records, got %d", len(records))
 	}
 }
 

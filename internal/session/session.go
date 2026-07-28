@@ -395,6 +395,44 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		return SaveResult{}, fmt.Errorf("session: write sidecar %s: %w", sidecarPath, err)
 	}
 
+	now := m.deps.Now().UTC()
+	saveSeq := snap.saveSeq + 1
+
+	// A durably-written sidecar the summarizer then fails to turn into an
+	// episode was, until this, still an orphan for a session that has never
+	// completed a save before: Records and Resume discover sessions
+	// exclusively through sessions.jsonl, so a session with no entry at all
+	// is invisible to both, even with its bytes safely on disk. This
+	// provisional record — EpisodePath deliberately empty, since no summary
+	// exists yet — makes a brand-new session discoverable and resumable
+	// (Resume only reads the sidecar; it never touches EpisodePath) the
+	// moment the sidecar is safely written, before the summarizer has any
+	// chance to fail. sessions.jsonl is append-only and last-wins-by-ID (see
+	// this file's own package comment), so if summarization succeeds below,
+	// the full record appended there simply supersedes this one.
+	//
+	// Only a session's *first* save needs this: alreadyKnown means an
+	// earlier save already completed and appended its own record, so this
+	// session is already discoverable — and the sidecar write above always
+	// carries this call's latest conversation regardless of whether the rest
+	// of this call succeeds, so a failure here does not orphan anything that
+	// wasn't already an orphan. Skipping the provisional record in that case
+	// avoids doubling sessions.jsonl's growth for every ordinary re-save,
+	// which is the overwhelmingly common path.
+	if !alreadyKnown {
+		provisional := Record{
+			ID:        snap.ID,
+			Agent:     snap.Agent,
+			Project:   snap.Project,
+			StartedAt: snap.StartedAt,
+			SavedAt:   now,
+			SaveSeq:   saveSeq,
+		}
+		if err := AppendRecord(m.deps.Appender, sessionsLogRel, provisional); err != nil {
+			return SaveResult{}, fmt.Errorf("session: append provisional log %s: %w", sessionsLogRel, err)
+		}
+	}
+
 	summary, err := m.summarizer.Summarize(ctx, snap.Conversation)
 	if err != nil {
 		return SaveResult{}, fmt.Errorf("session: summarize %s: %w", id, err)
@@ -419,8 +457,10 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		return SaveResult{}, fmt.Errorf("session: commit %s: %w", episodePath, err)
 	}
 
-	now := m.deps.Now().UTC()
-	saveSeq := snap.saveSeq + 1
+	// Reuses the same now/saveSeq the provisional record above used: both
+	// describe the same logical save attempt, and this one — carrying the
+	// real EpisodePath — is what supersedes the provisional entry once it is
+	// appended, per sessions.jsonl's last-wins-by-ID contract.
 	rec := Record{
 		ID:          snap.ID,
 		Agent:       snap.Agent,
