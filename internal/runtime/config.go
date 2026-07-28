@@ -109,6 +109,14 @@ func (rt *Runtime) ApplyConfig(
 				// slug while memory operations still run against the old
 				// project's repo.
 				slog.Warn("runtime reload: aborting memory/API rebuild, UI request drain failed", "err", err)
+			} else if err := rt.shutdownAPIServerForReload(ctx); err != nil {
+				// shutdownAPIServerForReload has already cleared rt.apiServer
+				// and closed its listener regardless of this error -- that part
+				// cannot be undone -- but the memory/git generation is still
+				// untouched, so the same "leave the current generation running"
+				// choice applies to rt.cfg and the UI gate as it does above.
+				slog.Warn("runtime reload: aborting memory/API rebuild, API server shutdown failed", "err", err)
+				uiServer.ResumeGenerationAdmission()
 			} else {
 				rt.cfg = *loaded
 				rt.refreshProjectDirectoryWarnings(uiServer)

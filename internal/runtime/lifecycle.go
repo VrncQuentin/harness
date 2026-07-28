@@ -116,7 +116,11 @@ func (rt *Runtime) Stop() {
 		cancel()
 	}
 	if apiSrv != nil {
-		apiSrv.Stop()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := apiSrv.Shutdown(shutCtx); err != nil {
+			slog.Warn("api server shutdown", "err", err)
+		}
+		cancel()
 	}
 	if q != nil {
 		q.Stop()

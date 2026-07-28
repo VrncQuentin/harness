@@ -548,20 +548,40 @@ func (rt *Runtime) SessionManager() *session.Manager {
 // deadlocking, and so a tracked UI request blocked on rt.mu elsewhere can
 // finish rather than deadlock against this call.
 //
-// The task-cancel and session-flush steps only log a warning on failure —
-// neither one guards a safety property the way the UI drain does, so a slow
-// task or a stuck flush does not by itself block a reload. The UI drain is
-// different: it leaves uiServer's generation gate closed to new admissions
-// on success (see Server.DrainGenerationRequests), and the caller must call
-// uiServer.ResumeGenerationAdmission once it has finished swapping in the new
-// generation or restoring the old one. On error, the gate has already
-// reopened itself and nothing has been quiesced on the UI side — the caller
-// must abort the rebuild and keep using the current generation rather than
-// proceed to close its handles.
+// The task-cancel step only logs a warning on failure and does not, on its
+// own, guarantee no task registers after its snapshot of running engines is
+// taken — CancelAll cancels and waits only for engines already registered
+// when it runs; a /task/send that reaches taskRunnerAdapter.registerEngine
+// moments later is invisible to it. That is safe anyway, not merely
+// tolerated: handleTaskSend takes its generation lease before registering
+// anything and holds it for the task's whole run (see Server.genGate and
+// handleTaskSend's own comment), so the drain below — not CancelAll — is
+// what actually has to wait for that task, and does, regardless of whether
+// CancelAll's own snapshot ever saw it. A task that slips past CancelAll
+// this way keeps running past the cancellation request, uncancelled, but
+// never past this method returning: it still holds up the drain, and the
+// caller still will not tear down the generation it is reading from until
+// the drain says everything has finished.
+//
+// The session-flush step is the same shape: log-only, no safety property of
+// its own to guard.
+//
+// The UI drain is different: it leaves uiServer's generation gate closed to
+// new admissions on success (see Server.DrainGenerationRequests), and the
+// caller must call uiServer.ResumeGenerationAdmission once it has finished
+// swapping in the new generation or restoring the old one. On error, the
+// gate has already reopened itself and nothing has been quiesced on the UI
+// side — the caller must abort the rebuild and keep using the current
+// generation rather than proceed to close its handles.
 //
 // This always runs the drain, even when there is no task loop or session
 // manager yet: skipping it in that case would leave a request that raced in
 // through a trackGenRequest handler unaccounted for.
+//
+// It does not shut down the API server — see shutdownAPIServerForReload,
+// which the caller runs as a separate step only after this one succeeds,
+// since that step's own side effect (closing the listener) cannot be undone
+// the way a UI drain timeout can.
 func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context, uiServer *ui.Server) error {
 	tasks := rt.taskRunner
 	mgr := rt.SessionManager()
@@ -594,19 +614,51 @@ func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context, uiServer *ui.Server)
 	return nil
 }
 
-// stopMemoryAndAPI tears down memory, sessions, task, and API services. Caller
-// must hold rt.mu and should call quiesceMemoryAndAPI first when replacing live
-// services during reload.
+// shutdownAPIServerForReload shuts down the current API server (if any)
+// ahead of a memory/API rebuild, waiting for in-flight requests to finish.
+// Caller must hold rt.mu and must call this only after quiesceMemoryAndAPI
+// has already succeeded. The method releases rt.mu while waiting, for the
+// same reason quiesceMemoryAndAPI does.
+//
+// rt.apiServer is cleared here regardless of outcome: http.Server.Shutdown
+// closes the listener the moment it is called, whether or not it returns
+// before ctx ends, so the reference is dead either way and a caller that
+// gets an error back cannot retry against this same instance. Unlike a UI
+// drain timeout, this side effect cannot be undone by simply not proceeding
+// — the API port is down and stays down until the next successful reload
+// creates a fresh server. A caller that gets an error must still avoid
+// tearing down the memory/git generation this server's dependents (the
+// prompt assembler, the session recorder) were reading from; it just cannot
+// also preserve API availability the way it preserves the rest of the
+// current generation.
+func (rt *Runtime) shutdownAPIServerForReload(ctx context.Context) error {
+	apiServer := rt.apiServer
+	if apiServer == nil {
+		return nil
+	}
+	rt.apiServer = nil
+
+	rt.mu.Unlock()
+	defer rt.mu.Lock()
+	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := apiServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("API server shutdown: %w", err)
+	}
+	return nil
+}
+
+// stopMemoryAndAPI tears down memory, sessions, and task services. Caller
+// must hold rt.mu and should call quiesceMemoryAndAPI, then
+// shutdownAPIServerForReload, first when replacing live services during
+// reload — the latter is what tears down the API server; by the time this
+// runs, rt.apiServer is already nil.
 //
 // It drops references and does not close the pinned repo handles. Ownership of
 // those belongs to whoever took the snapshot: on the reload path the previous
 // generation stays open until the replacement has started, because a failed
 // start restores it.
 func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
-	if rt.apiServer != nil {
-		rt.apiServer.Stop()
-		rt.apiServer = nil
-	}
 	rt.memHandles = memoryHandles{}
 	rt.globalMem = nil
 	rt.activeMem = nil

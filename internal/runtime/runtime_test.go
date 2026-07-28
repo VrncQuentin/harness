@@ -16,6 +16,7 @@ import (
 
 	"github.com/VrncQuentin/harness/internal/agent"
 	"github.com/VrncQuentin/harness/internal/agentloop"
+	"github.com/VrncQuentin/harness/internal/api"
 	"github.com/VrncQuentin/harness/internal/approvals"
 	"github.com/VrncQuentin/harness/internal/config"
 	gitw "github.com/VrncQuentin/harness/internal/git"
@@ -513,8 +514,97 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 	if rt.apiServer == nil {
 		t.Fatal("API server was not retried when enabled but absent")
 	}
-	t.Cleanup(rt.apiServer.Stop)
+	apiServer := rt.apiServer
+	t.Cleanup(func() { _ = apiServer.Shutdown(context.Background()) })
 }
+
+// stubAPIAssembler and capturingAPIEnqueuer are minimal implementations of
+// api.Assembler/api.Enqueuer for driving a real *api.Server end to end,
+// without needing the full runtime service graph. capturingAPIEnqueuer
+// deliberately never writes to or closes a request's Response channel, so a
+// real HTTP request against the server stays in flight indefinitely until
+// the test closes it — exactly the shape needed to force
+// http.Server.Shutdown to time out waiting for an in-flight handler.
+type stubAPIAssembler struct{}
+
+func (stubAPIAssembler) Assemble(_ context.Context, _ string, conversation []inference.Message) ([]inference.Message, error) {
+	return conversation, nil
+}
+
+type capturingAPIEnqueuer struct {
+	captured chan queue.Request
+}
+
+func newCapturingAPIEnqueuer() *capturingAPIEnqueuer {
+	return &capturingAPIEnqueuer{captured: make(chan queue.Request, 1)}
+}
+
+func (e *capturingAPIEnqueuer) Enqueue(req queue.Request) error {
+	e.captured <- req
+	return nil
+}
+
+// shutdownAPIServerForReload's whole reason to exist is that the previous
+// code's api.Server.Stop() discarded its Shutdown error, so stopMemoryAndAPI
+// proceeded to tear down the rest of the generation regardless of whether an
+// in-flight API request was still running against it. This proves the new
+// method both surfaces that error and still clears rt.apiServer -- the
+// listener is closed the moment Shutdown is called, timeout or not, so the
+// reference is dead either way and must not be left dangling.
+func TestShutdownAPIServerForReloadPropagatesATimeoutAndClearsTheReference(t *testing.T) {
+	cfg := config.Defaults()
+	rt := New(cfg, nil, LogRings{})
+
+	port := freeTCPPort(t)
+	enqueuer := newCapturingAPIEnqueuer()
+	srv := api.NewServer(port, stubAPIAssembler{}, enqueuer, nil)
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("api server start: %v", err)
+	}
+	rt.apiServer = srv
+
+	reqDone := make(chan *http.Response, 1)
+	go func() {
+		body := strings.NewReader(`{"model":"harness","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+		resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), "application/json", body)
+		if err != nil {
+			t.Errorf("POST /v1/chat/completions: %v", err)
+			return
+		}
+		reqDone <- resp
+	}()
+
+	var req queue.Request
+	select {
+	case req = <-enqueuer.captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("request was never enqueued")
+	}
+
+	rt.mu.Lock()
+	shortCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	err := rt.shutdownAPIServerForReload(shortCtx)
+	cancel()
+	rt.mu.Unlock()
+
+	if err == nil {
+		t.Fatal("shutdownAPIServerForReload: want a timeout error from the in-flight request, got nil")
+	}
+	if rt.apiServer != nil {
+		t.Fatal("rt.apiServer was not cleared despite Shutdown having already been called")
+	}
+
+	// Release the handler goroutine the in-flight request is blocked in, so
+	// the test does not leak it.
+	close(req.Response)
+	select {
+	case resp := <-reqDone:
+		_ = resp.Body.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight request never completed after its response channel was closed")
+	}
+}
+
 func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 	tests := []struct {
 		name   string

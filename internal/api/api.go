@@ -109,7 +109,11 @@ func (s *Server) Start(ctx context.Context) error {
 
 	go func() {
 		<-ctx.Done()
-		s.Stop()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.Shutdown(shutCtx); err != nil {
+			s.logger.Warn("api shutdown after context cancellation", slog.Any("err", err))
+		}
 	}()
 
 	return nil
@@ -119,15 +123,21 @@ func unexpectedServeError(err error) bool {
 	return err != nil && !errors.Is(err, http.ErrServerClosed)
 }
 
-// Stop gracefully shuts the server down. Idempotent: safe to call before
-// Start or more than once.
-func (s *Server) Stop() {
+// Shutdown gracefully shuts the server down, waiting for in-flight requests
+// to finish or ctx to end, whichever comes first. Idempotent: safe to call
+// before Start or more than once.
+//
+// The listener closes the moment this is called, regardless of whether it
+// returns before or after ctx ends: a timeout error means an in-flight
+// request may still be running against whatever this server's handler and
+// enqueuer were constructed with, not that the server is still reachable —
+// there is no "undo" for a caller that decides not to proceed with whatever
+// this shutdown was in service of.
+func (s *Server) Shutdown(ctx context.Context) error {
 	if s.httpSrv == nil {
-		return
+		return nil
 	}
-	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = s.httpSrv.Shutdown(shutCtx)
+	return s.httpSrv.Shutdown(ctx)
 }
 
 // handler returns the mux. Exposed at package level (lowercase) so tests can

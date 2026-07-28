@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -750,22 +751,87 @@ func TestChatCompletions_DefaultModelEcho(t *testing.T) {
 	}
 }
 
-// Sanity check that Stop is idempotent and safe before Start.
-func TestServer_StopIdempotent(t *testing.T) {
+// Sanity check that Shutdown is idempotent and safe before Start.
+func TestServer_ShutdownIdempotent(t *testing.T) {
 	s := NewServer(0, &stubAssembler{}, newStubEnqueuer(nil), nil)
-	s.Stop() // before Start: no-op
-	s.Stop() // again: no-op
+	if err := s.Shutdown(context.Background()); err != nil { // before Start: no-op
+		t.Fatalf("Shutdown before Start: %v", err)
+	}
+	if err := s.Shutdown(context.Background()); err != nil { // again: no-op
+		t.Fatalf("Shutdown again before Start: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// Bind to an arbitrary free port. If 0 is not legal on this platform we
-	// just skip the listen portion; the goal is to cover Stop-after-Start.
+	// just skip the listen portion; the goal is to cover Shutdown-after-Start.
 	err := s.Start(ctx)
 	if err != nil {
 		t.Skipf("bind :0 failed (benign, environment dependent): %v", err)
 	}
-	s.Stop()
-	s.Stop()
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown after Start: %v", err)
+	}
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown again after Start: %v", err)
+	}
+}
+
+// A prior version of Shutdown (then named Stop) discarded http.Server.Shutdown's
+// own error entirely, so a caller had no way to tell a clean shutdown from one
+// that gave up on an in-flight handler. This proves the error now surfaces:
+// with a real request parked in flight (via the enqueuer's hold, released only
+// by the test or by client-context cancellation), a Shutdown with a short ctx
+// must return a non-nil error rather than silently reporting success.
+func TestServer_ShutdownReturnsErrorWhenInFlightRequestOutlivesContext(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on ephemeral port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close probe listener: %v", err)
+	}
+
+	enq := newStubEnqueuer(nil)
+	enq.hold = make(chan struct{})
+	defer close(enq.hold) // release the streamer goroutine so it does not leak
+
+	s := NewServer(port, &stubAssembler{}, enq, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	reqDone := make(chan *http.Response, 1)
+	go func() {
+		body := strings.NewReader(`{"stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+		resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/v1/chat/completions", port), "application/json", body)
+		if err == nil {
+			reqDone <- resp
+		}
+	}()
+
+	select {
+	case req := <-enq.captured:
+		_ = req
+	case <-time.After(2 * time.Second):
+		t.Fatal("request was never enqueued")
+	}
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer shutdownCancel()
+	if err := s.Shutdown(shutdownCtx); err == nil {
+		t.Fatal("Shutdown: want an error from the in-flight request outliving the context, got nil")
+	}
+
+	select {
+	case resp := <-reqDone:
+		_ = resp.Body.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight request never completed after the enqueuer's hold was released")
+	}
 }
 
 // Guard test: the handler wires the right paths.
