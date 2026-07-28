@@ -155,19 +155,35 @@ const chatSendMaxBytes = 32 * 1024
 // renders the user's message and an empty assistant placeholder into
 // the transcript via htmx swap, then starts server-owned token streaming.
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
+	s.handleChatSendHooked(w, r, nil)
+}
+
+// handleChatSendHooked is handleChatSend with a hook that runs immediately
+// after the generation lease is admitted and before runner is read, so a
+// test can stage a reload landing in exactly that window. Nil on every
+// production path, mirroring handleTaskSendHooked.
+func (s *Server) handleChatSendHooked(w http.ResponseWriter, r *http.Request, afterEnter func()) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.getChatRunner() == nil {
-		http.Error(w, "chat backend not configured", http.StatusServiceUnavailable)
-		return
-	}
-	// Admitted here, but the lease is handed off to the streaming goroutine
-	// below rather than released when this handler returns: streamChatTokens
-	// reads generation-scoped deps (through runner) for as long as it runs,
-	// which outlives this request by design. handedOff tracks which of the
-	// two owns the exit.
+	// Enter before reading anything generation-scoped, not after: once enter
+	// succeeds, this generation cannot be torn down until this lease exits
+	// (any reload's drain has to wait for it), so runner — read immediately
+	// below, once, and reused for both the availability check and the actual
+	// launch — is guaranteed to stay valid and consistent for the whole
+	// request. Checking availability before enter and then reading runner
+	// again afterward (as this used to do) left a gap where the two reads
+	// could disagree: a reload completing in between could turn the second
+	// read nil after the first said configured, rendering the fragment (and
+	// its now-orphaned SSE placeholder) without ever launching anything, or
+	// could turn a genuinely available backend transiently nil for the first
+	// read, returning a "not configured" 503 instead of "reload in progress,
+	// try again" for what was really just a timing accident. The lease is
+	// handed off to the streaming goroutine below rather than released when
+	// this handler returns: streamChatTokens reads generation-scoped deps
+	// (through runner) for as long as it runs, which outlives this request
+	// by design. handedOff tracks which of the two owns the exit.
 	if !s.genGate.enter() {
 		http.Error(w, "reload in progress, try again", http.StatusServiceUnavailable)
 		return
@@ -178,6 +194,15 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 			s.genGate.exit()
 		}
 	}()
+	if afterEnter != nil {
+		afterEnter()
+	}
+
+	runner := s.getChatRunner()
+	if runner == nil {
+		http.Error(w, "chat backend not configured", http.StatusServiceUnavailable)
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, chatSendMaxBytes)
 	if err := r.ParseForm(); err != nil {
@@ -216,17 +241,17 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Start the runner in the background and broadcast tokens via SSE.
-	runner := s.getChatRunner()
-	if runner != nil {
-		ctx, cancel := context.WithCancel(s.asyncContext())
-		handedOff = true
-		go func() {
-			defer s.genGate.exit()
-			defer cancel()
-			s.streamChatTokens(ctx, runner, agent, sessionID, streamID, tokenEvent, conversation)
-		}()
-	}
+	// Start the runner in the background and broadcast tokens via SSE, using
+	// the same runner captured once at admission — not a fresh read, which
+	// could disagree with the availability check above (see the comment on
+	// that check for why).
+	ctx, cancel := context.WithCancel(s.asyncContext())
+	handedOff = true
+	go func() {
+		defer s.genGate.exit()
+		defer cancel()
+		s.streamChatTokens(ctx, runner, agent, sessionID, streamID, tokenEvent, conversation)
+	}()
 }
 
 // streamChatTokens runs the chat runner in a goroutine and broadcasts

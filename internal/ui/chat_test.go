@@ -349,6 +349,76 @@ func TestHandleChatSendRefusesAdmissionWhileADrainIsInProgress(t *testing.T) {
 	}
 }
 
+// handleChatSend used to check s.getChatRunner() == nil before entering the
+// gate, render the fragment, and only *then* re-read s.getChatRunner() a
+// second time to decide whether to launch the streaming goroutine. If a
+// reload landed between the two reads and turned the second one nil, the
+// handler would have already committed a 200 response with the rendered
+// fragment (and its SSE placeholder) before discovering there was nothing to
+// launch, leaving the client waiting on tokens that would never arrive. This
+// proves the fix: the single, consolidated read now happens before anything
+// is rendered, so a nil runner at that point is refused outright (503)
+// instead of surfacing after a fragment has already gone out.
+func TestHandleChatSendDoesNotRenderAFragmentWhenTheRunnerDisappearsAtAdmission(t *testing.T) {
+	s := NewServer(3000)
+	setChatRunnerForTest(s, &stubChatRunner{})
+
+	form := url.Values{"message": {"hi"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	s.handleChatSendHooked(rec, req, func() {
+		// Simulate a reload completing in the window between admission and
+		// dependency capture, leaving the backend unavailable — the same
+		// shape as SetServiceDeps(ui.ServiceDeps{}) mid-teardown.
+		setChatRunnerForTest(s, nil)
+	})
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d — a fragment must not be rendered once the runner is confirmed gone", rec.Code, http.StatusServiceUnavailable)
+	}
+	if strings.Contains(rec.Body.String(), "hi") {
+		t.Fatalf("fragment appears to have been rendered despite the runner being nil at admission: %s", rec.Body.String())
+	}
+}
+
+// Companion to the above: proves the single read also picks up a runner
+// that becomes available in the same window, not just one that disappears —
+// confirming this isn't just "always refuse," but genuinely reflects
+// whatever is current at admission time.
+func TestHandleChatSendCapturesTheRunnerCurrentAtAdmissionNotBeforeIt(t *testing.T) {
+	s := NewServer(3000)
+	// No runner wired at all initially — the old code's pre-admission check
+	// would have refused the request before enter() was ever reached.
+	newRunner := &stubChatRunner{tokens: []ChatToken{{Content: "from the current generation"}, {Done: true}}}
+
+	form := url.Values{"message": {"hi"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	s.handleChatSendHooked(rec, req, func() {
+		setChatRunnerForTest(s, newRunner)
+	})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d — a runner that becomes available at admission time should be used, not refused based on a pre-admission check", rec.Code, http.StatusOK)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		newRunner.mu.Lock()
+		calls := newRunner.calls
+		newRunner.mu.Unlock()
+		if calls > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the runner current at admission time never ran")
+}
+
 func TestStreamChatTokens_EscapesBroadcastTokenFrames(t *testing.T) {
 	s := NewServer(3000)
 	runner := &stubChatRunner{
