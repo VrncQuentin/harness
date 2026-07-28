@@ -599,6 +599,37 @@ func TestManager_RecordsFiltersByAgentAndDedupes(t *testing.T) {
 	}
 }
 
+// TestManager_RecordsShowsCompletedEpisodePathAfterFirstSave proves the
+// provisional record Save appends on a session's first save (see Save's own
+// comment) does not linger as the "latest" record once the save actually
+// completes. The provisional and final records share the exact same
+// SaveSeq and SavedAt on purpose — both describe the same save attempt — so
+// LatestPerID's tiebreak has to fall through to physical log position, not
+// stop at SaveSeq/SavedAt comparison, or Records keeps surfacing the
+// provisional record's empty EpisodePath even after the save succeeded.
+func TestManager_RecordsShowsCompletedEpisodePathAfterFirstSave(t *testing.T) {
+	fi := newFakeInference(summaryTokens("s"))
+	mgr, _, _, _ := newTestManager(t, fi)
+	s := mgr.Start("coder")
+	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hi"}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if _, err := mgr.Save(context.Background(), s.ID); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := mgr.Records("coder")
+	if err != nil {
+		t.Fatalf("Records: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 deduped record, got %d", len(got))
+	}
+	if got[0].EpisodePath == "" {
+		t.Fatal("Records returned the provisional record (empty EpisodePath) instead of the completed one -- LatestPerID's tiebreak did not fall through to log position for a same-SaveSeq, same-SavedAt tie")
+	}
+}
+
 func TestSummarizer_DefaultsAndError(t *testing.T) {
 	t.Run("defaults to fallback when prompt empty", func(t *testing.T) {
 		fi := newFakeInference(summaryTokens("ok"))

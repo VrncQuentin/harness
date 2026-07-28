@@ -10,7 +10,12 @@
 //     <agent>/<id>.md (committed to git, single file per commit)
 //   - the raw conversation is written to episodes/
 //     <agent>/<id>.json (working-tree-only, intentionally uncommitted)
-//   - one record per save is appended to sessions.jsonl
+//   - at least one record per save is appended to sessions.jsonl: a
+//     session's first-ever save appends a provisional record (real
+//     ID/Agent/Project/StartedAt/SaveSeq, EpisodePath empty) right after
+//     the sidecar write, so the session is discoverable even if
+//     summarization then fails, followed by the full record if
+//     summarization succeeds; every later save appends exactly one
 //
 // The project slug is set via ManagerDeps.ProjectSlug at construction
 // time; paths are computed from the manager's stored value.

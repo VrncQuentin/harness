@@ -132,7 +132,24 @@ func AppendRecord(w LogAppender, relPath string, rec Record) error {
 
 // LatestPerID dedupes records to keep only the latest entry per id.
 // "Latest" is the highest SaveSeq, with a SavedAt tiebreak so a
-// hand-edited log that resets SaveSeq still resolves deterministically.
+// hand-edited log that resets SaveSeq still resolves deterministically,
+// and a same-SaveSeq-and-SavedAt tie falling back to physical log position
+// (the later record, by iteration order, wins) so two records that are
+// otherwise indistinguishable still resolve to whichever one sessions.jsonl's
+// own last-wins-by-ID contract actually means: the one appended later. This
+// last case is not just theoretical — session.Manager.Save appends a
+// provisional record right after the sidecar write (EpisodePath empty) and,
+// on success, a final record for the same save carrying the identical
+// SaveSeq and SavedAt on purpose (see Save's own comment on why: both
+// describe the same logical save attempt). Comparing only SaveSeq and a
+// strict "after" on SavedAt left the provisional record as the winner in
+// that exact case, since the final record is never strictly later — Records
+// (and anything built on it, like the resume picker) would keep surfacing
+// the empty EpisodePath even after a save completed successfully.
+// findLatestRecord (used by Resume) does not share this bug: it just walks
+// the log and keeps the last match by position, with no SaveSeq/SavedAt
+// comparison to get out of sync with the log's own order.
+//
 // The returned slice preserves the order of first-seen ids so callers
 // can sort it themselves without losing the original log progression.
 func LatestPerID(records []Record) []Record {
@@ -148,10 +165,12 @@ func LatestPerID(records []Record) []Record {
 			order = append(order, r.ID)
 			continue
 		}
-		// Prefer the higher save_seq; fall back to the later SavedAt.
+		// Prefer the higher save_seq; fall back to the later-or-equal
+		// SavedAt (not strictly later — see the tie case in the doc comment
+		// above) so a later record in iteration order always wins a tie.
 		cur := records[idx]
 		if r.SaveSeq > cur.SaveSeq ||
-			(r.SaveSeq == cur.SaveSeq && r.SavedAt.After(cur.SavedAt)) {
+			(r.SaveSeq == cur.SaveSeq && !r.SavedAt.Before(cur.SavedAt)) {
 			winners[r.ID] = i
 		}
 	}
