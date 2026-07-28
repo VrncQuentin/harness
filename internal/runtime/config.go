@@ -234,8 +234,9 @@ func (rt *Runtime) ApplyConfig(
 			// memory services. Live work has already been quiesced above so it
 			// is committed under the previous project manager.
 			if projectSwitching {
-				if rt.handleProjectSwitch(ctx, uiServer, &old, loaded) {
-					// handleProjectSwitch's own reload (llama_on_switch=reload)
+				if rt.handleProjectSwitch(ctx, uiServer, &old, loaded, newModel) {
+					// handleProjectSwitch's own reload (llama_on_switch=reload,
+					// or a llama_on_switch=keep move to a changed global port)
 					// also moved llama-server forward; undoProcessReconfigure
 					// must know to revert it too if the rebuild below fails,
 					// alongside anything reconfigureProcesses itself moved.
@@ -266,6 +267,14 @@ func (rt *Runtime) ApplyConfig(
 				rt.cfg = old
 				rt.refreshProjectDirectoryWarnings(uiServer)
 				undoProcessReconfigure()
+				// reconfigureProcesses may have already set this true before
+				// the rebuild was attempted; since everything it did has now
+				// been undone above alongside the rest of this generation,
+				// the apply as a whole did not stick, and the result must
+				// say so — not report success for a configuration that was
+				// just rolled back. Anything unrelated to this branch (the
+				// log-ring resize below, say) still sets it independently.
+				result.LiveApplied = false
 			}
 			// The UI generation gate was left closed by a successful
 			// drain above; reopen it now that deps.SetServiceDeps points

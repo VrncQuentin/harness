@@ -97,14 +97,35 @@ func (rt *Runtime) RestartEmbedder() {
 
 // Stop tears down runtime-owned services that need explicit shutdown.
 //
-// Live sessions are flushed first so the summarizer can still reach
-// the live llama-server. The flush has its own context with a 10s
-// timeout - if llama-server is unhealthy, the summarizer call will
-// error and the flush will return an error, which we log and continue
-// rather than block shutdown indefinitely. The .json sidecars survive
-// in the working tree for next-session resume even if the summary
-// commit never lands.
-func (rt *Runtime) Stop() {
+// uiServer is drained the same way a reload drains it — closing generation
+// admission and waiting for in-flight requests — before anything below is
+// closed. This used to be entirely absent: Stop took no *ui.Server and
+// never touched its generation gate at all, so the elaborate leasing this
+// migration built for reloads simply did not apply to normal shutdown.
+// main.go's onQuit calls Stop before cancelling the context that eventually
+// tears down the UI listener (rootCancel), so without this, a chat or
+// memory request could start — or still be running — while FlushAll
+// snapshots sessions below and owned.close() closes the handles it reads
+// through: the same use-after-close hazard the reload path was built to
+// close, just on the shutdown path instead.
+//
+// Unlike a reload, a drain timeout here does not abort anything — there is
+// no "current generation" left to preserve for a later retry, since the
+// process is exiting regardless. It is logged and Stop proceeds, which is
+// the same "best effort, do not hang shutdown forever" reasoning already
+// applied to task cancellation and the session flush below.
+//
+// Live sessions are flushed after the drain (not before, and not
+// interleaved with it) so the summarizer can still reach the live
+// llama-server and so no session-modifying request can still be admitted
+// once the flush runs — see flushSessionsForReload's doc comment for why
+// that ordering matters; the same reasoning applies here. The flush has its
+// own context with a 10s timeout - if llama-server is unhealthy, the
+// summarizer call will error and the flush will return an error, which we
+// log and continue rather than block shutdown indefinitely. The .json
+// sidecars survive in the working tree for next-session resume even if the
+// summary commit never lands.
+func (rt *Runtime) Stop(uiServer *ui.Server) {
 	rt.mu.Lock()
 	q := rt.reqQueue
 	apiSrv := rt.apiServer
@@ -118,10 +139,10 @@ func (rt *Runtime) Stop() {
 		}
 		cancel()
 	}
-	if mgr := rt.SessionManager(); mgr != nil {
+	if uiServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := mgr.FlushAll(ctx); err != nil {
-			slog.Warn("session flush on shutdown", "err", err)
+		if err := uiServer.DrainGenerationRequests(ctx); err != nil {
+			slog.Warn("UI request drain on shutdown", "err", err)
 		}
 		cancel()
 	}
@@ -129,6 +150,13 @@ func (rt *Runtime) Stop() {
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := apiSrv.Shutdown(shutCtx); err != nil {
 			slog.Warn("api server shutdown", "err", err)
+		}
+		cancel()
+	}
+	if mgr := rt.SessionManager(); mgr != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := mgr.FlushAll(ctx); err != nil {
+			slog.Warn("session flush on shutdown", "err", err)
 		}
 		cancel()
 	}
