@@ -510,6 +510,16 @@ const maxWalkDepth = 64
 // walk does not enter, which is a valid answer to "what is here", not a
 // failure.
 func (r *Root) Walk(rel string, visit WalkFunc) error {
+	return r.walkHooked(rel, visit, nil)
+}
+
+// walkHooked is Walk with a hook that runs immediately after walkDir's
+// OpenChild call succeeds for any directory entry, before the Lstat that
+// follows it — the window a test can use to replace the entry out from under
+// an in-flight walk. It receives the entry's name so a test can act on one
+// specific entry while a walk with several directories is in progress. Nil on
+// every production path.
+func (r *Root) walkHooked(rel string, visit WalkFunc, afterOpenChild func(name string)) error {
 	start := r
 	if rel != "" && rel != "." {
 		child, err := r.OpenChild(rel)
@@ -519,10 +529,10 @@ func (r *Root) Walk(rel string, visit WalkFunc) error {
 		defer child.Close() //nolint:errcheck // read-only handle
 		start = child
 	}
-	return start.walk("", visit, 0)
+	return start.walk("", visit, 0, afterOpenChild)
 }
 
-func (r *Root) walk(prefix string, visit WalkFunc, depth int) error {
+func (r *Root) walk(prefix string, visit WalkFunc, depth int, afterOpenChild func(name string)) error {
 	if depth > maxWalkDepth {
 		return fmt.Errorf("rootfs: tree nests deeper than %d levels at %q — refusing to continue", maxWalkDepth, prefix)
 	}
@@ -537,7 +547,7 @@ func (r *Root) walk(prefix string, visit WalkFunc, depth int) error {
 			relPath = filepath.Join(prefix, name)
 		}
 		if entry.IsDir() {
-			if err := r.walkDir(name, relPath, visit, depth); err != nil {
+			if err := r.walkDirHooked(name, relPath, visit, depth, afterOpenChild); err != nil {
 				return err
 			}
 			continue
@@ -567,15 +577,33 @@ func (r *Root) walk(prefix string, visit WalkFunc, depth int) error {
 // symlink rather than refusing it, so a name that was a real directory when
 // listed and becomes an in-root symlink before this call runs is still opened
 // successfully by OpenChild — the pin alone does not tell descend and describe
-// apart from follow-a-link-that-only-just-appeared. What closes that is the
-// Lstat immediately below: it names the same "name" through the parent, which
-// does not follow links, so it reports the entry as it is *now*, at the moment
-// this is about to be treated as a directory — not as the earlier listing
-// recorded it. A symlink there, however it got there, is reported as a link
-// through the parent's own description and never entered, matching how a
-// symlink present at listing time is handled by the caller's non-directory
-// branch.
+// apart from follow-a-link-that-only-just-appeared. The Lstat below names the
+// same "name" through the parent, which does not follow links, so it reports
+// the entry as it is *now* rather than as the earlier listing recorded it. A
+// symlink there, however it got there, is reported as a link through the
+// parent's own description and never entered, matching how a symlink present
+// at listing time is handled by the caller's non-directory branch.
+//
+// That symlink check alone is not enough to trust that child and parentInfo
+// still describe the same object, though: OpenChild and the Lstat are two
+// separate resolutions of name, so a symlink present when OpenChild follows
+// it could be replaced by an ordinary directory or file before the Lstat
+// runs. The replacement passes the symlink check exactly as easily as the
+// original would — neither is a link — so "is it a symlink" cannot tell them
+// apart. os.SameFile can: it compares child (what OpenChild actually pinned)
+// against parentInfo (what the name currently names) as filesystem objects,
+// not as names, so an ordinary replacement directory under the same name
+// fails the comparison even though both it and the original are real,
+// non-symlink directories.
 func (r *Root) walkDir(name, relPath string, visit WalkFunc, depth int) error {
+	return r.walkDirHooked(name, relPath, visit, depth, nil)
+}
+
+// walkDirHooked is walkDir with a hook that runs right after OpenChild
+// succeeds and before the Lstat that follows it — the exact window a test can
+// use to replace name with something else before walkDir re-resolves it. Nil
+// on every production path.
+func (r *Root) walkDirHooked(name, relPath string, visit WalkFunc, depth int, afterOpenChild func(name string)) error {
 	child, err := r.OpenChild(name)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -590,6 +618,9 @@ func (r *Root) walkDir(name, relPath string, visit WalkFunc, depth int) error {
 			return nil
 		}
 		return err
+	}
+	if afterOpenChild != nil {
+		afterOpenChild(name)
 	}
 
 	parentInfo, err := r.root.Lstat(name)
@@ -611,6 +642,12 @@ func (r *Root) walkDir(name, relPath string, visit WalkFunc, depth int) error {
 	if err != nil {
 		return err
 	}
+	// parentInfo (Lstat through the parent) and info (Stat through the handle
+	// OpenChild pinned) must describe the same object, not merely both look
+	// like directories that are not symlinks — see the doc comment above.
+	if !parentInfo.IsDir() || !os.SameFile(parentInfo, info) {
+		return nil
+	}
 	skip, err := visit(WalkEntry{Rel: relPath, Name: name, Info: info})
 	if err != nil {
 		return err
@@ -618,7 +655,7 @@ func (r *Root) walkDir(name, relPath string, visit WalkFunc, depth int) error {
 	if skip {
 		return nil
 	}
-	return child.walk(relPath, visit, depth+1)
+	return child.walk(relPath, visit, depth+1, afterOpenChild)
 }
 
 // Set is an ordered list of root directories. It converts a caller-supplied

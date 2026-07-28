@@ -118,6 +118,76 @@ func TestRoot_WalkRefusesADirectoryReplacedByAnInRootSymlinkAfterListing(t *test
 	}
 }
 
+// The previous test closes the case where a symlink replacing a directory is
+// still in place when walkDir's Lstat runs. This one closes a narrower case
+// the old "is the Lstat result a symlink" check could not catch at all: an
+// ordinary, non-symlink directory replacing another ordinary directory, in
+// the window between OpenChild (which has already pinned the original) and
+// the Lstat that is supposed to describe what the name currently holds.
+// Neither the original nor the replacement is a link, so a check that only
+// asks "is this a symlink" cannot tell them apart — it sees a directory
+// either way and proceeds. Only comparing child (what OpenChild actually
+// pinned) against parentInfo (what the name names now) as filesystem
+// objects, via os.SameFile, tells them apart. No symlink privilege is needed
+// to exercise this: the new walkDirHooked seam fires right after OpenChild
+// has pinned the original "sub", before the Lstat that is supposed to
+// re-describe it runs, and the hook renames "sub" aside and recreates it as a
+// plain, unrelated directory in that window.
+func TestRoot_WalkRequiresChildAndParentLstatToDescribeTheSameObject(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const secret = "SECRET-INSIDE-THE-DIRECTORY-OPENCHILD-PINNED"
+	if err := os.WriteFile(filepath.Join(sub, "secret.txt"), []byte(secret), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	movedAside := filepath.Join(root, "moved-aside")
+	r := openRoot(t, root)
+	var swapped bool
+	var disclosedSecret bool
+
+	afterOpenChild := func(name string) {
+		if name != "sub" || swapped {
+			return
+		}
+		swapped = true
+		// child is already pinned to the original "sub" by the OpenChild call
+		// that just returned, by descriptor rather than by path — renaming
+		// the directory aside does not disturb it or the secret file inside,
+		// only the name it is reachable under. "sub" is then free to be
+		// recreated as a brand new, unrelated directory.
+		if err := os.Rename(sub, movedAside); err != nil {
+			t.Fatalf("Rename sub aside: %v", err)
+		}
+		if err := os.MkdirAll(sub, 0o755); err != nil {
+			t.Fatalf("MkdirAll sub (replacement): %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(sub, "replacement.txt"), []byte("the replacement sub"), 0o644); err != nil {
+			t.Fatalf("WriteFile replacement.txt: %v", err)
+		}
+	}
+
+	err := r.walkHooked("", func(e WalkEntry) (bool, error) {
+		if e.Name == "secret.txt" {
+			disclosedSecret = true
+		}
+		return false, nil
+	}, afterOpenChild)
+	if err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if !swapped {
+		t.Fatal("the swap never ran; the window was not exercised")
+	}
+	if disclosedSecret {
+		t.Fatal("the walk descended into the directory OpenChild had pinned even though \"sub\" had since been replaced by an unrelated directory")
+	}
+}
+
 // A walk that inspects a child's name and then resolves the name again to
 // descend can be sent somewhere else in between. Descending through a pinned
 // handle means what was inspected is what is entered — and in particular a
