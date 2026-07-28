@@ -148,10 +148,15 @@ func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel
 // being read. Only replacing the entry is safe against a link to anything.
 //
 // The temporary file is removed unless the rename consumes it, so a failed
-// write leaves neither a partial target nor a stray file. Removing it is safe
-// where removing a published name would not be: the temporary name was minted
-// by this call under a prefix no other writer uses, so it cannot have become
-// somebody else's file in the meantime.
+// write leaves neither a partial target nor a stray file. The prefix this
+// call mints the name under is not shared with any other caller, which rules
+// out an *accidental* collision with an unrelated concurrent create — but not
+// a writer that deliberately reuses the visible name once this call's own
+// createTemp has made it exist. That narrower case is real (see below) and
+// this removal is not exempt from it: the failure-path remove checks the
+// same object-identity condition the publishing rename does, rather than
+// removing by name alone on the strength of the name having been freshly
+// minted.
 //
 // The temporary file is fsynced before the rename. Without it "atomic" holds
 // only against a concurrent reader, not against a crash: the rename can reach
