@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -259,21 +260,40 @@ import "os"
 
 func f() { os.Stat("a"); os.Stat("b") }
 `)
-	// We don't know exact column positions for the two calls,
-	// so use col=0 which matches any column on that line.
+	// First run without allowlist to discover actual column positions.
+	report1 := Audit(dir, makeAllowlist(nil))
+	if report1.Err != nil {
+		t.Fatal(report1.Err)
+	}
+	var cols []int
+	for _, c := range report1.SourceCalls {
+		if c.Fn == "os.Stat" {
+			cols = append(cols, c.Col)
+		}
+	}
+	if len(cols) != 2 {
+		t.Fatalf("expected 2 os.Stat calls on same line, got %d (cols=%v)", len(cols), cols)
+	}
+
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/same_line.go", Line: 5, Col: 0, Fn: "os.Stat", PR: "PR 99"},
-		{File: "internal/pkg/same_line.go", Line: 5, Col: 0, Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/same_line.go", Line: 5, Col: cols[0], Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/same_line.go", Line: 5, Col: cols[1], Fn: "os.Stat", PR: "PR 99"},
 	})
-	report := Audit(dir, al)
-	if report.Err != nil {
-		t.Fatal(report.Err)
+
+	// Must validate first — this is what main does.
+	if errs := ValidateAllowlist(al); len(errs) > 0 {
+		t.Fatalf("validation failed: %v", errs)
 	}
-	if len(report.Unclassified) > 0 {
-		t.Errorf("both calls should be classified with two col=0 entries: unclass=%v", report.Unclassified)
+
+	report2 := Audit(dir, al)
+	if report2.Err != nil {
+		t.Fatal(report2.Err)
 	}
-	if len(report.Stale) > 0 {
-		t.Errorf("no stale entries expected: %v", report.Stale)
+	if len(report2.Unclassified) > 0 {
+		t.Errorf("both calls should be classified: unclass=%v", report2.Unclassified)
+	}
+	if len(report2.Stale) > 0 {
+		t.Errorf("no stale entries expected: %v", report2.Stale)
 	}
 }
 
@@ -307,6 +327,17 @@ func foo() { RemoveAll("/tmp/x") }
 	if report.Err != nil {
 		t.Fatal(report.Err)
 	}
+	// The dot import itself must be blocked.
+	blockedImport := false
+	for _, c := range report.Blocked {
+		if strings.Contains(c.Fn, `"os"`) {
+			blockedImport = true
+		}
+	}
+	if !blockedImport {
+		t.Errorf("dot import of os not blocked, blocked=%v", report.Blocked)
+	}
+	// The dot-imported call should still be classified.
 	found := false
 	for _, c := range report.SourceCalls {
 		if c.Fn == "os.RemoveAll" {
@@ -314,7 +345,7 @@ func foo() { RemoveAll("/tmp/x") }
 		}
 	}
 	if !found {
-		t.Errorf("dot-imported function call not detected, calls=%v", report.SourceCalls)
+		t.Errorf("dot-imported function call not detected in calls, calls=%v", report.SourceCalls)
 	}
 }
 
@@ -468,10 +499,58 @@ func open(path string) (*os.Root, error) { return os.OpenRoot(path) }
 	if report.Err != nil {
 		t.Fatal(report.Err)
 	}
+	// Internal (unexported) os.Root use in rootfs is fine.
+	// Exported would be caught by checkRootfsExportedAPI.
 	for _, c := range report.Blocked {
-		if c.Fn == "os.Root" {
-			t.Errorf("*os.Root reference inside internal/rootfs should not be blocked")
+		if c.Fn == "exported os.Root" || c.Fn == "os.Root" {
+			t.Errorf("unexported *os.Root inside internal/rootfs should not be blocked: %v", c)
 		}
+	}
+}
+
+func TestAudit_RootfsExportedOsRootBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/rootfs/leak.go", `package rootfs
+
+import "os"
+
+func Raw(root *Root) *os.Root { return root.root }
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "exported os.Root" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("exported os.Root from rootfs not blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_RootfsExportedTypeAliasBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/rootfs/alias.go", `package rootfs
+
+import "os"
+
+type PublicRoot = os.Root
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "exported os.Root" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("exported os.Root type alias from rootfs not blocked: %v", report.Blocked)
 	}
 }
 

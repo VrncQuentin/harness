@@ -114,7 +114,6 @@ func Audit(root string, al allowlist) Report {
 	allEntries := append([]entry(nil), al.Perm...)
 	allEntries = append(allEntries, al.Migr...)
 
-	// Map each allowlist entry's key to remaining allowances.
 	remaining := map[string]int{}
 	for _, e := range allEntries {
 		k := entryKey(e.File, e.Line, e.Col, e.Fn)
@@ -123,7 +122,6 @@ func Audit(root string, al allowlist) Report {
 
 	var unclassified []sourceCall
 	for _, c := range calls {
-		// Try column-aware match first; fall back to column-0.
 		kCol := entryKey(c.File, c.Line, c.Col, c.Fn)
 		if remaining[kCol] > 0 {
 			remaining[kCol]--
@@ -199,44 +197,44 @@ func collectSourceCalls(root string) (calls []sourceCall, blocked []sourceCall, 
 			return fmt.Errorf("parse %s: %w", path, parseErr)
 		}
 
+		inRootFS := strings.HasPrefix(rel, "internal/rootfs/")
 		imports, dotImports := resolveImports(f)
-		info := fileInfo{
-			rel:        rel,
-			imports:    imports,
-			dotImports: dotImports,
-			inRootFS:   strings.HasPrefix(rel, "internal/rootfs/"),
-		}
+		info := fileInfo{rel: rel, imports: imports, dotImports: dotImports, inRootFS: inRootFS}
 
 		add := func(c sourceCall) { calls = append(calls, c) }
 		block := func(c sourceCall) { blocked = append(blocked, c) }
 
-		// First, find all call expressions to identify selectors that
-		// are already classified as direct calls.  Those must not be
-		// re-flagged as capability extractions.
+		// Block dot imports of watched packages (the import itself,
+		// not just the calls they enable).
+		for _, imp := range f.Imports {
+			if imp.Name != nil && imp.Name.Name == "." {
+				path := strings.Trim(imp.Path.Value, `"`)
+				if _, ok := watched[path]; ok {
+					pos := fset.Position(imp.Pos())
+					block(sourceCall{File: rel, Line: pos.Line, Col: pos.Column, Fn: "import ." + `"` + path + `"`})
+				}
+			}
+		}
+
+		// Pre-pass: find call-expression positions so selectors and
+		// identifiers used as direct calls aren't re-flagged.
 		callSelPos := map[token.Pos]bool{}
 		ast.Inspect(f, func(n ast.Node) bool {
 			if ce, ok := n.(*ast.CallExpr); ok {
-				if sel, isSel := ce.Fun.(*ast.SelectorExpr); isSel {
-					callSelPos[sel.Pos()] = true
-				}
-				if ident, isIdent := ce.Fun.(*ast.Ident); isIdent {
-					callSelPos[ident.Pos()] = true
+				switch ce.Fun.(type) {
+				case *ast.SelectorExpr, *ast.Ident:
+					callSelPos[ce.Fun.Pos()] = true
 				}
 			}
 			return true
 		})
 
-		// Second walk: classify calls and flag capability escapes.
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch node := n.(type) {
 			case *ast.CallExpr:
 				c, ok := resolveCall(info, node, fset)
 				if ok {
 					add(c)
-					return true
-				}
-				if sel, isSel := node.Fun.(*ast.SelectorExpr); isSel {
-					checkRootMethod(info, sel, node, fset, block)
 				}
 
 			case *ast.SelectorExpr:
@@ -252,11 +250,9 @@ func collectSourceCalls(root string) (calls []sourceCall, blocked []sourceCall, 
 				checkDotImportNonCall(info, node, fset, block)
 
 			case *ast.StarExpr:
-				// *os.Root type reference outside rootfs.
 				checkRootTypeRef(info, node, fset, block)
 
 			case *ast.TypeSpec:
-				// type T = os.Root or type T os.Root outside rootfs.
 				if sel, isSel := node.Type.(*ast.SelectorExpr); isSel {
 					checkRootTypeRefSelector(info, sel, fset, block)
 				}
@@ -268,6 +264,12 @@ func collectSourceCalls(root string) (calls []sourceCall, blocked []sourceCall, 
 			}
 			return true
 		})
+
+		// If this file is inside internal/rootfs, check its exported
+		// API for os.Root exposure.  See checkRootfsExportedAPI.
+		if inRootFS {
+			checkRootfsExportedAPI(f, fset, rel, block)
+		}
 		return nil
 	})
 
@@ -309,10 +311,7 @@ func resolveImports(f *ast.File) (imports map[string]string, dotImports map[stri
 	return
 }
 
-// resolveCall checks whether the call expression is a direct,
-// classified filesystem call.
 func resolveCall(fi fileInfo, call *ast.CallExpr, fset *token.FileSet) (sourceCall, bool) {
-	// pkg.Symbol(...)
 	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
 		if pkgIdent, ok := sel.X.(*ast.Ident); ok {
 			if pkgPath, ok := fi.imports[pkgIdent.Name]; ok {
@@ -325,8 +324,6 @@ func resolveCall(fi fileInfo, call *ast.CallExpr, fset *token.FileSet) (sourceCa
 			}
 		}
 	}
-
-	// Dot-import call: bare RemoveAll(...).
 	if ident, ok := call.Fun.(*ast.Ident); ok {
 		for pkgPath := range fi.dotImports {
 			if syms, wok := watched[pkgPath]; wok {
@@ -340,8 +337,6 @@ func resolveCall(fi fileInfo, call *ast.CallExpr, fset *token.FileSet) (sourceCa
 	return sourceCall{}, false
 }
 
-// checkNonCallSelector flags any pkg.Func selector that is not a direct
-// classified call — passing, returning, storing a watched function.
 func checkNonCallSelector(fi fileInfo, sel *ast.SelectorExpr, fset *token.FileSet, block func(sourceCall)) {
 	pkgIdent, ok := sel.X.(*ast.Ident)
 	if !ok {
@@ -359,8 +354,6 @@ func checkNonCallSelector(fi fileInfo, sel *ast.SelectorExpr, fset *token.FileSe
 	block(sourceCall{File: fi.rel, Line: pos.Line, Col: pos.Column, Fn: filepath.Base(pkgPath) + "." + sel.Sel.Name})
 }
 
-// checkDotImportNonCall flags a bare watched symbol from a dot-import
-// that is used outside a direct call position.
 func checkDotImportNonCall(fi fileInfo, ident *ast.Ident, fset *token.FileSet, block func(sourceCall)) {
 	for pkgPath := range fi.dotImports {
 		syms, wok := watched[pkgPath]
@@ -372,34 +365,6 @@ func checkDotImportNonCall(fi fileInfo, ident *ast.Ident, fset *token.FileSet, b
 	}
 }
 
-// checkRootMethod flags *os.Root method calls outside rootfs.
-func checkRootMethod(fi fileInfo, sel *ast.SelectorExpr, call *ast.CallExpr, fset *token.FileSet, block func(sourceCall)) {
-	if fi.inRootFS {
-		return
-	}
-	pkgIdent, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return
-	}
-	if _, isImport := fi.imports[pkgIdent.Name]; isImport {
-		return
-	}
-	// The receiver is a local variable.  The method name is not an
-	// import-qualified call, so it is either a method on some local
-	// variable (possibly *os.Root) or a package name that did not
-	// appear in the imports map.  Flagging every such method call
-	// is too noisy (Name(), Open(), ReadDir() are common), so we
-	// flag only when the method is specific to *os.Root.
-	rootOnlyMethods := map[string]bool{
-		"OpenRoot": true,
-	}
-	if rootOnlyMethods[sel.Sel.Name] {
-		pos := fset.Position(call.Pos())
-		block(sourceCall{File: fi.rel, Line: pos.Line, Col: pos.Column, Fn: "(*os.Root)." + sel.Sel.Name})
-	}
-}
-
-// checkRootTypeRef flags *os.Root type references outside rootfs.
 func checkRootTypeRef(fi fileInfo, star *ast.StarExpr, fset *token.FileSet, block func(sourceCall)) {
 	if fi.inRootFS {
 		return
@@ -425,6 +390,103 @@ func checkRootTypeRefSelector(fi fileInfo, sel *ast.SelectorExpr, fset *token.Fi
 	}
 	pos := fset.Position(sel.Pos())
 	block(sourceCall{File: fi.rel, Line: pos.Line, Col: pos.Column, Fn: "os.Root"})
+}
+
+// checkRootfsExportedAPI scans exported declarations for os.Root exposure.
+// Any exported function, method, type alias, variable, or struct field that
+// references *os.Root or os.Root is blocked.
+func checkRootfsExportedAPI(f *ast.File, fset *token.FileSet, rel string, block func(sourceCall)) {
+	imports := map[string]string{}
+	for _, imp := range f.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		name := filepath.Base(path)
+		if imp.Name != nil && imp.Name.Name != "." {
+			name = imp.Name.Name
+		}
+		imports[name] = path
+	}
+
+	for _, decl := range f.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if !d.Name.IsExported() {
+				continue
+			}
+			if d.Type.Results != nil {
+				for _, field := range d.Type.Results.List {
+					checkTypeExpr(field.Type, imports, rel, fset, block)
+				}
+			}
+			if d.Type.Params != nil {
+				for _, field := range d.Type.Params.List {
+					checkTypeExpr(field.Type, imports, rel, fset, block)
+				}
+			}
+			if d.Recv != nil {
+				for _, field := range d.Recv.List {
+					checkTypeExpr(field.Type, imports, rel, fset, block)
+				}
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				if ts, ok := spec.(*ast.TypeSpec); ok && ts.Name.IsExported() {
+					checkTypeExpr(ts.Type, imports, rel, fset, block)
+				}
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					for _, name := range vs.Names {
+						if name.IsExported() && vs.Type != nil {
+							checkTypeExpr(vs.Type, imports, rel, fset, block)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func checkTypeExpr(expr ast.Expr, imports map[string]string, rel string, fset *token.FileSet, block func(sourceCall)) {
+	if expr == nil {
+		return
+	}
+	switch e := expr.(type) {
+	case *ast.StarExpr:
+		checkTypeExpr(e.X, imports, rel, fset, block)
+	case *ast.SelectorExpr:
+		if pkgIdent, ok := e.X.(*ast.Ident); ok {
+			if pkgPath, ok := imports[pkgIdent.Name]; ok && pkgPath == "os" && e.Sel.Name == "Root" {
+				pos := fset.Position(e.Pos())
+				block(sourceCall{File: rel, Line: pos.Line, Col: pos.Column, Fn: "exported os.Root"})
+			}
+		}
+	case *ast.MapType:
+		checkTypeExpr(e.Key, imports, rel, fset, block)
+		checkTypeExpr(e.Value, imports, rel, fset, block)
+	case *ast.ArrayType:
+		checkTypeExpr(e.Elt, imports, rel, fset, block)
+	case *ast.ChanType:
+		checkTypeExpr(e.Value, imports, rel, fset, block)
+	case *ast.StructType:
+		for _, field := range e.Fields.List {
+			if len(field.Names) > 0 && field.Names[0].IsExported() {
+				checkTypeExpr(field.Type, imports, rel, fset, block)
+			}
+		}
+	case *ast.InterfaceType:
+		for _, method := range e.Methods.List {
+			if ft, ok := method.Type.(*ast.FuncType); ok {
+				if ft.Results != nil {
+					for _, f := range ft.Results.List {
+						checkTypeExpr(f.Type, imports, rel, fset, block)
+					}
+				}
+				if ft.Params != nil {
+					for _, f := range ft.Params.List {
+						checkTypeExpr(f.Type, imports, rel, fset, block)
+					}
+				}
+			}
+		}
+	}
 }
 
 // ---------- keys ----------
@@ -477,6 +539,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  - dot import of os or path/filepath\n")
 		fmt.Fprintf(os.Stderr, "  - extracting a watched function as a value\n")
 		fmt.Fprintf(os.Stderr, "  - (*os.Root) or os.Root type reference outside internal/rootfs\n")
+		fmt.Fprintf(os.Stderr, "  - exported os.Root from internal/rootfs\n")
 		fmt.Fprintf(os.Stderr, "\n")
 		exit = true
 	}
