@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/VrncQuentin/harness/internal/memory"
 )
 
 // AgentInfo describes a single discovered agent. Persona, Rules, and
@@ -298,6 +300,19 @@ func (s *Server) handleAgentsEdit(
 	}
 
 	body := []byte(r.FormValue("body"))
+	// Same per-repository lock PromotionService's own rollback sequence
+	// uses: AppendAgentNote writes and, on a commit failure, may restore or
+	// remove agents/<name>/notes.md — this handler writes the same file by a
+	// different route, and without this lock its write could land exactly
+	// between that rollback's read and its restore, and be silently erased.
+	// The persona/rules editors take it too, for the same reason applied to
+	// files a promotion does not currently touch: the lock is per repository,
+	// not per file, so it is cheap insurance rather than a targeted fix for
+	// just one path.
+	if store := s.memoryStore(); store != nil {
+		unlock := memory.LockRepoWrite(store)
+		defer unlock()
+	}
 	if err := write(reg, name, body); err != nil {
 		data := s.buildAgentsView()
 		data.SaveErr = err.Error()

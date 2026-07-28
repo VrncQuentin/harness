@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type promotionStoreStub struct {
@@ -219,5 +220,83 @@ func TestPromotionService_ConcurrentPromotionsToTheSameRepoDoNotLoseUpdates(t *t
 	}
 	if committer.calls != writers {
 		t.Fatalf("commit calls = %d, want %d", committer.calls, writers)
+	}
+}
+
+// The UI's direct memory-file editor writes facts.md through the same Store,
+// entirely outside PromotionService — it does not call appendAndCommit, so it
+// never took repoWriteLocks before LockRepoWrite existed. If that write landed
+// between a failed promotion's rollback read and its restore, rollback's
+// bytes.Equal check alone could not save it: the check only detects a
+// collision that already happened by the time it runs, it cannot prevent one
+// from happening in the window right after. LockRepoWrite closes that by
+// making the editor's write and a promotion's whole
+// read-modify-write-commit-rollback sequence mutually exclusive: whichever
+// acquires the shared lock first, the other cannot even start until it is
+// done.
+//
+// This is staged deterministically rather than by timing: the failing
+// committer spawns the "editor" write in a goroutine that blocks on
+// LockRepoWrite, which is already held by the promotion in flight, and the
+// test waits for that goroutine to actually finish (proving it ran, not just
+// that it was scheduled) after PromoteFact returns.
+func TestPromotionService_LockRepoWriteExcludesADirectEditorWriteDuringRollback(t *testing.T) {
+	root := t.TempDir()
+	dr, err := OpenDirReader(root)
+	if err != nil {
+		t.Fatalf("OpenDirReader: %v", err)
+	}
+	defer func() { _ = dr.Close() }()
+	if err := dr.WriteFile("facts.md", []byte("original\n")); err != nil {
+		t.Fatalf("seed facts.md: %v", err)
+	}
+
+	const editorContent = "written by the direct memory editor\n"
+	editorDone := make(chan struct{})
+	editorStarted := make(chan struct{})
+	committer := &promotionCommitterStub{err: errors.New("git offline")}
+	svc := PromotionService{Store: dr, Committer: committer}
+
+	err = svc.appendAndCommitHooked("facts.md", "new fact", "msg", "commit fact", func() {
+		// The content check just passed inside rollback: current still
+		// equals what this call published, and appendAndCommit's own
+		// repoWriteLocks hold is still in effect. Start the "editor" here —
+		// the narrowest possible window between the check and the restore
+		// that follows it.
+		go func() {
+			close(editorStarted)
+			defer close(editorDone)
+			unlock := LockRepoWrite(dr)
+			defer unlock()
+			if err := dr.WriteFile("facts.md", []byte(editorContent)); err != nil {
+				t.Errorf("editor WriteFile: %v", err)
+			}
+		}()
+		<-editorStarted
+		// Give the goroutine a real chance to reach LockRepoWrite and block
+		// on it — this call still holds repoWriteLocks at this point, so a
+		// respecting writer cannot proceed until rollback (and the whole
+		// appendAndCommit call) returns. If it did not block here, this
+		// sleep would let it finish and land its write before rollback's own
+		// restore runs, which the assertion below would then catch as
+		// facts.md holding "original" instead of the editor's content.
+		time.Sleep(20 * time.Millisecond)
+	})
+	if err == nil || !errors.Is(err, committer.err) {
+		t.Fatalf("appendAndCommitHooked error = %v, want commit error", err)
+	}
+
+	select {
+	case <-editorDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the editor goroutine never finished — it may be deadlocked on the lock")
+	}
+
+	got, err := dr.Read("facts.md")
+	if err != nil {
+		t.Fatalf("Read facts.md: %v", err)
+	}
+	if string(got) != editorContent {
+		t.Fatalf("facts.md = %q, want the editor's write %q — the editor landed inside rollback's own check-then-restore window and was overwritten (or ran too early and was itself erased)", got, editorContent)
 	}
 }

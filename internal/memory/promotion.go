@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"strings"
 	"sync"
+
+	"github.com/VrncQuentin/harness/internal/pathid"
 )
 
 // PromotionStore is the mutable memory repo surface required by promotion
@@ -31,36 +33,89 @@ type promotionRemover interface {
 // A value is constructed fresh per request, so a mutex on the value itself
 // would not serialize anything: two concurrent promotions to the same repo
 // each get their own PromotionService and their own uncontended mutex.
-// promotionLocks holds the actual lock, keyed by the repo's physical identity
-// rather than by anything scoped to one request, which is what makes it shared
-// across every PromotionService instance that names the same repository —
-// mirroring the pattern internal/git already uses to serialize its own
-// mutations. Read-modify-write-commit-and-possible-rollback is one critical
-// section: a second promotion cannot see this one's write, its commit, or its
-// rollback partway through, which removes the read-then-clobber gap a
-// content check alone cannot close on its own.
+// repoWriteLocks holds the actual lock, keyed by the repo's physical identity
+// rather than by anything scoped to one request, which is what makes it
+// shared across every caller that names the same repository — mirroring the
+// pattern internal/git already uses to serialize its own mutations. This
+// value's own read-modify-write-commit-and-possible-rollback is one critical
+// section under that lock: a second promotion cannot see this one's write,
+// its commit, or its rollback partway through.
+//
+// That lock is not this package's alone to hold, though: rollback's content
+// check (below) exists specifically because a promotion is not the only thing
+// that writes facts.md or an agent's notes.md — the UI's direct memory-file
+// and agent-notes editors do too, through the same Store, entirely outside
+// this type. LockRepoWrite is exported so those callers can take the same
+// lock around their own write, closing the gap a content check alone cannot:
+// a check-then-act sequence only narrows a race against an unlocked writer,
+// it never removes it, because there is still a window between the check and
+// the act for that writer to land in.
 type PromotionService struct {
 	Store     PromotionStore
 	Committer PromotionCommitter
 }
 
-// promotionLocks serializes promotion read-modify-write-commit sequences per
-// repository, the same role internal/git.repoMutationLocks plays for git
-// mutations. It has to be keyed by physical identity, not by the configured
-// path spelling, for the same reason that package's lock is: two handles on
-// one repository reached by different names must contend for one lock, not
-// two.
-var promotionLocks sync.Map // identity key -> *sync.Mutex
+// repoWriteLocks serializes writes to one repository's memory files across
+// every caller that takes the lock — PromotionService's own
+// read-modify-write-commit-rollback sequence, and any other component
+// (notably the UI's direct file editors) that calls LockRepoWrite around its
+// own write to the same repo. It has to be keyed by physical identity, not by
+// the configured path spelling, for the same reason internal/git's own
+// mutation lock is: two handles on one repository reached by different names
+// must contend for one lock, not two.
+var repoWriteLocks sync.Map // identity key -> *sync.Mutex
 
-// promotionLockKey returns the key to serialize promotions on, and whether one
-// is available. A store that cannot report its own identity — a test fake,
-// most likely — gets no lock: production always passes a *DirReader.
-func promotionLockKey(store PromotionStore) (string, bool) {
-	dr, ok := store.(*DirReader)
+// repoIdentifier is satisfied by *DirReader; declared narrowly here so this
+// package does not need to import anything to describe the one method it
+// needs from a store.
+type repoIdentifier interface {
+	Identity() pathid.ID
+}
+
+// repoWriteLockKey returns the key to serialize writes on, and whether one is
+// available. A store that cannot report its own identity — a test fake, most
+// likely, or a caller that has nothing but the narrower PromotionStore/
+// PromotionCommitter interfaces — gets no lock: production always passes a
+// *DirReader.
+func repoWriteLockKey(store any) (string, bool) {
+	dr, ok := store.(repoIdentifier)
 	if !ok {
 		return "", false
 	}
 	return dr.Identity().Key(), true
+}
+
+// LockRepoWrite acquires the same per-repository lock PromotionService's own
+// read-modify-write-commit-rollback sequence uses, for a caller that writes
+// the same memory files by a different route — the UI's direct memory-file
+// and agent-notes editors, specifically, which write facts.md and an agent's
+// notes.md through the same Store without going through PromotionService at
+// all. Call it around that write so a promotion's rollback can never observe
+// this call's write as "still present" and then race past it: while this
+// lock is held, no promotion's rollback for the same repository can be
+// running its own read-compare-and-restore sequence at all.
+//
+// It returns a no-op unlock if store cannot report its own identity, the same
+// graceful degradation the lock's other caller uses; production always passes
+// a *memory.DirReader.
+func LockRepoWrite(store any) (unlock func()) {
+	key, ok := repoWriteLockKey(store)
+	if !ok {
+		return func() {}
+	}
+	return lockRepoWriteKey(key)
+}
+
+// lockRepoWriteKey acquires the lock for an already-resolved key.
+func lockRepoWriteKey(key string) func() {
+	actual, _ := repoWriteLocks.LoadOrStore(key, &sync.Mutex{})
+	lock, ok := actual.(*sync.Mutex)
+	if !ok {
+		// Unreachable: only *sync.Mutex is ever stored.
+		lock = &sync.Mutex{}
+	}
+	lock.Lock()
+	return lock.Unlock
 }
 
 // PromoteFact appends text to facts.md and commits the change. If the commit
@@ -90,21 +145,21 @@ func (s PromotionService) AppendAgentNote(agentName, text string) error {
 }
 
 func (s PromotionService) appendAndCommit(relPath, text, commitMessage, commitContext string) error {
+	return s.appendAndCommitHooked(relPath, text, commitMessage, commitContext, nil)
+}
+
+// appendAndCommitHooked is appendAndCommit with a hook forwarded to
+// rollbackHooked, so a test can stage a write in the narrow window between
+// rollback's content check and its restore. Nil on every production path.
+func (s PromotionService) appendAndCommitHooked(relPath, text, commitMessage, commitContext string, afterRollbackCheck func()) error {
 	if s.Store == nil {
 		return errors.New("memory store not available")
 	}
 	if s.Committer == nil {
 		return errors.New("committer not available")
 	}
-	if key, ok := promotionLockKey(s.Store); ok {
-		actual, _ := promotionLocks.LoadOrStore(key, &sync.Mutex{})
-		lock, ok := actual.(*sync.Mutex)
-		if !ok {
-			// Unreachable: only *sync.Mutex is ever stored.
-			lock = &sync.Mutex{}
-		}
-		lock.Lock()
-		defer lock.Unlock()
+	if key, ok := repoWriteLockKey(s.Store); ok {
+		defer lockRepoWriteKey(key)()
 	}
 	previous, existed, err := s.readExisting(relPath)
 	if err != nil {
@@ -115,7 +170,7 @@ func (s PromotionService) appendAndCommit(relPath, text, commitMessage, commitCo
 		return fmt.Errorf("write %s: %w", relPath, err)
 	}
 	if _, err := s.Committer.Commit(commitMessage, []string{relPath}); err != nil {
-		if rollbackErr := s.rollback(relPath, previous, updated, existed); rollbackErr != nil {
+		if rollbackErr := s.rollbackHooked(relPath, previous, updated, existed, afterRollbackCheck); rollbackErr != nil {
 			return fmt.Errorf("%s: %w; rollback: %v", commitContext, err, rollbackErr)
 		}
 		return fmt.Errorf("%s: %w", commitContext, err)
@@ -155,6 +210,20 @@ func (s PromotionService) readExisting(relPath string) ([]byte, bool, error) {
 // back would erase their write instead of this one's, so the safe choice is to
 // leave the file exactly as it is and let the original commit error stand.
 func (s PromotionService) rollback(relPath string, previous, expected []byte, existed bool) error {
+	return s.rollbackHooked(relPath, previous, expected, existed, nil)
+}
+
+// rollbackHooked is rollback with a hook that runs after the content check
+// passes -- current still equals expected, so nothing has visibly raced this
+// call yet -- and before the restore or removal that follows. It exists so a
+// test can stage a write landing in exactly that window: appendAndCommit
+// still holds repoWriteLocks for the whole call at this point, so a
+// LockRepoWrite-respecting writer attempting to land here blocks until this
+// call (and its restore) is done, which is the property under test. The hook
+// is a parameter, nil on every production path, for the same reason every
+// other hook in this codebase is: two tests setting shared state at once
+// would each run the other's hook.
+func (s PromotionService) rollbackHooked(relPath string, previous, expected []byte, existed bool, afterCheck func()) error {
 	current, err := s.Store.Read(relPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -166,6 +235,9 @@ func (s PromotionService) rollback(relPath string, previous, expected []byte, ex
 	}
 	if !bytes.Equal(current, expected) {
 		return nil
+	}
+	if afterCheck != nil {
+		afterCheck()
 	}
 	if existed {
 		return s.Store.WriteFile(relPath, previous)

@@ -615,6 +615,16 @@ func (s *Server) handleMemorySave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Holds the same per-repository lock PromotionService's own
+	// read-modify-write-commit-rollback sequence uses, for the whole write:
+	// a promotion's rollback reads this file, compares it to what the
+	// promotion itself wrote, and — if they still match — restores or removes
+	// it. That comparison is only meaningful if nothing else can write the
+	// file while it is being made; without this lock, this save could land
+	// between the promotion's read and its restore, and be silently erased.
+	unlock := memory.LockRepoWrite(store)
+	defer unlock()
+
 	if err := store.WriteFile(p, []byte(content)); err != nil {
 		data := memoryEditView{
 			basePage: s.newBasePage("memory"),
