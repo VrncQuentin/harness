@@ -90,23 +90,36 @@ func (rt *Runtime) ApplyConfig(
 			modelEndpointChanged ||
 			embedderEndpointChanged ||
 			needsMemoryAPIRetry {
-			rt.quiesceMemoryAndAPI(ctx, uiServer)
-			// Project switch optionally reloads llama-server before rebuilding
-			// memory services. Live work has already been quiesced above so it
-			// is committed under the previous project manager.
-			if old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
-				rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
-			}
-			slog.Info("rebuilding memory and api services")
-			snapshot := rt.snapshotMemoryAndAPI(uiServer)
-			rt.stopMemoryAndAPI(uiServer)
-			if rt.startMemoryAndAPI(ctx, uiServer, metricsStore) {
-				result.LiveApplied = true
-				// The replacement is live, so the generation it replaced is
-				// now unreachable and its pinned handles can go.
-				snapshot.closeReplaced()
+			if err := rt.quiesceMemoryAndAPI(ctx, uiServer); err != nil {
+				// The UI generation gate has already reopened itself; nothing
+				// has been quiesced or torn down, so the safe choice is to
+				// leave the current generation running and let a later
+				// retry (manual or the next config save) try again, rather
+				// than rebuild out from under a request the drain could not
+				// wait for.
+				slog.Warn("runtime reload: aborting memory/API rebuild, UI request drain failed", "err", err)
 			} else {
-				rt.restoreMemoryAndAPI(uiServer, snapshot)
+				// Project switch optionally reloads llama-server before rebuilding
+				// memory services. Live work has already been quiesced above so it
+				// is committed under the previous project manager.
+				if old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
+					rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
+				}
+				slog.Info("rebuilding memory and api services")
+				snapshot := rt.snapshotMemoryAndAPI(uiServer)
+				rt.stopMemoryAndAPI(uiServer)
+				if rt.startMemoryAndAPI(ctx, uiServer, metricsStore) {
+					result.LiveApplied = true
+					// The replacement is live, so the generation it replaced is
+					// now unreachable and its pinned handles can go.
+					snapshot.closeReplaced()
+				} else {
+					rt.restoreMemoryAndAPI(uiServer, snapshot)
+				}
+				// The UI generation gate was left closed by a successful
+				// drain above; reopen it now that deps.SetServiceDeps points
+				// at either the new generation or the restored old one.
+				uiServer.ResumeGenerationAdmission()
 			}
 		}
 	}

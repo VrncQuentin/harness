@@ -239,6 +239,143 @@ func TestDrainGenerationRequestsReturnsImmediatelyWhenNothingIsInFlight(t *testi
 	}
 }
 
+// A plain sync.WaitGroup's contract requires that a positive Add arriving
+// while the counter reads zero happen before the matching Wait call — nothing
+// in the old design could promise that ordering against a fresh handler
+// goroutine, so a request could in principle Add to the counter after Wait
+// had already observed zero and returned, land inside the window the runtime
+// treats as fully drained, and then have its handles closed underneath it.
+// This proves the fix directly: once DrainGenerationRequests has started
+// (whether or not it has returned yet), a brand new request is refused (503)
+// rather than silently admitted — there is no window in which trackGenRequest
+// runs a handler without either being counted by the drain in progress or
+// being turned away.
+func TestTrackGenRequestRefusesAdmissionWhileADrainIsInProgress(t *testing.T) {
+	s := NewServer(3000)
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	blocking := s.trackGenRequest(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})
+
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		blocking(httptest.NewRecorder(), req)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tracked handler never started")
+	}
+
+	drainDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		drainDone <- s.DrainGenerationRequests(ctx)
+	}()
+
+	// Give DrainGenerationRequests a moment to close the gate. It cannot
+	// return yet — the first handler is still blocked on release — so by the
+	// time this sleep elapses the gate is certainly closed.
+	time.Sleep(100 * time.Millisecond)
+
+	newReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	newRec := httptest.NewRecorder()
+	newHandlerRan := false
+	newHandler := s.trackGenRequest(func(w http.ResponseWriter, r *http.Request) {
+		newHandlerRan = true
+		w.WriteHeader(http.StatusOK)
+	})
+	newHandler(newRec, newReq)
+	if newHandlerRan {
+		t.Fatal("a new request was admitted while a drain was already in progress — this is the race finding #3 describes")
+	}
+	if newRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("new request during drain: status = %d, want %d", newRec.Code, http.StatusServiceUnavailable)
+	}
+
+	close(release)
+	select {
+	case err := <-drainDone:
+		if err != nil {
+			t.Fatalf("DrainGenerationRequests: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DrainGenerationRequests did not return after the handler finished")
+	}
+
+	// The gate is deliberately left closed by a successful drain until the
+	// caller calls ResumeGenerationAdmission — a request arriving in that
+	// window must still be refused, not quietly admitted against whatever
+	// deps.SetServiceDeps happens to hold mid-swap.
+	postDrainReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	postDrainRec := httptest.NewRecorder()
+	newHandler(postDrainRec, postDrainReq)
+	if postDrainRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("request after successful drain but before ResumeGenerationAdmission: status = %d, want %d", postDrainRec.Code, http.StatusServiceUnavailable)
+	}
+
+	s.ResumeGenerationAdmission()
+	afterResumeReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	afterResumeRec := httptest.NewRecorder()
+	newHandler(afterResumeRec, afterResumeReq)
+	if afterResumeRec.Code != http.StatusOK {
+		t.Fatalf("request after ResumeGenerationAdmission: status = %d, want %d", afterResumeRec.Code, http.StatusOK)
+	}
+}
+
+// A drain that times out because a tracked request never finishes must not
+// leave the server permanently refusing every future request — the runtime
+// aborts the rebuild and keeps using the current generation in that case
+// (finding #4), so the generation gate must reopen itself before the timeout
+// error is returned.
+func TestDrainGenerationRequestsTimeoutReopensAdmission(t *testing.T) {
+	s := NewServer(3000)
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	defer close(release)
+	stuck := s.trackGenRequest(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+	})
+
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		stuck(httptest.NewRecorder(), req)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tracked handler never started")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := s.DrainGenerationRequests(ctx)
+	if err == nil {
+		t.Fatal("DrainGenerationRequests: want a timeout error, got nil")
+	}
+
+	newReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	newRec := httptest.NewRecorder()
+	admitted := false
+	newHandler := s.trackGenRequest(func(w http.ResponseWriter, r *http.Request) {
+		admitted = true
+		w.WriteHeader(http.StatusOK)
+	})
+	newHandler(newRec, newReq)
+	if !admitted || newRec.Code != http.StatusOK {
+		t.Fatalf("request after a timed-out drain: admitted=%v status=%d, want admitted with %d — a failed drain must not leave the gate stuck closed", admitted, newRec.Code, http.StatusOK)
+	}
+}
+
 func TestSetServiceDepsPublishesAndClearsSnapshot(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})

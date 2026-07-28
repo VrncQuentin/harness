@@ -537,17 +537,27 @@ func (rt *Runtime) SessionManager() *session.Manager {
 // deadlocking, and so a tracked UI request blocked on rt.mu elsewhere can
 // finish rather than deadlock against this call.
 //
-// The UI drain covers only the handlers wrapped with trackGenRequest — see
-// that method's doc comment for which ones, and which are deliberately not
-// covered yet.
-func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context, uiServer *ui.Server) {
+// The task-cancel and session-flush steps only log a warning on failure —
+// neither one guards a safety property the way the UI drain does, so a slow
+// task or a stuck flush does not by itself block a reload. The UI drain is
+// different: it leaves uiServer's generation gate closed to new admissions
+// on success (see Server.DrainGenerationRequests), and the caller must call
+// uiServer.ResumeGenerationAdmission once it has finished swapping in the new
+// generation or restoring the old one. On error, the gate has already
+// reopened itself and nothing has been quiesced on the UI side — the caller
+// must abort the rebuild and keep using the current generation rather than
+// proceed to close its handles.
+//
+// This always runs the drain, even when there is no task loop or session
+// manager yet: skipping it in that case would leave a request that raced in
+// through a trackGenRequest handler unaccounted for.
+func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context, uiServer *ui.Server) error {
 	tasks := rt.taskRunner
 	mgr := rt.SessionManager()
-	if tasks == nil && mgr == nil {
-		return
-	}
 
 	rt.mu.Unlock()
+	defer rt.mu.Lock()
+
 	if tasks != nil {
 		cancelCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := tasks.CancelAll(cancelCtx); err != nil {
@@ -562,14 +572,15 @@ func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context, uiServer *ui.Server)
 		}
 		cancel()
 	}
-	if uiServer != nil {
-		drainCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if err := uiServer.DrainGenerationRequests(drainCtx); err != nil {
-			slog.Warn("runtime reload: UI request drain", "err", err)
-		}
-		cancel()
+	if uiServer == nil {
+		return nil
 	}
-	rt.mu.Lock()
+	drainCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := uiServer.DrainGenerationRequests(drainCtx); err != nil {
+		return fmt.Errorf("UI request drain: %w", err)
+	}
+	return nil
 }
 
 // stopMemoryAndAPI tears down memory, sessions, task, and API services. Caller

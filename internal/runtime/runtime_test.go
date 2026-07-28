@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -292,6 +293,109 @@ func TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange(t *testing.T
 		t.Fatalf("rebuilt UI deps missing: path=%q session=%T task=%T", deps.MemoryRepoPath, deps.SessionStore, deps.TaskRunner)
 	}
 }
+
+// blockingAgentRegistry is a ui.AgentRegistry whose WritePersona blocks on
+// release, so a test can hold an HTTP request inside a trackGenRequest-wrapped
+// handler for as long as it needs to.
+type blockingAgentRegistry struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingAgentRegistry) List() ([]ui.AgentInfo, error) { return nil, nil }
+func (r *blockingAgentRegistry) Get(name string) (ui.AgentInfo, error) {
+	return ui.AgentInfo{Name: name}, nil
+}
+func (r *blockingAgentRegistry) Active() string                  { return "coder" }
+func (r *blockingAgentRegistry) SetActive(string) error          { return nil }
+func (r *blockingAgentRegistry) Create(string) error             { return nil }
+func (r *blockingAgentRegistry) Delete(string) error             { return nil }
+func (r *blockingAgentRegistry) WriteRules(string, []byte) error { return nil }
+func (r *blockingAgentRegistry) WriteNotes(string, []byte) error { return nil }
+func (r *blockingAgentRegistry) WritePersona(string, []byte) error {
+	r.once.Do(func() { close(r.entered) })
+	<-r.release
+	return nil
+}
+
+// A prior version of this reload path only logged a UI request drain timeout
+// and proceeded to rebuild the memory/API service graph anyway, which would
+// close the previous generation's handles out from under the very request
+// the drain was supposed to be waiting for. This proves the fix: with a
+// request genuinely in flight inside a trackGenRequest-wrapped handler, a
+// reload whose context leaves the drain no time to succeed must abort the
+// rebuild entirely rather than proceed — the same config change that
+// TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange proves DOES
+// rebuild successfully when nothing is in flight.
+func TestApplyConfigAbortsMemoryRebuildWhenUIRequestDrainTimesOut(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	releaseMemHandles(t, rt)
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	port := freeTCPPort(t)
+	uiServer := ui.NewServer(port)
+	srvCtx, cancelSrv := context.WithCancel(context.Background())
+	defer cancelSrv()
+	if err := uiServer.Start(srvCtx); err != nil {
+		t.Fatalf("ui server start: %v", err)
+	}
+
+	reg := &blockingAgentRegistry{entered: make(chan struct{}), release: make(chan struct{})}
+	uiServer.SetServiceDeps(ui.ServiceDeps{AgentRegistry: reg})
+
+	type postResult struct {
+		resp *http.Response
+		err  error
+	}
+	reqDone := make(chan postResult, 1)
+	go func() {
+		resp, err := http.PostForm(
+			fmt.Sprintf("http://127.0.0.1:%d/agents/persona", port),
+			url.Values{"name": {"coder"}, "body": {"updated persona"}},
+		)
+		reqDone <- postResult{resp, err}
+	}()
+
+	select {
+	case <-reg.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking agent registry write never started")
+	}
+
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer shortCancel()
+	result := rt.ApplyConfig(shortCtx, uiServer, NewEventChannel(), nil)
+	if result.LiveApplied {
+		t.Fatal("reload reported live apply despite an in-flight request the UI drain could not wait out")
+	}
+	if rt.SessionManager() != nil || rt.taskRunner != nil {
+		t.Fatal("memory/API services were rebuilt despite an aborted UI request drain")
+	}
+
+	close(reg.release)
+	select {
+	case r := <-reqDone:
+		if r.err != nil {
+			t.Fatalf("POST /agents/persona: %v", r.err)
+		}
+		_ = r.resp.Body.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked request never completed after release")
+	}
+}
+
 func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()

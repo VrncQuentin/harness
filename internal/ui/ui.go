@@ -207,33 +207,122 @@ type Server struct {
 	// /shutdown endpoint and the tray menu converge on one exit path.
 	quitOnce sync.Once
 
-	// genReqs counts in-flight requests to handlers that read the
+	// genGate admits in-flight requests to handlers that read the
 	// currently-published memory/API service deps for their whole duration —
 	// a request holding a *memory.DirReader or *git.Repo reference obtained
 	// before a reload swapped deps.SetServiceDeps has to finish with the
 	// generation it started with, not have the runtime close that generation's
 	// handles underneath it mid-request. deps itself is swapped atomically, so
-	// no handler ever observes a half-rebuilt mix of adapters; genReqs is a
+	// no handler ever observes a half-rebuilt mix of adapters; genGate is a
 	// second, separate guarantee about how long the *old* generation's
 	// underlying OS handles stay open once a new one has replaced it.
 	//
-	// Coverage is deliberately partial, not repository-wide: only
-	// handlePromoteFact and handleAppendNote are wrapped with trackGenRequest
-	// today, because those are the two handlers this generation-safety pass
-	// audited closely enough to be confident about. Other handlers that read
-	// MemoryStore, Committer, AgentRegistry, or SessionStore for a quick
-	// request/response (the /memory and /agents pages, notably) are not yet
-	// wrapped and remain exposed to the same narrow window: a reload landing
-	// exactly during one of their reads or writes can close the handle they
-	// are using. The failure mode is a request-scoped I/O error, not silent
-	// corruption or a boundary escape — Go's os.Root and os.File both refuse
-	// operations on an already-closed handle rather than reusing a
-	// reassigned descriptor — but it is a real, unclosed gap, not a solved
-	// one. SSE endpoints (/events, /chat/events, /task/events) must never be
-	// wrapped this way: they are long-lived by design, and a drain that waits
-	// for them would block on a connection that has no reason to end on its
-	// own, turning a reload into a hang.
-	genReqs sync.WaitGroup
+	// A plain sync.WaitGroup cannot provide this guarantee on its own: its own
+	// contract requires that a positive Add arriving while the counter reads
+	// zero happen before the matching Wait call, and nothing here can promise
+	// that ordering against a handler goroutine that has not been scheduled
+	// yet. genGate closes admission (under its own mutex) before it ever
+	// waits, so by the time it starts waiting, every Add that will happen for
+	// this drain has already happened — see genGate's own doc comment.
+	//
+	// Coverage: every handler that reads MemoryStore, Committer,
+	// AgentRegistry, or SessionStore for a quick request/response is wrapped
+	// with trackGenRequest — see the route table in Start. SSE endpoints
+	// (/events, /chat/events, /task/events) must never be wrapped this way:
+	// they are long-lived by design, and a drain that waits for them would
+	// block on a connection that has no reason to end on its own, turning a
+	// reload into a hang.
+	genGate genGate
+}
+
+// genGate tracks in-flight requests wrapped by trackGenRequest so a reload can
+// wait for them to finish before swapping in a new generation, with no window
+// where a fresh request could still be admitted against the generation being
+// retired. It is a mutex-protected counter plus a closed flag, not a bare
+// sync.WaitGroup: admission (count++) only ever happens while the mutex shows
+// the gate open, and the gate is closed before draining begins, so every
+// admission that will ever count toward one drain cycle has already happened
+// by the time the drain starts waiting — there is no way for a fresh request
+// to land in the gap between "drain observed zero" and "the caller actually
+// swaps the generation," because while the gate is closed a fresh request is
+// refused admission outright (503) rather than let through untracked.
+type genGate struct {
+	mu      sync.Mutex
+	count   int
+	closed  bool
+	drained chan struct{}
+}
+
+// enter admits one request, returning false if the gate is currently closed
+// for a retire in progress. A caller that gets false must not run its
+// handler at all — refuse the request (503) instead of running it untracked,
+// since an untracked request reading generation-scoped deps during exactly
+// this window is the race this gate exists to close.
+func (g *genGate) enter() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.closed {
+		return false
+	}
+	if g.drained == nil {
+		g.drained = make(chan struct{})
+	}
+	g.count++
+	return true
+}
+
+func (g *genGate) exit() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.count--
+	if g.closed && g.count == 0 && g.drained != nil {
+		close(g.drained)
+	}
+}
+
+// close closes the gate to new admissions and waits for every
+// already-admitted request to call exit, or for ctx to end, whichever comes
+// first. On success the gate is left closed — deliberately: the caller's
+// actual rebuild (opening a git repo, starting an embedder, and the like) can
+// be slow, and none of that should run with the mutex held, so it runs after
+// close returns rather than inside it. The caller must call reopen once the
+// rebuild (or the decision to keep the current generation after a failed
+// one) is complete.
+//
+// On a timeout, close reopens the gate itself before returning the error:
+// nothing was torn down, so the caller must abort and keep using the current
+// generation rather than proceed as if it were retired.
+func (g *genGate) close(ctx context.Context) error {
+	g.mu.Lock()
+	g.closed = true
+	if g.count == 0 {
+		g.mu.Unlock()
+		return nil
+	}
+	if g.drained == nil {
+		g.drained = make(chan struct{})
+	}
+	drained := g.drained
+	g.mu.Unlock()
+
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		g.mu.Lock()
+		g.closed = false
+		g.mu.Unlock()
+		return ctx.Err()
+	}
+}
+
+// reopen re-admits requests after a successful close. Safe to call even if
+// close already reopened the gate itself on timeout.
+func (g *genGate) reopen() {
+	g.mu.Lock()
+	g.closed = false
+	g.drained = make(chan struct{})
+	g.mu.Unlock()
 }
 
 // trackGenRequest wraps h so a call to DrainGenerationRequests waits for it to
@@ -243,28 +332,37 @@ type Server struct {
 // not end on its own.
 func (s *Server) trackGenRequest(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.genReqs.Add(1)
-		defer s.genReqs.Done()
+		if !s.genGate.enter() {
+			http.Error(w, "reload in progress, try again", http.StatusServiceUnavailable)
+			return
+		}
+		defer s.genGate.exit()
 		h(w, r)
 	}
 }
 
-// DrainGenerationRequests waits for every in-flight request wrapped by
-// trackGenRequest to finish, or for ctx to end, whichever comes first. The
-// runtime calls this before closing a memory/API generation's handles during a
-// reload, alongside the existing task-loop cancellation and session flush.
+// DrainGenerationRequests closes admission to every handler wrapped with
+// trackGenRequest (they get a 503 instead of running until reopened), waits
+// for every already-admitted request to finish, or for ctx to end, whichever
+// comes first, and — on success only — leaves admission closed. The runtime
+// calls this before closing a memory/API generation's handles during a
+// reload, alongside the existing task-loop cancellation and session flush,
+// and must call ResumeGenerationAdmission once the swap (or the decision to
+// keep the old generation after a failed rebuild) is complete.
+//
+// On a timeout, admission is reopened before the error is returned: nothing
+// was closed or swapped, so the caller must abort the reload and keep using
+// the current generation rather than proceed to close its handles.
 func (s *Server) DrainGenerationRequests(ctx context.Context) error {
-	done := make(chan struct{})
-	go func() {
-		s.genReqs.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return s.genGate.close(ctx)
+}
+
+// ResumeGenerationAdmission reopens admission after a successful
+// DrainGenerationRequests once the runtime has finished swapping in the new
+// generation (or restoring the old one after a failed rebuild). Safe to call
+// even if DrainGenerationRequests already reopened it on timeout.
+func (s *Server) ResumeGenerationAdmission() {
+	s.genGate.reopen()
 }
 
 // NewServer creates a new UI server on the given port. The config store is
@@ -654,24 +752,29 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/", s.handleStatus)
 	mux.HandleFunc("/events", s.handleSSE)
 	mux.HandleFunc("/config", s.handleConfig)
-	mux.HandleFunc("/agents", s.handleAgents)
-	mux.HandleFunc("/agents/active", s.handleAgentsActive)
-	mux.HandleFunc("/agents/create", s.handleAgentsCreate)
-	mux.HandleFunc("/agents/delete", s.handleAgentsDelete)
-	mux.HandleFunc("/agents/persona", s.handleAgentsPersona)
-	mux.HandleFunc("/agents/rules", s.handleAgentsRules)
-	mux.HandleFunc("/agents/notes", s.handleAgentsNotes)
+	mux.HandleFunc("/agents", s.trackGenRequest(s.handleAgents))
+	mux.HandleFunc("/agents/active", s.trackGenRequest(s.handleAgentsActive))
+	mux.HandleFunc("/agents/create", s.trackGenRequest(s.handleAgentsCreate))
+	mux.HandleFunc("/agents/delete", s.trackGenRequest(s.handleAgentsDelete))
+	mux.HandleFunc("/agents/persona", s.trackGenRequest(s.handleAgentsPersona))
+	mux.HandleFunc("/agents/rules", s.trackGenRequest(s.handleAgentsRules))
+	mux.HandleFunc("/agents/notes", s.trackGenRequest(s.handleAgentsNotes))
 	mux.HandleFunc("/chat", s.handleChat)
 	mux.HandleFunc("/chat/events", s.handleChatEvents)
+	// handleChatSend itself returns promptly, but it launches the actual
+	// ChatRunner call in a detached goroutine that outlives the request (see
+	// streamChatTokens) — wrapping the handler would not cover the work that
+	// actually reads generation-scoped deps, so it is deliberately left
+	// untracked, the same reasoning that excludes the SSE endpoints.
 	mux.HandleFunc("/chat/send", s.handleChatSend)
 
-	mux.HandleFunc("/chat/save", s.handleChatSave)
-	mux.HandleFunc("/chat/session", s.handleChatSessionResume)
-	mux.HandleFunc("/memory", s.handleMemory)
-	mux.HandleFunc("/memory/edit", s.handleMemoryEdit)
-	mux.HandleFunc("/memory/save", s.handleMemorySave)
-	mux.HandleFunc("/memory/episodes", s.handleMemoryEpisodes)
-	mux.HandleFunc("/memory/episodes/view", s.handleMemoryEpisodeView)
+	mux.HandleFunc("/chat/save", s.trackGenRequest(s.handleChatSave))
+	mux.HandleFunc("/chat/session", s.trackGenRequest(s.handleChatSessionResume))
+	mux.HandleFunc("/memory", s.trackGenRequest(s.handleMemory))
+	mux.HandleFunc("/memory/edit", s.trackGenRequest(s.handleMemoryEdit))
+	mux.HandleFunc("/memory/save", s.trackGenRequest(s.handleMemorySave))
+	mux.HandleFunc("/memory/episodes", s.trackGenRequest(s.handleMemoryEpisodes))
+	mux.HandleFunc("/memory/episodes/view", s.trackGenRequest(s.handleMemoryEpisodeView))
 	mux.HandleFunc("/memory/promote", s.trackGenRequest(s.handlePromoteFact))
 	mux.HandleFunc("/memory/note", s.trackGenRequest(s.handleAppendNote))
 	mux.HandleFunc("/projects", s.handleProjects)
@@ -686,8 +789,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/task/cancel", s.handleTaskCancel)
 	mux.HandleFunc("/retry", s.handleRetry)
 	mux.HandleFunc("/metrics", s.handleMetrics)
-	mux.HandleFunc("/memory/scaffold", s.handleMemoryScaffold)
-	mux.HandleFunc("/memory/rebuild-index", s.handleMemoryRebuildIndex)
+	mux.HandleFunc("/memory/scaffold", s.trackGenRequest(s.handleMemoryScaffold))
+	mux.HandleFunc("/memory/rebuild-index", s.trackGenRequest(s.handleMemoryRebuildIndex))
 	mux.HandleFunc("/procs/llama/restart", s.handleProcRestart("llama"))
 	mux.HandleFunc("/procs/embed/restart", s.handleProcRestart("embed"))
 	mux.HandleFunc("/shutdown", s.handleShutdown)
