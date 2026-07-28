@@ -3,6 +3,7 @@ package project
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 type workflowStore struct {
@@ -149,5 +150,97 @@ func TestWorkflowUpdateAbortsWhenRepoIdentityCannotBeResolved(t *testing.T) {
 	}
 	if len(repos.ensures) != 0 || len(repos.moves) != 0 {
 		t.Fatalf("repo operations ran on an unresolved identity: ensures=%v moves=%v", repos.ensures, repos.moves)
+	}
+}
+
+// sequencedWorkflowRepos wraps workflowRepos so a test can hold
+// EnsureProjectRepo in flight: it reports the root it was called with on
+// entered (so the test can confirm which call reached it) and then blocks on
+// release before delegating to the embedded stub.
+type sequencedWorkflowRepos struct {
+	*workflowRepos
+	entered chan string
+	release chan struct{}
+}
+
+func (r *sequencedWorkflowRepos) EnsureProjectRepo(root string, global bool) error {
+	r.entered <- root
+	<-r.release
+	return r.workflowRepos.EnsureProjectRepo(root, global)
+}
+
+// Two callers reaching Workflow.Create/Update concurrently is a realistic
+// scenario -- an HTTP handler builds a fresh *Workflow per request (see
+// internal/ui/projects_page.go), so nothing about the request path itself
+// serializes them -- and both could plausibly name the same MemoryRepoPath:
+// a "create project" naming a path another project is about to move onto, or
+// two edits racing on the same destination. Without workflowMu, both calls
+// would reach EnsureProjectRepo/MoveProjectRepo concurrently and interleave
+// their writes to the same destination directory.
+//
+// This proves the lock actually serializes them, not just that both calls
+// eventually succeed: a Create is parked inside EnsureProjectRepo (holding
+// workflowMu), and a concurrent Update naming the same destination must not
+// reach its own EnsureProjectRepo call until the Create finishes and
+// releases the lock.
+func TestWorkflowSerializesConcurrentCreateAndUpdateOnTheSameDestination(t *testing.T) {
+	store := newWorkflowStore(Project{Slug: "existing", DisplayName: "Existing", MemoryRepoPath: "/shared/repo"})
+	repos := &sequencedWorkflowRepos{
+		workflowRepos: &workflowRepos{},
+		entered:       make(chan string, 1),
+		release:       make(chan struct{}),
+	}
+	workflow := NewWorkflow(store, repos)
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := workflow.Create(CreateInput{Slug: "new", DisplayName: "New", MemoryRepoPath: "/shared/repo"})
+		createDone <- err
+	}()
+
+	select {
+	case root := <-repos.entered:
+		if root != "/shared/repo" {
+			t.Fatalf("EnsureProjectRepo root = %q, want /shared/repo", root)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Create never reached EnsureProjectRepo")
+	}
+
+	updateDone := make(chan error, 1)
+	go func() {
+		_, err := workflow.Update(UpdateInput{Slug: "existing", DisplayName: "Existing", MemoryRepoPath: "/shared/repo/moved"}, MemoryRepoModeFresh)
+		updateDone <- err
+	}()
+
+	select {
+	case <-repos.entered:
+		t.Fatal("Update reached EnsureProjectRepo while Create was still in flight -- workflowMu did not serialize them")
+	case <-time.After(150 * time.Millisecond):
+		// Still blocked on workflowMu, as it must be.
+	}
+
+	close(repos.release)
+
+	select {
+	case err := <-createDone:
+		if err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Create did not finish after release")
+	}
+	select {
+	case <-repos.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Update never reached EnsureProjectRepo after Create released the lock")
+	}
+	select {
+	case err := <-updateDone:
+		if err != nil {
+			t.Fatalf("Update: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Update did not finish after Create released the lock")
 	}
 }

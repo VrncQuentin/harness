@@ -340,6 +340,18 @@ func (m *Manager) End(id string) {
 // interleave. The short manager mutex (mu) is taken only to read the live
 // session and later to bump saveSeq/knownIDs; it is released for the
 // duration of the I/O so Append and Snapshot stay responsive mid-save.
+//
+// saveMu is its own lock domain, separate from memory.LockRepoWrite's
+// repoWriteLocks: nothing outside this package writes episodes/**.md,
+// episodes/**.json, or sessions.jsonl today (the UI's direct memory-file
+// editor is restricted to a fixed set of top-level files — see
+// editableProjectFiles in internal/ui/memory.go — which does not include
+// them), so saveMu alone is sufficient. That is an invariant this method
+// relies on, not a general guarantee: a future writer to any of those three
+// paths would need to take the same lock this method does — or, if it lives
+// outside this package, one keyed the same way memory.LockRepoWrite's is —
+// or the two would run their own read-modify-write-commit sequences against
+// the same files with nothing to keep them from interleaving.
 func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 	m.saveMu.Lock()
 	defer m.saveMu.Unlock()

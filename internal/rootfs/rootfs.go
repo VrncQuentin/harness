@@ -188,6 +188,23 @@ func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel
 // shrinks the window from "the entire copy, sync, and close" down to "between
 // one stat and the next filesystem call", and it refuses to publish or delete
 // anything it cannot confirm is still the file this call created.
+//
+// That residual window is not closable by any check this call could add —
+// stat-then-act is what every general-purpose filesystem's rename and unlink
+// offer, on every OS this package targets, and a second stat immediately
+// before the syscall narrows the gap without ever removing it. It requires a
+// second writer with its own access to the same directory, actively racing
+// this specific sequence; this package's own callers close that door, not by
+// tightening this primitive further, but by making sure no two of them are
+// ever writing to the same destination at the same time in the first place —
+// memory.LockRepoWrite and its repoWriteLocks for facts.md/notes.md/agent
+// files, project.Workflow's workflowMu for project creation and repo moves,
+// and index.Index's own mu for its vectors.bin/manifest.json pair. What
+// remains is a genuinely external process, outside this codebase's own
+// concurrency, with independent write access to a sandboxed directory — the
+// same boundary internal/git's repoMutationLocks already draws for its own
+// mutation lock ("guards harness-internal concurrency only... outside its
+// reach"), applied here to a create-then-publish instead of a commit.
 func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) error {
 	return r.writeStreamAtomicHooked(rel, src, perm, nil)
 }

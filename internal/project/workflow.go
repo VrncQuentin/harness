@@ -3,6 +3,7 @@ package project
 import (
 	"errors"
 	"fmt"
+	"sync"
 )
 
 const (
@@ -49,9 +50,34 @@ func NewWorkflow(store WorkflowStore, repos MemoryRepoManager) *Workflow {
 	return &Workflow{Store: store, Repos: repos}
 }
 
+// workflowMu serializes every Create and Update call across the whole
+// process, not just within one Workflow value's own lifetime.
+//
+// A mutex field on Workflow itself would not do this: callers construct a
+// fresh *Workflow per request (see internal/ui/projects_page.go's
+// handleProjectCreate/handleProjectEdit), so two concurrent requests would
+// each get their own, entirely uncontended lock — the same reason
+// internal/memory's repoWriteLocks and internal/git's repoMutationLocks live
+// in package-level state rather than on a per-request value. Without this,
+// two "create project" requests naming the same MemoryRepoPath under
+// different slugs, or a create racing an update that moves a different
+// project onto that path, could both call EnsureProjectRepo/MoveProjectRepo
+// against the same destination directory at once — concurrent writers this
+// package's own containment and identity checks were never meant to
+// arbitrate between, only to keep a single writer inside its own bounds.
+//
+// One process-wide lock, not identity-keyed per destination the way those
+// two packages' locks are, is deliberate: project creation and editing are
+// rare, human-driven administrative actions, not a hot path measured in
+// operations per second, so there is nothing to gain from finer granularity
+// here that would be worth the added complexity.
+var workflowMu sync.Mutex
+
 // Create persists project metadata and initializes its memory repo, rolling back
 // metadata when repo setup fails.
 func (w *Workflow) Create(input CreateInput) (Project, error) {
+	workflowMu.Lock()
+	defer workflowMu.Unlock()
 	if w.Store == nil {
 		return Project{}, errors.New("project: store not configured")
 	}
@@ -76,6 +102,8 @@ func (w *Workflow) Create(input CreateInput) (Project, error) {
 // Update persists project metadata and reconciles memory repo path changes with
 // rollback when repo initialization or migration fails.
 func (w *Workflow) Update(input UpdateInput, memoryRepoMode string) (Project, error) {
+	workflowMu.Lock()
+	defer workflowMu.Unlock()
 	if w.Store == nil {
 		return Project{}, errors.New("project: store not configured")
 	}
