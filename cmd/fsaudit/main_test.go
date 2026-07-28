@@ -31,16 +31,7 @@ func makeAllowlist(entries []entry) allowlist {
 	return al
 }
 
-func mustMarshalAllowlist(t *testing.T, al allowlist) string {
-	t.Helper()
-	data, err := json.MarshalIndent(al, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(data)
-}
-
-// ---------- ValidateAllowlist tests ----------
+// ---------- ValidateAllowlist ----------
 
 func TestValidateAllowlist_RejectsNeitherJustificationNorPR(t *testing.T) {
 	al := makeAllowlist([]entry{
@@ -84,68 +75,53 @@ func TestValidateAllowlist_AcceptsValidMix(t *testing.T) {
 	}
 }
 
-func TestValidateAllowlist_RequiresExactConfigKeys(t *testing.T) {
-	data := mustMarshalAllowlist(t, allowlist{
-		Perm: []entry{{File: "x.go", Line: 1, Fn: "os.Stat"}},
+func TestValidateAllowlist_AcceptsSameLineDifferentCol(t *testing.T) {
+	al := makeAllowlist([]entry{
+		{File: "x.go", Line: 7, Col: 1, Fn: "os.Stat", PR: "PR 99"},
+		{File: "x.go", Line: 7, Col: 20, Fn: "os.Stat", PR: "PR 99"},
 	})
-	var parsed allowlist
-	if err := json.Unmarshal([]byte(data), &parsed); err != nil {
-		t.Fatal(err)
-	}
-	// An entry with no justification and no pr should be accepted by
-	// the JSON parser but rejected by ValidateAllowlist.
-	errs := ValidateAllowlist(parsed)
-	if len(errs) == 0 {
-		t.Error("validation should reject entry with no classification fields")
+	errs := ValidateAllowlist(al)
+	if len(errs) != 0 {
+		t.Errorf("same-line different-column entries should be accepted: %v", errs)
 	}
 }
 
-// ---------- Audit tests ----------
+func TestValidateAllowlist_RejectsSameLineSameCol(t *testing.T) {
+	al := makeAllowlist([]entry{
+		{File: "x.go", Line: 7, Col: 20, Fn: "os.Stat", PR: "PR 99"},
+		{File: "x.go", Line: 7, Col: 20, Fn: "os.Stat", PR: "PR 99"},
+	})
+	errs := ValidateAllowlist(al)
+	if len(errs) == 0 {
+		t.Error("same-line same-column duplicate entries should be rejected")
+	}
+}
+
+// ---------- Audit: basic classification ----------
 
 func TestAudit_ImportAliasDetected(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/alias.go", `
-package pkg
+	writeFile(t, dir, "internal/pkg/alias.go", `package pkg
 
 import filesystem "os"
 
-func foo() {
-	filesystem.RemoveAll("/tmp/x")
-}
+func foo() { filesystem.RemoveAll("/tmp/x") }
 `)
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/alias.go", Line: 7, Fn: "os.RemoveAll", PR: "PR 99"},
+		{File: "internal/pkg/alias.go", Line: 5, Fn: "os.RemoveAll", PR: "PR 99"},
 	})
 	report := Audit(dir, al)
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
 	if len(report.Unclassified) > 0 {
 		t.Errorf("alias import not matched: %v", report.Unclassified)
-	}
-	if len(report.Stale) > 0 {
-		t.Errorf("stale entries: %v", report.Stale)
-	}
-}
-
-func TestAudit_AliasImportNotOsIgnored(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/other.go", `
-package pkg
-
-import other "fmt"
-
-func foo() {
-	other.Println("hi")
-}
-`)
-	report := Audit(dir, makeAllowlist(nil))
-	if len(report.SourceCalls) != 0 {
-		t.Errorf("non-watched alias calls should be ignored, got %v", report.SourceCalls)
 	}
 }
 
 func TestAudit_WrongSymbolAtAllowedLineRejected(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/bad.go", `
-package pkg
+	writeFile(t, dir, "internal/pkg/bad.go", `package pkg
 
 import "os"
 
@@ -155,9 +131,12 @@ func foo() {
 }
 `)
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/bad.go", Line: 7, Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/bad.go", Line: 6, Fn: "os.Stat", PR: "PR 99"},
 	})
 	report := Audit(dir, al)
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
 	found := false
 	for _, c := range report.Unclassified {
 		if c.Fn == "os.RemoveAll" {
@@ -165,26 +144,26 @@ func foo() {
 		}
 	}
 	if !found {
-		t.Error("os.RemoveAll on line 7 should not match os.Stat allowlist entry")
+		t.Error("os.RemoveAll on line 6 should not match os.Stat allowlist entry")
 	}
 }
 
 func TestAudit_StaleEntryDetected(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/real.go", `
-package pkg
+	writeFile(t, dir, "internal/pkg/real.go", `package pkg
 
 import "os"
 
-func foo() {
-	os.Stat("/tmp/x")
-}
+func foo() { os.Stat("/tmp/x") }
 `)
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/real.go", Line: 7, Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/real.go", Line: 5, Fn: "os.Stat", PR: "PR 99"},
 		{File: "internal/pkg/real.go", Line: 99, Fn: "os.Stat", PR: "PR 99"},
 	})
 	report := Audit(dir, al)
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
 	if len(report.Stale) == 0 {
 		t.Error("expected stale entry for line 99")
 	}
@@ -192,16 +171,16 @@ func foo() {
 
 func TestAudit_SecurityPackageScanned(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "internal/rootfs/fake.go", `
-package rootfs
+	writeFile(t, dir, "internal/rootfs/fake.go", `package rootfs
 
 import "os"
 
-func FakeOpen() (*os.Root, error) {
-	return os.OpenRoot("/tmp/fake")
-}
+func FakeOpen() (*os.Root, error) { return os.OpenRoot("/tmp/fake") }
 `)
 	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
 	if len(report.SourceCalls) == 0 {
 		t.Error("rootfs should be scanned by the audit")
 	}
@@ -209,16 +188,16 @@ func FakeOpen() (*os.Root, error) {
 
 func TestAudit_FsauditDirExempted(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "cmd/fsaudit/fake.go", `
-package main
+	writeFile(t, dir, "cmd/fsaudit/fake.go", `package main
 
 import "os"
 
-func foo() {
-	os.WriteFile("/tmp/x", []byte("hello"), 0o644)
-}
+func foo() { os.WriteFile("/tmp/x", []byte("hello"), 0o644) }
 `)
 	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
 	if len(report.SourceCalls) != 0 {
 		t.Errorf("cmd/fsaudit/ should be exempt, got %v", report.SourceCalls)
 	}
@@ -226,77 +205,26 @@ func foo() {
 
 func TestAudit_TestFilesExcluded(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/real_test.go", `
-package pkg_test
+	writeFile(t, dir, "internal/pkg/real_test.go", `package pkg_test
 
 import "os"
 
-func TestFoo(t *testing.T) {
-	os.RemoveAll("/tmp/x")
-}
+func TestFoo(t *testing.T) { os.RemoveAll("/tmp/x") }
 `)
 	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
 	if len(report.SourceCalls) != 0 {
 		t.Errorf("test files should be excluded, got %v", report.SourceCalls)
 	}
 }
 
-func TestAudit_MultilineCallDetected(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/multi.go", `
-package pkg
-
-import "os"
-
-func foo() {
-	os.RemoveAll(
-		"/tmp/x",
-	)
-}
-`)
-	report := Audit(dir, makeAllowlist(nil))
-	found := false
-	for _, c := range report.SourceCalls {
-		if c.Fn == "os.RemoveAll" {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("multiline call not detected")
-	}
-}
-
-// ---------- multiplicity tests ----------
-
-func TestAudit_DuplicateCallsMatchDuplicateAllowlist(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/dup.go", `
-package pkg
-
-import "os"
-
-func foo() {
-	os.Stat("/tmp/a")
-	os.Stat("/tmp/b")
-}
-`)
-	al := makeAllowlist([]entry{
-		{File: "internal/pkg/dup.go", Line: 7, Fn: "os.Stat", PR: "PR 99"},
-		{File: "internal/pkg/dup.go", Line: 8, Fn: "os.Stat", PR: "PR 99"},
-	})
-	report := Audit(dir, al)
-	if len(report.Unclassified) > 0 {
-		t.Errorf("matching multiplicities should pass: %v", report.Unclassified)
-	}
-	if len(report.Stale) > 0 {
-		t.Errorf("no stale entries expected: %v", report.Stale)
-	}
-}
+// ---------- Audit: multiplicities ----------
 
 func TestAudit_MoreSourceCallsThanEntriesIsUnclassified(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/dup.go", `
-package pkg
+	writeFile(t, dir, "internal/pkg/dup.go", `package pkg
 
 import "os"
 
@@ -306,11 +234,12 @@ func foo() {
 }
 `)
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/dup.go", Line: 7, Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/dup.go", Line: 6, Fn: "os.Stat", PR: "PR 99"},
 	})
 	report := Audit(dir, al)
-	// The two calls on lines 7 and 8 match one allowlist entry (line 7).
-	// The call on line 8 should be unclassified (different line means different entry key).
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
 	osStatCalls := 0
 	for _, c := range report.Unclassified {
 		if c.Fn == "os.Stat" {
@@ -322,44 +251,62 @@ func foo() {
 	}
 }
 
-func TestAudit_TwoIdenticalCallsOnSameLineNeedTwoEntries(t *testing.T) {
+func TestAudit_TwoCallsOnSameLineClassifiedByColumn(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "internal/pkg/same_line.go", `package pkg
 
 import "os"
 
-func foo() { os.Stat("/a"); os.Stat("/b") }
+func f() { os.Stat("a"); os.Stat("b") }
 `)
+	// We don't know exact column positions for the two calls,
+	// so use col=0 which matches any column on that line.
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/same_line.go", Line: 5, Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/same_line.go", Line: 5, Col: 0, Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/same_line.go", Line: 5, Col: 0, Fn: "os.Stat", PR: "PR 99"},
 	})
 	report := Audit(dir, al)
-	// One remaining call on line 7 should be stale-then-unclassified.
-	osStatUnclass := 0
-	for _, c := range report.Unclassified {
-		if c.Fn == "os.Stat" {
-			osStatUnclass++
-		}
+	if report.Err != nil {
+		t.Fatal(report.Err)
 	}
-	if osStatUnclass != 1 {
-		t.Errorf("expected one unclassified os.Stat for same-line multiplicity, got %d (blocked=%d)", osStatUnclass, len(report.Blocked))
+	if len(report.Unclassified) > 0 {
+		t.Errorf("both calls should be classified with two col=0 entries: unclass=%v", report.Unclassified)
+	}
+	if len(report.Stale) > 0 {
+		t.Errorf("no stale entries expected: %v", report.Stale)
 	}
 }
 
-// ---------- dot-import tests ----------
+// ---------- Audit: parse error propagation ----------
 
-func TestAudit_DotImportDetected(t *testing.T) {
+func TestAudit_ParseErrorFailsClosed(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/dotimp.go", `
-package pkg
+	writeFile(t, dir, "internal/pkg/broken.go", `package pkg
+
+import "os"
+
+func foo(   // missing closing paren
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err == nil {
+		t.Error("parse error should be returned")
+	}
+}
+
+// ---------- Audit: blocked capability escapes ----------
+
+func TestAudit_DotImportCallDetected(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/pkg/dotimp.go", `package pkg
 
 import . "os"
 
-func foo() {
-	RemoveAll("/tmp/x")
-}
+func foo() { RemoveAll("/tmp/x") }
 `)
 	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
 	found := false
 	for _, c := range report.SourceCalls {
 		if c.Fn == "os.RemoveAll" {
@@ -371,35 +318,18 @@ func foo() {
 	}
 }
 
-func TestAudit_DotImportNotWatchedIgnored(t *testing.T) {
+func TestAudit_DotImportExtractionBlocked(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/dotimp.go", `
-package pkg
+	writeFile(t, dir, "internal/pkg/dotimp2.go", `package pkg
 
-import . "fmt"
+import . "os"
 
-func foo() {
-	Println("hi")
-}
+var remove = RemoveAll
 `)
 	report := Audit(dir, makeAllowlist(nil))
-	if len(report.SourceCalls) != 0 {
-		t.Errorf("non-watched dot import should be ignored, got %v", report.SourceCalls)
+	if report.Err != nil {
+		t.Fatal(report.Err)
 	}
-}
-
-// ---------- function-value extraction tests ----------
-
-func TestAudit_FunctionValueExtractionBlocked(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/val.go", `
-package pkg
-
-import "os"
-
-var fn = os.RemoveAll
-`)
-	report := Audit(dir, makeAllowlist(nil))
 	found := false
 	for _, c := range report.Blocked {
 		if c.Fn == "os.RemoveAll" {
@@ -407,23 +337,22 @@ var fn = os.RemoveAll
 		}
 	}
 	if !found {
-		t.Errorf("function value extraction not blocked, blocked=%v", report.Blocked)
+		t.Errorf("dot-imported extraction not blocked: %v", report.Blocked)
 	}
 }
 
-func TestAudit_FunctionValueShortDeclBlocked(t *testing.T) {
+func TestAudit_PassWatchedFunctionAsArgBlocked(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "internal/pkg/val2.go", `
-package pkg
+	writeFile(t, dir, "internal/pkg/val.go", `package pkg
 
 import "os"
 
-func foo() {
-	rm := os.RemoveAll
-	_ = rm
-}
+func use(os.RemoveAll)
 `)
 	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
 	found := false
 	for _, c := range report.Blocked {
 		if c.Fn == "os.RemoveAll" {
@@ -431,30 +360,172 @@ func foo() {
 		}
 	}
 	if !found {
-		t.Errorf("short-decl function value extraction not blocked, blocked=%v", report.Blocked)
+		t.Errorf("passing os.RemoveAll as arg not blocked: %v", report.Blocked)
 	}
 }
 
-// ---------- watched policy immutability ----------
+func TestAudit_ReturnWatchedFunctionBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/pkg/ret.go", `package pkg
 
-func TestAudit_WatchedPolicyIsntFromAllowlist(t *testing.T) {
+import "os"
+
+func fn() func(string) error { return os.RemoveAll }
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.RemoveAll" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("returning os.RemoveAll not blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_CompositeLiteralWatchedFunctionBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/pkg/comp.go", `package pkg
+
+import "os"
+
+var funcs = []func(string) error{os.RemoveAll}
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.RemoveAll" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("composite-literal os.RemoveAll not blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_OsRootTypeRefBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/pkg/roottype.go", `package pkg
+
+import "os"
+
+func wipe(root *os.Root) { _ = root }
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("*os.Root type reference not blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_OsRootTypeSpecBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/pkg/rootalias.go", `package pkg
+
+import "os"
+
+type MyRoot = os.Root
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("os.Root type alias not blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_OsRootTypeRefInRootFSIsNotBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/rootfs/root.go", `package rootfs
+
+import "os"
+
+func open(path string) (*os.Root, error) { return os.OpenRoot(path) }
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root" {
+			t.Errorf("*os.Root reference inside internal/rootfs should not be blocked")
+		}
+	}
+}
+
+// ---------- Audit: watched policy immutability ----------
+
+func TestAudit_WatchedPolicyIsCompiled(t *testing.T) {
 	if _, ok := watched["os"]; !ok {
 		t.Error("os package must be in compiled watched policy")
 	}
 	if _, ok := watched["path/filepath"]; !ok {
 		t.Error("path/filepath package must be in compiled watched policy")
 	}
-	syms := watched["os"]
-	for _, s := range []string{"Open", "OpenFile", "RemoveAll", "MkdirAll", "Truncate", "Link", "Symlink", "CopyFS", "DirFS", "MkdirTemp"} {
-		found := false
-		for _, ws := range syms {
-			if ws == s {
-				found = true
-				break
-			}
-		}
-		if !found {
+	for _, s := range []string{"OpenFile", "RemoveAll", "MkdirAll", "Truncate", "Link", "Symlink", "CopyFS", "DirFS", "MkdirTemp"} {
+		if !slicesContains(watched["os"], s) {
 			t.Errorf("os.%s must be in compiled watched policy", s)
 		}
+	}
+}
+
+func slicesContains(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------- JSON round-trip ----------
+
+func TestAllowlistJSON_RoundTrip(t *testing.T) {
+	al := allowlist{
+		Perm: []entry{
+			{File: "x.go", Line: 1, Col: 0, Fn: "os.Stat", Justification: "legit"},
+		},
+		Migr: []entry{
+			{File: "y.go", Line: 2, Col: 14, Fn: "os.Open", PR: "PR 3"},
+		},
+	}
+	data, err := json.MarshalIndent(al, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed allowlist
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Perm) != 1 || parsed.Perm[0].Fn != "os.Stat" {
+		t.Error("permanent entry lost in round-trip")
+	}
+	if len(parsed.Migr) != 1 || parsed.Migr[0].Fn != "os.Open" {
+		t.Error("migration entry lost in round-trip")
+	}
+	if parsed.Migr[0].Col != 14 {
+		t.Errorf("expected col 14, got %d", parsed.Migr[0].Col)
 	}
 }

@@ -10,9 +10,9 @@ until the sequence below is merged and the final audit (PR 12) passes.
 
 | # | Finding | Test |
 |---|---------|------|
-| 2.1 | Symlink alias escapes containment when root resolves by name | `TestAnchor_SymlinkAliasRefusesAccess` |
-| 2.2 | Windows junction escapes containment | `TestAnchor_JunctionAliasRefusesAccess` |
-| 2.3 | Same-name directory replacement not detected | `TestAnchor_SameNameReplacementFailsClosed` |
+| 2.1 | Construction through a stable symlink alias must bind the physical target | `TestAnchor_ConstructionThroughSymlinkAliasSucceeds` |
+| 2.2 | Construction through a stable Windows junction must bind the physical target | `TestAnchor_ConstructionThroughJunctionAliasSucceeds` |
+| 2.3 | Re-pointing a previously-stable alias root fails closed | `TestAnchor_RePointedAliasFailsClosed` |
 | 2.4 | Root re-pointing (rename original aside, replace with evil) | `TestAnchor_RootRepointedAfterPinFails` |
 | 2.5 | Original directory renamed aside — silent switch | `TestAnchor_OriginalRenamedAsideFailsClosed` |
 | 2.6 | Windows filesystem identity not established | `TestAnchor_WindowsIdentity` |
