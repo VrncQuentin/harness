@@ -1329,9 +1329,70 @@ func TestBuildSessionManagerAcceptsWhenGitRepoMatchesThePinnedReader(t *testing.
 	}
 }
 
+// The two tests above distinguish a mismatch from a match by pointing
+// roots.activeRoot at a genuinely different *path* — but pathid.ID compares
+// canonical path strings, not filesystem objects, so it cannot be trusted to
+// catch a same-name replacement: pin a repo, rename it aside, install a
+// different valid repo under the exact same path, and pathid.Resolve of that
+// path resolves to an Equal ID before and after, because Resolve never opens
+// anything to check. This proves the fix compares the two directory objects
+// instead: pinned (sessionStore) keeps its handle on the original repo, which
+// is a distinct physical directory from whatever now occupies roots.activeRoot
+// even though both were addressed by the identical configured path — a
+// git.Open at that path must be refused as a mismatch, not accepted because
+// the string happens to match.
+func TestBuildSessionManagerRefusesWhenPathIsReusedByADifferentRepoBetweenTheTwoOpens(t *testing.T) {
+	base := t.TempDir()
+	repoPath := filepath.Join(base, "repo")
+	initRuntimeProjectRepoAt(t, repoPath)
+
+	cfg := config.Defaults()
+	cfg.Project.ActiveProjectSlug = "global"
+	rt := New(cfg, nil, LogRings{})
+	pinned := openTestRepo(t, repoPath)
+	rt.globalMem = pinned
+	rt.activeMem = pinned
+
+	// pinned's handle is by descriptor, not by path, so renaming the
+	// directory it is pinned to out from under its own name does not disturb
+	// it on platforms that allow renaming a directory with an open handle —
+	// POSIX does unconditionally. Windows' os.OpenRoot, unlike OpenChild on an
+	// already-open Root, does not appear to request share-mode-delete for
+	// the root handle itself, so the rename below can fail here with a
+	// sharing violation even though nothing is wrong with the fix under
+	// test; skip rather than fail in that case — ubuntu-latest in CI
+	// exercises the real scenario unconditionally.
+	movedAside := filepath.Join(base, "repo-moved-aside")
+	if err := os.Rename(repoPath, movedAside); err != nil {
+		t.Skipf("cannot rename a directory with an open handle in this environment: %v", err)
+	}
+	// A second, independent, and equally valid repo now occupies the exact
+	// path the first one used to.
+	initRuntimeProjectRepoAt(t, repoPath)
+
+	mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+		globalRoot: repoPath,
+		activeRoot: repoPath,
+		activeSlug: "global",
+	}, pinned, openTestEpisodeIndex(t, pinned), rt.ensureInferenceClient(), nil)
+
+	if mgr != nil || adapter != nil {
+		t.Fatalf("expected a refusal when a different repo now occupies the pinned reader's original path, got mgr=%v adapter=%v", mgr, adapter)
+	}
+}
+
 func initRuntimeProjectRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	initRuntimeProjectRepoAt(t, root)
+	return root
+}
+
+// initRuntimeProjectRepoAt scaffolds a valid project memory repo at a caller-
+// chosen path rather than a fresh t.TempDir(), so a test can install a second,
+// independent repo at the exact path an earlier one occupied.
+func initRuntimeProjectRepoAt(t *testing.T, root string) {
+	t.Helper()
 	repo, err := gitw.Init(root)
 	if err != nil {
 		t.Fatalf("git init: %v", err)
@@ -1342,7 +1403,6 @@ func initRuntimeProjectRepo(t *testing.T) string {
 	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(true)); err != nil {
 		t.Fatalf("commit scaffold: %v", err)
 	}
-	return root
 }
 
 func startFakeModelServer(t *testing.T, summary string) (int, func()) {

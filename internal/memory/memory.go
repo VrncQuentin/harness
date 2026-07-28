@@ -177,7 +177,26 @@ func (r *DirReader) Close() error {
 // resolution of the path taken later still: a later resolution only answers
 // what the path currently names, which is a different, later question than
 // whether the two components opened the same repository.
+//
+// That said, Identity itself only answers "what path does the other side
+// currently mean" — pathid.ID reduces a path to its canonical string form and
+// never inspects the object a path currently names, so two Identity values
+// can be Equal even when one side's directory was renamed aside and a
+// different directory installed under the same name between the two opens.
+// DirInfo answers the stronger question — did the two handles land on the
+// same physical object — and is what a caller should actually compare.
 func (r *DirReader) Identity() pathid.ID { return r.id }
+
+// DirInfo returns the pinned repo directory's current FileInfo, queried live
+// through the handle this reader has held open since OpenDirReader rather
+// than a cached snapshot — the handle stays open for this reader's whole
+// lifetime anyway, so there is nothing to gain by caching. Compare it against
+// a second component's own DirInfo (see git.Repo.DirInfo) with os.SameFile to
+// confirm the two independently-opened handles reached the same physical
+// directory, not merely the same configured path spelling.
+func (r *DirReader) DirInfo() (fs.FileInfo, error) {
+	return r.root.Stat(".")
+}
 
 // SubRoot implements SubRooter. relPath is created if it is missing, then
 // pinned through the repo handle so the returned root is inside the repo by

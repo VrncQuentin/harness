@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -457,15 +458,25 @@ func (rt *Runtime) buildSessionManagerWithClients(
 		return nil, nil
 	}
 	// go-git addresses its storage by pathname and has no handle to bind to
-	// sessionStore's own pin, so this is the closest check available: both
-	// sides' identities are compared as already-resolved values, each taken at
-	// its own open time, rather than by re-resolving roots.activeRoot a third
-	// time here — a fresh resolution at this later point would only confirm
-	// what the path currently names, not whether it named the same thing when
-	// go-git opened it moments before. dr is nil for a test fake that does not
-	// implement Identity; production always passes the real *memory.DirReader.
+	// sessionStore's own pin, so this is the closest check available. It
+	// compares DirInfo, not Identity: pathid.ID reduces a path to its
+	// canonical string form and never inspects the object a path currently
+	// names, so two Identity values can be Equal even when sessionStore's
+	// directory was renamed aside and a different one installed under the
+	// same configured path between the two opens — dr would then still hold
+	// the original repository while repo, opened moments later by path,
+	// landed on the replacement. DirInfo is each side's FileInfo, captured as
+	// close as possible to its own open time, and os.SameFile compares the
+	// two as filesystem objects rather than as names. dr is nil for a test
+	// fake that does not implement DirInfo; production always passes the
+	// real *memory.DirReader.
 	if dr, ok := sessionStore.(*memory.DirReader); ok {
-		if !dr.Identity().Equal(repo.Identity()) {
+		drInfo, err := dr.DirInfo()
+		if err != nil {
+			uiServer.AddStartupError(fmt.Errorf("session manager: stat pinned memory repo: %w", err))
+			return nil, nil
+		}
+		if !os.SameFile(drInfo, repo.DirInfo()) {
 			uiServer.AddStartupError(errors.New("session manager: git repository does not match the pinned memory repo"))
 			return nil, nil
 		}

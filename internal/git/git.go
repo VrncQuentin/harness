@@ -40,6 +40,16 @@ type Repo struct {
 	// component's own identity rather than reopen the path a second time.
 	id      pathid.ID
 	lockKey string
+	// dirInfo is the repository directory's FileInfo, captured immediately
+	// after go-git opened it. pathid.ID is a canonical path spelling, not a
+	// filesystem object: a directory renamed aside and replaced by a
+	// different one under the same name resolves to an Equal ID before and
+	// after, because Resolve reduces to path strings, never opens anything,
+	// and has no notion of "the same object" at all. A caller that needs to
+	// know two handles reached the same physical directory — not merely a
+	// path that means the same thing right now — compares dirInfo with
+	// os.SameFile instead. See DirInfo.
+	dirInfo os.FileInfo
 	mu      sync.Mutex
 }
 
@@ -74,13 +84,38 @@ func newRepo(repo *gogit.Repository, path string) (*Repo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("git: identify repository %s: %w", path, err)
 	}
-	return &Repo{repo: repo, path: path, id: id, lockKey: id.Key()}, nil
+	// Stat'd immediately after go-git's own open, for the same reason id is
+	// resolved here rather than left to a caller: this is the closest
+	// approximation available of "what go-git actually opened," since go-git
+	// gives no way to ask and addresses its storage by path throughout.
+	dirInfo, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("git: stat repository %s: %w", path, err)
+	}
+	return &Repo{repo: repo, path: path, id: id, lockKey: id.Key(), dirInfo: dirInfo}, nil
 }
 
 // Identity returns the physical identity resolved when this handle was
 // opened, for a caller that needs to confirm another component — one it
 // cannot bind to this handle directly — is looking at the same repository.
+//
+// This answers "what path does the other side currently mean," which is a
+// weaker question than "did the other side open the same directory this
+// handle did" — see DirInfo, which answers that one.
 func (r *Repo) Identity() pathid.ID { return r.id }
+
+// DirInfo returns the repository directory's FileInfo, captured immediately
+// after go-git opened it. A caller comparing two independently-opened handles
+// on what should be the same repository — this one and, say, a
+// *memory.DirReader pinned on the same configured path — should compare their
+// two DirInfo values with os.SameFile rather than their Identity values: two
+// Identity values can be Equal while describing different physical
+// directories if one was renamed aside and a different directory installed
+// under the same name between the two opens, because pathid.ID reduces a
+// path to its canonical string form and never inspects the object a path
+// currently names. os.SameFile does inspect the object, which is what this
+// question actually needs answered.
+func (r *Repo) DirInfo() os.FileInfo { return r.dirInfo }
 
 // lockRepo takes the repository-wide mutation lock and this handle's mutex, and
 // returns the function that releases both in the right order.
