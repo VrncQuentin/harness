@@ -569,9 +569,13 @@ func (r *Root) walk(prefix string, visit WalkFunc, depth int, afterOpenChild fun
 	return nil
 }
 
-// walkDir pins one subdirectory, describes it through that same handle, and —
-// unless the visitor skips it — descends through it. name is only ever passed
-// here when the initial listing already reported it as a directory.
+// walkDirHooked pins one subdirectory, describes it through that same
+// handle, and — unless the visitor skips it — descends through it. name is
+// only ever passed here when the initial listing already reported it as a
+// directory. afterOpenChild runs right after OpenChild succeeds and before
+// the Lstat that follows it — the exact window a test can use to replace
+// name with something else before this call re-resolves it. Nil on every
+// production path.
 //
 // That listing is a snapshot, not a live fact: os.Root follows an in-root
 // symlink rather than refusing it, so a name that was a real directory when
@@ -595,14 +599,6 @@ func (r *Root) walk(prefix string, visit WalkFunc, depth int, afterOpenChild fun
 // not as names, so an ordinary replacement directory under the same name
 // fails the comparison even though both it and the original are real,
 // non-symlink directories.
-func (r *Root) walkDir(name, relPath string, visit WalkFunc, depth int) error {
-	return r.walkDirHooked(name, relPath, visit, depth, nil)
-}
-
-// walkDirHooked is walkDir with a hook that runs right after OpenChild
-// succeeds and before the Lstat that follows it — the exact window a test can
-// use to replace name with something else before walkDir re-resolves it. Nil
-// on every production path.
 func (r *Root) walkDirHooked(name, relPath string, visit WalkFunc, depth int, afterOpenChild func(name string)) error {
 	child, err := r.OpenChild(name)
 	if err != nil {

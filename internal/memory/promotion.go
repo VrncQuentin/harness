@@ -189,11 +189,11 @@ func (s PromotionService) readExisting(relPath string) ([]byte, bool, error) {
 	return nil, false, fmt.Errorf("read %s: %w", relPath, err)
 }
 
-// rollback undoes this call's own write when the commit that was meant to
-// follow it fails. expected is the content this call published; rollback only
-// proceeds if the file still holds exactly that.
+// rollbackHooked undoes this call's own write when the commit that was meant
+// to follow it fails. expected is the content this call published; rollback
+// only proceeds if the file still holds exactly that.
 //
-// appendAndCommit's promotionLocks hold already rules out a second promotion
+// appendAndCommit's repoWriteLocks hold already rules out a second promotion
 // landing here — this call's own read, write, and any rollback are one
 // critical section for that repository, so another PromotionService call
 // cannot interleave partway through. What the content check guards against is
@@ -209,20 +209,16 @@ func (s PromotionService) readExisting(relPath string) ([]byte, bool, error) {
 // somebody else has already written over this call's promotion, and rolling
 // back would erase their write instead of this one's, so the safe choice is to
 // leave the file exactly as it is and let the original commit error stand.
-func (s PromotionService) rollback(relPath string, previous, expected []byte, existed bool) error {
-	return s.rollbackHooked(relPath, previous, expected, existed, nil)
-}
-
-// rollbackHooked is rollback with a hook that runs after the content check
-// passes -- current still equals expected, so nothing has visibly raced this
-// call yet -- and before the restore or removal that follows. It exists so a
-// test can stage a write landing in exactly that window: appendAndCommit
-// still holds repoWriteLocks for the whole call at this point, so a
-// LockRepoWrite-respecting writer attempting to land here blocks until this
-// call (and its restore) is done, which is the property under test. The hook
-// is a parameter, nil on every production path, for the same reason every
-// other hook in this codebase is: two tests setting shared state at once
-// would each run the other's hook.
+//
+// afterCheck runs after the content check passes -- current still equals
+// expected, so nothing has visibly raced this call yet -- and before the
+// restore or removal that follows. It exists so a test can stage a write
+// landing in exactly that window: appendAndCommit still holds repoWriteLocks
+// for the whole call at this point, so a LockRepoWrite-respecting writer
+// attempting to land here blocks until this call (and its restore) is done,
+// which is the property under test. The hook is a parameter, nil on every
+// production path, for the same reason every other hook in this codebase is:
+// two tests setting shared state at once would each run the other's hook.
 func (s PromotionService) rollbackHooked(relPath string, previous, expected []byte, existed bool, afterCheck func()) error {
 	current, err := s.Store.Read(relPath)
 	if err != nil {
