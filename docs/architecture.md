@@ -708,10 +708,7 @@ Mediates all reads and writes to git-backed project memory repos.
   the handles it reads through: the same use-after-close hazard the reload
   path exists to close, just on the shutdown path instead. Unlike a reload,
   a drain timeout here does not abort anything — there is no generation left
-  to preserve for a later retry, since the process is exiting regardless —
-  so it is logged and `Stop` proceeds; live sessions are flushed only after
-  the drain (not before or interleaved with it), for the same
-  no-new-admissions-then-flush reasoning `flushSessionsForReload` documents.
+  to preserve for a later retry, since the process is exiting regardless.
   `Stop` calls a dedicated `Server.DrainGenerationRequestsForShutdown`
   (`genGate.closeForShutdown`), not `DrainGenerationRequests`: the latter
   reopens admission on a timeout because a reload that timed out must abort
@@ -719,7 +716,24 @@ Mediates all reads and writes to git-backed project memory repos.
   handles regardless of the drain's outcome — reopening admission on a
   timed-out shutdown drain would let a fresh request in right before the
   handles it depends on are closed. `closeForShutdown` is the same wait,
-  just without that reopen branch.
+  just without that reopen branch. A timeout from either the UI drain or the
+  API server's own `Shutdown` means more than "new admissions failed to
+  close in time," though — it means a request is still actually running
+  against the current generation. `Stop` used to log that and proceed
+  regardless, straight into `FlushAll` and `owned.close()`, which would pull
+  the handles out from under the very request the drain could not wait for
+  — the same use-after-close hazard the drain exists to prevent, reached
+  through a different door. `Stop` now tracks whether both phases actually
+  quiesced; on either timing out, it skips `FlushAll` and the final
+  `owned.close()` and returns, leaving those handles open for the OS to
+  reclaim on process exit (the request queue is still stopped either way —
+  `Queue.Stop` only drains requests it already accepted, touching neither
+  `rt.memHandles` nor either generation gate). `Stop` also now takes a
+  `context.Context` parameter threaded into each phase's own
+  `context.WithTimeout` exactly like `quiesceMemoryAndAPI`/
+  `shutdownAPIServerForReload` already do, so a test (or a future caller)
+  can bound every phase's wait by supplying a context with an earlier
+  deadline; ordinary shutdown passes `context.Background()`.
 - `Stop` and `ApplyConfig` can no longer interleave. `/config` and `/retry`
   intentionally sit outside the generation gate — an apply drains that gate
   itself — so nothing previously stopped an already-running (or newly
@@ -734,30 +748,40 @@ Mediates all reads and writes to git-backed project memory repos.
   because `ApplyConfig` releases `rt.mu` during its own drain windows — a
   flag guarded by `rt.mu` alone would still let a concurrent `ApplyConfig`
   start and finish inside those windows while `Stop` proceeded in parallel.
-- `handleProjectSwitch`'s `llama_on_switch=keep` branch still reconfigures
-  llama-server when the *global* `Model.Port` field changed in the same
-  apply as the switch, even though "keep" otherwise leaves the process
-  alone. Port is never project-specific (`config.ModelConfigEqual`'s own
-  comment), so a direct edit to it is not something "keep" is meant to
-  suppress — and `reconfigureProcesses`'s inference-client swap
-  (`config.go`) is unconditional on `projectSwitching` for exactly that
-  reason. Without this, the client would move to the new port while
-  llama-server stayed on the old one, pointing every request at nothing.
-  The reconfigure in that specific case uses the *source* project's
-  effective model with only the port swapped — never the destination's —
-  so "keep" still means what it says for the model itself.
-- The `llama_on_switch=reload` branch's own skip check has the same
-  port blind spot, from the other direction: it decides whether to
-  reconfigure at all with `config.ModelConfigEqual(srcModel, dstModel)`
-  alone, and that comparison deliberately ignores `Port`. Two projects
-  with an otherwise-identical effective model but a switch that also
-  changed the global port would read as "unchanged, skip reload" — leaving
-  llama-server on the old port while the inference-client swap above has
-  already moved every request to the new one. The check is now
-  `ModelConfigEqual(srcModel, dstModel) && srcModel.Port == dstModel.Port`,
-  so a port-only divergence still triggers `Reconfigure` (with `dstModel`,
-  which already carries the correct new port since Port is never a project
-  override).
+- `handleProjectSwitch` takes `oldModel` (the caller's already-computed
+  effective model for the pre-apply config, `rt.effectiveModelFor(&old)` in
+  `config.go`) as a parameter, alongside `newModel`, rather than
+  re-resolving the source project itself. This closed two related gaps at
+  once. First: the `llama_on_switch=keep` branch's port sync (added when
+  this was first found: a direct edit to the global `Model.Port` field in
+  the same apply as a switch must still take effect, since
+  `reconfigureProcesses`'s inference-client swap in `config.go` is
+  unconditional on `projectSwitching`) used to re-resolve the source
+  project locally, and any resolution failure — a project deleted
+  mid-apply, a transient project-store error — silently skipped the sync
+  entirely, even though the client had already moved to the new port
+  unconditionally. `oldModel` is exactly what `rt.effectiveModelFor` already
+  falls back to (the global `Model` config, unmodified) on that same
+  failure, so using the caller's copy instead of re-deriving it removes the
+  failure mode altogether — nothing in `handleProjectSwitch` can silently
+  skip the sync just because the project store had a bad moment. Second:
+  both the `keep` port-sync and the `reload` policy's skip check used to
+  compare `Port` only (via `config.ModelConfigEqual`, which deliberately
+  ignores both `Port` and `Verbose`), so a same-model, same-port,
+  *`Verbose`-only* divergence across a switch went unnoticed in either
+  direction — the committed config could say `Verbose` changed while the
+  running process kept its old `--verbose` setting. Since `ModelConfig` has
+  no incomparable fields, a plain `==` is exactly "did anything about the
+  running process's args actually change," so `keep`'s sync now merges
+  `oldModel` with `newModel`'s `Port` and `Verbose` and compares the merged
+  result to `oldModel` with `==`, and `reload`'s skip check compares
+  `oldModel == dstModel` directly (`dstModel` already carries the new
+  config's global `Port`/`Verbose`, since neither is ever a project
+  override) — both cover every field, not just `Port`, and neither depends
+  on a project-store lookup succeeding. The model-mismatch UI banner is a
+  separate, display-only comparison and deliberately keeps using
+  `ModelConfigEqual`'s exclusion: a pure port or verbose difference is not
+  a "different model" from the user's point of view.
 - `session.Manager.Save` writes the sidecar (the raw conversation JSON)
   before calling the summarizer, not after. A summarizer failure — plausible
   exactly when a last-minute `flushSessionsForReload`/`Stop` flush runs,
@@ -782,7 +806,20 @@ Mediates all reads and writes to git-backed project memory repos.
   `sessions.jsonl` is append-only and last-wins-by-ID (see the package's own
   doc comment, and `findLatestRecord`/`allRecords`), so if summarization
   then succeeds, the full record appended afterward simply supersedes the
-  provisional one — no log rewriting involved.
+  provisional one — no log rewriting involved. The provisional and final
+  records from the same save deliberately carry the identical `SaveSeq` and
+  `SavedAt` (both describe the same logical save attempt), which
+  `LatestPerID` — used by `Records`, not `Resume` — did not originally
+  handle: its tiebreak only advanced to a record with a strictly *later*
+  `SavedAt`, so on an exact tie it kept whichever record it saw first,
+  meaning `Records` (and the resume picker built on it) kept surfacing the
+  provisional record's empty `EpisodePath` even after the save completed
+  successfully. `findLatestRecord` (`Resume`'s own lookup) never had this
+  bug — it just walks the log and keeps the last positional match, with no
+  `SaveSeq`/`SavedAt` comparison to fall out of sync with the log's actual
+  order. `LatestPerID`'s tiebreak now prefers the later-or-equal `SavedAt`
+  (not strictly later) on an equal `SaveSeq`, so a tie now falls through to
+  physical log position exactly like `findLatestRecord` already does.
 - A rebuild's `result.LiveApplied` is reset to `false` if the rebuild it
   guards is attempted and fails. `reconfigureProcesses` sets it `true` as
   soon as it moves llama-server or the embedder, before the rebuild that
@@ -1041,7 +1078,7 @@ Sections and fields:
 - **log:** `ring_max_entries`, `proc_max_lines`
 - **loop:** `max_turns`, `doom_threshold`, `read_enabled`, `file_list_enabled`, `ast_map_enabled`, `ast_find_enabled`, `git_status_enabled`, `git_diff_enabled`, `git_log_enabled`, `edit_enabled`, `exec_enabled`, `go_test_enabled`, `go_lint_enabled`, `git_commit_enabled`, `git_branch_enabled`, `git_checkout_enabled`, `web_search_enabled`, `memory_query_enabled`, `git_push_enabled`, `gh_pr_create_enabled`, `gh_pr_merge_enabled`, `gh_pr_wait_enabled`
 
-First run: the row is seeded with defaults and `saved_at` is NULL. The status page shows a "Set up your harness" CTA until the user saves at least once. Changes to `ui.port`, model/embedder binaries, and ports take effect on the next harness restart; everything else is reloaded when the retry callback fires.
+First run: the row is seeded with defaults and `saved_at` is NULL. The status page shows a "Set up your harness" CTA until the user saves at least once. Only `ui.port` and `queue.max_depth` require a harness restart (`ApplyConfig` reports them as `RestartNeeded`); everything else — including model/embedder binaries, model paths, and ports — is reconfigured live when the retry callback fires, per the generation-lease machinery described under Runtime above.
 
 ---
 
