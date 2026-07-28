@@ -712,6 +712,28 @@ Mediates all reads and writes to git-backed project memory repos.
   so it is logged and `Stop` proceeds; live sessions are flushed only after
   the drain (not before or interleaved with it), for the same
   no-new-admissions-then-flush reasoning `flushSessionsForReload` documents.
+  `Stop` calls a dedicated `Server.DrainGenerationRequestsForShutdown`
+  (`genGate.closeForShutdown`), not `DrainGenerationRequests`: the latter
+  reopens admission on a timeout because a reload that timed out must abort
+  and keep serving the current generation, but `Stop` proceeds to close
+  handles regardless of the drain's outcome — reopening admission on a
+  timed-out shutdown drain would let a fresh request in right before the
+  handles it depends on are closed. `closeForShutdown` is the same wait,
+  just without that reopen branch.
+- `Stop` and `ApplyConfig` can no longer interleave. `/config` and `/retry`
+  intentionally sit outside the generation gate — an apply drains that gate
+  itself — so nothing previously stopped an already-running (or newly
+  submitted) `ApplyConfig` call from rebuilding services and reopening
+  admission while `Stop` was mid-shutdown, with `Stop` then closing the
+  replacement generation's handles instead of the one it drained. `Stop` now
+  takes `Runtime.applyMu` for its entire call (the same mutex `ApplyConfig`
+  already held end to end, see above) and sets a `stopping` flag under it
+  before touching anything else; `ApplyConfig` checks `stopping` immediately
+  after acquiring `applyMu` and bails out with the zero `ui.ApplyResult` if
+  it is set. Guarding `stopping` with `applyMu` rather than `rt.mu` matters
+  because `ApplyConfig` releases `rt.mu` during its own drain windows — a
+  flag guarded by `rt.mu` alone would still let a concurrent `ApplyConfig`
+  start and finish inside those windows while `Stop` proceeded in parallel.
 - `handleProjectSwitch`'s `llama_on_switch=keep` branch still reconfigures
   llama-server when the *global* `Model.Port` field changed in the same
   apply as the switch, even though "keep" otherwise leaves the process
@@ -724,6 +746,18 @@ Mediates all reads and writes to git-backed project memory repos.
   The reconfigure in that specific case uses the *source* project's
   effective model with only the port swapped — never the destination's —
   so "keep" still means what it says for the model itself.
+- The `llama_on_switch=reload` branch's own skip check has the same
+  port blind spot, from the other direction: it decides whether to
+  reconfigure at all with `config.ModelConfigEqual(srcModel, dstModel)`
+  alone, and that comparison deliberately ignores `Port`. Two projects
+  with an otherwise-identical effective model but a switch that also
+  changed the global port would read as "unchanged, skip reload" — leaving
+  llama-server on the old port while the inference-client swap above has
+  already moved every request to the new one. The check is now
+  `ModelConfigEqual(srcModel, dstModel) && srcModel.Port == dstModel.Port`,
+  so a port-only divergence still triggers `Reconfigure` (with `dstModel`,
+  which already carries the correct new port since Port is never a project
+  override).
 - `session.Manager.Save` writes the sidecar (the raw conversation JSON)
   before calling the summarizer, not after. A summarizer failure — plausible
   exactly when a last-minute `flushSessionsForReload`/`Stop` flush runs,
@@ -733,6 +767,22 @@ Mediates all reads and writes to git-backed project memory repos.
   was never part of the episode's git commit in the first place (only the
   markdown file is staged), so writing it first changes nothing about what
   ends up in git — only whether the transcript survives a failed summary.
+  A durable sidecar alone was not enough for a session's *first* save,
+  though: `Records`/`Resume` discover sessions exclusively through
+  `sessions.jsonl`, and the only entry ever appended there used to land
+  after summarization and the git commit both succeeded — so a first-save
+  summarizer failure left the sidecar bytes durable but invisible to a
+  later `Resume(id)` (`ErrUnknownSession`), reachable only by hand. `Save`
+  now appends a *provisional* `Record` (real `ID`/`Agent`/`Project`/
+  `StartedAt`/`SaveSeq`, `EpisodePath` deliberately empty) right after the
+  sidecar write, but only when the session has no earlier successful save
+  (`!alreadyKnown`) — a later save's failure doesn't orphan anything, since
+  the session is already discoverable from its first save's record, and the
+  sidecar write always carries that call's latest conversation regardless.
+  `sessions.jsonl` is append-only and last-wins-by-ID (see the package's own
+  doc comment, and `findLatestRecord`/`allRecords`), so if summarization
+  then succeeds, the full record appended afterward simply supersedes the
+  provisional one — no log rewriting involved.
 - A rebuild's `result.LiveApplied` is reset to `false` if the rebuild it
   guards is attempted and fails. `reconfigureProcesses` sets it `true` as
   soon as it moves llama-server or the embedder, before the rebuild that
