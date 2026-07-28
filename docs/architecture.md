@@ -218,9 +218,19 @@ Responsibilities:
   type at listing time were the only check. It is not the only check: `walkDir`
   Lstat's the same name through the parent immediately after pinning it, which
   does not follow links, and refuses to describe or enter the pinned child
-  unless that Lstat still shows a directory. Walk is also depth-bounded:
-  `os.Root` follows an in-root symlink, so a link pointing at one of its own
-  ancestors is a cycle that would otherwise not terminate.
+  unless that Lstat still shows a directory. That alone is not enough to trust
+  that the pinned child and the Lstat result describe the same object, though:
+  `OpenChild` and the Lstat are two separate resolutions of the name, so a
+  symlink present when `OpenChild` follows it — or, with no symlink involved at
+  all, an ordinary directory present when `OpenChild` opens it — can be
+  replaced again by an ordinary, non-symlink directory or file before the Lstat
+  runs. The replacement passes the "is it a symlink" check exactly as easily as
+  the original would, since neither is a link. `walkDir` additionally requires
+  `os.SameFile` between the Lstat result and the pinned child's own `Stat(".")`
+  before visiting or descending — comparing the two as filesystem objects,
+  which a same-name replacement cannot pass regardless of its type. Walk is
+  also depth-bounded: `os.Root` follows an in-root symlink, so a link pointing
+  at one of its own ancestors is a cycle that would otherwise not terminate.
 - `Root.AppendSync` / `Root.OpenAppend` are the append-only capability the
   session log and the retrieval trace use. There is deliberately no general
   `OpenFile`: exposing the flag set would put `O_TRUNC` one argument away from
@@ -228,12 +238,24 @@ Responsibilities:
 - `Root.WriteStreamAtomic` pins `rel`'s destination directory once, before the
   temporary file is created, and the create, the failure-path remove, and the
   final rename all resolve against that one handle rather than the directory
-  component a second and third time. Re-resolving it on each of those calls
-  would let a directory swapped in between them redirect the rename: list the
-  directory once the temp file is visible (its random name is unpredictable
-  only until then), move it aside, plant a file under the same name in a
-  replacement, and the rename publishes the planted content under the caller's
-  requested name.
+  component a second and third time. Re-resolving the *directory* on each of
+  those calls would let a directory swapped in between them redirect the
+  rename to a different directory entirely; pinning it once closes that. It
+  does not, on its own, close the narrower window one level down: the temp
+  file's name becomes visible to anything else with access to the directory
+  the moment it is created, and a `src` reader that takes any real time (a
+  slow disk, an unlucky scheduling gap) gives a concurrent writer a chance to
+  remove that visible name and recreate it holding different content —
+  independent of the directory-level pin, since the replacement is a new file
+  under an old name in the same, correctly pinned directory. `WriteStreamAtomic`
+  captures the temp file's own `FileInfo` immediately after creating it, and
+  before both the failure-path remove and the final rename confirms via
+  `os.SameFile` that the name still refers to that same file, refusing to
+  remove or publish anything it cannot confirm is still its own. No portable
+  "rename by handle" primitive exists in Go's stdlib to close this atomically —
+  Windows' `SetFileInformationByHandle` could, but is not exposed — so a
+  narrow stat-to-syscall window remains; this shrinks it from the entire copy,
+  sync, and close down to that.
 - `File`, returned only by `OpenRead`, is read-only and exposes no pathname
   accessor: `os.File.Name` on a file opened through an `os.Root` reports the
   root path joined with the relative name, an authorized read that could be
@@ -361,7 +383,7 @@ this table.
 | `internal/governor/governor.go` `tooloutDir` | `os.MkdirAll` | Bootstrap of the spill root. Everything below it is addressed through a pinned handle by `writeSpill`. |
 | `internal/retrieval/trace.go` `NewNDJSONSink` | `os.MkdirAll` | Bootstrap of the trace root, pinned on the next line; the daily file, the listing, and the retention deletes all go through that handle. |
 | `internal/memory/project_repo.go` `copyTreeWithoutGitHooked` | `os.MkdirAll` | Bootstrap of the copy destination, pinned immediately after and then checked for identity and containment before anything is written. |
-| `internal/git/git.go` `Init` | `os.MkdirAll` | Bootstrap of a repository root, immediately followed by `go-git`, which addresses its storage by pathname and cannot take a handle. `newRepo` resolves the repository's physical identity via `pathid` immediately after `go-git` opens it — as close as achievable to what `go-git` itself used, since it exposes no way to ask what it actually opened — and retains it as `Repo.Identity()`. `internal/runtime`'s session-manager wiring compares that captured identity directly against `memory.DirReader.Identity()` (itself captured at the reader's own pin time), rather than re-resolving `roots.activeRoot` a further time to compare against: a fresh resolution taken later only answers what the path currently names, not whether it named the same thing when each side actually opened it. |
+| `internal/git/git.go` `Init`, `newRepo` | `os.MkdirAll`, `os.Stat` | Bootstrap of a repository root, immediately followed by `go-git`, which addresses its storage by pathname and cannot take a handle. `newRepo` resolves the repository's physical identity via `pathid` immediately after `go-git` opens it — as close as achievable to what `go-git` itself used, since it exposes no way to ask what it actually opened — and retains it as `Repo.Identity()`. It also captures the directory's `os.FileInfo` via `os.Stat` at the same moment, retained as `Repo.DirInfo()`. `internal/runtime`'s session-manager wiring compares `DirInfo()` against `memory.DirReader.DirInfo()` (queried live through the reader's own still-open handle) with `os.SameFile` — not `Identity()` against `Identity()`. `pathid.ID` reduces a path to its canonical string form and never opens or inspects anything, so it cannot tell two physical directories apart when one has been renamed aside and a different, equally valid directory installed under the exact same configured path between the two opens: both IDs would resolve to the identical string and `Equal` would return true even though the pinned reader and the freshly-opened `Repo` reached different objects. `os.SameFile` on each side's own `FileInfo`, captured as close as possible to its own open time, compares the directory objects themselves rather than the path strings each side happened to resolve to. |
 | `internal/db/db.go` `PeekUIPort` | `os.Stat` | The SQLite driver takes a DSN string, so the path is a pathname either way. The stat only decides whether to attempt the open; a wrong answer costs the fallback UI port. |
 | `internal/runtime/setup.go` `validateFilePath` | `os.Stat` | User-chosen model and binary paths anywhere on the machine, with no configured tree to contain them, each handed to `os/exec` afterwards. Produces a checklist message; no read, write, or authorization follows. |
 | `internal/runtime/project_health.go` `CheckProjectDirectories` | `os.Stat` | An attached project directory is a root in its own right. Produces a UI warning only; the tools that operate inside those directories run their own `pathid` containment check per call. |
@@ -478,28 +500,55 @@ Mediates all reads and writes to git-backed project memory repos.
   notably, which writes through the same store without going through
   `PromotionService`. Rolling back by name alone, on the strength of what this
   call remembers writing, would erase such a writer's content instead of this
-  call's own.
+  call's own — except that a content check alone only detects a collision after
+  it has already happened, it cannot prevent one landing in the narrow window
+  between the check and the restore. `memory.LockRepoWrite` closes that: it is
+  the same per-repository lock `appendAndCommit`'s own read-modify-write-commit-
+  rollback sequence takes (keyed by physical identity, in package-level state,
+  since a `PromotionService` value is constructed fresh per call and a lock on
+  it would serialize nothing), exported so a caller outside the package can take
+  it around its own write to the same repo. `handleMemorySave` and
+  `handleAgentsEdit` (persona, rules, and notes) hold it for their whole write,
+  so a promotion's rollback and a direct editor's save are mutually exclusive
+  for one repository rather than merely racing to a content check.
 - The UI handler reads the memory store and the committer (and the dedup checker
   and its threshold) from one snapshot of the published service deps, not from
   separate reads, so a config reload landing mid-request cannot make the write
   and the commit act on two different generations of the memory service graph.
-- `handlePromoteFact` and `handleAppendNote` are wrapped with
-  `Server.trackGenRequest`, so a reload's `quiesceMemoryAndAPI` step waits for
-  any in-flight call to one of them (via `Server.DrainGenerationRequests`,
+- Every handler that reads `MemoryStore`, `Committer`, `AgentRegistry`, or
+  `SessionStore` for a quick request/response is wrapped with
+  `Server.trackGenRequest` — `/memory`, `/memory/edit`, `/memory/save`,
+  `/memory/episodes`, `/memory/episodes/view`, `/memory/scaffold`,
+  `/memory/rebuild-index`, `/memory/promote`, `/memory/note`, `/agents`,
+  `/agents/active`, `/agents/create`, `/agents/delete`, `/agents/persona`,
+  `/agents/rules`, `/agents/notes`, `/chat/save`, and `/chat/session`. A
+  reload's `quiesceMemoryAndAPI` step drains them (`Server.DrainGenerationRequests`,
   alongside the existing task-loop cancellation and session flush) before the
-  memory/API generation they were using is closed. This coverage is
-  deliberately partial: other handlers that read `MemoryStore`, `Committer`,
-  `AgentRegistry`, or `SessionStore` for a quick request/response — the
-  `/memory` and `/agents` pages, notably — are not yet wrapped and remain
-  exposed to the same narrow window, where a reload landing exactly during
-  one of their reads or writes can close the handle mid-use. The failure mode
-  there is a request-scoped I/O error (`os.Root`/`os.File` both refuse
-  operations on an already-closed handle rather than silently reusing a
-  reassigned descriptor), not a boundary escape — but it is a real, open gap
-  pending a repository-wide audit of which handlers need the same wrapping,
-  not a solved one. SSE endpoints (`/events`, `/chat/events`, `/task/events`)
-  must never be wrapped this way, since they are long-lived by design and a
-  drain that waited for one to end on its own would turn a reload into a hang.
+  memory/API generation they were using is closed. `/chat/send` is deliberately
+  left unwrapped: it returns promptly but launches the actual work in a detached
+  goroutine that outlives the request, so wrapping the handler would not cover
+  the call that actually reads generation-scoped deps — the same reasoning that
+  excludes the SSE endpoints (`/events`, `/chat/events`, `/task/events`), which
+  are long-lived by design and would turn a drain into a hang.
+- The admission this drain waits on is not a bare `sync.WaitGroup`: that type's
+  own contract requires a positive `Add` arriving while the counter reads zero
+  to happen before the matching `Wait`, which nothing could promise against a
+  fresh handler goroutine — a request could `Add` after `Wait` had already
+  observed zero and returned, landing inside a window the runtime already
+  treated as fully drained. `Server`'s generation gate is a mutex-protected
+  counter with a closed flag instead: admission only ever increments while the
+  mutex shows the gate open, and the gate closes *before* draining begins, so
+  every admission for one drain cycle has already happened by the time the
+  drain starts waiting. A request arriving while the gate is closed is refused
+  outright (503) rather than let through untracked. `DrainGenerationRequests`
+  leaves the gate closed on success — deliberately, since the actual rebuild
+  that follows (opening a git repo, starting an embedder) can be slow and none
+  of that should run with new admissions still blocked on a mutex — until the
+  caller calls `Server.ResumeGenerationAdmission` once the swap, or the
+  restore after a failed one, is complete. On a timeout, the gate reopens
+  itself before the error returns, and the reload path aborts the whole
+  rebuild rather than proceed to close the current generation's handles out
+  from under a request the drain could not wait for.
 
 **Cross-agent reads:** explicit only. An agent may request episodes from another agent's directory. Not automatic.
 
