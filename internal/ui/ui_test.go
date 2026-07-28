@@ -1890,6 +1890,47 @@ func TestStart_BindsLoopbackOnly(t *testing.T) {
 	}
 }
 
+// /chat was registered directly (mux.HandleFunc("/chat", s.handleChat)),
+// unwrapped by trackGenRequest, despite reading ChatRunner, AgentRegistry,
+// and SessionStore synchronously with no detached goroutine — a
+// straightforward trackGenRequest candidate that was simply missed when the
+// rest of the route table was wrapped. This drives a real request through
+// the actual registered mux (via Start), not a direct call to handleChat, so
+// it catches exactly that class of regression: a route-table omission that a
+// unit test calling the handler directly would never see.
+func TestChatRouteRefusesAdmissionWhileADrainIsInProgress(t *testing.T) {
+	const port = 13003
+	s := NewServer(port)
+	setChatRunnerForTest(s, &stubChatRunner{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	if err := s.genGate.close(context.Background()); err != nil {
+		t.Fatalf("genGate.close: %v", err)
+	}
+	defer s.genGate.reopen()
+
+	var resp *http.Response
+	var err error
+	for i := 0; i < 10; i++ {
+		resp, err = http.Get(fmt.Sprintf("http://127.0.0.1:%d/chat", port))
+		if err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("GET /chat: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("GET /chat during a drain: status = %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+}
+
 // nonLoopbackIPv4 returns the host's routable IPv4 addresses, skipping the
 // test if there are none (isolated build environments).
 func nonLoopbackIPv4(t *testing.T) []string {

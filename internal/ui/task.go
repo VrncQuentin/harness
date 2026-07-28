@@ -89,20 +89,36 @@ type taskSendView struct {
 }
 
 func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
+	s.handleTaskSendHooked(w, r, nil)
+}
+
+// handleTaskSendHooked is handleTaskSend with a hook that runs immediately
+// after the generation lease is admitted and before any generation-scoped
+// dependency (runner, the live conversation) is read, so a test can stage a
+// reload landing in exactly that window and confirm the dependency actually
+// used is the one current at admission, not one read before it. Nil on
+// every production path, for the same reason every other hook in this
+// codebase is: two tests setting shared state at once would each run the
+// other's hook.
+func (s *Server) handleTaskSendHooked(w http.ResponseWriter, r *http.Request, afterEnter func()) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	runner := s.getTaskRunner()
-	if runner == nil {
-		http.Error(w, ErrTaskNotReady.Error(), http.StatusServiceUnavailable)
-		return
-	}
-	// Admitted here, but the lease is handed off to the streaming goroutine
-	// below rather than released when this handler returns: streamTaskEvents
-	// reads generation-scoped deps (through runner) for as long as the task
-	// runs, which outlives this request by design. handedOff tracks which of
-	// the two owns the exit.
+	// Enter before reading anything generation-scoped, not after: once enter
+	// succeeds, this generation cannot be torn down until this lease exits
+	// (any reload's drain has to wait for it), so runner — read immediately
+	// below — is guaranteed to still be valid for as long as this request and
+	// the goroutine it hands off to are running. Reading runner before enter
+	// would let a reload complete in the gap between the two: enter would
+	// then succeed against the *new*, reopened generation, while runner still
+	// pointed at the old one — a stale dependency wrapped in a lease that
+	// protects a different generation than the one it actually reads from.
+	// The lease is handed off to the streaming goroutine below rather than
+	// released when this handler returns: streamTaskEvents reads
+	// generation-scoped deps (through runner) for as long as the task runs,
+	// which outlives this request by design. handedOff tracks which of the
+	// two owns the exit.
 	if !s.genGate.enter() {
 		http.Error(w, "reload in progress, try again", http.StatusServiceUnavailable)
 		return
@@ -113,6 +129,15 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 			s.genGate.exit()
 		}
 	}()
+	if afterEnter != nil {
+		afterEnter()
+	}
+
+	runner := s.getTaskRunner()
+	if runner == nil {
+		http.Error(w, ErrTaskNotReady.Error(), http.StatusServiceUnavailable)
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, taskSendMaxBytes)
 	if err := r.ParseForm(); err != nil {

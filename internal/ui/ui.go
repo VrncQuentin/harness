@@ -759,7 +759,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/agents/persona", s.trackGenRequest(s.handleAgentsPersona))
 	mux.HandleFunc("/agents/rules", s.trackGenRequest(s.handleAgentsRules))
 	mux.HandleFunc("/agents/notes", s.trackGenRequest(s.handleAgentsNotes))
-	mux.HandleFunc("/chat", s.handleChat)
+	mux.HandleFunc("/chat", s.trackGenRequest(s.handleChat))
 	mux.HandleFunc("/chat/events", s.handleChatEvents)
 	// handleChatSend itself returns promptly, but it launches the actual
 	// ChatRunner call in a detached goroutine that outlives the request (see

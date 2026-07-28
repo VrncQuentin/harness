@@ -131,3 +131,42 @@ func TestHandleTaskSendRefusesAdmissionWhileADrainIsInProgress(t *testing.T) {
 		t.Fatalf("handleTaskSend during a drain: status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
+
+// handleTaskSend used to read its TaskRunner before calling s.genGate.enter().
+// A reload completing in the gap between the two would leave the request
+// admitted against the *new*, reopened generation while runner still pointed
+// at the old one — a lease that protects one generation guarding a
+// dependency read from a different one. This proves the fix by staging a
+// generation swap in the exact window between admission and dependency
+// capture (via handleTaskSendHooked's afterEnter hook) and confirming the
+// task that actually runs uses the runner current at admission time, not one
+// read beforehand.
+func TestHandleTaskSendCapturesTheRunnerCurrentAtAdmissionNotBeforeIt(t *testing.T) {
+	s := NewServer(3000)
+	oldRunner := &recordingTaskRunner{ran: make(chan struct{})}
+	setTaskRunnerForTest(s, oldRunner)
+	newRunner := &recordingTaskRunner{ran: make(chan struct{})}
+
+	form := url.Values{"message": {"hi"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/task/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	s.handleTaskSendHooked(rec, req, func() {
+		// Simulate a reload completing in the window between this request's
+		// admission and its dependency capture: swap in a new generation's
+		// TaskRunner, as SetServiceDeps would during a real reload.
+		setTaskRunnerForTest(s, newRunner)
+	})
+
+	select {
+	case <-newRunner.ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the runner current at admission time never ran")
+	}
+	select {
+	case <-oldRunner.ran:
+		t.Fatal("the stale, pre-admission runner ran instead of the one current when the lease was admitted")
+	default:
+	}
+}
