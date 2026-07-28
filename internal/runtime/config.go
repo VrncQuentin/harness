@@ -243,7 +243,7 @@ func (rt *Runtime) ApplyConfig(
 			// memory services. Live work has already been quiesced above so it
 			// is committed under the previous project manager.
 			if projectSwitching {
-				if rt.handleProjectSwitch(ctx, uiServer, &old, loaded, newModel) {
+				if rt.handleProjectSwitch(ctx, uiServer, &old, loaded, oldModel, newModel) {
 					// handleProjectSwitch's own reload (llama_on_switch=reload,
 					// or a llama_on_switch=keep move to a changed global port)
 					// also moved llama-server forward; undoProcessReconfigure

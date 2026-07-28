@@ -14,13 +14,23 @@ import (
 // changes. The caller must hold rt.mu on entry and quiesce live memory/API work
 // before calling so sessions are committed under the previous project manager.
 //
-// newModel is the just-computed effective model for the config being applied
-// (rt.effectiveModelFor(loaded) in config.go) — passed in rather than
-// recomputed so this can tell whether the *global* Model.Port field itself
-// changed in the same apply as the switch. Port is never project-specific
-// (see config.ModelConfigEqual's own comment: the harness runs exactly one
-// llama-server, whose port comes from the global config), so that comparison
-// does not depend on which project ends up active.
+// oldModel and newModel are the effective models the caller already computed
+// for the pre-apply and to-be-applied configs (rt.effectiveModelFor(&old) and
+// rt.effectiveModelFor(loaded) in config.go) — passed in rather than
+// recomputed here for two reasons. First, so this can tell whether the
+// *global* Model.Port (and Verbose) fields themselves changed in the same
+// apply as the switch: neither is ever project-specific (see
+// config.ModelConfigEqual's own comment), so that comparison does not depend
+// on which project ends up active. Second, and just as important: oldModel
+// is exactly what rt.effectiveModelFor already falls back to (the global
+// Model config, unmodified) when the project store cannot resolve the
+// source project — a re-resolution done locally in this function instead
+// used to bail out of the port/verbose sync entirely on that same failure,
+// even though the inference client had already moved to newModel's port
+// unconditionally (config.go's reconfigureProcesses). Using the caller's
+// already-computed, already-fallback-safe oldModel here closes that gap:
+// nothing this function does can silently skip syncing llama-server just
+// because the project store had a bad moment.
 //
 // Returns true when it actually reconfigured llama-server, so a caller that
 // goes on to attempt a memory/API rebuild and finds it fails knows whether
@@ -28,22 +38,21 @@ import (
 // reconfigureProcesses call and not this one would leave llama-server on the
 // destination project's model while the restored (source project's) memory
 // graph expects the source's.
-func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server, oldConfig, newConfig *config.Config, newModel config.ModelConfig) bool {
+func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server, oldConfig, newConfig *config.Config, oldModel, newModel config.ModelConfig) bool {
 	llamaPolicy := rt.cfg.Project.LlamaOnSwitch
 
 	if llamaPolicy != "reload" {
 		slog.Info("project switch: keeping current llama-server (llama_on_switch=keep)")
 		// Compute whether there is a model mismatch to surface in the UI.
-		srcProj, srcErr := rt.resolveProject(oldConfig.Project.ActiveProjectSlug)
-		var srcModel config.ModelConfig
-		if srcErr == nil {
-			srcModel = config.EffectiveModel(oldConfig, srcProj)
-		}
+		// This is a display-only comparison, so it deliberately still uses
+		// ModelConfigEqual's Port/Verbose exclusion: a pure port or verbose
+		// difference is not a "different model" from the user's point of
+		// view and should not raise the mismatch banner.
 		dstProj, err := rt.resolveProject(newConfig.Project.ActiveProjectSlug)
-		if err == nil && srcErr == nil {
+		if err == nil {
 			dstModel := config.EffectiveModel(newConfig, dstProj)
-			if !config.ModelConfigEqual(srcModel, dstModel) {
-				uiServer.SetModelMismatch(true, srcModel.ModelPath, dstModel.ModelPath)
+			if !config.ModelConfigEqual(oldModel, dstModel) {
+				uiServer.SetModelMismatch(true, oldModel.ModelPath, dstModel.ModelPath)
 			} else {
 				uiServer.SetModelMismatch(false, "", "")
 			}
@@ -52,22 +61,27 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 		}
 
 		// "keep" governs the *model* llama-server serves across this switch,
-		// not whether it listens on the port the rest of this apply says it
-		// should. A direct edit to the global Model.Port field, saved in the
-		// same apply as a switch, must still take effect regardless of
-		// policy — reconfigureProcesses's own port-driven inference-client
-		// swap (config.go) is unconditional on projectSwitching for exactly
-		// this reason, since the port is global. Without this, the client
-		// would move to newModel.Port while llama-server stayed on
-		// srcModel's (old) port, pointing every request at nothing.
-		// Reconfiguring with srcModel — the model actually being served —
-		// with only the port swapped keeps "keep" honest: the destination
-		// project's model is never loaded here.
-		if srcErr == nil && rt.llamaMgr != nil && srcModel.Port != newModel.Port {
-			keepModel := srcModel
-			keepModel.Port = newModel.Port
-			slog.Info("project switch: keeping model, moving to the new port",
-				"model_path", keepModel.ModelPath, "port", keepModel.Port)
+		// not whether it listens on the port (or runs with the verbose flag)
+		// the rest of this apply says it should. A direct edit to either
+		// global field, saved in the same apply as a switch, must still
+		// take effect regardless of policy — reconfigureProcesses's own
+		// port-driven inference-client swap (config.go) is unconditional on
+		// projectSwitching for exactly this reason, since the port is
+		// global. Without this, the client would move to newModel.Port
+		// while llama-server stayed on oldModel's (old) port, pointing
+		// every request at nothing. keepModel starts from oldModel — the
+		// model actually running — and adopts only the fields that are
+		// global, never project-specific, from newModel; comparing the
+		// result to oldModel with a plain == (ModelConfig has no
+		// incomparable fields) is exactly "did any global field actually
+		// change," and covers Port and Verbose alike rather than
+		// special-casing Port only.
+		keepModel := oldModel
+		keepModel.Port = newModel.Port
+		keepModel.Verbose = newModel.Verbose
+		if rt.llamaMgr != nil && keepModel != oldModel {
+			slog.Info("project switch: keeping model, syncing changed global fields",
+				"model_path", keepModel.ModelPath, "port", keepModel.Port, "verbose", keepModel.Verbose)
 			rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(keepModel) }, llamaHealthURL(keepModel))
 			return true
 		}
@@ -79,26 +93,22 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 		slog.Warn("project switch: cannot resolve destination project, skipping reload", "err", err)
 		return false
 	}
-
 	dstModel := config.EffectiveModel(newConfig, dstProj)
-	srcProj, srcErr := rt.resolveProject(oldConfig.Project.ActiveProjectSlug)
-	if srcErr != nil {
-		slog.Warn("project switch: cannot resolve source project, forcing reload",
-			"slug", oldConfig.Project.ActiveProjectSlug, "err", srcErr)
-	} else {
-		srcModel := config.EffectiveModel(oldConfig, srcProj)
-		// ModelConfigEqual deliberately ignores Port (see its own doc
-		// comment), so it alone cannot tell "same model" from "same model,
-		// different port" apart. Under this policy the destination project's
-		// model is always the one that ends up loaded, so a port-only
-		// divergence still requires a real Reconfigure — skipping it here
-		// would leave llama-server listening on the old port while
-		// reconfigureProcesses's inference-client swap (config.go) has
-		// already moved every request to dstModel.Port.
-		if config.ModelConfigEqual(srcModel, dstModel) && srcModel.Port == dstModel.Port {
-			slog.Info("project switch: effective model and port unchanged, skipping reload")
-			return false
-		}
+
+	// dstModel already carries newConfig's global Port and Verbose (neither
+	// is ever a project override, and EffectiveModel starts from cfg.Model),
+	// so a plain == against oldModel — which likewise already reflects
+	// everything currently running, model identity and global fields alike
+	// — is exactly "would anything about the running process's args differ
+	// after this reload." ModelConfigEqual is the wrong tool here: it
+	// exists specifically to ignore Port and Verbose for a different
+	// caller's purpose, so using it (even with a bolted-on Port check) left
+	// a same-model, Verbose-only divergence unnoticed, and a project the
+	// store could not resolve used to force a reload defensively instead of
+	// this comparison simply working — oldModel cannot fail to resolve.
+	if oldModel == dstModel {
+		slog.Info("project switch: effective model unchanged, skipping reload")
+		return false
 	}
 
 	slog.Info("project switch: reloading llama-server",

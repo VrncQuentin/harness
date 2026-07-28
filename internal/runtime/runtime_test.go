@@ -503,7 +503,7 @@ func TestStopDrainsGenerationRequestsBeforeClosingHandles(t *testing.T) {
 
 	stopDone := make(chan struct{})
 	go func() {
-		rt.Stop(uiServer)
+		rt.Stop(context.Background(), uiServer)
 		close(stopDone)
 	}()
 
@@ -533,6 +533,87 @@ func TestStopDrainsGenerationRequestsBeforeClosingHandles(t *testing.T) {
 	}
 }
 
+// TestStopSkipsHandleCloseWhenShutdownDrainTimesOut proves the other half of
+// what TestStopDrainsGenerationRequestsBeforeClosingHandles's happy path
+// leaves unchecked: a timed-out shutdown drain means a request is still
+// actually running against the current generation, not merely that new
+// admissions failed to close in time. Closing rt.memHandles regardless would
+// pull them out from under the very request the drain could not wait for --
+// the same use-after-close hazard the drain exists to prevent, just reached
+// by a different door. This forces a real timeout via a short ctx passed
+// into Stop (mirroring TestApplyConfigAbortsMemoryRebuildWhenUIRequestDrainTimesOut's
+// pattern) against a handler that never releases, and asserts rt.memHandles
+// is byte-for-byte the same afterward -- neither cleared nor closed.
+func TestStopSkipsHandleCloseWhenShutdownDrainTimesOut(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	releaseMemHandles(t, rt)
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	port := freeTCPPort(t)
+	uiServer := ui.NewServer(port)
+	srvCtx, cancelSrv := context.WithCancel(context.Background())
+	defer cancelSrv()
+	if err := uiServer.Start(srvCtx); err != nil {
+		t.Fatalf("ui server start: %v", err)
+	}
+
+	if ok := rt.startMemoryAndAPI(context.Background(), uiServer, nil); !ok {
+		t.Fatal("test setup: initial memory service setup failed")
+	}
+	before := rt.memHandles
+	if before.globalMem == nil {
+		t.Fatal("test setup: memHandles were never populated")
+	}
+
+	reg := &blockingAgentRegistry{entered: make(chan struct{}), release: make(chan struct{})}
+	uiServer.SetServiceDeps(ui.ServiceDeps{AgentRegistry: reg})
+
+	type postResult struct {
+		resp *http.Response
+		err  error
+	}
+	reqDone := make(chan postResult, 1)
+	go func() {
+		resp, err := http.PostForm(
+			fmt.Sprintf("http://127.0.0.1:%d/agents/persona", port),
+			url.Values{"name": {"coder"}, "body": {"updated persona"}},
+		)
+		reqDone <- postResult{resp, err}
+	}()
+
+	select {
+	case <-reg.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking agent registry write never started")
+	}
+
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer shortCancel()
+	rt.Stop(shortCtx, uiServer)
+
+	if rt.memHandles != before {
+		t.Fatalf("Stop closed/cleared memory handles despite a shutdown drain timeout -- the still-running request may still be reading through them")
+	}
+
+	close(reg.release)
+	select {
+	case r := <-reqDone:
+		if r.err == nil {
+			_ = r.resp.Body.Close()
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked request never completed after release")
+	}
+}
+
 // TestApplyConfigNoOpsAfterStop proves Stop and ApplyConfig cannot
 // interleave. Stop takes applyMu for its whole call and sets rt.stopping
 // under it before doing anything else; ApplyConfig checks rt.stopping right
@@ -555,7 +636,7 @@ func TestApplyConfigNoOpsAfterStop(t *testing.T) {
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
 
 	uiServer := ui.NewServer(0)
-	rt.Stop(uiServer)
+	rt.Stop(context.Background(), uiServer)
 
 	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
 	if result.LiveApplied || result.RestartNeeded != nil {
@@ -563,6 +644,47 @@ func TestApplyConfigNoOpsAfterStop(t *testing.T) {
 	}
 	if rt.cfg.Project.ActiveProjectSlug != project.GlobalSlug {
 		t.Fatalf("ApplyConfig after Stop: rt.cfg.Project.ActiveProjectSlug = %q, want unchanged %q -- Stop and ApplyConfig interleaved", rt.cfg.Project.ActiveProjectSlug, project.GlobalSlug)
+	}
+}
+
+// TestStopBlocksOnApplyMuHeldByAnInFlightApplyConfig strengthens
+// TestApplyConfigNoOpsAfterStop above, which only proves the *result* of
+// calling ApplyConfig after Stop has already returned -- that alone would
+// still pass even if Stop's rt.applyMu.Lock() were deleted and only the
+// rt.stopping flag remained, since nothing in that test lets the two calls
+// overlap in time. The flag only works because Stop holds applyMu for its
+// entire call (see Stop's own doc comment); take the mutex away and the
+// flag is just a value ApplyConfig might race to read either side of. This
+// test holds applyMu directly -- standing in for an ApplyConfig call that
+// has already passed the stopping check and is mid-flight, still holding
+// the mutex -- and confirms Stop blocks on it rather than proceeding, then
+// confirms Stop unblocks the instant the lock is released.
+func TestStopBlocksOnApplyMuHeldByAnInFlightApplyConfig(t *testing.T) {
+	cfg := config.Defaults()
+	rt := New(cfg, nil, LogRings{})
+
+	rt.applyMu.Lock()
+
+	uiServer := ui.NewServer(0)
+	stopDone := make(chan struct{})
+	go func() {
+		rt.Stop(context.Background(), uiServer)
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned while applyMu was held elsewhere -- it did not actually block on the mutex")
+	case <-time.After(200 * time.Millisecond):
+		// Still blocked, as it must be.
+	}
+
+	rt.applyMu.Unlock()
+
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop never returned after applyMu was released")
 	}
 }
 
@@ -891,8 +1013,9 @@ func TestHandleProjectSwitchKeepStillMovesToANewGlobalPort(t *testing.T) {
 		rt.projectStore = projectStore
 		rt.llamaMgr = proc.NewManager(proc.ManagerConfig{Name: "llama-server", BuildArgs: func() (string, []string) { return "true", nil }})
 
+		oldModel := rt.effectiveModelFor(&cfg)
 		newModel := rt.effectiveModelFor(&loaded)
-		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, newModel)
+		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, oldModel, newModel)
 		if !reconfigured {
 			t.Fatal("handleProjectSwitch did not reconfigure llama-server despite the global port changing under llama_on_switch=keep -- the inference client would move to the new port while the process stayed on the old one")
 		}
@@ -911,8 +1034,9 @@ func TestHandleProjectSwitchKeepStillMovesToANewGlobalPort(t *testing.T) {
 		rt.projectStore = projectStore
 		rt.llamaMgr = proc.NewManager(proc.ManagerConfig{Name: "llama-server", BuildArgs: func() (string, []string) { return "true", nil }})
 
+		oldModel := rt.effectiveModelFor(&cfg)
 		newModel := rt.effectiveModelFor(&loaded)
-		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, newModel)
+		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, oldModel, newModel)
 		if reconfigured {
 			t.Fatal("handleProjectSwitch reconfigured llama-server despite llama_on_switch=keep and no port change -- \"keep\" must leave the process alone in its ordinary case")
 		}
@@ -949,8 +1073,9 @@ func TestHandleProjectSwitchReloadStillMovesToANewGlobalPort(t *testing.T) {
 		rt.projectStore = projectStore
 		rt.llamaMgr = proc.NewManager(proc.ManagerConfig{Name: "llama-server", BuildArgs: func() (string, []string) { return "true", nil }})
 
+		oldModel := rt.effectiveModelFor(&cfg)
 		newModel := rt.effectiveModelFor(&loaded)
-		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, newModel)
+		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, oldModel, newModel)
 		if !reconfigured {
 			t.Fatal("handleProjectSwitch skipped reconfigure under llama_on_switch=reload despite the global port changing -- ModelConfigEqual ignores Port, so this leaves llama-server on the old port while the inference client has already moved to the new one")
 		}
@@ -969,12 +1094,88 @@ func TestHandleProjectSwitchReloadStillMovesToANewGlobalPort(t *testing.T) {
 		rt.projectStore = projectStore
 		rt.llamaMgr = proc.NewManager(proc.ManagerConfig{Name: "llama-server", BuildArgs: func() (string, []string) { return "true", nil }})
 
+		oldModel := rt.effectiveModelFor(&cfg)
 		newModel := rt.effectiveModelFor(&loaded)
-		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, newModel)
+		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, oldModel, newModel)
 		if reconfigured {
 			t.Fatal("handleProjectSwitch reconfigured llama-server despite an unchanged effective model and port under llama_on_switch=reload -- this must stay a no-op")
 		}
 	})
+}
+
+// TestHandleProjectSwitchKeepSyncsPortWhenSourceProjectUnresolvable proves
+// the "keep" port-sync no longer depends on the project store being able to
+// resolve the *source* project. It used to: handleProjectSwitch re-resolved
+// the source project on its own, and any failure there (a project deleted
+// mid-apply, a transient store error) silently skipped the whole port sync
+// -- even though config.go's reconfigureProcesses had already,
+// unconditionally, moved the inference client to the new port. Only
+// "destination" is registered with the project store here; "source" (what
+// oldConfig still points at) is not.
+func TestHandleProjectSwitchKeepSyncsPortWhenSourceProjectUnresolvable(t *testing.T) {
+	projectStore := &runtimeProjectStoreStub{projects: map[string]project.Project{
+		"destination": {Slug: "destination", DisplayName: "Destination"},
+	}}
+
+	cfg := config.Defaults()
+	cfg.Project.ActiveProjectSlug = "source"
+	cfg.Project.LlamaOnSwitch = "keep"
+	cfg.Model.Port = 18081
+	loaded := cfg
+	loaded.Project.ActiveProjectSlug = "destination"
+	loaded.Model.Port = 18082
+
+	rt := New(loaded, nil, LogRings{})
+	rt.projectStore = projectStore
+	rt.llamaMgr = proc.NewManager(proc.ManagerConfig{Name: "llama-server", BuildArgs: func() (string, []string) { return "true", nil }})
+
+	// Mirrors exactly what ApplyConfig itself computes and passes in:
+	// effectiveModelFor already falls back to cfg.Model when the project
+	// store cannot resolve the active project, so oldModel is never an
+	// error value here -- this is the property the fix relies on.
+	oldModel := rt.effectiveModelFor(&cfg)
+	newModel := rt.effectiveModelFor(&loaded)
+	reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, oldModel, newModel)
+	if !reconfigured {
+		t.Fatal("handleProjectSwitch did not sync the changed global port when the source project could not be resolved -- the inference client would have already moved to the new port regardless")
+	}
+}
+
+// TestHandleProjectSwitchSyncsVerboseOnlyChange proves both policies react
+// to a Verbose-only global change across a project switch, not just a
+// port-only one. ModelConfigEqual deliberately ignores both Port and
+// Verbose; the fix compares full ModelConfig values (or a keepModel merged
+// from them) rather than special-casing Port alone, so this covers Verbose
+// for free.
+func TestHandleProjectSwitchSyncsVerboseOnlyChange(t *testing.T) {
+	projectStore := &runtimeProjectStoreStub{projects: map[string]project.Project{
+		"source":      {Slug: "source", DisplayName: "Source"},
+		"destination": {Slug: "destination", DisplayName: "Destination"},
+	}}
+
+	for _, policy := range []string{"keep", "reload"} {
+		t.Run(policy, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Project.ActiveProjectSlug = "source"
+			cfg.Project.LlamaOnSwitch = policy
+			cfg.Model.Verbose = false
+			loaded := cfg
+			loaded.Project.ActiveProjectSlug = "destination"
+			loaded.Model.Verbose = true
+			// Port unchanged -- isolates the Verbose-only divergence.
+
+			rt := New(loaded, nil, LogRings{})
+			rt.projectStore = projectStore
+			rt.llamaMgr = proc.NewManager(proc.ManagerConfig{Name: "llama-server", BuildArgs: func() (string, []string) { return "true", nil }})
+
+			oldModel := rt.effectiveModelFor(&cfg)
+			newModel := rt.effectiveModelFor(&loaded)
+			reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, oldModel, newModel)
+			if !reconfigured {
+				t.Fatalf("handleProjectSwitch (%s) did not sync a Verbose-only global change -- ModelConfigEqual ignores Verbose, so a same-model, same-port, Verbose-only switch left llama-server running with the old --verbose setting", policy)
+			}
+		})
+	}
 }
 
 // testServerPort extracts the numeric port httptest.NewServer bound to.

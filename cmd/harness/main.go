@@ -144,7 +144,7 @@ func run() error {
 
 	onQuit := func() {
 		slog.Info("harness shutting down")
-		rt.Stop(uiServer)
+		rt.Stop(context.Background(), uiServer)
 		rootCancel()
 		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		rt.WaitManagers(waitCtx)

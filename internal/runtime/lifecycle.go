@@ -95,7 +95,12 @@ func (rt *Runtime) RestartEmbedder() {
 	}
 }
 
-// Stop tears down runtime-owned services that need explicit shutdown.
+// Stop tears down runtime-owned services that need explicit shutdown. ctx
+// bounds every phase's own timeout the same way it does in
+// quiesceMemoryAndAPI/shutdownAPIServerForReload — each phase derives its
+// timeout from ctx via context.WithTimeout, so a ctx with an earlier
+// deadline than a given phase's own tightens that phase's wait instead of
+// extending it. Ordinary shutdown passes context.Background().
 //
 // uiServer is drained the same way a reload drains it — closing generation
 // admission and waiting for in-flight requests — before anything below is
@@ -109,17 +114,24 @@ func (rt *Runtime) RestartEmbedder() {
 // through: the same use-after-close hazard the reload path was built to
 // close, just on the shutdown path instead.
 //
-// Unlike a reload, a drain timeout here does not abort anything — there is
-// no "current generation" left to preserve for a later retry, since the
-// process is exiting regardless. It is logged and Stop proceeds, which is
-// the same "best effort, do not hang shutdown forever" reasoning already
-// applied to task cancellation and the session flush below. This is exactly
-// why Stop calls DrainGenerationRequestsForShutdown rather than
-// DrainGenerationRequests: the latter reopens admission on a timeout because
-// a reload that timed out must abort and keep serving the current
-// generation, but Stop proceeds to close handles regardless of the drain's
-// outcome — reopening admission here would let a fresh request be admitted
-// into a generation about to be torn out from under it.
+// A drain (or API shutdown) timeout means a request is still actually
+// running against the current generation — not merely that admission of
+// new ones failed to close in time. Closing handles regardless would not
+// just risk a *new* request landing in the gap (the reopen-on-timeout
+// mistake DrainGenerationRequestsForShutdown itself already closes, see its
+// own doc comment); it would pull the handles out from under the one
+// request the drain was waiting for and could not. There is no generation
+// left to preserve for a later retry the way an aborted reload preserves
+// one, since the process is exiting regardless, so Stop cannot "abort" the
+// way ApplyConfig does either. What it can do is stop short of the unsafe
+// steps: on a timeout from either the UI drain or the API shutdown, Stop
+// skips FlushAll and the final owned.close() and returns, leaving those
+// handles open for the OS to reclaim on process exit — safe, since nothing
+// past this point in Stop depends on them being closed, only on them not
+// being closed too early. The request queue is still stopped either way:
+// Queue.Stop closes intake and waits for the worker to drain requests it
+// already accepted, touching neither rt.memHandles nor the API/UI
+// generation gate, so it carries none of this risk.
 //
 // Live sessions are flushed after the drain (not before, and not
 // interleaved with it) so the summarizer can still reach the live
@@ -128,9 +140,11 @@ func (rt *Runtime) RestartEmbedder() {
 // that ordering matters; the same reasoning applies here. The flush has its
 // own context with a 10s timeout - if llama-server is unhealthy, the
 // summarizer call will error and the flush will return an error, which we
-// log and continue rather than block shutdown indefinitely. The .json
-// sidecars survive in the working tree for next-session resume even if the
-// summary commit never lands.
+// log and continue rather than block shutdown indefinitely (this is a
+// separate, already-tolerated failure mode from the quiesce timeout above:
+// the flush itself still runs under the same handles, just may not finish
+// summarizing everything). The .json sidecars survive in the working tree
+// for next-session resume even if the summary commit never lands.
 //
 // Stop takes applyMu for its entire call and sets stopping under it before
 // doing anything else. ApplyConfig checks stopping right after acquiring
@@ -141,7 +155,7 @@ func (rt *Runtime) RestartEmbedder() {
 // services and reopen admission that Stop is in the middle of closing, and
 // Stop could then go on to close the replacement generation's handles out
 // from under a runtime that thinks it just finished reloading.
-func (rt *Runtime) Stop(uiServer *ui.Server) {
+func (rt *Runtime) Stop(ctx context.Context, uiServer *ui.Server) {
 	rt.applyMu.Lock()
 	defer rt.applyMu.Unlock()
 	rt.mu.Lock()
@@ -152,29 +166,42 @@ func (rt *Runtime) Stop(uiServer *ui.Server) {
 	rt.mu.Unlock()
 
 	if tasks != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := tasks.CancelAll(ctx); err != nil {
+		cancelCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		if err := tasks.CancelAll(cancelCtx); err != nil {
 			slog.Warn("task loop shutdown wait", "err", err)
 		}
 		cancel()
 	}
+
+	quiesced := true
 	if uiServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := uiServer.DrainGenerationRequestsForShutdown(ctx); err != nil {
+		drainCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := uiServer.DrainGenerationRequestsForShutdown(drainCtx); err != nil {
 			slog.Warn("UI request drain on shutdown", "err", err)
+			quiesced = false
 		}
 		cancel()
 	}
 	if apiSrv != nil {
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := apiSrv.Shutdown(shutCtx); err != nil {
 			slog.Warn("api server shutdown", "err", err)
+			quiesced = false
 		}
 		cancel()
 	}
+
+	if !quiesced {
+		slog.Warn("shutdown proceeding without a clean quiesce: a request is still running against the current generation, so the session flush and memory/git handle close are skipped rather than risk closing them underneath it — the process exiting will reclaim them instead")
+		if q != nil {
+			q.Stop()
+		}
+		return
+	}
+
 	if mgr := rt.SessionManager(); mgr != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := mgr.FlushAll(ctx); err != nil {
+		flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := mgr.FlushAll(flushCtx); err != nil {
 			slog.Warn("session flush on shutdown", "err", err)
 		}
 		cancel()
