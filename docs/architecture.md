@@ -277,18 +277,25 @@ primitives: `internal/pathid` (physical path identity) and `internal/rootfs`
 resolve the configured directory once, bind the open handle to its physical
 identity, and perform all subsequent operations through that handle.
 
+The threat model describes the target state. Packages not yet migrated
+(`internal/memory`, `internal/session`, `internal/index`, `internal/retrieval`,
+`internal/governor`) currently operate by pathname and are tracked as migration
+entries in `cmd/fsaudit/allowlist.json`. Once migrated they will inherit the
+guarantees below.
+
 #### Defended threats
 
-| Threat | Mechanism |
-|--------|-----------|
-| Symlink escape from a sandbox root | `os.Root` resolve-by-handle; absolute-target links refused unconditionally |
-| Windows junction escape | `pathid` resolves junctions before the root sees the name; `Set.Open` addresses the target through the physical path |
-| Case / 8.3 alias (Windows) | `pathid.Canonical` resolves to a single physical name; containment checked against the canonical form |
-| Same-name directory replacement | `OpenIdentified` verifies the pinned handle against the physical identity with `os.SameFile`; a replacement fails the comparison |
-| Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name |
-| Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere |
-| In-process concurrent writers | Per-repository mutation coordinator keyed by physical identity (planned); currently writes use temp+rename for file-level atomicity |
-| Check/use races on intermediate directories | Traversal pins each directory with `OpenChild` before inspecting it; what is inspected and what is entered are the same directory |
+| Threat | Mechanism | Status |
+|--------|-----------|--------|
+| Symlink escape from a sandbox root | `os.Root` resolve-by-handle; absolute-target links refused unconditionally | implemented |
+| Windows junction escape | `pathid` resolves junctions before the root sees the name; `Set.Open` addresses the target through the physical path | implemented |
+| Case / 8.3 alias (Windows) | `pathid.Canonical` resolves to a single physical name; containment checked against the canonical form | implemented |
+| Same-name directory replacement | `OpenIdentified` verifies the pinned handle against the physical identity with `os.SameFile`; a replacement fails the comparison | implemented |
+| Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name | implemented |
+| Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere | implemented |
+| In-process concurrent writers | Per-repository mutation coordinator keyed by physical identity (planned in PR 5); currently writes use temp+rename for file-level atomicity | planned |
+| Check/use races on intermediate directories | Traversal pins each directory with `OpenChild` before inspecting it; what is inspected and what is entered are the same directory | planned (PR 4) |
+| Memory repo reads/writes through pathname | `DirRef`/`Anchor` reopenable directory references; every operation reopens the configured name and verifies identity | planned (PR 2–7) |
 
 #### Out of scope
 
@@ -305,27 +312,34 @@ identity, and perform all subsequent operations through that handle.
 
 #### Acknowledged residual window
 
-An external process can rename a directory between the final `os.Stat` and the
-`os.Rename` inside `WriteStreamAtomic`'s publication step. The atomic rename
-that follows is a single syscall and cannot race with itself in the same
-process, but it can race with a rename from outside. Documenting it rather than
-claiming it closed is deliberate: the window cannot be eliminated without
-filesystem-level transactions, which are not portable.
+Within `WriteStreamAtomic`, the temporary file is created inside a pinned
+destination directory and written, then the pinned identity of that temporary
+entry is verified against the still-pinned destination. An external process can
+substitute a different entry at the temporary name between that verification
+and the rename, causing the rename to land the attacker's entry at the
+destination name. The rename that follows is a single syscall and cannot race
+with itself in the same process, but it can race with a rename from outside.
+Closing this requires a compare-and-rename primitive that operates on a handle
+rather than a name; no such primitive exists in the portable Go standard
+library. Documenting the window rather than claiming it closed is deliberate.
 
 #### Audit enforcement
 
-Production calls to `os.Open`, `os.OpenFile`, `os.ReadFile`, `os.WriteFile`,
-`os.ReadDir`, `os.CreateTemp`, `os.Rename`, `os.Remove`, `os.RemoveAll`,
-`os.Mkdir`, `os.MkdirAll`, `os.Stat`, `os.Lstat`, `os.OpenRoot`,
-`os.SameFile`, `filepath.WalkDir`, and `filepath.Glob` are inventoried in
+Production calls to `os.Open`, `os.OpenFile`, `os.OpenRoot`, `os.ReadFile`,
+`os.WriteFile`, `os.ReadDir`, `os.Create`, `os.CreateTemp`, `os.Rename`,
+`os.Remove`, `os.RemoveAll`, `os.Mkdir`, `os.MkdirAll`, `os.Lstat`, `os.Stat`,
+`os.SameFile`, `os.Truncate`, `os.Link`, `os.Symlink`, `os.Readlink`,
+`os.Chmod`, `os.Chown`, `os.Chtimes`, `filepath.Walk`, `filepath.WalkDir`,
+`filepath.Glob`, and `filepath.EvalSymlinks` are inventoried in
 `cmd/fsaudit/allowlist.json`. Each call is classified as:
 - **migration** — will be routed through `rootfs` in a future PR; or
 - **permanent** — an intentional boundary exception with a justification.
 
 The `cmd/fsaudit` tool verifies on every CI run that no new direct filesystem
-call appears without a matching entry. The audit excludes test files
-(`_test.go`) and the security primitive packages themselves (`internal/rootfs`,
-`internal/pathid`).
+call appears without a matching entry. The audit scans all production `.go`
+files including `internal/rootfs` and `internal/pathid`. Only the audit tool
+itself (`cmd/fsaudit/`) is exempt. The watched-function policy is compiled into
+the scanner — it is not configurable from the allowlist.
 
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).

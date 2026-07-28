@@ -8,16 +8,37 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
 
-type classification string
-
-const (
-	permanent classification = "permanent"
-	migration classification = "migration"
-)
+// watched maps a canonical package path to the set of symbols whose direct
+// calls must be classified in the allowlist. This table is compiled into the
+// scanner — it does not come from the allowlist — so removing an entry here
+// requires a code change with review.
+var watched = map[string][]string{
+	"os": {
+		"Open", "OpenFile", "OpenRoot",
+		"ReadFile", "WriteFile",
+		"ReadDir",
+		"Create", "CreateTemp",
+		"Rename",
+		"Remove", "RemoveAll",
+		"Mkdir", "MkdirAll",
+		"Lstat", "Stat",
+		"SameFile",
+		"Truncate",
+		"Link", "Symlink",
+		"Readlink",
+		"Chmod", "Chown", "Chtimes",
+	},
+	"path/filepath": {
+		"Walk", "WalkDir",
+		"Glob",
+		"EvalSymlinks",
+	},
+}
 
 type entry struct {
 	File          string `json:"file"`
@@ -29,16 +50,14 @@ type entry struct {
 }
 
 type allowlist struct {
-	Watched []string `json:"watched_functions"`
-	Perm    []entry  `json:"permanent"`
-	Migr    []entry  `json:"migration"`
+	Perm []entry `json:"permanent"`
+	Migr []entry `json:"migration"`
 }
 
-type finding struct {
+type call struct {
 	File string
 	Line int
 	Fn   string
-	Pkg  string
 }
 
 func main() {
@@ -46,7 +65,6 @@ func main() {
 	if len(os.Args) > 1 {
 		alPath = os.Args[1]
 	}
-
 	data, err := os.ReadFile(alPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fsaudit: cannot read allowlist: %v\n", err)
@@ -58,65 +76,103 @@ func main() {
 		os.Exit(1)
 	}
 
-	index := buildIndex(al)
+	allEntries := append([]entry(nil), al.Perm...)
+	allEntries = append(allEntries, al.Migr...)
 
-	findings, err := scan("internal", index, al.Watched)
+	seenEntry := map[string]bool{}
+	for _, e := range allEntries {
+		k := entryKey(e)
+		if seenEntry[k] {
+			fmt.Fprintf(os.Stderr, "fsaudit: duplicate allowlist entry: %s %s:%d %s\n", classify(e), e.File, e.Line, e.Fn)
+			os.Exit(1)
+		}
+		seenEntry[k] = true
+		if e.Justification == "" && e.PR == "" {
+			fmt.Fprintf(os.Stderr, "fsaudit: allowlist entry has neither justification nor pr: %s:%d %s\n", e.File, e.Line, e.Fn)
+			os.Exit(1)
+		}
+		if e.Justification != "" && e.PR != "" {
+			fmt.Fprintf(os.Stderr, "fsaudit: allowlist entry has both justification and pr: %s:%d %s\n", e.File, e.Line, e.Fn)
+			os.Exit(1)
+		}
+	}
+
+	sourceCalls, err := collectCalls(".")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fsaudit: scan error: %v\n", err)
 		os.Exit(1)
 	}
-	cmdFindings, err := scan("cmd", index, al.Watched)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "fsaudit: scan error: %v\n", err)
+
+	allowed := map[string]bool{}
+	for _, e := range allEntries {
+		allowed[entryKey(e)] = true
+	}
+
+	matched := map[string]bool{}
+	var unclassified []call
+	for _, c := range sourceCalls {
+		k := entryKey(entry{File: c.File, Line: c.Line, Fn: c.Fn})
+		if allowed[k] {
+			matched[k] = true
+		} else {
+			unclassified = append(unclassified, c)
+		}
+	}
+
+	var stale []entry
+	for _, e := range allEntries {
+		if !matched[entryKey(e)] {
+			stale = append(stale, e)
+		}
+	}
+
+	exit := false
+	if len(stale) > 0 {
+		fmt.Fprintf(os.Stderr, "fsaudit: %d stale allowlist entry(ies) — no matching source call found:\n\n", len(stale))
+		for _, e := range stale {
+			fmt.Fprintf(os.Stderr, "  %s %s:%d %s\n", classify(e), e.File, e.Line, e.Fn)
+		}
+		fmt.Fprintf(os.Stderr, "\n")
+		exit = true
+	}
+	if len(unclassified) > 0 {
+		fmt.Fprintf(os.Stderr, "fsaudit: %d unclassified direct filesystem call(s):\n\n", len(unclassified))
+		counts := map[string]int{}
+		for _, c := range unclassified {
+			counts[c.Fn]++
+			fmt.Fprintf(os.Stderr, "  %s:%d  %s\n", c.File, c.Line, c.Fn)
+		}
+		fmt.Fprintf(os.Stderr, "\n")
+		for fn, n := range counts {
+			fmt.Fprintf(os.Stderr, "  %d × %s\n", n, fn)
+		}
+		fmt.Fprintf(os.Stderr, "\nAdd to cmd/fsaudit/allowlist.json:\n")
+		fmt.Fprintf(os.Stderr, "  - permanent entry if this is an intentional boundary exception\n")
+		fmt.Fprintf(os.Stderr, "  - migration entry if this will be routed through rootfs in a future PR\n")
+		exit = true
+	}
+	if exit {
 		os.Exit(1)
 	}
-	findings = append(findings, cmdFindings...)
-
-	if len(findings) == 0 {
-		fmt.Println("fsaudit: all direct filesystem calls are accounted for in the allowlist")
-		return
-	}
-
-	fmt.Printf("fsaudit: %d unclassified direct filesystem call(s):\n\n", len(findings))
-	counts := map[string]int{}
-	for _, f := range findings {
-		key := f.Fn
-		counts[key]++
-		fmt.Printf("  %s:%d  %s  (package %s)\n", f.File, f.Line, f.Fn, f.Pkg)
-	}
-	fmt.Println()
-	for fn, n := range counts {
-		fmt.Printf("  %d × %s\n", n, fn)
-	}
-	fmt.Println("\nEach call must be added to cmd/fsaudit/allowlist.json as either:")
-	fmt.Println("  - a 'migration' entry (routed through rootfs in a future PR)")
-	fmt.Println("  - a 'permanent' entry (intentional boundary exception with justification)")
-	os.Exit(1)
+	fmt.Println("fsaudit: all direct filesystem calls are accounted for in the allowlist")
 }
 
-func buildIndex(al allowlist) map[string]bool {
-	idx := map[string]bool{}
-	for _, e := range al.Perm {
-		idx[key(e.File, e.Line)] = true
+func entryKey(e entry) string { return fmt.Sprintf("%s:%d:%s", e.File, e.Line, e.Fn) }
+
+func classify(e entry) string {
+	if e.PR != "" {
+		return "migration"
 	}
-	for _, e := range al.Migr {
-		idx[key(e.File, e.Line)] = true
-	}
-	return idx
+	return "permanent"
 }
 
-func key(file string, line int) string {
-	return fmt.Sprintf("%s:%d", file, line)
-}
-
-func scan(root string, allowed map[string]bool, watched []string) ([]finding, error) {
-	watch := map[string]bool{}
-	for _, w := range watched {
-		watch[w] = true
+func collectCalls(root string) ([]call, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
 	}
-
-	var results []finding
-	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	var calls []call
+	err = filepath.WalkDir(absRoot, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -129,10 +185,15 @@ func scan(root string, allowed map[string]bool, watched []string) ([]finding, er
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		// Skip the audit tool itself and security primitive packages: their calls are intentional.
-		if strings.HasPrefix(filepath.ToSlash(path), "cmd/fsaudit/") ||
-			strings.HasPrefix(filepath.ToSlash(path), "internal/rootfs/") ||
-			strings.HasPrefix(filepath.ToSlash(path), "internal/pathid/") {
+		rel, err := filepath.Rel(absRoot, path)
+		if err != nil {
+			rel = path
+		}
+		rel = filepath.ToSlash(rel)
+		if strings.HasPrefix(rel, "cmd/fsaudit/") {
+			return nil
+		}
+		if !strings.HasPrefix(rel, "internal/") && !strings.HasPrefix(rel, "cmd/") {
 			return nil
 		}
 
@@ -142,55 +203,74 @@ func scan(root string, allowed map[string]bool, watched []string) ([]finding, er
 			return fmt.Errorf("parse %s: %w", path, err)
 		}
 
-		pkg := "main"
-		if f.Name != nil {
-			pkg = f.Name.Name
-		}
+		imports := resolveImports(f)
 
 		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
+			callExpr, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			fnName := callName(call)
-			if fnName == "" || !watch[fnName] {
+			canon, match := resolveCall(callExpr, imports)
+			if !match {
 				return true
 			}
-			pos := fset.Position(call.Pos())
+			pos := fset.Position(callExpr.Pos())
 			if pos.Line == 0 {
 				return true
 			}
-			// Normalize path to forward slashes for matching.
-			normFile := filepath.ToSlash(path)
-			if !allowed[key(normFile, pos.Line)] {
-				results = append(results, finding{
-					File: normFile,
-					Line: pos.Line,
-					Fn:   fnName,
-					Pkg:  pkg,
-				})
-			}
+			calls = append(calls, call{
+				File: rel,
+				Line: pos.Line,
+				Fn:   canon,
+			})
 			return true
 		})
 		return nil
 	})
-	sort.Slice(results, func(i, j int) bool {
-		if results[i].File != results[j].File {
-			return results[i].File < results[j].File
+	sort.Slice(calls, func(i, j int) bool {
+		if calls[i].File != calls[j].File {
+			return calls[i].File < calls[j].File
 		}
-		return results[i].Line < results[j].Line
+		if calls[i].Line != calls[j].Line {
+			return calls[i].Line < calls[j].Line
+		}
+		return calls[i].Fn < calls[j].Fn
 	})
-	return results, err
+	return calls, err
 }
 
-func callName(call *ast.CallExpr) string {
+func resolveImports(f *ast.File) map[string]string {
+	out := map[string]string{}
+	for _, imp := range f.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		name := filepath.Base(path)
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		out[name] = path
+	}
+	return out
+}
+
+func resolveCall(call *ast.CallExpr, imports map[string]string) (string, bool) {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
-		return ""
+		return "", false
 	}
-	pkg, ok := sel.X.(*ast.Ident)
+	pkgIdent, ok := sel.X.(*ast.Ident)
 	if !ok {
-		return ""
+		return "", false
 	}
-	return pkg.Name + "." + sel.Sel.Name
+	pkgPath, ok := imports[pkgIdent.Name]
+	if !ok {
+		return "", false
+	}
+	symbols, ok := watched[pkgPath]
+	if !ok {
+		return "", false
+	}
+	if !slices.Contains(symbols, sel.Sel.Name) {
+		return "", false
+	}
+	return filepath.Base(pkgPath) + "." + sel.Sel.Name, true
 }

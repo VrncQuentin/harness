@@ -47,14 +47,15 @@ until the sequence below is merged and the final audit (PR 12) passes.
 
 | # | Finding | Test |
 |---|---------|------|
-| 5.1 | `DirReader.WriteFile` truncates existing destination in place via rename | `TestDirReader_WriteFileReplacesHardLinkedLeafInsteadOfWritingThroughIt` |
+| 5.1 | `DirReader.WriteFile` writes by pathname, not through a pinned handle | `TestDirReader_WriteFileReplacesHardLinkedLeafInsteadOfWritingThroughIt` |
 | 5.2 | Index located by absolute pathname (`<repo>/index/_episodes`) | `TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo` |
 | 5.3 | Index re-pointed after pin — manifests a different repo | `TestEpisodeIndex_RepointedAfterPinFailsClosed` |
-| 5.4 | Post-rename `os.Remove` + retry fallback deletes a replacement | `TestIndex_WriteManifestDoesNotRemoveStranger` |
-| 5.5 | Measure→append→rollback sequence holds no handle across steps | `TestIndex_AppendThenTruncateRollsBackThroughOneHandle` |
+| 5.4 | Post-rename `os.Remove` + retry fallback deletes a stranger's replacement | `TestIndex_WriteManifestDoesNotRemoveStranger` |
+| 5.5 | Index append→truncate rollback propagates through hard links; must assemble replacement separately and publish by rename | `TestIndex_AppendAssemblesReplacementByRename` |
 | 5.6 | Manifest publication not fsynced before rename | `TestIndex_WriteManifestFsyncsBeforeRename` |
-| 5.7 | Scattered lock maps — no unified per-repo coordinator | Eliminated mechanism: replaced by one coordinator keyed by physical identity |
-| 5.8 | Compare-then-rollback against unlocked concurrent writer | Eliminated mechanism: writes participate in transaction |
+| 5.7 | Temp file cleanup deletes by name after the rename may have consumed it | `TestIndex_WriteManifestCleansUpOwnTemp` |
+| 5.8 | Scattered lock maps — no unified per-repo coordinator | Eliminated mechanism: replaced by one coordinator keyed by physical identity |
+| 5.9 | Compare-then-rollback against unlocked concurrent writer | Eliminated mechanism: writes participate in transaction |
 
 ### PR 6 — Project repository workflow
 
@@ -139,7 +140,7 @@ until the sequence below is merged and the final audit (PR 12) passes.
 |---|---------|------|
 | 12.1 | Migration allowlist entries still present | `fsaudit` reports zero migration entries |
 | 12.2 | Configured-tree pathname operations outside rootfs | `fsaudit` reports only permanent exceptions |
-| 12.3 | Production `os.OpenRoot` exists outside internal/rootfs | `fsaudit` reports only rootfs.go:80 and toolout.go:95 |
+| 12.3 | Production `os.OpenRoot` exists outside internal/rootfs | `fsaudit` reports os.OpenRoot only in rootfs.go |
 | 12.4 | Compatibility wrappers or unused APIs remain | Manual review — removed |
 | 12.5 | `rootfs.go` is monolithic | Split into identity, read, write, walk, set/target files |
 | 12.6 | Test setup repetitive | Consolidated without removing discriminating cases |
@@ -160,5 +161,5 @@ makes them unnecessary.
 | `stopMemoryAndAPI` — drops references, does not close | Replaced by no-lifetime-pinning in PR 2: nothing to drop or close |
 | `ResolveAbsRepoPath` — session manager method | Replaced by rooted capabilities in PR 7: session manager receives a handle, not a pathname factory |
 | Package-global test hooks for identity verification | Replaced by function-parameter hooks in PR 2: no global state |
-| Post-rename `os.Remove` + retry fallback in index | Replaced by handle-based truncate in PR 5: no name-based cleanup |
+| Post-rename `os.Remove` + retry fallback in index | Replaced by copy-on-write + rename publication in PR 5: no name-based cleanup |
 | `.gitkeep` created by joining layout directory absolute path | Replaced by repo-relative addressing through pinned root in PR 6 |

@@ -1,12 +1,12 @@
 {
-  "description": "Direct filesystem calls in production code, classified by migration status. The fsaudit tool checks that every production call to the listed functions appears here. migration = will be routed through rootfs in a future PR. permanent = intentional boundary exception, never to be migrated.",
+  "description": "Direct filesystem calls in production code, classified by migration status. The fsaudit tool compiles the watched-function policy internally — this file only classifies each call, it does not control what gets scanned. migration = will be routed through rootfs in a future PR. permanent = intentional boundary exception, never to be migrated.",
   "permanent": [
     { "file": "internal/rootfs/rootfs.go", "line": 80,  "fn": "os.OpenRoot",          "justification": "rootfs security primitive: pins a directory" },
     { "file": "internal/rootfs/rootfs.go", "line": 190, "fn": "os.SameFile",          "justification": "rootfs security primitive: directory identity comparison" },
     { "file": "internal/rootfs/rootfs.go", "line": 341, "fn": "os.Stat",              "justification": "rootfs security primitive: identity verification via matches()" },
     { "file": "internal/rootfs/rootfs.go", "line": 345, "fn": "os.SameFile",          "justification": "rootfs security primitive: identity verification via matches()" },
-    { "file": "internal/pathid/canonical_windows.go", "line": 35, "fn": "os.Open",    "justification": "pathid security primitive: GetFinalPathNameByHandle" },
-    { "file": "internal/tools/toolout.go", "line": 95, "fn": "os.OpenRoot",           "justification": "toolout spill directory is outside every sandbox root; opens its own os.Root" },
+    { "file": "internal/pathid/canonical_windows.go", "line": 34, "fn": "os.Open",    "justification": "pathid security primitive: GetFinalPathNameByHandle" },
+    { "file": "internal/pathid/canonical_other.go", "line": 15, "fn": "filepath.EvalSymlinks", "justification": "pathid security primitive: non-Windows canonical resolution" },
     { "file": "internal/home/home.go",      "line": 40, "fn": "os.MkdirAll",          "justification": "bootstrap: creating the harness home itself; nothing below it is touched until pinned" },
     { "file": "internal/tray/tray_linux.go", "line": 37, "fn": "os.OpenFile",         "justification": "single-instance lock on the fd, not the pathname" },
     { "file": "internal/db/db.go",          "line": 83, "fn": "os.Stat",              "justification": "checking if harness.db exists; SQLite DSN needs a pathname string" },
@@ -15,10 +15,10 @@
     { "file": "internal/runtime/setup.go",  "line": 76, "fn": "os.Stat",              "justification": "model/binary path validation for os/exec; subprocess containment is a separate problem" },
     { "file": "internal/runtime/project_health.go", "line": 41, "fn": "os.Stat",      "justification": "checking project directory existence; warning only, tools re-check per call" },
     { "file": "internal/git/git.go",        "line": 107, "fn": "os.MkdirAll",         "justification": "go-git takes a pathname string; identity and C2 checks remain around the go-git boundary" },
-    { "file": "cmd/eval-retrieval/main.go", "line": 56, "fn": "os.Open",              "justification": "eval harness reads operator-named query file; not part of the production binary" },
-    { "file": "cmd/eval-retrieval/main.go", "line": 97, "fn": "filepath.Glob",        "justification": "eval harness enumerates episode files; operator-named root, not part of the production binary" }
+    { "file": "cmd/eval-retrieval/main.go", "line": 56, "fn": "os.Open",              "justification": "eval harness reads operator-named query file; not part of the production binary" }
   ],
   "migration": [
+    { "file": "internal/tools/toolout.go", "line": 95, "fn": "os.OpenRoot",           "pr": "PR 3",  "notes": "toolout spill: route through rootfs.Open rather than direct os.OpenRoot" },
     { "file": "internal/memory/memory.go",  "line": 104, "fn": "os.ReadFile",       "pr": "PR 4",  "notes": "DirReader.Read: re-resolve every read instead of using a pinned handle" },
     { "file": "internal/memory/memory.go",  "line": 119, "fn": "os.ReadDir",        "pr": "PR 4",  "notes": "DirReader.ListDirs" },
     { "file": "internal/memory/memory.go",  "line": 142, "fn": "os.MkdirAll",       "pr": "PR 5",  "notes": "DirReader.MkdirAll" },
@@ -62,26 +62,7 @@
     { "file": "internal/retrieval/trace.go", "line": 148, "fn": "os.Remove",       "pr": "PR 3",  "notes": "NDJSONSink: delete expired trace files" },
     { "file": "internal/governor/governor.go", "line": 108, "fn": "os.MkdirAll",   "pr": "PR 3",  "notes": "toolout spill directory: bootstrap creation" },
     { "file": "internal/governor/b3.go",    "line": 44,  "fn": "os.WriteFile",     "pr": "PR 3",  "notes": "B3 tee-on-failure: write spill through pinned root, publish by rename" },
-    { "file": "internal/tools/gitpush.go",  "line": 76,  "fn": "os.ReadFile",      "pr": "PR 3",  "notes": "readHEADBranch: read .git/HEAD; replace with go-git CurrentBranch" }
-  ],
-  "watched_functions": [
-    "os.Open",
-    "os.OpenFile",
-    "os.OpenRoot",
-    "os.ReadFile",
-    "os.WriteFile",
-    "os.ReadDir",
-    "os.Create",
-    "os.CreateTemp",
-    "os.Rename",
-    "os.Remove",
-    "os.RemoveAll",
-    "os.Mkdir",
-    "os.MkdirAll",
-    "os.Lstat",
-    "os.Stat",
-    "os.SameFile",
-    "filepath.WalkDir",
-    "filepath.Glob"
+    { "file": "internal/tools/gitpush.go",  "line": 76,  "fn": "os.ReadFile",      "pr": "PR 3",  "notes": "readHEADBranch: read .git/HEAD; replace with go-git CurrentBranch" },
+    { "file": "cmd/eval-retrieval/main.go", "line": 97, "fn": "filepath.Glob",     "pr": "PR 3",  "notes": "eval-retrieval: enumerate episode files through pinned repo instead of filepath.Glob+filepath.Rel" }
   ]
 }
