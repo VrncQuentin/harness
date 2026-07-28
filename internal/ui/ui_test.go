@@ -376,6 +376,55 @@ func TestDrainGenerationRequestsTimeoutReopensAdmission(t *testing.T) {
 	}
 }
 
+// TestDrainGenerationRequestsForShutdownTimeoutLeavesGateClosed is
+// DrainGenerationRequestsTimeoutReopensAdmission's mirror image for the
+// shutdown variant: Stop proceeds to close generation-scoped handles
+// regardless of whether the drain finished, so a timed-out shutdown drain
+// must NOT reopen admission the way a timed-out reload drain does — doing
+// so would let a fresh request in right before Stop tears down the handles
+// it depends on.
+func TestDrainGenerationRequestsForShutdownTimeoutLeavesGateClosed(t *testing.T) {
+	s := NewServer(3000)
+
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	defer close(release)
+	stuck := s.trackGenRequest(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+	})
+
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		stuck(httptest.NewRecorder(), req)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("tracked handler never started")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := s.DrainGenerationRequestsForShutdown(ctx)
+	if err == nil {
+		t.Fatal("DrainGenerationRequestsForShutdown: want a timeout error, got nil")
+	}
+
+	newReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	newRec := httptest.NewRecorder()
+	admitted := false
+	newHandler := s.trackGenRequest(func(w http.ResponseWriter, r *http.Request) {
+		admitted = true
+		w.WriteHeader(http.StatusOK)
+	})
+	newHandler(newRec, newReq)
+	if admitted || newRec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("request after a timed-out shutdown drain: admitted=%v status=%d, want refused with %d — shutdown proceeds regardless of the drain's outcome, so admission must stay closed", admitted, newRec.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestSetServiceDepsPublishesAndClearsSnapshot(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})

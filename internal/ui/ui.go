@@ -316,6 +316,34 @@ func (g *genGate) close(ctx context.Context) error {
 	}
 }
 
+// closeForShutdown is close's counterpart for process teardown rather than a
+// reload: it closes admission and waits the same way, but on a timeout it
+// leaves the gate closed instead of reopening it. Shutdown proceeds to close
+// generation-scoped handles regardless of whether the drain finished in
+// time, so reopening here — as close does for an aborted reload, where
+// nothing was torn down — would let a fresh request be admitted into a
+// generation that is about to have its handles closed out from under it.
+func (g *genGate) closeForShutdown(ctx context.Context) error {
+	g.mu.Lock()
+	g.closed = true
+	if g.count == 0 {
+		g.mu.Unlock()
+		return nil
+	}
+	if g.drained == nil {
+		g.drained = make(chan struct{})
+	}
+	drained := g.drained
+	g.mu.Unlock()
+
+	select {
+	case <-drained:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // reopen re-admits requests after a successful close. Safe to call even if
 // close already reopened the gate itself on timeout.
 func (g *genGate) reopen() {
@@ -355,6 +383,16 @@ func (s *Server) trackGenRequest(h http.HandlerFunc) http.HandlerFunc {
 // the current generation rather than proceed to close its handles.
 func (s *Server) DrainGenerationRequests(ctx context.Context) error {
 	return s.genGate.close(ctx)
+}
+
+// DrainGenerationRequestsForShutdown is DrainGenerationRequests' counterpart
+// for process teardown: the runtime calls this from Stop instead, since
+// shutdown closes generation-scoped handles regardless of whether the drain
+// completed in time, and must not let admission reopen in that case. Unlike
+// DrainGenerationRequests, a timeout here leaves the gate closed for good —
+// there is no ResumeGenerationAdmission call coming afterward.
+func (s *Server) DrainGenerationRequestsForShutdown(ctx context.Context) error {
+	return s.genGate.closeForShutdown(ctx)
 }
 
 // ResumeGenerationAdmission reopens admission after a successful

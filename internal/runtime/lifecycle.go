@@ -113,7 +113,13 @@ func (rt *Runtime) RestartEmbedder() {
 // no "current generation" left to preserve for a later retry, since the
 // process is exiting regardless. It is logged and Stop proceeds, which is
 // the same "best effort, do not hang shutdown forever" reasoning already
-// applied to task cancellation and the session flush below.
+// applied to task cancellation and the session flush below. This is exactly
+// why Stop calls DrainGenerationRequestsForShutdown rather than
+// DrainGenerationRequests: the latter reopens admission on a timeout because
+// a reload that timed out must abort and keep serving the current
+// generation, but Stop proceeds to close handles regardless of the drain's
+// outcome — reopening admission here would let a fresh request be admitted
+// into a generation about to be torn out from under it.
 //
 // Live sessions are flushed after the drain (not before, and not
 // interleaved with it) so the summarizer can still reach the live
@@ -125,8 +131,21 @@ func (rt *Runtime) RestartEmbedder() {
 // log and continue rather than block shutdown indefinitely. The .json
 // sidecars survive in the working tree for next-session resume even if the
 // summary commit never lands.
+//
+// Stop takes applyMu for its entire call and sets stopping under it before
+// doing anything else. ApplyConfig checks stopping right after acquiring
+// applyMu (see config.go) and bails out if it is set. Without this, /config
+// and /retry — which intentionally sit outside the generation gate, since
+// an apply drains that gate itself — could start, or be mid-flight, while
+// Stop is shutting down: an apply completing concurrently would rebuild
+// services and reopen admission that Stop is in the middle of closing, and
+// Stop could then go on to close the replacement generation's handles out
+// from under a runtime that thinks it just finished reloading.
 func (rt *Runtime) Stop(uiServer *ui.Server) {
+	rt.applyMu.Lock()
+	defer rt.applyMu.Unlock()
 	rt.mu.Lock()
+	rt.stopping = true
 	q := rt.reqQueue
 	apiSrv := rt.apiServer
 	tasks := rt.taskRunner
@@ -141,7 +160,7 @@ func (rt *Runtime) Stop(uiServer *ui.Server) {
 	}
 	if uiServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := uiServer.DrainGenerationRequests(ctx); err != nil {
+		if err := uiServer.DrainGenerationRequestsForShutdown(ctx); err != nil {
 			slog.Warn("UI request drain on shutdown", "err", err)
 		}
 		cancel()

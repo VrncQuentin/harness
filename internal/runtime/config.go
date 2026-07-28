@@ -27,6 +27,15 @@ func (rt *Runtime) ApplyConfig(
 	rt.applyMu.Lock()
 	defer rt.applyMu.Unlock()
 
+	// Stop takes applyMu for its entire call and sets stopping before doing
+	// anything else (see Stop's doc comment in lifecycle.go), so observing it
+	// here means Stop is already underway — or already finished — and it
+	// would be unsafe to quiesce, reconfigure, or reopen admission against
+	// services Stop is tearing down (or has already torn down).
+	if rt.stopping {
+		return ui.ApplyResult{}
+	}
+
 	uiServer.ClearStartupErrors()
 	uiServer.SetProjectDirectoryWarnings("", nil)
 	if rt.cfgStore == nil {

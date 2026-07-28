@@ -53,7 +53,15 @@ type Runtime struct {
 	// applyMu makes the whole sequence — validate, quiesce, reconfigure,
 	// rebuild, resume admission — one transaction that the second caller
 	// waits out entirely before starting its own.
-	applyMu      sync.Mutex
+	applyMu sync.Mutex
+	// stopping is set once Stop begins and is checked by ApplyConfig
+	// immediately after it acquires applyMu. Guarded by applyMu, not mu:
+	// Stop holds applyMu for its entire call (see Stop's doc comment), so
+	// checking under the same lock is what actually excludes ApplyConfig —
+	// a flag guarded by mu instead would still let ApplyConfig start,
+	// release mu during its own drain windows, and finish rebuilding
+	// services and reopening admission while Stop is mid-shutdown.
+	stopping     bool
 	mu           sync.Mutex
 	cfg          config.Config
 	cfgStore     config.Store

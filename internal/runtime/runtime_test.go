@@ -533,6 +533,39 @@ func TestStopDrainsGenerationRequestsBeforeClosingHandles(t *testing.T) {
 	}
 }
 
+// TestApplyConfigNoOpsAfterStop proves Stop and ApplyConfig cannot
+// interleave. Stop takes applyMu for its whole call and sets rt.stopping
+// under it before doing anything else; ApplyConfig checks rt.stopping right
+// after acquiring applyMu. Without that check, a /config or /retry call that
+// starts (or is still running) while Stop is shutting down could rebuild
+// services and reopen admission Stop is in the middle of closing -- Stop
+// would then go on to close the replacement generation's handles instead of
+// the one it drained. Here Stop runs to completion first, then ApplyConfig
+// is called with a config store that would otherwise switch the active
+// project; the assertions confirm ApplyConfig did nothing at all: it
+// returned the zero ApplyResult and left rt.cfg exactly as Stop found it.
+func TestApplyConfigNoOpsAfterStop(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	loaded := cfg
+	loaded.Project.ActiveProjectSlug = "other"
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+
+	uiServer := ui.NewServer(0)
+	rt.Stop(uiServer)
+
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if result.LiveApplied || result.RestartNeeded != nil {
+		t.Fatalf("ApplyConfig after Stop: want the zero ApplyResult, got %+v", result)
+	}
+	if rt.cfg.Project.ActiveProjectSlug != project.GlobalSlug {
+		t.Fatalf("ApplyConfig after Stop: rt.cfg.Project.ActiveProjectSlug = %q, want unchanged %q -- Stop and ApplyConfig interleaved", rt.cfg.Project.ActiveProjectSlug, project.GlobalSlug)
+	}
+}
+
 // An aborted rebuild used to still commit rt.cfg to the new value, even
 // though the service graph backing it -- rt.activeMem, rt.gitRepo, the
 // task runner -- was left exactly as it was. Any component that reads
@@ -882,6 +915,64 @@ func TestHandleProjectSwitchKeepStillMovesToANewGlobalPort(t *testing.T) {
 		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, newModel)
 		if reconfigured {
 			t.Fatal("handleProjectSwitch reconfigured llama-server despite llama_on_switch=keep and no port change -- \"keep\" must leave the process alone in its ordinary case")
+		}
+	})
+}
+
+// TestHandleProjectSwitchReloadStillMovesToANewGlobalPort proves the
+// "reload" policy's skip check does not rely on ModelConfigEqual alone.
+// ModelConfigEqual deliberately ignores Port, so two projects effectively
+// sharing "the same model" (identical Binary/ModelPath/CtxSize/etc.) but
+// hit during an apply that also changed the global Model.Port must still
+// trigger a real Reconfigure -- otherwise llama-server keeps listening on
+// the old port while reconfigureProcesses's inference-client swap has
+// already moved every request to the new one (the exact split-brain the
+// "keep" fix above already closed for the other policy).
+func TestHandleProjectSwitchReloadStillMovesToANewGlobalPort(t *testing.T) {
+	projectStore := &runtimeProjectStoreStub{projects: map[string]project.Project{
+		"source":      {Slug: "source", DisplayName: "Source"},
+		"destination": {Slug: "destination", DisplayName: "Destination"},
+	}}
+
+	t.Run("same effective model, port changed", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Project.ActiveProjectSlug = "source"
+		cfg.Project.LlamaOnSwitch = "reload"
+		cfg.Model.Port = 18081
+		loaded := cfg
+		loaded.Project.ActiveProjectSlug = "destination"
+		loaded.Model.Port = 18082
+		// Neither project overrides any model field, so the effective model
+		// is identical across the switch -- only the global port differs.
+
+		rt := New(loaded, nil, LogRings{})
+		rt.projectStore = projectStore
+		rt.llamaMgr = proc.NewManager(proc.ManagerConfig{Name: "llama-server", BuildArgs: func() (string, []string) { return "true", nil }})
+
+		newModel := rt.effectiveModelFor(&loaded)
+		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, newModel)
+		if !reconfigured {
+			t.Fatal("handleProjectSwitch skipped reconfigure under llama_on_switch=reload despite the global port changing -- ModelConfigEqual ignores Port, so this leaves llama-server on the old port while the inference client has already moved to the new one")
+		}
+	})
+
+	t.Run("same effective model, port unchanged", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Project.ActiveProjectSlug = "source"
+		cfg.Project.LlamaOnSwitch = "reload"
+		cfg.Model.Port = 18081
+		loaded := cfg
+		loaded.Project.ActiveProjectSlug = "destination"
+		// Model.Port unchanged and no project overrides -- true no-op case.
+
+		rt := New(loaded, nil, LogRings{})
+		rt.projectStore = projectStore
+		rt.llamaMgr = proc.NewManager(proc.ManagerConfig{Name: "llama-server", BuildArgs: func() (string, []string) { return "true", nil }})
+
+		newModel := rt.effectiveModelFor(&loaded)
+		reconfigured := rt.handleProjectSwitch(context.Background(), ui.NewServer(0), &cfg, &loaded, newModel)
+		if reconfigured {
+			t.Fatal("handleProjectSwitch reconfigured llama-server despite an unchanged effective model and port under llama_on_switch=reload -- this must stay a no-op")
 		}
 	})
 }

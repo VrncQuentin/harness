@@ -87,8 +87,16 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 			"slug", oldConfig.Project.ActiveProjectSlug, "err", srcErr)
 	} else {
 		srcModel := config.EffectiveModel(oldConfig, srcProj)
-		if config.ModelConfigEqual(srcModel, dstModel) {
-			slog.Info("project switch: effective model unchanged, skipping reload")
+		// ModelConfigEqual deliberately ignores Port (see its own doc
+		// comment), so it alone cannot tell "same model" from "same model,
+		// different port" apart. Under this policy the destination project's
+		// model is always the one that ends up loaded, so a port-only
+		// divergence still requires a real Reconfigure — skipping it here
+		// would leave llama-server listening on the old port while
+		// reconfigureProcesses's inference-client swap (config.go) has
+		// already moved every request to dstModel.Port.
+		if config.ModelConfigEqual(srcModel, dstModel) && srcModel.Port == dstModel.Port {
+			slog.Info("project switch: effective model and port unchanged, skipping reload")
 			return false
 		}
 	}
