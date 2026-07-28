@@ -628,6 +628,75 @@ Mediates all reads and writes to git-backed project memory repos.
   back out would install a client still pointed at the old port. When no
   rebuild is needed at all, the reconfigure runs immediately, same as before;
   there is no generation to protect in that case.
+- `needsRebuild` (the condition that decides whether to quiesce at all) checks
+  `oldModel != newModel` and `old.Embedder != loaded.Embedder` directly, not
+  just `modelEndpointChanged`/`embedderEndpointChanged` (port-only): the
+  process reconfigure above reacts to *any* field in either changing, so
+  gating quiescing on port alone let a same-port model-path, context-size, or
+  embedder change reach the no-rebuild path, where the reconfigure ran
+  immediately with nothing drained first. `modelEndpointChanged` on its own
+  is still used inside the reconfigure to decide whether the inference client
+  needs rebuilding, since Model.Port is never project-specific (the harness
+  runs exactly one llama-server, whose port comes from the global config —
+  see `config.ModelConfigEqual`'s own comment) and is therefore unaffected by
+  a project switch.
+- The generic llama-server reconfigure skips itself entirely when the active
+  project is also changing in the same apply (`projectSwitching`), deferring
+  completely to `handleProjectSwitch`'s own, separately-run decision — which
+  compares effective models between the source and destination projects and
+  honors `llama_on_switch=keep`. Since `oldModel != newModel` is almost always
+  true across a switch to a project with a different effective model, running
+  the generic reconfigure first would move the process before that decision
+  ever ran, defeating "keep" in exactly the common case a switch is meant to
+  exercise.
+- If the rebuild that follows a successful quiesce is attempted and then
+  fails, `restoreMemoryAndAPI` puts the previous memory/git generation back —
+  but the process reconfigure (and possibly `handleProjectSwitch`'s own
+  reload) already ran ahead of that attempt, moving llama-server/the embedder/
+  the inference client to the new config. `undoProcessReconfigure` reverses
+  exactly the components this apply actually moved forward (tracked via
+  `llamaMoved`/`embedderMoved`/`clientSwapped`, the last two flags also set by
+  `handleProjectSwitch`'s own return value), reconfiguring back to
+  `oldModel`/`old.Embedder`. Tracking which components actually moved, rather
+  than unconditionally reconfiguring back, matters because
+  `proc.Manager.Reconfigure` always restarts the process — calling it on a
+  component that never moved (e.g. under `llama_on_switch=keep`) would cause
+  a needless, disruptive restart of an already-correct process.
+- `ApplyConfig` holds a dedicated `Runtime.applyMu` for its entire call,
+  distinct from and outside `rt.mu`. `rt.mu` alone cannot serialize two
+  concurrent `ApplyConfig` calls (a `/config` save racing `/retry`, say)
+  because `ApplyConfig` itself releases it during the UI drain and the API
+  shutdown; without `applyMu`, the first call's rebuild could complete and
+  reopen admission while the second — still holding stale local copies of
+  `old`/`loaded`/`oldModel`/`newModel` from before the first's rebuild —
+  proceeded to quiesce and replace the generation the first just installed,
+  without ever draining the requests admitted against it. `applyMu` makes
+  the whole sequence one transaction that a second caller waits out entirely.
+- Sessions are flushed only after *both* the UI drain and the API shutdown
+  have succeeded — `flushSessionsForReload`, called from the same success
+  branch as the process reconfigure, right before it (so a last-minute
+  summarization still runs against the model the conversation was actually
+  held with). This used to run inside `quiesceMemoryAndAPI` itself, *before*
+  the UI drain — while the UI gate (and the API server) were still admitting
+  new requests. A chat/task admitted in that window could append to the
+  session manager's live session map only after `FlushAll`'s snapshot of what
+  to save had already been taken; the later drain correctly waited for that
+  request's own goroutine to finish, but waiting for it to finish is not the
+  same as flushing what it wrote, and nothing flushed it again before
+  `stopMemoryAndAPI`/`closeReplaced()` closed the manager's underlying roots.
+  Moving the flush to after both drains means no new session-modifying
+  request can be admitted by the time it runs, and every one that was already
+  admitted has already finished.
+- `handleChatSend`/`handleTaskSend` capture their runner as a single read
+  taken immediately after `s.genGate.enter()` succeeds, reused for both the
+  availability check and the actual goroutine launch — not two separate reads
+  at different points. Two reads can disagree if a reload lands between them:
+  `handleChatSend` used to check `s.getChatRunner() == nil` *before*
+  `enter()`, then read it again afterward for the launch. If the second read
+  went nil after the first said configured, the handler would have already
+  rendered the response fragment (and its SSE placeholder) before discovering
+  there was nothing to launch, leaving the client waiting on tokens that
+  would never arrive.
 - `rt.cfg` is not committed to the loaded value until the component it
   describes has actually been rebuilt to match — immediately for the very
   first start (nothing to protect yet), inside the quiesce-and-shutdown
