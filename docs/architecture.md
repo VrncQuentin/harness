@@ -548,7 +548,16 @@ Mediates all reads and writes to git-backed project memory repos.
   handler when the gate is closed) and hand it off explicitly: a `handedOff`
   flag decides whether the deferred release fires when the synchronous
   handler returns (every early-return path) or is skipped because the
-  spawned goroutine's own deferred `s.genGate.exit()` now owns it.
+  spawned goroutine's own deferred `s.genGate.exit()` now owns it. Both call
+  `enter()` *before* reading the runner (or anything else generation-scoped),
+  never after: reading it first and entering second would let a reload
+  complete in between, so `enter()` succeeds against the new, reopened
+  generation while the already-captured runner still points at the old
+  one — a lease that protects one generation guarding a dependency read from
+  a different one. `handleChat` (the plain `/chat` GET) has no such
+  asymmetry — it reads `ChatRunner`, `AgentRegistry`, and `SessionStore`
+  synchronously with no detached goroutine — so it is simply wrapped with
+  `trackGenRequest` like the rest of the route table.
 - The admission this drain waits on is not a bare `sync.WaitGroup`: that type's
   own contract requires a positive `Add` arriving while the counter reads zero
   to happen before the matching `Wait`, which nothing could promise against a
@@ -586,13 +595,39 @@ Mediates all reads and writes to git-backed project memory repos.
   timeout can: calling `http.Server.Shutdown` closes the listener immediately,
   whether or not it returns before its context ends, so a caller that decides
   not to proceed cannot go back to serving on that instance regardless. The
-  method clears `rt.apiServer` unconditionally for exactly that reason — the
-  reference is dead either way — and returns the `Shutdown` error, which the
-  reload path treats the same as a UI drain failure: abort the rebuild,
-  reopen the UI gate, leave `rt.cfg` and the rest of the service graph
-  untouched. The one thing that abort cannot preserve, unlike every other
-  piece of the current generation, is API availability — the port stays down
-  until the next successful reload builds a fresh server.
+  reference in `rt.apiServer` is *not* cleared just because this call gives up
+  waiting, though: it stays pointed at the same instance until `Shutdown`
+  actually completes successfully. On a timeout, clearing it would let a
+  later reload attempt read `rt.apiServer` back as `nil`, skip this step
+  entirely (there being nothing left to shut down, from its point of view),
+  and let `stopMemoryAndAPI`/`closeReplaced()` close the roots an in-flight
+  request on that same, still-running server is reading from. Leaving the
+  reference in place means a second attempt calls `Shutdown` again on the
+  *same* server — safe and idempotent by `http.Server`'s own contract — which
+  extends the wait for whatever is still outstanding instead of silently
+  treating it as already gone. The method's error is treated the same as a UI
+  drain failure: abort the rebuild, reopen the UI gate, leave `rt.cfg` and the
+  rest of the service graph untouched. The one thing that abort cannot
+  preserve, unlike every other piece of the current generation, is API
+  availability — the listener is down and stays down until `Shutdown` finally
+  succeeds (on this attempt or a later one).
+- Reconfiguring llama-server and the embedder, and swapping the inference
+  client's target port, happens only *after* a rebuild's quiesce (drain plus
+  API shutdown) has succeeded — never before it — when a memory/API rebuild
+  is also needed. Doing it earlier, unconditionally, created two separate
+  problems: an in-flight task or a session-flush summarization still using
+  the old model would have its target change out from under it mid-request,
+  and an aborted rebuild (a failed drain or API shutdown) would leave the old
+  memory/API generation paired with processes that had already moved to the
+  new config — coherent for neither generation. The reconfigure itself reads
+  the already-computed `newModel`/`loaded` local values, never `rt.cfg`: at
+  the point a model-port change needs a fresh inference client,
+  `rt.newInferenceClientForModel(newModel)` is used instead of
+  `rt.newInferenceClient()` (which reads `rt.cfg` internally), specifically
+  because `rt.cfg` is not yet committed to `loaded` at that point — reading it
+  back out would install a client still pointed at the old port. When no
+  rebuild is needed at all, the reconfigure runs immediately, same as before;
+  there is no generation to protect in that case.
 - `rt.cfg` is not committed to the loaded value until the component it
   describes has actually been rebuilt to match — immediately for the very
   first start (nothing to protect yet), inside the quiesce-and-shutdown
