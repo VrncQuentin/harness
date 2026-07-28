@@ -270,6 +270,44 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 	}
 }
 
+// Save used to call the summarizer before writing the sidecar. A summarizer
+// failure (plausible exactly when a reload's last-minute FlushAll runs,
+// since llama-server can be mid-reconfiguration at that moment) meant Save
+// returned before either file was written -- the raw conversation was lost
+// entirely, not just the markdown summary. This proves the fix: even though
+// Save still returns an error when the summarizer fails, the sidecar (raw
+// conversation JSON) has already been durably written by the time it does.
+func TestManager_SavePersistsSidecarEvenWhenSummarizerFails(t *testing.T) {
+	fi := newFakeInference()
+	fi.err = errors.New("llama-server unavailable")
+	mgr, reader, _, _ := newTestManager(t, fi)
+	s := mgr.Start("coder")
+
+	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hi"}); err != nil {
+		t.Fatalf("Append user: %v", err)
+	}
+	if err := mgr.Append(s.ID, inference.Message{Role: "assistant", Content: "hello"}); err != nil {
+		t.Fatalf("Append assistant: %v", err)
+	}
+
+	_, err := mgr.Save(context.Background(), s.ID)
+	if err == nil {
+		t.Fatal("Save: want an error from the failing summarizer, got nil")
+	}
+
+	body, readErr := reader.Read("episodes/coder/" + s.ID + ".json")
+	if readErr != nil {
+		t.Fatalf("sidecar was not durably written despite the summarizer failure: %v", readErr)
+	}
+	conv, err := decodeConversation(body)
+	if err != nil {
+		t.Fatalf("decodeConversation: %v", err)
+	}
+	if len(conv) != 2 {
+		t.Fatalf("sidecar conversation: want 2 messages, got %d", len(conv))
+	}
+}
+
 func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 	fi := newFakeInference(summaryTokens("first summary"), summaryTokens("second summary"))
 	mgr, reader, dir, fm := newTestManager(t, fi)

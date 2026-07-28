@@ -371,6 +371,30 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 	_, alreadyKnown := m.knownIDs[id]
 	m.mu.Unlock()
 
+	episodePath := episodeMarkdownPath(snap.Agent, snap.ID)
+	sidecarPath := episodeSidecarPath(snap.Agent, snap.ID)
+
+	// The raw conversation is written before the summarizer is ever called,
+	// not after — a summarizer failure (transient, and plausible during
+	// exactly the window this matters most: a reload can be reconfiguring
+	// llama-server at the moment a last-minute FlushAll runs) used to cost
+	// the conversation itself, not just the markdown summary, because Save
+	// returned before writing either file. WriteFile's own atomic publish
+	// (rootfs.WriteStreamAtomic: temp file, fsync, rename) already makes
+	// this durable on disk the moment it returns; the sidecar was never part
+	// of the episode commit below in the first place (only episodePath is
+	// staged — see docs/architecture.md's semantic-write-gate note:
+	// conversation sidecars are operational state, not committed episodic
+	// memory), so writing it first changes nothing about what ends up in
+	// git, only whether the raw transcript survives a summarizer failure.
+	sidecarBytes, err := encodeConversation(snap.Conversation)
+	if err != nil {
+		return SaveResult{}, fmt.Errorf("session: encode sidecar %s: %w", sidecarPath, err)
+	}
+	if err := m.deps.Writer.WriteFile(sidecarPath, sidecarBytes); err != nil {
+		return SaveResult{}, fmt.Errorf("session: write sidecar %s: %w", sidecarPath, err)
+	}
+
 	summary, err := m.summarizer.Summarize(ctx, snap.Conversation)
 	if err != nil {
 		return SaveResult{}, fmt.Errorf("session: summarize %s: %w", id, err)
@@ -379,19 +403,9 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		return SaveResult{}, fmt.Errorf("session: summarize %s: summarizer returned empty body", id)
 	}
 
-	episodePath := episodeMarkdownPath(snap.Agent, snap.ID)
-	sidecarPath := episodeSidecarPath(snap.Agent, snap.ID)
-
 	body := renderEpisodeBody(snap.ID, summary)
 	if err := m.deps.Writer.WriteFile(episodePath, []byte(body)); err != nil {
 		return SaveResult{}, fmt.Errorf("session: write episode %s: %w", episodePath, err)
-	}
-	sidecarBytes, err := encodeConversation(snap.Conversation)
-	if err != nil {
-		return SaveResult{}, fmt.Errorf("session: encode sidecar %s: %w", sidecarPath, err)
-	}
-	if err := m.deps.Writer.WriteFile(sidecarPath, sidecarBytes); err != nil {
-		return SaveResult{}, fmt.Errorf("session: write sidecar %s: %w", sidecarPath, err)
 	}
 
 	commitMsg := git.BuildMessage(
