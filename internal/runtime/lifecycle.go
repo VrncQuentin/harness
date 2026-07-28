@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/embedder"
 	"github.com/VrncQuentin/harness/internal/httpclient"
 	"github.com/VrncQuentin/harness/internal/inference"
@@ -50,7 +51,16 @@ func (rt *Runtime) QueueStats() (int, int) {
 }
 
 func (rt *Runtime) newInferenceClient() inference.Client {
-	model := rt.effectiveModelFor(&rt.cfg)
+	return rt.newInferenceClientForModel(rt.effectiveModelFor(&rt.cfg))
+}
+
+// newInferenceClientForModel builds a client targeting model's port directly,
+// for a caller that already has the model config it wants a client for and
+// must not read rt.cfg to get it — notably ApplyConfig's model-endpoint-change
+// path, which computes newModel before rt.cfg is committed to the loaded
+// config (see config.go) and would otherwise build a client pointed at the
+// old port by reading rt.cfg back out of newInferenceClient.
+func (rt *Runtime) newInferenceClientForModel(model config.ModelConfig) inference.Client {
 	return inference.NewClient(
 		fmt.Sprintf("http://127.0.0.1:%d", model.Port),
 		httpclient.NewStreaming(),

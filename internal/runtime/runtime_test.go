@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -544,14 +546,17 @@ func (e *capturingAPIEnqueuer) Enqueue(req queue.Request) error {
 	return nil
 }
 
-// shutdownAPIServerForReload's whole reason to exist is that the previous
-// code's api.Server.Stop() discarded its Shutdown error, so stopMemoryAndAPI
-// proceeded to tear down the rest of the generation regardless of whether an
-// in-flight API request was still running against it. This proves the new
-// method both surfaces that error and still clears rt.apiServer -- the
-// listener is closed the moment Shutdown is called, timeout or not, so the
-// reference is dead either way and must not be left dangling.
-func TestShutdownAPIServerForReloadPropagatesATimeoutAndClearsTheReference(t *testing.T) {
+// shutdownAPIServerForReload used to clear rt.apiServer unconditionally,
+// including on a timeout. That was itself the bug: a timeout means an
+// in-flight request may still be reading this generation's roots, and a
+// second reload attempt that reads rt.apiServer back as nil would skip
+// waiting for it entirely and proceed straight to closing those roots out
+// from under it. This proves rt.apiServer stays pointed at the same,
+// still-owed instance across two consecutive reload attempts that both time
+// out while the same request is in flight -- neither may see nil and treat
+// the server as already gone -- and only clears once Shutdown finally
+// completes successfully after the request is released.
+func TestShutdownAPIServerForReloadPreservesTheOwnerAcrossConsecutiveTimeouts(t *testing.T) {
 	cfg := config.Defaults()
 	rt := New(cfg, nil, LogRings{})
 
@@ -581,27 +586,55 @@ func TestShutdownAPIServerForReloadPropagatesATimeoutAndClearsTheReference(t *te
 		t.Fatal("request was never enqueued")
 	}
 
+	// First reload attempt: the request is still in flight, so Shutdown must
+	// time out.
 	rt.mu.Lock()
 	shortCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	err := rt.shutdownAPIServerForReload(shortCtx)
 	cancel()
 	rt.mu.Unlock()
-
 	if err == nil {
-		t.Fatal("shutdownAPIServerForReload: want a timeout error from the in-flight request, got nil")
+		t.Fatal("first shutdownAPIServerForReload call: want a timeout error, got nil")
 	}
-	if rt.apiServer != nil {
-		t.Fatal("rt.apiServer was not cleared despite Shutdown having already been called")
+	if rt.apiServer != srv {
+		t.Fatal("rt.apiServer was cleared after the first timeout -- a later reload attempt would see nil and skip waiting for the still-running request")
 	}
 
-	// Release the handler goroutine the in-flight request is blocked in, so
-	// the test does not leak it.
+	// Second, later reload attempt (e.g. a manual retry): the request is
+	// STILL in flight, so this must also time out and must not treat the
+	// server as already gone.
+	rt.mu.Lock()
+	shortCtx2, cancel2 := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	err2 := rt.shutdownAPIServerForReload(shortCtx2)
+	cancel2()
+	rt.mu.Unlock()
+	if err2 == nil {
+		t.Fatal("second shutdownAPIServerForReload call: want a timeout error, got nil")
+	}
+	if rt.apiServer != srv {
+		t.Fatal("rt.apiServer was cleared on the second consecutive timeout despite the request still being in flight")
+	}
+
+	// Release the in-flight request, then confirm a further attempt finally
+	// succeeds and clears the reference.
 	close(req.Response)
 	select {
 	case resp := <-reqDone:
 		_ = resp.Body.Close()
 	case <-time.After(2 * time.Second):
 		t.Fatal("in-flight request never completed after its response channel was closed")
+	}
+
+	rt.mu.Lock()
+	longCtx, cancel3 := context.WithTimeout(context.Background(), 2*time.Second)
+	err3 := rt.shutdownAPIServerForReload(longCtx)
+	cancel3()
+	rt.mu.Unlock()
+	if err3 != nil {
+		t.Fatalf("shutdownAPIServerForReload after the request was released: %v", err3)
+	}
+	if rt.apiServer != nil {
+		t.Fatal("rt.apiServer was not cleared after Shutdown finally completed successfully")
 	}
 }
 
@@ -657,6 +690,83 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 				t.Fatalf("endpoint-only reload did not publish rebuilt UI deps: path=%q session=%T scorer=%T rebuilder=%T", deps.MemoryRepoPath, deps.SessionStore, deps.RetrievalScorer, deps.IndexRebuilder)
 			}
 		})
+	}
+}
+
+// testServerPort extracts the numeric port httptest.NewServer bound to.
+func testServerPort(t *testing.T, rawURL string) int {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse test server URL %q: %v", rawURL, err)
+	}
+	port, err := net.LookupPort("tcp", u.Port())
+	if err != nil {
+		t.Fatalf("parse test server port from %q: %v", rawURL, err)
+	}
+	return port
+}
+
+// newInferenceClient reads rt.effectiveModelFor(&rt.cfg) -- but rt.cfg is
+// deliberately not committed to the loaded config until a rebuild's quiesce
+// has already succeeded (see config.go). A model-port reload that built its
+// replacement client by calling newInferenceClient at the point the old code
+// did would read rt.cfg back out before it had been updated, and install a
+// client still pointed at the old port. This proves the fix by actually
+// issuing a completion through rt.inferClient after the reload and checking
+// which of two real HTTP servers -- one bound to the old model port, one to
+// the new -- received the request.
+func TestApplyConfigModelPortChangeInstallsClientForTheNewPort(t *testing.T) {
+	var oldHit, newHit atomic.Bool
+	oldSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		oldHit.Store(true)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer oldSrv.Close()
+	newSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		newHit.Store(true)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer newSrv.Close()
+
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.Model.Port = testServerPort(t, oldSrv.URL)
+	loaded := cfg
+	loaded.Model.Port = testServerPort(t, newSrv.URL)
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	releaseMemHandles(t, rt)
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt.llamaMgr = proc.NewManager(proc.ManagerConfig{Name: "llama-server"})
+	rt.embedMgr = proc.NewManager(proc.ManagerConfig{Name: "embedder"})
+	rt.inferClient = rt.newInferenceClient()
+	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, rt.inferClient)
+
+	uiServer := ui.NewServer(0)
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		t.Fatal("model-port reload did not report a live apply")
+	}
+
+	ch, err := rt.inferClient.Complete(context.Background(), inference.CompletionRequest{
+		Messages: []inference.Message{{Role: "user", Content: "hi"}},
+	})
+	if err == nil {
+		for range ch {
+		}
+	}
+
+	if oldHit.Load() {
+		t.Fatal("inference client targeted the old model port after a model-port reload")
+	}
+	if !newHit.Load() {
+		t.Fatal("inference client never reached the new model port after a model-port reload")
 	}
 }
 

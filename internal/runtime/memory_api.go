@@ -620,30 +620,44 @@ func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context, uiServer *ui.Server)
 // has already succeeded. The method releases rt.mu while waiting, for the
 // same reason quiesceMemoryAndAPI does.
 //
-// rt.apiServer is cleared here regardless of outcome: http.Server.Shutdown
-// closes the listener the moment it is called, whether or not it returns
-// before ctx ends, so the reference is dead either way and a caller that
-// gets an error back cannot retry against this same instance. Unlike a UI
-// drain timeout, this side effect cannot be undone by simply not proceeding
-// — the API port is down and stays down until the next successful reload
-// creates a fresh server. A caller that gets an error must still avoid
-// tearing down the memory/git generation this server's dependents (the
-// prompt assembler, the session recorder) were reading from; it just cannot
-// also preserve API availability the way it preserves the rest of the
-// current generation.
+// Calling Shutdown closes the listener immediately, whether or not it
+// returns before ctx ends — that part cannot be undone, so no new request
+// can reach this server again regardless of outcome. But rt.apiServer itself
+// is left pointing at this same instance until Shutdown actually completes
+// successfully; it is not cleared just because this call is giving up on
+// waiting. A timeout here means an in-flight request may still be running
+// against this generation's dependencies, and rt.apiServer is how the
+// runtime remembers that this specific server, not some fresher nil, is the
+// one still owed a wait. A later reload attempt calling this method again
+// therefore calls Shutdown a second time on the *same* instance — safe and
+// idempotent, per http.Server's own contract — which extends the wait for
+// whatever is still outstanding rather than silently skipping this step
+// because rt.apiServer already reads nil. Skipping it is exactly what a
+// premature clear would cause: stopMemoryAndAPI/startMemoryAndAPI would then
+// proceed to close the roots that in-flight request is still reading, with
+// nothing left to have waited for it.
 func (rt *Runtime) shutdownAPIServerForReload(ctx context.Context) error {
 	apiServer := rt.apiServer
 	if apiServer == nil {
 		return nil
 	}
-	rt.apiServer = nil
 
 	rt.mu.Unlock()
-	defer rt.mu.Lock()
 	shutdownCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := apiServer.Shutdown(shutdownCtx); err != nil {
+	err := apiServer.Shutdown(shutdownCtx)
+	cancel()
+	rt.mu.Lock()
+
+	if err != nil {
 		return fmt.Errorf("API server shutdown: %w", err)
+	}
+	// Only clear the reference once Shutdown has actually completed. The
+	// identity check guards against a concurrent ApplyConfig call having
+	// already installed a different server in rt.apiServer while this one's
+	// lock was released above; in that case there is nothing of this call's
+	// own to clear.
+	if rt.apiServer == apiServer {
+		rt.apiServer = nil
 	}
 	return nil
 }
