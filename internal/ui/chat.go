@@ -163,6 +163,22 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "chat backend not configured", http.StatusServiceUnavailable)
 		return
 	}
+	// Admitted here, but the lease is handed off to the streaming goroutine
+	// below rather than released when this handler returns: streamChatTokens
+	// reads generation-scoped deps (through runner) for as long as it runs,
+	// which outlives this request by design. handedOff tracks which of the
+	// two owns the exit.
+	if !s.genGate.enter() {
+		http.Error(w, "reload in progress, try again", http.StatusServiceUnavailable)
+		return
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			s.genGate.exit()
+		}
+	}()
+
 	r.Body = http.MaxBytesReader(w, r.Body, chatSendMaxBytes)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
@@ -204,7 +220,9 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	runner := s.getChatRunner()
 	if runner != nil {
 		ctx, cancel := context.WithCancel(s.asyncContext())
+		handedOff = true
 		go func() {
+			defer s.genGate.exit()
 			defer cancel()
 			s.streamChatTokens(ctx, runner, agent, sessionID, streamID, tokenEvent, conversation)
 		}()

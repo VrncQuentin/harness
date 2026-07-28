@@ -763,9 +763,11 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/chat/events", s.handleChatEvents)
 	// handleChatSend itself returns promptly, but it launches the actual
 	// ChatRunner call in a detached goroutine that outlives the request (see
-	// streamChatTokens) — wrapping the handler would not cover the work that
-	// actually reads generation-scoped deps, so it is deliberately left
-	// untracked, the same reasoning that excludes the SSE endpoints.
+	// streamChatTokens) — wrapping the handler with trackGenRequest would
+	// release the lease when the handler returns, not when that goroutine
+	// finishes, so handleChatSend gates and hands the lease off itself
+	// instead of being wrapped here. /task/send (handleTaskSend) does the
+	// same for streamTaskEvents.
 	mux.HandleFunc("/chat/send", s.handleChatSend)
 
 	mux.HandleFunc("/chat/save", s.trackGenRequest(s.handleChatSave))

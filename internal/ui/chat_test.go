@@ -274,6 +274,81 @@ func TestHandleChatSend_UsesRequestIndependentStreamContext(t *testing.T) {
 	}
 }
 
+// handleChatSend itself returns as soon as it launches streamChatTokens in a
+// goroutine — but that goroutine goes on reading the ChatRunner dependency
+// for as long as the completion runs, well past the point the HTTP handler
+// has returned. A drain that released the lease when the handler returned
+// (the same shape trackGenRequest gives every other handler) would let a
+// reload close the runner's generation while this goroutine was still using
+// it. This proves the lease is instead handed off to the goroutine: the
+// drain must still be blocked while runner.Run hasn't returned, and only
+// completes once it does.
+func TestHandleChatSendHoldsGenerationLeaseUntilStreamingFinishes(t *testing.T) {
+	s := NewServer(3000)
+	runner := &blockingChatRunner{called: make(chan context.Context, 1), release: make(chan struct{})}
+	setChatRunnerForTest(s, runner)
+
+	form := url.Values{"message": {"hi"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleChatSend(rec, req)
+
+	select {
+	case <-runner.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner was not called")
+	}
+
+	drainDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		drainDone <- s.DrainGenerationRequests(ctx)
+	}()
+
+	select {
+	case <-drainDone:
+		t.Fatal("DrainGenerationRequests returned before the streaming goroutine finished")
+	case <-time.After(100 * time.Millisecond):
+		// Still blocked, as it must be while runner.Run holds release.
+	}
+
+	close(runner.release)
+
+	select {
+	case err := <-drainDone:
+		if err != nil {
+			t.Fatalf("DrainGenerationRequests: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("DrainGenerationRequests did not return after the streaming goroutine finished")
+	}
+}
+
+// A request arriving while a drain is already closing admission must be
+// refused before it can spawn a goroutine that would itself go untracked —
+// handleChatSend gates and hands off the lease itself rather than being
+// wrapped by trackGenRequest, so this exercises that inline gating directly.
+func TestHandleChatSendRefusesAdmissionWhileADrainIsInProgress(t *testing.T) {
+	s := NewServer(3000)
+	setChatRunnerForTest(s, &stubChatRunner{})
+
+	if err := s.genGate.close(context.Background()); err != nil {
+		t.Fatalf("genGate.close: %v", err)
+	}
+
+	form := url.Values{"message": {"hi"}}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/chat/send", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	s.handleChatSend(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("handleChatSend during a drain: status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+}
+
 func TestStreamChatTokens_EscapesBroadcastTokenFrames(t *testing.T) {
 	s := NewServer(3000)
 	runner := &stubChatRunner{

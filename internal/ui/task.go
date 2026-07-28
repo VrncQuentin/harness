@@ -98,6 +98,22 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, ErrTaskNotReady.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	// Admitted here, but the lease is handed off to the streaming goroutine
+	// below rather than released when this handler returns: streamTaskEvents
+	// reads generation-scoped deps (through runner) for as long as the task
+	// runs, which outlives this request by design. handedOff tracks which of
+	// the two owns the exit.
+	if !s.genGate.enter() {
+		http.Error(w, "reload in progress, try again", http.StatusServiceUnavailable)
+		return
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			s.genGate.exit()
+		}
+	}()
+
 	r.Body = http.MaxBytesReader(w, r.Body, taskSendMaxBytes)
 	if err := r.ParseForm(); err != nil {
 		http.Error(w, "invalid form", http.StatusBadRequest)
@@ -127,7 +143,9 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx, cancel := context.WithCancel(s.asyncContext())
+	handedOff = true
 	go func() {
+		defer s.genGate.exit()
 		defer cancel()
 		s.streamTaskEvents(ctx, runner, agent, sessionID, streamID, textEvent, conversation)
 	}()
