@@ -697,6 +697,49 @@ Mediates all reads and writes to git-backed project memory repos.
   rendered the response fragment (and its SSE placeholder) before discovering
   there was nothing to launch, leaving the client waiting on tokens that
   would never arrive.
+- `Runtime.Stop` — normal process shutdown, not a reload — drains the UI
+  generation gate the same way a reload does, before anything else it tears
+  down. This did not exist until it was added: `Stop` took no `*ui.Server`
+  at all and never touched the gate, so the leasing this migration built for
+  reloads simply did not apply to shutdown. `main.go`'s `onQuit` calls `Stop`
+  before cancelling the context that eventually shuts down the UI listener,
+  so a chat, task, or memory request could start — or still be running —
+  while `Stop`'s own `FlushAll` and `owned.close()` ran concurrently against
+  the handles it reads through: the same use-after-close hazard the reload
+  path exists to close, just on the shutdown path instead. Unlike a reload,
+  a drain timeout here does not abort anything — there is no generation left
+  to preserve for a later retry, since the process is exiting regardless —
+  so it is logged and `Stop` proceeds; live sessions are flushed only after
+  the drain (not before or interleaved with it), for the same
+  no-new-admissions-then-flush reasoning `flushSessionsForReload` documents.
+- `handleProjectSwitch`'s `llama_on_switch=keep` branch still reconfigures
+  llama-server when the *global* `Model.Port` field changed in the same
+  apply as the switch, even though "keep" otherwise leaves the process
+  alone. Port is never project-specific (`config.ModelConfigEqual`'s own
+  comment), so a direct edit to it is not something "keep" is meant to
+  suppress — and `reconfigureProcesses`'s inference-client swap
+  (`config.go`) is unconditional on `projectSwitching` for exactly that
+  reason. Without this, the client would move to the new port while
+  llama-server stayed on the old one, pointing every request at nothing.
+  The reconfigure in that specific case uses the *source* project's
+  effective model with only the port swapped — never the destination's —
+  so "keep" still means what it says for the model itself.
+- `session.Manager.Save` writes the sidecar (the raw conversation JSON)
+  before calling the summarizer, not after. A summarizer failure — plausible
+  exactly when a last-minute `flushSessionsForReload`/`Stop` flush runs,
+  since a reload can be reconfiguring llama-server at that very moment —
+  used to mean `Save` returned before writing either file, losing the raw
+  conversation entirely rather than just the markdown summary. The sidecar
+  was never part of the episode's git commit in the first place (only the
+  markdown file is staged), so writing it first changes nothing about what
+  ends up in git — only whether the transcript survives a failed summary.
+- A rebuild's `result.LiveApplied` is reset to `false` if the rebuild it
+  guards is attempted and fails. `reconfigureProcesses` sets it `true` as
+  soon as it moves llama-server or the embedder, before the rebuild that
+  follows is even attempted; if that rebuild then fails,
+  `undoProcessReconfigure` and `restoreMemoryAndAPI` revert everything it
+  did, and the result must say so rather than report success for a
+  configuration that was just rolled back.
 - `rt.cfg` is not committed to the loaded value until the component it
   describes has actually been rebuilt to match — immediately for the very
   first start (nothing to protect yet), inside the quiesce-and-shutdown
