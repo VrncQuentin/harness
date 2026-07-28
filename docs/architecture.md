@@ -255,7 +255,15 @@ Responsibilities:
   "rename by handle" primitive exists in Go's stdlib to close this atomically —
   Windows' `SetFileInformationByHandle` could, but is not exposed — so a
   narrow stat-to-syscall window remains; this shrinks it from the entire copy,
-  sync, and close down to that.
+  sync, and close down to that. What remains needs a second writer with
+  independent access to the same directory, actively racing this exact
+  sequence — a genuinely external process, not this codebase's own
+  concurrency, since every current caller onto a shared destination is
+  itself serialized: `memory.LockRepoWrite`'s `repoWriteLocks` for
+  facts.md/notes.md/agent files, `index.Index`'s own `mu` for its
+  `vectors.bin`/`manifest.json` pair, and `project.Workflow`'s `workflowMu`
+  for project creation and repo moves. That is the same boundary
+  `repoMutationLocks` below already draws for its own lock.
 - `File`, returned only by `OpenRead`, is read-only and exposes no pathname
   accessor: `os.File.Name` on a file opened through an `os.Root` reports the
   root path joined with the relative name, an authorized read that could be
@@ -524,12 +532,23 @@ Mediates all reads and writes to git-backed project memory repos.
   `/agents/rules`, `/agents/notes`, `/chat/save`, and `/chat/session`. A
   reload's `quiesceMemoryAndAPI` step drains them (`Server.DrainGenerationRequests`,
   alongside the existing task-loop cancellation and session flush) before the
-  memory/API generation they were using is closed. `/chat/send` is deliberately
-  left unwrapped: it returns promptly but launches the actual work in a detached
-  goroutine that outlives the request, so wrapping the handler would not cover
-  the call that actually reads generation-scoped deps — the same reasoning that
-  excludes the SSE endpoints (`/events`, `/chat/events`, `/task/events`), which
-  are long-lived by design and would turn a drain into a hang.
+  memory/API generation they were using is closed. The SSE endpoints
+  (`/events`, `/chat/events`, `/task/events`) are long-lived by design and stay
+  outside this entirely — a drain that waited for one to end on its own would
+  turn a reload into a hang.
+- `/chat/send` and `/task/send` are a different shape from every other handler
+  here: each returns promptly but hands off to a goroutine
+  (`streamChatTokens`, `streamTaskEvents`) that goes on reading a
+  generation-scoped dependency (`ChatRunner`, `TaskRunner`) for as long as the
+  completion or task runs, well past the point the HTTP handler itself
+  returns. Wrapping them with `trackGenRequest` would not help — that helper
+  releases its lease when the *handler* returns, not when a goroutine it
+  launched finishes — so both take their lease directly
+  (`s.genGate.enter()`, refusing admission with 503 exactly like a wrapped
+  handler when the gate is closed) and hand it off explicitly: a `handedOff`
+  flag decides whether the deferred release fires when the synchronous
+  handler returns (every early-return path) or is skipped because the
+  spawned goroutine's own deferred `s.genGate.exit()` now owns it.
 - The admission this drain waits on is not a bare `sync.WaitGroup`: that type's
   own contract requires a positive `Add` arriving while the counter reads zero
   to happen before the matching `Wait`, which nothing could promise against a
@@ -549,6 +568,47 @@ Mediates all reads and writes to git-backed project memory repos.
   itself before the error returns, and the reload path aborts the whole
   rebuild rather than proceed to close the current generation's handles out
   from under a request the drain could not wait for.
+- `taskRunnerAdapter.CancelAll` only cancels and waits for task engines already
+  registered in its own snapshot; a `/task/send` that reaches
+  `registerEngine` moments later is invisible to it, and its error is only
+  logged, never treated as a reason to abort. That is safe rather than merely
+  tolerated, because `/task/send` takes its generation lease (above) before
+  registering anything and holds it for the task's whole run: the drain that
+  follows `CancelAll` — not `CancelAll` itself — is what actually has to wait
+  for that task, and does, regardless of whether `CancelAll`'s snapshot ever
+  saw it. A task that slips past `CancelAll` this way keeps running past the
+  cancellation request, uncancelled, but never past the reload's own drain:
+  it still holds that up, so the runtime still will not tear down the
+  generation it is reading from until it finishes.
+- The API server gets a separate quiesce step, `shutdownAPIServerForReload`,
+  run only after the UI drain above has already succeeded — never folded into
+  it — because its own side effect cannot be undone the way a UI drain
+  timeout can: calling `http.Server.Shutdown` closes the listener immediately,
+  whether or not it returns before its context ends, so a caller that decides
+  not to proceed cannot go back to serving on that instance regardless. The
+  method clears `rt.apiServer` unconditionally for exactly that reason — the
+  reference is dead either way — and returns the `Shutdown` error, which the
+  reload path treats the same as a UI drain failure: abort the rebuild,
+  reopen the UI gate, leave `rt.cfg` and the rest of the service graph
+  untouched. The one thing that abort cannot preserve, unlike every other
+  piece of the current generation, is API availability — the port stays down
+  until the next successful reload builds a fresh server.
+- `rt.cfg` is not committed to the loaded value until the component it
+  describes has actually been rebuilt to match — immediately for the very
+  first start (nothing to protect yet), inside the quiesce-and-shutdown
+  success branch right before the rebuild it authorizes, and in the plain
+  reconfigure path when no rebuild was needed at all. On the abort path
+  (either quiesce step failing) `rt.cfg` stays at the old value; the same
+  rollback applies if the rebuild itself is attempted but fails and
+  `restoreMemoryAndAPI` puts the previous generation back. Reading `rt.cfg`
+  live is common — `taskRunnerAdapter.RunTask` resolves sandbox roots from
+  `rt.cfg.Project.ActiveProjectSlug` directly, not through the (unrebuilt)
+  service graph — so committing the new value ahead of the rebuild it
+  requires would let such a reader observe a project or prompt config the
+  still-running old generation was never built for: a task started right
+  after an aborted project switch would resolve sandbox roots for the new
+  project while every memory operation still ran against the old project's
+  repo.
 
 **Cross-agent reads:** explicit only. An agent may request episodes from another agent's directory. Not automatic.
 
@@ -559,6 +619,8 @@ remain outside the semantic gate as evidence, operational state, or derived proj
 
 ### Project Store (`internal/project`)
 Defines project identity and validation rules. SQL persistence lives in `internal/db`, while this package owns typed project values, slugs, directory metadata, effective model overrides, and lifecycle status such as hidden or system projects.
+
+`Workflow.Create` and `Workflow.Update` are serialized by a package-level `workflowMu`, not a mutex on the `Workflow` value: a handler builds a fresh `*Workflow` per request, so a value-level lock would serialize nothing between two concurrent requests. One process-wide lock, not identity-keyed the way `internal/git`'s and `internal/memory`'s own locks are, is deliberate — project creation and editing are rare, human-driven actions, not a hot path — but it is what keeps two concurrent "create project" or "edit project" calls naming the same `MemoryRepoPath` from both reaching `EnsureProjectRepo`/`MoveProjectRepo` against that destination at once.
 
 ### Git Backend (`internal/git`)
 Thin wrapper around `go-git` (pure Go — no git binary dependency).
