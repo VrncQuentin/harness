@@ -161,12 +161,33 @@ func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel
 // rel's directory is pinned once, before the temp file is created, and every
 // later step — the create, the cleanup remove, and the final rename — resolves
 // against that one pinned handle rather than against rel's directory component
-// a second and third time. Re-resolving it on each call would let a directory
-// swapped in between them redirect the cleanup or the rename: the temp file's
-// random name is only unpredictable at the moment it is minted, and a reader
-// that lists the directory afterwards, moves it aside, and plants a file under
-// the same name in a replacement can otherwise make the final rename publish
-// that planted content instead of the bytes this call wrote.
+// a second and third time. Re-resolving the *directory* on each call would let
+// a directory swapped in between them redirect the cleanup or the rename to a
+// different directory entirely; pinning it once closes that.
+//
+// It does not, on its own, close the narrower window one level down: Rename
+// and Remove still address the temp file by its name within that directory,
+// and the name becomes visible — a plain directory listing, from anything
+// else with access to it — the moment createTemp succeeds. A reader passed as
+// src that takes any real time to produce its bytes (network I/O, a slow
+// disk, or nothing more than an unlucky scheduling gap) gives a concurrent
+// writer with access to the same directory a window to remove the visible
+// temp name and recreate it holding different content, entirely independent
+// of the directory-level pin: the replacement is a new file under an old
+// name, in the same, correctly-pinned directory. Renaming by name alone would
+// then publish whatever currently holds that name — the replacement's bytes —
+// under the caller's requested name, not what this call actually wrote to its
+// own open handle.
+//
+// What closes that is comparing the object the temp name currently resolves
+// to against the object this call's own handle was writing to, using
+// os.SameFile rather than a name: the check and the operation it gates are
+// still two steps, not one atomic unit — no portable primitive here binds a
+// rename to a specific open handle rather than a name, the way Windows'
+// SetFileInformationByHandle can but Go's os package does not expose — but it
+// shrinks the window from "the entire copy, sync, and close" down to "between
+// one stat and the next filesystem call", and it refuses to publish or delete
+// anything it cannot confirm is still the file this call created.
 func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) error {
 	return r.writeStreamAtomicHooked(rel, src, perm, nil)
 }
@@ -197,12 +218,22 @@ func (r *Root) writeStreamAtomicHooked(rel string, src io.Reader, perm fs.FileMo
 	if err != nil {
 		return err
 	}
+	// Captured the moment the name is known to still refer to this call's own
+	// handle, before anything else can have touched it. Every later step that
+	// addresses tmpName by name — the cleanup remove, the publishing rename —
+	// checks the name against this rather than trusting that a name, once
+	// minted, keeps meaning the same thing.
+	createdInfo, statErr := f.Stat()
 	cleanup := true
 	defer func() {
-		if cleanup {
+		if cleanup && statErr == nil && stillNames(dir, tmpName, createdInfo) {
 			_ = dir.root.Remove(tmpName)
 		}
 	}()
+	if statErr != nil {
+		_ = f.Close()
+		return fmt.Errorf("rootfs: stat created temp file %s: %w", tmpName, statErr)
+	}
 
 	if _, err := io.Copy(f, src); err != nil {
 		_ = f.Close()
@@ -214,6 +245,9 @@ func (r *Root) writeStreamAtomicHooked(rel string, src io.Reader, perm fs.FileMo
 	}
 	if err := f.Close(); err != nil {
 		return err
+	}
+	if !stillNames(dir, tmpName, createdInfo) {
+		return fmt.Errorf("rootfs: temp file %s was replaced before it could be published", tmpName)
 	}
 	if err := dir.root.Rename(tmpName, base); err != nil {
 		return err
@@ -908,4 +942,21 @@ func (r *Root) createTemp(perm fs.FileMode) (string, *os.File, error) {
 		return name, f, nil
 	}
 	return "", nil, fmt.Errorf("rootfs: no free temporary name after %d attempts", attempts)
+}
+
+// stillNames reports whether name, resolved fresh through dir without
+// following a final symlink, is still the object described by info.
+//
+// Lstat rather than Stat: a replacement is not necessarily a link — the most
+// direct substitution is an ordinary file created fresh under the vacated
+// name — so this must not follow anything to decide whether the name still
+// means what it meant when info was captured. os.SameFile compares the two as
+// filesystem objects, which is the only comparison a renamed or recreated
+// name cannot pass by accident.
+func stillNames(dir *Root, name string, info fs.FileInfo) bool {
+	current, err := dir.root.Lstat(name)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(info, current)
 }

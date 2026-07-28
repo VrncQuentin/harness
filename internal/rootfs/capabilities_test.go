@@ -1,6 +1,7 @@
 package rootfs
 
 import (
+	"bytes"
 	"errors"
 	"io/fs"
 	"os"
@@ -479,6 +480,102 @@ func TestRoot_WriteStreamAtomicFailureLeavesNoDebris(t *testing.T) {
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+
+// swapTempFileOnFirstRead stands in for a src whose Read takes real time to
+// produce bytes — network I/O, a slow disk, or nothing more than an unlucky
+// scheduling gap — during which anything else with access to the destination
+// directory can see the temp file WriteStreamAtomic already created (its name
+// is only unpredictable before that point) and replace it. It lists the
+// directory itself the first time it is asked for bytes, removes whatever
+// carries the tempNamePrefix, and recreates that exact name holding different
+// content, before finally handing back the genuine bytes this call is
+// supposed to publish.
+type swapTempFileOnFirstRead struct {
+	dir           string
+	attackerBytes []byte
+	inner         *bytes.Reader
+	swapped       bool
+}
+
+func (s *swapTempFileOnFirstRead) Read(p []byte) (int, error) {
+	if !s.swapped {
+		s.swapped = true
+		entries, err := os.ReadDir(s.dir)
+		if err == nil {
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), tempNamePrefix) {
+					tmpPath := filepath.Join(s.dir, e.Name())
+					_ = os.Remove(tmpPath)
+					_ = os.WriteFile(tmpPath, s.attackerBytes, 0o644)
+				}
+			}
+		}
+	}
+	return s.inner.Read(p)
+}
+
+// The temp file's random name stops being a secret the moment createTemp
+// succeeds: it is a plain directory entry, visible to a listing from anything
+// else with access to the same directory. Pinning the destination directory
+// once (proven by TestRoot_WriteStreamAtomicPinsDestinationDirectoryOnce)
+// says nothing about that — it protects which directory the name is resolved
+// in, not what currently holds the name inside it. If the name is removed and
+// recreated with different content while this call's own handle is still
+// being written to, a rename addressed by name alone would publish whatever
+// currently holds that name, not the bytes this call actually wrote.
+func TestRoot_WriteStreamAtomicRefusesATempNameSwappedDuringTheCopy(t *testing.T) {
+	dir := t.TempDir()
+	const genuine = "the genuine bytes this call is publishing"
+	const attacker = "ATTACKER-SUBSTITUTED CONTENT"
+	src := &swapTempFileOnFirstRead{
+		dir:           dir,
+		attackerBytes: []byte(attacker),
+		inner:         bytes.NewReader([]byte(genuine)),
+	}
+
+	r := openRoot(t, dir)
+	err := r.WriteStreamAtomic("file.txt", src, 0o644)
+	if !src.swapped {
+		t.Fatal("the swap never ran; the window was not exercised")
+	}
+	if err == nil {
+		t.Fatal("expected a refusal: the temp name was replaced with different content during the copy")
+	}
+	if got, rerr := os.ReadFile(filepath.Join(dir, "file.txt")); rerr == nil {
+		if string(got) == attacker {
+			t.Fatalf("attacker-substituted content was published under the requested name: %q", got)
+		}
+		t.Fatalf("file.txt was published despite the refusal: %q", got)
+	}
+
+	// The refusal's own cleanup must not delete the replacement either: by
+	// the time cleanup runs, the name no longer refers to this call's file,
+	// and removing it would delete whatever the replacement actually is —
+	// the same "cannot unlink the exact object a handle refers to" hazard
+	// documented on CreateExclusive, here applying to a name this call no
+	// longer owns rather than one it never claimed.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), tempNamePrefix) {
+			continue
+		}
+		found = true
+		got, rerr := os.ReadFile(filepath.Join(dir, e.Name()))
+		if rerr != nil {
+			t.Fatalf("ReadFile %s: %v", e.Name(), rerr)
+		}
+		if string(got) != attacker {
+			t.Fatalf("the surviving temp entry does not hold the replacement's content: %q", got)
+		}
+	}
+	if !found {
+		t.Fatal("cleanup removed the replacement file that took over the temp name")
+	}
+}
 
 // Clone hands out an independent handle on the same directory: closing one must
 // not disturb the other.
