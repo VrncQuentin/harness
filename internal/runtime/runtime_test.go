@@ -396,6 +396,87 @@ func TestApplyConfigAbortsMemoryRebuildWhenUIRequestDrainTimesOut(t *testing.T) 
 	}
 }
 
+// An aborted rebuild used to still commit rt.cfg to the new value, even
+// though the service graph backing it -- rt.activeMem, rt.gitRepo, the
+// task runner -- was left exactly as it was. Any component that reads
+// rt.cfg live rather than through the (unrebuilt) service graph -- the task
+// runner's own sandbox-root resolution, notably -- would then resolve state
+// for the new project while every memory operation still ran against the
+// old project's repo. This proves rt.cfg stays put on the same aborted-drain
+// path TestApplyConfigAbortsMemoryRebuildWhenUIRequestDrainTimesOut proves
+// the service graph itself is untouched by: same in-flight-request setup,
+// but with old and new configs naming two different projects so a wrongly
+// committed rt.cfg is directly observable.
+func TestApplyConfigDoesNotCommitNewProjectSlugWhenUIRequestDrainTimesOut(t *testing.T) {
+	globalRoot := initRuntimeProjectRepo(t)
+	otherRoot := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	loaded := cfg
+	loaded.Project.ActiveProjectSlug = "other"
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	releaseMemHandles(t, rt)
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: globalRoot},
+		"other":            {Slug: "other", DisplayName: "Other", MemoryRepoPath: otherRoot},
+	}}
+
+	port := freeTCPPort(t)
+	uiServer := ui.NewServer(port)
+	srvCtx, cancelSrv := context.WithCancel(context.Background())
+	defer cancelSrv()
+	if err := uiServer.Start(srvCtx); err != nil {
+		t.Fatalf("ui server start: %v", err)
+	}
+
+	reg := &blockingAgentRegistry{entered: make(chan struct{}), release: make(chan struct{})}
+	uiServer.SetServiceDeps(ui.ServiceDeps{AgentRegistry: reg})
+
+	type postResult struct {
+		resp *http.Response
+		err  error
+	}
+	reqDone := make(chan postResult, 1)
+	go func() {
+		resp, err := http.PostForm(
+			fmt.Sprintf("http://127.0.0.1:%d/agents/persona", port),
+			url.Values{"name": {"coder"}, "body": {"updated persona"}},
+		)
+		reqDone <- postResult{resp, err}
+	}()
+
+	select {
+	case <-reg.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocking agent registry write never started")
+	}
+
+	shortCtx, shortCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer shortCancel()
+	result := rt.ApplyConfig(shortCtx, uiServer, NewEventChannel(), nil)
+	if result.LiveApplied {
+		t.Fatal("reload reported live apply despite an in-flight request the UI drain could not wait out")
+	}
+	if got := rt.cfg.Project.ActiveProjectSlug; got != project.GlobalSlug {
+		t.Fatalf("rt.cfg.Project.ActiveProjectSlug = %q after an aborted reload, want %q (the project the untouched service graph still serves) -- a component reading rt.cfg live would resolve state for %q while memory operations still run against %q's repo", got, project.GlobalSlug, got, project.GlobalSlug)
+	}
+
+	close(reg.release)
+	select {
+	case r := <-reqDone:
+		if r.err != nil {
+			t.Fatalf("POST /agents/persona: %v", r.err)
+		}
+		_ = r.resp.Body.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked request never completed after release")
+	}
+}
+
 func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()

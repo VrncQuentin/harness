@@ -52,12 +52,15 @@ func (rt *Runtime) ApplyConfig(
 	newModel := rt.effectiveModelFor(loaded)
 	modelEndpointChanged := oldModel.Port != newModel.Port
 	embedderEndpointChanged := old.Embedder.Port != loaded.Embedder.Port
-	rt.cfg = *loaded
-	rt.refreshProjectDirectoryWarnings(uiServer)
 
 	var result ui.ApplyResult
 
 	if !rt.started {
+		// Nothing to protect yet -- there is no previous generation a wrong
+		// commit could leave stranded -- so rt.cfg can be set immediately;
+		// startServices/startMemoryAndAPI read it live.
+		rt.cfg = *loaded
+		rt.refreshProjectDirectoryWarnings(uiServer)
 		slog.Info("starting services", "model_port", newModel.Port, "embed_port", loaded.Embedder.Port)
 		rt.startServices(ctx, uiServer, events, metricsStore)
 		rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
@@ -96,9 +99,19 @@ func (rt *Runtime) ApplyConfig(
 				// leave the current generation running and let a later
 				// retry (manual or the next config save) try again, rather
 				// than rebuild out from under a request the drain could not
-				// wait for.
+				// wait for. rt.cfg is deliberately left as `old` here, not
+				// `loaded`: committing the new config while the service
+				// graph backing it was never rebuilt would let every
+				// component that reads rt.cfg live -- the task runner's
+				// sandbox-root resolution, notably -- observe a project or
+				// prompt config the still-running old generation was never
+				// built for, e.g. resolving sandbox roots for a new project
+				// slug while memory operations still run against the old
+				// project's repo.
 				slog.Warn("runtime reload: aborting memory/API rebuild, UI request drain failed", "err", err)
 			} else {
+				rt.cfg = *loaded
+				rt.refreshProjectDirectoryWarnings(uiServer)
 				// Project switch optionally reloads llama-server before rebuilding
 				// memory services. Live work has already been quiesced above so it
 				// is committed under the previous project manager.
@@ -115,12 +128,23 @@ func (rt *Runtime) ApplyConfig(
 					snapshot.closeReplaced()
 				} else {
 					rt.restoreMemoryAndAPI(uiServer, snapshot)
+					// The rebuild attempt itself failed and the previous
+					// generation's service graph was restored -- rt.cfg
+					// follows it back to `old` for the same reason it was
+					// never advanced past `old` on the drain-timeout path
+					// above: the live services and the config a caller reads
+					// must describe one generation, not two.
+					rt.cfg = old
+					rt.refreshProjectDirectoryWarnings(uiServer)
 				}
 				// The UI generation gate was left closed by a successful
 				// drain above; reopen it now that deps.SetServiceDeps points
 				// at either the new generation or the restored old one.
 				uiServer.ResumeGenerationAdmission()
 			}
+		} else {
+			rt.cfg = *loaded
+			rt.refreshProjectDirectoryWarnings(uiServer)
 		}
 	}
 
