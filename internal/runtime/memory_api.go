@@ -540,13 +540,11 @@ func (rt *Runtime) SessionManager() *session.Manager {
 	return rt.sessionMg
 }
 
-// quiesceMemoryAndAPI cancels active task loops, flushes live sessions, and
-// waits for in-flight UI requests tracked by trackGenRequest before a
-// memory/API rebuild drops the current generation's handles. Caller must hold
-// rt.mu on entry; the method releases it while waiting so session
-// summarization can read live config through summarizerPromptFn without
-// deadlocking, and so a tracked UI request blocked on rt.mu elsewhere can
-// finish rather than deadlock against this call.
+// quiesceMemoryAndAPI cancels active task loops and waits for in-flight UI
+// requests tracked by trackGenRequest before a memory/API rebuild drops the
+// current generation's handles. Caller must hold rt.mu on entry; the method
+// releases it while waiting so a tracked UI request blocked on rt.mu
+// elsewhere can finish rather than deadlock against this call.
 //
 // The task-cancel step only logs a warning on failure and does not, on its
 // own, guarantee no task registers after its snapshot of running engines is
@@ -563,28 +561,27 @@ func (rt *Runtime) SessionManager() *session.Manager {
 // caller still will not tear down the generation it is reading from until
 // the drain says everything has finished.
 //
-// The session-flush step is the same shape: log-only, no safety property of
-// its own to guard.
-//
-// The UI drain is different: it leaves uiServer's generation gate closed to
-// new admissions on success (see Server.DrainGenerationRequests), and the
-// caller must call uiServer.ResumeGenerationAdmission once it has finished
-// swapping in the new generation or restoring the old one. On error, the
-// gate has already reopened itself and nothing has been quiesced on the UI
-// side — the caller must abort the rebuild and keep using the current
-// generation rather than proceed to close its handles.
+// The UI drain leaves uiServer's generation gate closed to new admissions on
+// success (see Server.DrainGenerationRequests), and the caller must call
+// uiServer.ResumeGenerationAdmission once it has finished swapping in the new
+// generation or restoring the old one. On error, the gate has already
+// reopened itself and nothing has been quiesced on the UI side — the caller
+// must abort the rebuild and keep using the current generation rather than
+// proceed to close its handles.
 //
 // This always runs the drain, even when there is no task loop or session
 // manager yet: skipping it in that case would leave a request that raced in
 // through a trackGenRequest handler unaccounted for.
 //
-// It does not shut down the API server — see shutdownAPIServerForReload,
-// which the caller runs as a separate step only after this one succeeds,
-// since that step's own side effect (closing the listener) cannot be undone
-// the way a UI drain timeout can.
+// It does not shut down the API server, and it does not flush sessions — see
+// shutdownAPIServerForReload and flushSessionsForReload, which the caller
+// runs as separate steps only after this one succeeds. The API server's own
+// side effect (closing the listener) cannot be undone the way a UI drain
+// timeout can, which is why it is its own step rather than folded in here;
+// the session flush has to run after *both* drains for a different reason —
+// see flushSessionsForReload's own doc comment.
 func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context, uiServer *ui.Server) error {
 	tasks := rt.taskRunner
-	mgr := rt.SessionManager()
 
 	rt.mu.Unlock()
 	defer rt.mu.Lock()
@@ -593,13 +590,6 @@ func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context, uiServer *ui.Server)
 		cancelCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		if err := tasks.CancelAll(cancelCtx); err != nil {
 			slog.Warn("runtime reload: task loop shutdown wait", "err", err)
-		}
-		cancel()
-	}
-	if mgr != nil {
-		flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		if err := mgr.FlushAll(flushCtx); err != nil {
-			slog.Warn("runtime reload: session flush", "err", err)
 		}
 		cancel()
 	}
@@ -612,6 +602,42 @@ func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context, uiServer *ui.Server)
 		return fmt.Errorf("UI request drain: %w", err)
 	}
 	return nil
+}
+
+// flushSessionsForReload flushes every live session, once both the UI
+// generation gate and the API server have stopped admitting new requests, so
+// no session-modifying request can start after this point and every one that
+// was already admitted has already finished — both drains wait for exactly
+// that. Caller must hold rt.mu and must call this only after
+// quiesceMemoryAndAPI and shutdownAPIServerForReload have both already
+// succeeded. The method releases rt.mu while flushing, for the same reason
+// the two drains before it do.
+//
+// Flushing any earlier — while either the UI drain or the API server was
+// still admitting requests, which is where this used to run, inside
+// quiesceMemoryAndAPI itself before the UI drain — risked losing a session
+// entirely: a chat/task could be admitted moments after FlushAll's snapshot
+// of live sessions was taken, get recorded in the (old) manager's live
+// session map by the time its own goroutine finishes (streamChatTokens/
+// streamTaskEvents wait for the underlying runner's session-append to
+// complete before releasing their lease), and never be flushed again before
+// stopMemoryAndAPI/closeReplaced() closed the manager's underlying roots. The
+// later drain still correctly waited for that request's goroutine to finish
+// — it is leased like any other — but waiting for it to finish is not the
+// same as flushing what it wrote. Log-only on failure, same as before: no
+// safety property of its own to guard once it runs at the right time.
+func (rt *Runtime) flushSessionsForReload(ctx context.Context) {
+	mgr := rt.SessionManager()
+	if mgr == nil {
+		return
+	}
+	rt.mu.Unlock()
+	defer rt.mu.Lock()
+	flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := mgr.FlushAll(flushCtx); err != nil {
+		slog.Warn("runtime reload: session flush", "err", err)
+	}
 }
 
 // shutdownAPIServerForReload shuts down the current API server (if any)

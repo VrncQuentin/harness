@@ -21,6 +21,12 @@ func (rt *Runtime) ApplyConfig(
 	events chan proc.Event,
 	metricsStore metrics.Store,
 ) ui.ApplyResult {
+	// Held for this whole call, well past the windows where rt.mu itself is
+	// released (draining, API shutdown) — see Runtime.applyMu's own doc
+	// comment for why mu alone cannot serialize two concurrent callers here.
+	rt.applyMu.Lock()
+	defer rt.applyMu.Unlock()
+
 	uiServer.ClearStartupErrors()
 	uiServer.SetProjectDirectoryWarnings("", nil)
 	if rt.cfgStore == nil {
@@ -50,8 +56,12 @@ func (rt *Runtime) ApplyConfig(
 	old := rt.cfg
 	oldModel := rt.effectiveModelFor(&old)
 	newModel := rt.effectiveModelFor(loaded)
+	// Port is a process-level flag, never part of a project's model
+	// override (config.ModelConfigEqual's own comment: the harness runs
+	// exactly one llama-server, whose port comes from the global config) —
+	// so this is only ever true because of a direct edit to Model.Port
+	// itself, never as a side effect of switching projects.
 	modelEndpointChanged := oldModel.Port != newModel.Port
-	embedderEndpointChanged := old.Embedder.Port != loaded.Embedder.Port
 
 	var result ui.ApplyResult
 
@@ -67,13 +77,24 @@ func (rt *Runtime) ApplyConfig(
 		result.LiveApplied = true
 	} else {
 		needsMemoryAPIRetry := rt.memoryAPIUnavailable()
+		// oldModel != newModel and old.Embedder != loaded.Embedder are used
+		// directly here, not just modelEndpointChanged/embedderEndpointChanged
+		// (port-only): reconfigureProcesses below reacts to any field in
+		// either changing, not just the port, so needsRebuild must trigger
+		// quiescing for the same set of changes it reacts to. Gating this on
+		// port alone let a same-port model-path, context-size, or embedder
+		// change reach the !needsRebuild branch, where reconfigureProcesses
+		// runs immediately with nothing drained first -- reconfiguring (and
+		// for llama-server, restarting) a process still serving active
+		// requests.
+		projectSwitching := old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug
 		needsRebuild := old.Prompt != loaded.Prompt ||
 			old.API != loaded.API ||
 			old.Loop != loaded.Loop ||
 			old.Agent.Active != loaded.Agent.Active ||
-			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug ||
-			modelEndpointChanged ||
-			embedderEndpointChanged ||
+			projectSwitching ||
+			oldModel != newModel ||
+			old.Embedder != loaded.Embedder ||
 			needsMemoryAPIRetry
 
 		// reconfigureProcesses restarts llama-server/the embedder and swaps
@@ -86,10 +107,34 @@ func (rt *Runtime) ApplyConfig(
 		// shutdown) would otherwise leave the old memory/API generation
 		// paired with processes that have already moved to the new config —
 		// coherent for neither the old generation nor the new one.
+		// llamaMoved/embedderMoved/clientSwapped track which of this apply's
+		// forward reconfigures actually happened, so a rebuild that gets that
+		// far and then fails can undo exactly those and no others: calling
+		// proc.Manager.Reconfigure unconditionally restarts the process even
+		// when the args have not changed (Reconfigure -> Restart, always), so
+		// undoing a component that never moved would cause a needless,
+		// disruptive restart of an already-correct process.
+		llamaMoved := false
+		embedderMoved := false
+		clientSwapped := false
+
 		reconfigureProcesses := func() {
-			if oldModel != newModel {
+			if oldModel != newModel && !projectSwitching {
+				// A project switch's own llama decision -- including
+				// honoring llama_on_switch=keep -- belongs entirely to
+				// handleProjectSwitch, called separately below with its own,
+				// more specific comparison of effective models. Model.Port is
+				// never project-specific (see config.ModelConfigEqual's own
+				// comment: the harness runs exactly one llama-server, whose
+				// port comes from the global config), so oldModel != newModel
+				// across a switch almost always reflects a *different*
+				// per-project model override rather than a raw config edit —
+				// reconfiguring here first would move the process before
+				// handleProjectSwitch's decision runs, defeating "keep"
+				// in exactly that common case.
 				slog.Info("reconfiguring llama-server", "old_port", oldModel.Port, "new_port", newModel.Port)
 				rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(newModel) }, llamaHealthURL(newModel))
+				llamaMoved = true
 				result.LiveApplied = true
 			}
 			if old.Embedder != loaded.Embedder {
@@ -97,14 +142,46 @@ func (rt *Runtime) ApplyConfig(
 				rt.embedMgr.Reconfigure(func() (string, []string) {
 					return embedderArgsForConfig(loaded.Embedder)
 				}, embedderHealthURL(loaded.Embedder))
+				embedderMoved = true
 				result.LiveApplied = true
 			}
 			if modelEndpointChanged && rt.reqQueue != nil {
-				// newModel, not rt.cfg, is the target: rt.cfg is not committed
-				// to loaded until the caller decides this reconfigure is
-				// actually going to stick (see below), so a client built by
-				// reading rt.cfg here would still point at the old port.
+				// Port is global, never project-specific, so this is
+				// unaffected by projectSwitching: it only fires when the raw
+				// Model.Port field itself changed. newModel, not rt.cfg, is
+				// the target: rt.cfg is not committed to loaded until the
+				// caller decides this reconfigure is actually going to stick
+				// (see below), so a client built by reading rt.cfg here would
+				// still point at the old port.
 				client := rt.newInferenceClientForModel(newModel)
+				rt.inferClient = client
+				rt.reqQueue.SetClient(client)
+				clientSwapped = true
+			}
+		}
+
+		// undoProcessReconfigure reverses exactly the components this apply
+		// actually moved forward, back to old/oldModel. Called only when a
+		// rebuild that reconfigureProcesses (and possibly handleProjectSwitch)
+		// already ran ahead of turns out to fail: the memory/git generation
+		// is being restored to `old` in that case, and pairing it with
+		// processes still on the new config would be coherent for neither
+		// generation -- the same reasoning reconfigureProcesses documents for
+		// running only after a successful quiesce applies just as much to
+		// running this in reverse after a failed rebuild.
+		undoProcessReconfigure := func() {
+			if llamaMoved {
+				slog.Info("restoring llama-server after failed rebuild", "port", oldModel.Port)
+				rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(oldModel) }, llamaHealthURL(oldModel))
+			}
+			if embedderMoved {
+				slog.Info("restoring embedder after failed rebuild", "port", old.Embedder.Port)
+				rt.embedMgr.Reconfigure(func() (string, []string) {
+					return embedderArgsForConfig(old.Embedder)
+				}, embedderHealthURL(old.Embedder))
+			}
+			if clientSwapped && rt.reqQueue != nil {
+				client := rt.newInferenceClientForModel(oldModel)
 				rt.inferClient = client
 				rt.reqQueue.SetClient(client)
 			}
@@ -144,15 +221,26 @@ func (rt *Runtime) ApplyConfig(
 			// Quiescing succeeded, so this reload is committed: the old
 			// generation's in-flight work is drained, and there is nothing
 			// left running against the old model/embedder for a process
-			// reconfigure to disrupt.
+			// reconfigure to disrupt. Sessions are flushed here, before the
+			// process reconfigure that follows, so any last-minute
+			// summarization still runs against the model the conversation
+			// was actually held with, not the one this reload is about to
+			// switch to.
+			rt.flushSessionsForReload(ctx)
 			reconfigureProcesses()
 			rt.cfg = *loaded
 			rt.refreshProjectDirectoryWarnings(uiServer)
 			// Project switch optionally reloads llama-server before rebuilding
 			// memory services. Live work has already been quiesced above so it
 			// is committed under the previous project manager.
-			if old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
-				rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
+			if projectSwitching {
+				if rt.handleProjectSwitch(ctx, uiServer, &old, loaded) {
+					// handleProjectSwitch's own reload (llama_on_switch=reload)
+					// also moved llama-server forward; undoProcessReconfigure
+					// must know to revert it too if the rebuild below fails,
+					// alongside anything reconfigureProcesses itself moved.
+					llamaMoved = true
+				}
 			}
 			slog.Info("rebuilding memory and api services")
 			snapshot := rt.snapshotMemoryAndAPI(uiServer)
@@ -169,9 +257,15 @@ func (rt *Runtime) ApplyConfig(
 				// follows it back to `old` for the same reason it was
 				// never advanced past `old` on the drain-timeout path
 				// above: the live services and the config a caller reads
-				// must describe one generation, not two.
+				// must describe one generation, not two. The process
+				// managers and inference client must follow the same way:
+				// reconfigureProcesses (and possibly handleProjectSwitch)
+				// already moved them to the new config before this rebuild
+				// was attempted, and the restored generation was built for
+				// the old one.
 				rt.cfg = old
 				rt.refreshProjectDirectoryWarnings(uiServer)
+				undoProcessReconfigure()
 			}
 			// The UI generation gate was left closed by a successful
 			// drain above; reopen it now that deps.SetServiceDeps points

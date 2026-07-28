@@ -29,6 +29,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/prompt"
 	"github.com/VrncQuentin/harness/internal/queue"
+	"github.com/VrncQuentin/harness/internal/session"
 	"github.com/VrncQuentin/harness/internal/tools"
 	"github.com/VrncQuentin/harness/internal/ui"
 )
@@ -839,6 +840,147 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 		t.Fatalf("flushed records = %+v, want saved session %s", records, sessionID)
 	}
 }
+
+// appendingBlockingTaskRunner appends a session turn as soon as RunTask is
+// called, signals entered, then blocks on release before returning. It lets
+// a test admit a real /task/send request, confirm the session append has
+// already happened, and then control exactly when the request's genGate
+// lease is released -- independent of the real taskRunnerAdapter/agentloop
+// machinery, which this test has no need for.
+type appendingBlockingTaskRunner struct {
+	mgr     *session.Manager
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *appendingBlockingTaskRunner) RunTask(_ context.Context, agentName, sessionID string, _ []ui.ChatMessage) (string, <-chan ui.TaskEvent, error) {
+	id := sessionID
+	if id == "" {
+		id = r.mgr.Start(agentName).ID
+	}
+	if err := r.mgr.Append(id, inference.Message{Role: "user", Content: "hi"}); err != nil {
+		return "", nil, err
+	}
+	if err := r.mgr.Append(id, inference.Message{Role: "assistant", Content: "late-admitted reply"}); err != nil {
+		return "", nil, err
+	}
+	close(r.entered)
+	<-r.release
+	ch := make(chan ui.TaskEvent)
+	close(ch)
+	return id, ch, nil
+}
+
+func (r *appendingBlockingTaskRunner) CancelTask(string) error { return nil }
+func (r *appendingBlockingTaskRunner) ApplyApproval(string, string, string) error {
+	return nil
+}
+
+// quiesceMemoryAndAPI used to call mgr.FlushAll before uiServer.DrainGenerationRequests
+// -- i.e. while the UI gate was still admitting new requests. A task
+// admitted in that window would append to the session manager's live
+// session map only *after* FlushAll's snapshot of what to save had already
+// been taken, and the later drain (which does correctly wait for that
+// task's own goroutine to finish) would not cause anything to re-flush it.
+// This proves the fix: a /task/send request is admitted and appends its
+// session turn while still holding its genGate lease, quiesceMemoryAndAPI's
+// UI drain is confirmed to block on it, and only once the drain has
+// returned (and the request released) is flushSessionsForReload called --
+// which must find and persist that session's content.
+func TestFlushSessionsForReloadCapturesASessionAppendedDuringTheDrain(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Agent.Active = "coder"
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	releaseMemHandles(t, rt)
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	port := freeTCPPort(t)
+	uiServer := ui.NewServer(port)
+	srvCtx, cancelSrv := context.WithCancel(context.Background())
+	defer cancelSrv()
+	if err := uiServer.Start(srvCtx); err != nil {
+		t.Fatalf("ui server start: %v", err)
+	}
+
+	client := &capturingInferenceClient{tokens: []inference.Token{{Content: "saved late-admitted session"}, {Done: true}}}
+	sessionStore := openTestRepo(t, root)
+	mgr, adapter := rt.buildSessionManagerWithClients(nil, uiServer, projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: project.GlobalSlug,
+	}, sessionStore, openTestEpisodeIndex(t, sessionStore), client, nil)
+	rt.setSessionManager(mgr)
+
+	runner := &appendingBlockingTaskRunner{mgr: mgr, entered: make(chan struct{}), release: make(chan struct{})}
+	uiServer.SetServiceDeps(ui.ServiceDeps{TaskRunner: runner, SessionStore: adapter})
+
+	reqDone := make(chan *http.Response, 1)
+	go func() {
+		form := url.Values{"message": {"hi"}, "agent": {"coder"}}
+		resp, err := http.PostForm(fmt.Sprintf("http://127.0.0.1:%d/task/send", port), form)
+		if err != nil {
+			t.Errorf("POST /task/send: %v", err)
+			return
+		}
+		reqDone <- resp
+	}()
+
+	select {
+	case <-runner.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("task runner never entered")
+	}
+
+	rt.mu.Lock()
+	quiesceDone := make(chan error, 1)
+	go func() {
+		quiesceDone <- rt.quiesceMemoryAndAPI(context.Background(), uiServer)
+	}()
+
+	select {
+	case <-quiesceDone:
+		t.Fatal("quiesceMemoryAndAPI returned before the in-flight task finished")
+	case <-time.After(100 * time.Millisecond):
+		// Still blocked, as it must be while the task holds release.
+	}
+
+	close(runner.release)
+
+	select {
+	case err := <-quiesceDone:
+		if err != nil {
+			t.Fatalf("quiesceMemoryAndAPI: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("quiesceMemoryAndAPI did not return after the task finished")
+	}
+
+	rt.flushSessionsForReload(context.Background())
+	rt.mu.Unlock()
+
+	select {
+	case resp := <-reqDone:
+		_ = resp.Body.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("task send request never completed")
+	}
+
+	records, err := mgr.Records("coder")
+	if err != nil {
+		t.Fatalf("Records: %v", err)
+	}
+	if len(records) == 0 {
+		t.Fatal("session admitted during the drain was never flushed -- it should have been saved once the drain finished and flushSessionsForReload ran")
+	}
+}
+
 func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	port := freeTCPPort(t)
 	cfg := config.Defaults()

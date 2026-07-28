@@ -39,6 +39,21 @@ type LogRings struct {
 // reconfigures in place. A mutex guards all fields because callbacks run on
 // HTTP goroutines while event forwarding and metrics read managers and queue.
 type Runtime struct {
+	// applyMu serializes ApplyConfig end to end, across the whole call — not
+	// just the portions that hold mu. ApplyConfig releases mu while draining
+	// UI requests and shutting down the API server so unrelated readers
+	// (status page, metrics) are not blocked for that whole duration; two
+	// concurrent ApplyConfig calls (a /config save racing /retry, say) would
+	// otherwise interleave through those same windows, since mu alone offers
+	// no protection while it is released. The first call's rebuild could
+	// complete and reopen admission while the second, still holding stale
+	// local copies of old/loaded/oldModel/newModel from before the first's
+	// rebuild, proceeds to quiesce and replace the generation the first just
+	// installed — without ever draining the requests admitted against it.
+	// applyMu makes the whole sequence — validate, quiesce, reconfigure,
+	// rebuild, resume admission — one transaction that the second caller
+	// waits out entirely before starting its own.
+	applyMu      sync.Mutex
 	mu           sync.Mutex
 	cfg          config.Config
 	cfgStore     config.Store

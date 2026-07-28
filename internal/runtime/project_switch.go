@@ -13,7 +13,14 @@ import (
 // handleProjectSwitch optionally reloads llama-server when the active project
 // changes. The caller must hold rt.mu on entry and quiesce live memory/API work
 // before calling so sessions are committed under the previous project manager.
-func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server, oldConfig, newConfig *config.Config) {
+//
+// Returns true when it actually reconfigured llama-server, so a caller that
+// goes on to attempt a memory/API rebuild and finds it fails knows whether
+// there is a process move to undo: reverting only the generic
+// reconfigureProcesses call and not this one would leave llama-server on the
+// destination project's model while the restored (source project's) memory
+// graph expects the source's.
+func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server, oldConfig, newConfig *config.Config) bool {
 	llamaPolicy := rt.cfg.Project.LlamaOnSwitch
 
 	if llamaPolicy != "reload" {
@@ -26,17 +33,17 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 			dstModel := config.EffectiveModel(newConfig, dstProj)
 			if !config.ModelConfigEqual(srcModel, dstModel) {
 				uiServer.SetModelMismatch(true, srcModel.ModelPath, dstModel.ModelPath)
-				return
+				return false
 			}
 		}
 		uiServer.SetModelMismatch(false, "", "")
-		return
+		return false
 	}
 
 	dstProj, err := rt.resolveProject(newConfig.Project.ActiveProjectSlug)
 	if err != nil {
 		slog.Warn("project switch: cannot resolve destination project, skipping reload", "err", err)
-		return
+		return false
 	}
 
 	dstModel := config.EffectiveModel(newConfig, dstProj)
@@ -48,7 +55,7 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 		srcModel := config.EffectiveModel(oldConfig, srcProj)
 		if config.ModelConfigEqual(srcModel, dstModel) {
 			slog.Info("project switch: effective model unchanged, skipping reload")
-			return
+			return false
 		}
 	}
 
@@ -63,11 +70,14 @@ func (rt *Runtime) handleProjectSwitch(ctx context.Context, uiServer *ui.Server,
 			slog.Error("project switch: queue restart failed", "err", err)
 		}
 	}
+	reconfigured := false
 	if rt.llamaMgr != nil {
 		rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(dstModel) }, llamaHealthURL(dstModel))
+		reconfigured = true
 	}
 
 	uiServer.SetModelMismatch(false, "", "")
+	return reconfigured
 }
 
 // resolveProject looks up a project by slug from the project store.
