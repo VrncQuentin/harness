@@ -269,6 +269,64 @@ Design constraints:
 - The toolout spill directory is outside every sandbox root, so it opens its own
   `os.Root` in `internal/tools` rather than going through `Set`.
 
+### Filesystem Threat Model
+
+The harness's security architecture for filesystem operations is built on two
+primitives: `internal/pathid` (physical path identity) and `internal/rootfs`
+(rooted directory operations). Together they implement **pin-before-authorize**:
+resolve the configured directory once, bind the open handle to its physical
+identity, and perform all subsequent operations through that handle.
+
+#### Defended threats
+
+| Threat | Mechanism |
+|--------|-----------|
+| Symlink escape from a sandbox root | `os.Root` resolve-by-handle; absolute-target links refused unconditionally |
+| Windows junction escape | `pathid` resolves junctions before the root sees the name; `Set.Open` addresses the target through the physical path |
+| Case / 8.3 alias (Windows) | `pathid.Canonical` resolves to a single physical name; containment checked against the canonical form |
+| Same-name directory replacement | `OpenIdentified` verifies the pinned handle against the physical identity with `os.SameFile`; a replacement fails the comparison |
+| Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name |
+| Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere |
+| In-process concurrent writers | Per-repository mutation coordinator keyed by physical identity (planned); currently writes use temp+rename for file-level atomicity |
+| Check/use races on intermediate directories | Traversal pins each directory with `OpenChild` before inspecting it; what is inspected and what is entered are the same directory |
+
+#### Out of scope
+
+- **Privileged mount manipulation.** Staging a bind mount, mount point, or
+  `/proc` entry inside a tree requires privileges that already defeat the
+  sandbox. `openat2` with `RESOLVE_NO_XDEV` would close this but has no Windows
+  counterpart.
+- **Subprocess sandboxing.** `exec`, `go_test`, and `go_lint` validate their
+  working directory with `pathid` and hand a pathname to the child process.
+  Command containment is a separate problem.
+- **go-git pathname boundary.** go-git resolves its storage by pathname, not by
+  handle. The harness keeps explicit identity and C2 checks around the go-git
+  boundary.
+
+#### Acknowledged residual window
+
+An external process can rename a directory between the final `os.Stat` and the
+`os.Rename` inside `WriteStreamAtomic`'s publication step. The atomic rename
+that follows is a single syscall and cannot race with itself in the same
+process, but it can race with a rename from outside. Documenting it rather than
+claiming it closed is deliberate: the window cannot be eliminated without
+filesystem-level transactions, which are not portable.
+
+#### Audit enforcement
+
+Production calls to `os.Open`, `os.OpenFile`, `os.ReadFile`, `os.WriteFile`,
+`os.ReadDir`, `os.CreateTemp`, `os.Rename`, `os.Remove`, `os.RemoveAll`,
+`os.Mkdir`, `os.MkdirAll`, `os.Stat`, `os.Lstat`, `os.OpenRoot`,
+`os.SameFile`, `filepath.WalkDir`, and `filepath.Glob` are inventoried in
+`cmd/fsaudit/allowlist.json`. Each call is classified as:
+- **migration** — will be routed through `rootfs` in a future PR; or
+- **permanent** — an intentional boundary exception with a justification.
+
+The `cmd/fsaudit` tool verifies on every CI run that no new direct filesystem
+call appears without a matching entry. The audit excludes test files
+(`_test.go`) and the security primitive packages themselves (`internal/rootfs`,
+`internal/pathid`).
+
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).
 
