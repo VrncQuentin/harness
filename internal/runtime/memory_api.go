@@ -406,6 +406,7 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 
 	sessionStore, err := memory.NewDirReader(repoPath)
 	if err != nil {
+		uiServer.AddStartupError(fmt.Errorf("open session store %s: %w", repoPath, err))
 		return nil, nil
 	}
 	mgr, err := session.NewManager(session.ManagerDeps{
