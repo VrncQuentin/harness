@@ -488,7 +488,7 @@ func TestDirReader_ReadDoesNotFollowLink(t *testing.T) {
 	}
 }
 
-func TestDirReader_WalkRefusesSymlinkEscape(t *testing.T) {
+func TestDirReader_WalkDoesNotEnterSymlink(t *testing.T) {
 	dir := t.TempDir()
 	repoRoot := filepath.Join(dir, "repo")
 	outside := filepath.Join(dir, "outside")
@@ -585,8 +585,7 @@ func TestDirReader_WalkKeepsDescendingInsidePinnedTree(t *testing.T) {
 	// it, and verify Walk descends correctly through the physical tree.
 	alias := filepath.Join(dir, "alias")
 	if err := os.Symlink(repoRoot, alias); err != nil {
-		// Fall back: use the real path.
-		alias = repoRoot
+		t.Skip("symlink unavailable: " + err.Error())
 	}
 	r, err := NewDirReader(alias)
 	if err != nil {
