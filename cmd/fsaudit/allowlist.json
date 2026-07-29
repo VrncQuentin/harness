@@ -275,49 +275,49 @@
     {
       "line": 221,
       "file": "internal/index/index.go",
-      "pr": "PR 5b1",
+      "pr": "PR 5b2",
       "notes": "Search: open vectors.bin",
       "fn": "os.Open"
     },
     {
       "line": 309,
       "file": "internal/index/index.go",
-      "pr": "PR 5b1",
+      "pr": "PR 5b2",
       "notes": "validateManifest: check vector file",
       "fn": "os.Stat"
     },
     {
       "line": 348,
       "file": "internal/index/index.go",
-      "pr": "PR 5b1",
+      "pr": "PR 5b2",
       "notes": "writeFileAtomic: temp file",
       "fn": "os.CreateTemp"
     },
     {
       "line": 353,
       "file": "internal/index/index.go",
-      "pr": "PR 5b1",
+      "pr": "PR 5b2",
       "notes": "writeFileAtomic: cleanup temp",
       "fn": "os.Remove"
     },
     {
       "line": 369,
       "file": "internal/index/index.go",
-      "pr": "PR 5b1",
+      "pr": "PR 5b2",
       "notes": "writeFileAtomic: publish",
       "fn": "os.Rename"
     },
     {
       "line": 370,
       "file": "internal/index/index.go",
-      "pr": "PR 5b1",
+      "pr": "PR 5b2",
       "notes": "writeFileAtomic: cleanup old",
       "fn": "os.Remove"
     },
     {
       "line": 373,
       "file": "internal/index/index.go",
-      "pr": "PR 5b1",
+      "pr": "PR 5b2",
       "notes": "writeFileAtomic: retry rename",
       "fn": "os.Rename"
     }

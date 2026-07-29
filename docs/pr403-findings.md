@@ -70,14 +70,24 @@ until the sequence below is merged and the final audit (PR 12) passes.
 |---|---------|------|
 | 5.1 | `DirReader.WriteFile` writes by pathname, not through a pinned handle | `TestDirReader_WriteFileReplacesHardLinkedLeaf` |
 
-### PR 5b — Index and mutation serialization
+### PR 5b1 — Vector copy-on-write
+
+| # | Finding | Test |
+|---|---------|------|
+| 5.5 | Index append→truncate rollback propagates through hard links; must assemble replacement separately and publish by rename | `TestIndex_UpsertReplacesViaRename`, `TestIndex_UpsertManifestFailurePreservesOldIndex`, `TestIndex_UpsertFailurePreservesOtherEntries` |
+
+### PR 5b2 — Index rooted identity
 
 | # | Finding | Test |
 |---|---------|------|
 | 5.2 | Index located by absolute pathname (`<repo>/index/_episodes`) | `TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo` |
 | 5.3 | Index re-pointed after pin — manifests a different repo | `TestEpisodeIndex_RepointedAfterPinFailsClosed` |
+
+### PR 5b3 — Manifest publication and serialization
+
+| # | Finding | Test |
+|---|---------|------|
 | 5.4 | Post-rename `os.Remove` + retry fallback deletes a stranger's replacement | `TestIndex_WriteManifestDoesNotRemoveStranger` |
-| 5.5 | Index append→truncate rollback propagates through hard links; must assemble replacement separately and publish by rename | `TestIndex_AppendAssemblesReplacementByRename` |
 | 5.6 | Manifest publication not fsynced before rename | `TestIndex_WriteManifestFsyncsBeforeRename` |
 | 5.7 | Temp file cleanup deletes by name after the rename may have consumed it | `TestIndex_WriteManifestCleansUpOwnTemp` |
 | 5.8 | Scattered lock maps — no unified per-repo coordinator | Eliminated mechanism: replaced by one coordinator keyed by physical identity |
