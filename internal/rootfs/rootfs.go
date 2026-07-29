@@ -255,6 +255,55 @@ func (r *Root) OpenChild(rel string) (*Root, error) {
 	return &Root{root: child}, nil
 }
 
+// OpenChildNoFollow opens the single-component name inside r, verifies
+// the entry is not a link by Lstat'ing it through the parent, and
+// confirms the opened child refers to the same filesystem object as that
+// entry via os.SameFile.  Returns the pinned child.  The caller closes it.
+//
+// name must be a single path component (no separators).  For multi-component
+// paths, open each component separately so intermediate symlinks are refused.
+//
+// This closes the check/use window between Lstat and OpenChild: the
+// opened handle is compared against the parent entry, so a swap between
+// inspection and entry is detected.
+func (r *Root) OpenChildNoFollow(name string) (*Root, fs.FileInfo, error) {
+	return r.openChildNoFollow(name, nil)
+}
+
+// openChildNoFollow is OpenChildNoFollow with an optional hook that runs
+// after OpenRoot and before Lstat.  Tests use it to stage substitutions.
+func (r *Root) openChildNoFollow(name string, afterOpen func()) (*Root, fs.FileInfo, error) {
+	if name == "" || name == "." || name == ".." || strings.Contains(name, string(filepath.Separator)) || strings.Contains(name, "/") {
+		return nil, nil, fmt.Errorf("rootfs: OpenChildNoFollow requires a single component, got %q", name)
+	}
+	child, err := r.root.OpenRoot(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if afterOpen != nil {
+		afterOpen()
+	}
+	entryFi, err := r.root.Lstat(name)
+	if err != nil {
+		_ = child.Close()
+		return nil, nil, err
+	}
+	if entryFi.Mode()&os.ModeSymlink != 0 || entryFi.Mode()&os.ModeIrregular != 0 {
+		_ = child.Close()
+		return nil, nil, fmt.Errorf("rootfs: refusing to enter link %s", name)
+	}
+	childFi, err := child.Stat(".")
+	if err != nil {
+		_ = child.Close()
+		return nil, nil, err
+	}
+	if !os.SameFile(entryFi, childFi) {
+		_ = child.Close()
+		return nil, nil, fmt.Errorf("rootfs: %s changed between open and verify", name)
+	}
+	return &Root{root: child}, childFi, nil
+}
+
 // Set is an ordered list of root directories. It converts a caller-supplied
 // path — absolute or relative, in any spelling — into an operation performed
 // inside whichever root physically owns it.

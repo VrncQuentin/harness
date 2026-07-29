@@ -44,7 +44,11 @@ func writeRepo(t *testing.T, files map[string]string) *memory.DirReader {
 			t.Fatalf("WriteFile: %v", err)
 		}
 	}
-	return memory.NewDirReader(root)
+	dr, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dr
 }
 
 // newAssembler wires up a DiskAssembler with a disk-backed registry.

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 // Reader is the minimum surface the prompt assembler needs from the memory
@@ -73,16 +75,13 @@ type Entry struct {
 	Size int64
 }
 
-// DirReader serves files from a directory on the local filesystem. It is
-// the concrete Reader used in production; tests can use an in-memory fake
-// that implements the same interface.
+// DirReader serves files from a directory.  Read operations use a
+// pinned os.Root handle for containment.  Durable identity across
+// operations is deferred to PR 2c.
 type DirReader struct {
-	// root is the absolute path of the memory repo. It is joined with the
-	// relative paths passed to Read/Glob and mutation helpers.
 	root string
 }
 
-// Compile-time assertions for the production memory repo interfaces.
 var (
 	_ Reader     = (*DirReader)(nil)
 	_ Repo       = (*DirReader)(nil)
@@ -90,35 +89,56 @@ var (
 	_ Walker     = (*DirReader)(nil)
 )
 
-// NewDirReader returns a DirReader rooted at root.
-func NewDirReader(root string) *DirReader {
-	return &DirReader{root: root}
+func NewDirReader(root string) (*DirReader, error) {
+	// Validate the directory exists by opening it once.
+	r, err := rootfs.Open(root)
+	if err != nil {
+		return nil, fmt.Errorf("memory: open dir reader %s: %w", root, err)
+	}
+	_ = r.Close()
+	return &DirReader{root: root}, nil
 }
 
-// Read implements Reader.
+// openRoot opens the configured root.  The caller closes it.  Durable
+// identity across operations is deferred to PR 2c.
+func (r *DirReader) openRoot() (*rootfs.Root, error) {
+	return rootfs.Open(r.root)
+}
+
 func (r *DirReader) Read(relPath string) ([]byte, error) {
-	abs, err := r.resolve(relPath)
-	if err != nil {
+	if err := checkRel(relPath); err != nil {
 		return nil, err
 	}
-	b, err := os.ReadFile(abs)
+	root, err := r.openRoot()
+	if err != nil {
+		return nil, fmt.Errorf("memory: read %s: %w", relPath, err)
+	}
+	defer func() { _ = root.Close() }()
+	b, err := root.ReadFile(filepath.FromSlash(relPath))
 	if err != nil {
 		return nil, fmt.Errorf("memory: read %s: %w", relPath, err)
 	}
 	return b, nil
 }
 
-// ListDirs returns direct subdirectories of relPath.
 func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 	if relPath != "" {
 		if err := checkRel(relPath); err != nil {
 			return nil, err
 		}
 	}
-	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
-	entries, err := os.ReadDir(abs)
+	root, err := r.openRoot()
 	if err != nil {
-		if os.IsNotExist(err) {
+		return nil, fmt.Errorf("memory: list dirs %s: %w", relPath, err)
+	}
+	defer func() { _ = root.Close() }()
+	rd := filepath.FromSlash(relPath)
+	if rd == "" {
+		rd = "."
+	}
+	entries, err := root.ReadDir(rd)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("memory: list dirs %s: %w", relPath, err)
@@ -133,7 +153,6 @@ func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 	return out, nil
 }
 
-// MkdirAll creates relPath and any necessary parents.
 func (r *DirReader) MkdirAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return err
@@ -145,9 +164,6 @@ func (r *DirReader) MkdirAll(relPath string) error {
 	return nil
 }
 
-// WriteFile implements FileWriter. It writes via a temp file in the
-// same directory followed by os.Rename so readers never observe a partial
-// write mid-flight.
 func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
@@ -157,14 +173,11 @@ func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-
 	tmp, err := os.CreateTemp(parent, ".harness-*")
 	if err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
 	tmpPath := tmp.Name()
-	// cleanup runs on every error path before the rename succeeds; once
-	// the rename lands the temp file no longer exists under tmpPath.
 	cleanup := func() {
 		_ = tmp.Close()
 		_ = os.Remove(tmpPath)
@@ -184,9 +197,6 @@ func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	return nil
 }
 
-// RemoveAll refuses paths that resolve to
-// the repo root itself so a caller cannot wipe the whole memory repo
-// by passing "." or "" past the validator.
 func (r *DirReader) RemoveAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
@@ -201,25 +211,27 @@ func (r *DirReader) RemoveAll(relPath string) error {
 	return nil
 }
 
-// Glob implements Reader.
 func (r *DirReader) Glob(pattern string) ([]string, error) {
 	if err := checkRel(pattern); err != nil {
 		return nil, err
 	}
-	// Match against the pattern's parent directory so callers with no
-	// metacharacters (e.g. a literal file path) still work. When the
-	// parent does not exist we treat it as an empty set so a bare repo
-	// without any agent episodes folder doesn't error out.
 	dir, file := path.Split(pattern)
-	absDir := filepath.Join(r.root, filepath.FromSlash(dir))
-	entries, err := os.ReadDir(absDir)
+	root, err := r.openRoot()
 	if err != nil {
-		if os.IsNotExist(err) {
+		return nil, fmt.Errorf("memory: glob %s: %w", pattern, err)
+	}
+	defer func() { _ = root.Close() }()
+	rd := filepath.FromSlash(dir)
+	if rd == "" {
+		rd = "."
+	}
+	entries, err := root.ReadDir(rd)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("memory: glob %s: %w", pattern, err)
 	}
-
 	matches := make([]string, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
@@ -238,70 +250,104 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 	return matches, nil
 }
 
-// Walk implements Walker. The .git directory is pruned so the editor
-// never sees git plumbing, even when memory/ is a real git repo.
+// Walk implements Walker using rooted traversal.  Subdirectories are
+// entered through OpenChildNoFollow, which opens, Lstats through the
+// parent, rejects links, and verifies the opened handle via os.SameFile.
+// Metadata comes from the verified child handle.  Children are closed
+// after their subtrees.  Links are refused at every component, so
+// ordinary directory trees cannot cycle; bind mounts remain out of scope.
 func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	if relPath != "" {
 		if err := checkRel(relPath); err != nil {
 			return nil, err
 		}
 	}
-	absRoot := filepath.Join(r.root, filepath.FromSlash(relPath))
-	var out []Entry
-	err := filepath.WalkDir(absRoot, func(absPath string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if absPath == absRoot {
-			return nil
-		}
-		rel, err := filepath.Rel(r.root, absPath)
-		if err != nil {
-			return err
-		}
-		relSlash := filepath.ToSlash(rel)
-		// Prune .git anywhere under the repo - the memory directory is
-		// itself a git repo and we never want plumbing in the UI.
-		if d.Name() == ".git" {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		out = append(out, Entry{
-			Path: relSlash,
-			Dir:  d.IsDir(),
-			Size: info.Size(),
-		})
-		return nil
-	})
+	root, err := r.openRoot()
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
 	}
+	defer func() { _ = root.Close() }()
+
+	var out []Entry
+	var walkDir func(dir *rootfs.Root, prefix string) error
+	walkDir = func(dir *rootfs.Root, prefix string) error {
+		entries, err := dir.ReadDir(".")
+		if err != nil {
+			return fmt.Errorf("memory: walk %s: %w", prefix, err)
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if name == ".git" {
+				continue
+			}
+			childRel := path.Join(prefix, name)
+			if prefix == "" {
+				childRel = name
+			}
+			if !e.IsDir() {
+				info, err := e.Info()
+				if err != nil {
+					return fmt.Errorf("memory: walk %s: %w", childRel, err)
+				}
+				out = append(out, Entry{Path: childRel, Dir: false, Size: info.Size()})
+				continue
+			}
+			child, childFi, err := dir.OpenChildNoFollow(name)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
+				return fmt.Errorf("memory: walk %s: %w", childRel, err)
+			}
+			out = append(out, Entry{Path: childRel, Dir: true, Size: childFi.Size()})
+			if err := walkDir(child, childRel); err != nil {
+				_ = child.Close()
+				return err
+			}
+			_ = child.Close()
+		}
+		return nil
+	}
+
+	startDir := root
+	defer func() {
+		if startDir != root {
+			_ = startDir.Close()
+		}
+	}()
+	startPrefix := ""
+	if relPath != "" {
+		components := strings.Split(filepath.FromSlash(relPath), string(filepath.Separator))
+		for _, comp := range components {
+			child, _, err := startDir.OpenChildNoFollow(comp)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
+			}
+			if startDir != root {
+				_ = startDir.Close()
+			}
+			startDir = child
+			if startPrefix == "" {
+				startPrefix = comp
+			} else {
+				startPrefix = path.Join(startPrefix, comp)
+			}
+		}
+	}
+
+	if err := walkDir(startDir, startPrefix); err != nil {
+		return nil, err
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
 }
 
-// resolve turns a forward-slash relative path into an absolute OS path.
-// It rejects empty, absolute, and traversing inputs explicitly so no
-// caller can read a file outside Root by mistake or malice.
-func (r *DirReader) resolve(relPath string) (string, error) {
-	if err := checkRel(relPath); err != nil {
-		return "", err
-	}
-	return filepath.Join(r.root, filepath.FromSlash(relPath)), nil
-}
-
-// checkRel rejects empty, absolute, and traversing paths. We work on the
-// forward-slash string directly so OS-specific separators on Windows
-// don't let "a\\..\\b" slip past path.Clean.
 func checkRel(rel string) error {
 	if rel == "" {
 		return fmt.Errorf("memory: empty path")
@@ -309,7 +355,6 @@ func checkRel(rel string) error {
 	if path.IsAbs(rel) || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "\\") || isWindowsAbs(rel) {
 		return fmt.Errorf("memory: absolute path not allowed: %s", rel)
 	}
-	// Scan segments on both slash flavours so "\\.." is rejected too.
 	if hasParentSegment(rel, '/') || hasParentSegment(rel, '\\') {
 		return fmt.Errorf("memory: path escapes repo root: %s", rel)
 	}

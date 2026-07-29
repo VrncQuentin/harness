@@ -239,7 +239,10 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	loaded := cfg
 	loaded.Project.ActiveProjectSlug = "missing"
 
-	mem := memory.NewDirReader(root)
+	mem, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
 	rt.started = true
 	rt.globalMem = mem
@@ -1050,7 +1053,10 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Agent.Active = "coder"
 	cfg.Project.ActiveProjectSlug = "global"
-	mem := memory.NewDirReader(root)
+	mem, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	active := "coder"
 	reg := agent.NewDiskRegistry(mem,
 		func() string { return active },
@@ -1121,7 +1127,11 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, nil, LogRings{})
-	rt.globalMem = memory.NewDirReader(root)
+	dr, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.globalMem = dr
 	rt.activeMem = rt.globalMem
 
 	mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
@@ -1438,7 +1448,11 @@ func newMemoryRepo(t *testing.T, files map[string]string) *memory.DirReader {
 			t.Fatalf("WriteFile %s: %v", abs, err)
 		}
 	}
-	return memory.NewDirReader(root)
+	dr, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dr
 }
 
 func freeTCPPort(t *testing.T) int {
