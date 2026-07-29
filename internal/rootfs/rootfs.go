@@ -155,15 +155,6 @@ func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, af
 
 	if _, err := io.Copy(f, src); err != nil {
 		_ = f.Close()
-		// Do not remove the temp — ownership may have changed.
-		return err
-	}
-
-	// Capture the temp file's identity from the open handle before
-	// closing, so we can compare against the named entry below.
-	tmpHandleInfo, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
 		return err
 	}
 
@@ -171,19 +162,27 @@ func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, af
 		_ = f.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
+
+	// Compare identities while the handle is live so os.SameFile
+	// cannot be fooled by inode reuse after close.
+	tmpHandleInfo, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
 		return err
 	}
-
-	// Verify the named entry still refers to the file we authored.
 	tmpNameInfo, err := parent.root.Stat(tmpRel)
 	if err != nil {
+		_ = f.Close()
 		return err
 	}
 	if !os.SameFile(tmpHandleInfo, tmpNameInfo) {
+		_ = f.Close()
 		return fmt.Errorf("rootfs: temporary entry %s was substituted", tmpRel)
 	}
 
+	if err := f.Close(); err != nil {
+		return err
+	}
 	if err := parent.root.Rename(tmpRel, base); err != nil {
 		return err
 	}
@@ -541,7 +540,9 @@ func (r *Root) createTemp(dir string, perm fs.FileMode) (string, *os.File, error
 		// would leave the renamed file more restrictive than asked for.
 		if err := f.Chmod(perm); err != nil {
 			_ = f.Close()
-			_ = r.root.Remove(rel)
+			// Do not remove the temp name — ownership may have
+			// changed since creation, and portable Go has no
+			// unlink-by-handle primitive.
 			return "", nil, err
 		}
 		return rel, f, nil

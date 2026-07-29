@@ -34,13 +34,13 @@ until the sequence below is merged and the final audit (PR 12) passes.
 
 | # | Finding | Test |
 |---|---------|------|
-| 3.1 | B3 spill writes through pre-existing hard-linked entry | `TestApplyB3_DoesNotWriteThroughAHardLinkedSpillEntry` |
+| 3.1 | B3 spill writes through pre-existing hard-linked entry | `TestWriteStreamAtomic_ReplacesHardLinkedLeaf` (rootfs) |
 | 3.2 | B3 spill written with `os.WriteFile` — no rename, partial reads possible | migrated: governor uses Anchor + WriteStreamAtomic |
-| 3.7 | `WriteStreamAtomic` does not fsync before rename — crash-unsafe | fixed: f.Sync() before rename |
+| 3.7 | `WriteStreamAtomic` does not fsync before rename — crash-unsafe | implemented: f.Sync() before close |
 | 3.8 | `WriteStreamAtomic` cleanup deletes by name after rename has consumed it | `TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure` |
-| 3.9 | `WriteStreamAtomic` must preserve a stranger's substituted entry | `TestWriteStreamAtomic_DetectsSubstitutedTemp` |
-| 3.10 | `WriteStreamAtomic` must pin the destination directory once for temp creation, cleanup, and rename | `TestWriteStreamAtomic_PinsDestinationOnce` |
-| 3.11 | A failed write may leave its own partial temp entry when ownership cannot be proved | `TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure` |
+| 3.9 | `WriteStreamAtomic` must preserve a stranger's substituted entry | `TestWriteStreamAtomic_DetectsSubstitutedTemp` (Linux CI) |
+| 3.10 | `WriteStreamAtomic` must pin the destination directory once | `TestWriteStreamAtomic_PinSurvivesIntermediateSwap` (Linux CI) |
+| 3.11 | A failed write may leave its own partial temp entry | `TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure` |
 
 ### PR 3b — Remaining standalone consumers
 
@@ -50,8 +50,6 @@ until the sequence below is merged and the final audit (PR 12) passes.
 | 3.4 | Retrieval trace deletes by pathname, could delete stranger's file | `TestNDJSONSink_RetentionDeletesOnlyOwnFiles` |
 | 3.5 | `git_push` reads `.git/HEAD` by path — fails on linked worktrees | `TestCurrentBranch_LinkedWorktreeLayout` |
 | 3.6 | `eval-retrieval` uses `filepath.Glob` + `filepath.Rel` on operator root | `TestEvalRetrieval_PinnedRepo` |
-| 3.12 | `Set.Open` resolves the target before pinning each candidate root | `TestSet_OpenResolvesAlongsideEachPin` |
-| 3.13 | `Root.Open` exposes `*os.File.Name()`, enabling a read to become a pathname reopen | `TestRoot_OpenDoesNotExposePathname` |
 | 3.12 | `Set.Open` resolves the target before pinning each candidate root; must resolve alongside each candidate pin | `TestSet_OpenResolvesAlongsideEachPin` |
 | 3.13 | `Root.Open` exposes `*os.File.Name()`, enabling an authorized read to become a pathname reopen | `TestRoot_OpenDoesNotExposePathname` |
 

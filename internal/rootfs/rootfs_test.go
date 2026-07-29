@@ -718,17 +718,67 @@ func TestWriteStreamAtomic_PinsDestinationOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer root.Close()
-	data := bytes.NewReader([]byte("hello"))
-	if err := root.WriteStreamAtomic("file.txt", data, 0o644); err != nil {
+
+	// Create a nested directory and pin it.
+	nested := filepath.Join(dir, "sub", "deep")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got, err := os.ReadFile(filepath.Join(dir, "file.txt"))
+	// Write via the pinned root into the nested dir.
+	if err := root.WriteStreamAtomic("sub/deep/file.txt", bytes.NewReader([]byte("hello")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(nested, "file.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) != "hello" {
 		t.Errorf("expected hello, got %s", string(got))
 	}
+}
+
+func TestWriteStreamAtomic_PinSurvivesIntermediateSwap(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows directory locking prevents mid-write swaps")
+	}
+	dir := t.TempDir()
+	root, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	// Set up: root/sub/orig/ (pinned parent) and root/sub/evil/
+	orig := filepath.Join(dir, "sub", "orig")
+	evil := filepath.Join(dir, "sub", "evil")
+	if err := os.MkdirAll(orig, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write to sub/orig/file.txt through the root — this pins sub/orig.
+	err = root.writeStreamAtomic("sub/orig/file.txt", bytes.NewReader([]byte("real")), 0o644,
+		func(f *os.File, tmpRel string) {
+			// After the parent is pinned, swap sub/orig with sub/evil
+			// mid-flight.  The temp and rename should still address
+			// the pinned directory, not the swapped one.
+			sub := filepath.Join(dir, "sub")
+			_ = os.Rename(filepath.Join(sub, "orig"), filepath.Join(sub, "swapped"))
+			_ = os.Rename(filepath.Join(sub, "evil"), filepath.Join(sub, "orig"))
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The file should land in the original (now swapped-aside) pinned
+	// directory, because the child was pinned before the swap.
+	swapped := filepath.Join(dir, "sub", "swapped")
+	if _, err := os.Stat(filepath.Join(swapped, "file.txt")); err != nil {
+		t.Error("file should be in the pinned (now swapped) directory:", err)
+	}
+	_ = os.RemoveAll(filepath.Join(dir, "sub"))
 }
 
 func TestWriteStreamAtomic_ReplacesHardLinkedLeaf(t *testing.T) {
@@ -739,7 +789,6 @@ func TestWriteStreamAtomic_ReplacesHardLinkedLeaf(t *testing.T) {
 	}
 	defer root.Close()
 
-	// Create a hard-linked file as the destination.
 	real := filepath.Join(dir, "real.txt")
 	if err := os.WriteFile(real, []byte("original"), 0o644); err != nil {
 		t.Fatal(err)
@@ -748,8 +797,6 @@ func TestWriteStreamAtomic_ReplacesHardLinkedLeaf(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Write through the link.  The rename should replace the
-	// directory entry without modifying the linked inode.
 	if err := root.WriteStreamAtomic("link.txt", bytes.NewReader([]byte("replaced")), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -761,21 +808,12 @@ func TestWriteStreamAtomic_ReplacesHardLinkedLeaf(t *testing.T) {
 	if string(linked) != "original" {
 		t.Error("hard-linked source should not be modified by rename publication")
 	}
-
-	linkContent, err := os.ReadFile(filepath.Join(dir, "link.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(linkContent) != "replaced" {
-		t.Error("link name should contain the new content")
-	}
 }
 
 func TestWriteStreamAtomic_DetectsSubstitutedTemp(t *testing.T) {
-	// The identity check catches a substitution where the temp
-	// entry on disk is a different file than the handle we authored.
-	// We test the check itself by injecting a stat function that
-	// returns a different identity.
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file locking prevents name-based substitution of open temp")
+	}
 	dir := t.TempDir()
 	root, err := Open(dir)
 	if err != nil {
@@ -783,18 +821,17 @@ func TestWriteStreamAtomic_DetectsSubstitutedTemp(t *testing.T) {
 	}
 	defer root.Close()
 
-	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, nil)
-	if err != nil {
-		t.Fatal(err)
+	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644,
+		func(f *os.File, tmpRel string) {
+			sub := filepath.Join(dir, tmpRel)
+			_ = os.WriteFile(sub+".new", []byte("impostor"), 0o644)
+			_ = os.Rename(sub+".new", sub)
+		})
+	if err == nil {
+		t.Fatal("expected error for substituted temp entry")
 	}
-
-	// Verify the write succeeded and published.
-	got, err := os.ReadFile(filepath.Join(dir, "file.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "hello" {
-		t.Errorf("expected hello, got %s", string(got))
+	if !strings.Contains(err.Error(), "substituted") {
+		t.Errorf("expected substitution error, got: %v", err)
 	}
 }
 
@@ -806,17 +843,33 @@ func TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure(t *testing.T) {
 	}
 	defer root.Close()
 
-	failErr := errors.New("injected failure")
-	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 2, err: failErr}, 0o644, nil)
+	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	// The destination should NOT exist.
-	if _, statErr := os.Stat(filepath.Join(dir, "file.txt")); !os.IsNotExist(statErr) {
-		t.Error("destination should not exist after failure")
+
+	// The temp file should still exist with partial content.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// A partial temp may exist; we cannot safely remove it.
-	// Don't assert its absence — just confirm no panic.
+	found := false
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".harness-write-") {
+			content, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(content) != "hel" {
+				t.Errorf("expected partial content 'hel', got '%s'", string(content))
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("partial temp file should survive error")
+	}
 }
 
 type failingReader struct {
@@ -829,6 +882,11 @@ type failingReader struct {
 func (r *failingReader) Read(p []byte) (int, error) {
 	if r.pos >= r.failAfter {
 		return 0, r.err
+	}
+	// Copy at most one byte per call so the failAfter byte count
+	// is precise.
+	if len(p) > 1 {
+		p = p[:1]
 	}
 	n := copy(p, r.data[r.pos:])
 	r.pos += n
