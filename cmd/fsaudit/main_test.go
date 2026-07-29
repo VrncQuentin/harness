@@ -464,6 +464,52 @@ func wipe(root *os.Root) { _ = root }
 	}
 }
 
+func TestAudit_ValueOsRootBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/pkg/valroot.go", `package pkg
+
+import "os"
+
+func use(root os.Root) {}
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("value os.Root type reference not blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_NonRootfsParenthesizedOsRootBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/pkg/paren.go", `package pkg
+
+import "os"
+
+type P = (os.Root)
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("parenthesized os.Root outside rootfs not blocked: %v", report.Blocked)
+	}
+}
+
 func TestAudit_OsRootTypeSpecBlocked(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "internal/pkg/rootalias.go", `package pkg

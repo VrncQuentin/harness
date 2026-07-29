@@ -239,25 +239,13 @@ func collectSourceCalls(root string) (calls []sourceCall, blocked []sourceCall, 
 					return true
 				}
 				checkNonCallSelector(info, node, fset, block)
+				checkRootTypeRefSelector(info, node, fset, block)
 
 			case *ast.Ident:
 				if callSelPos[node.Pos()] {
 					return true
 				}
 				checkDotImportNonCall(info, node, fset, block)
-
-			case *ast.StarExpr:
-				checkRootTypeRef(info, node, fset, block)
-
-			case *ast.TypeSpec:
-				if sel, isSel := node.Type.(*ast.SelectorExpr); isSel {
-					checkRootTypeRefSelector(info, sel, fset, block)
-				}
-				if star, isStar := node.Type.(*ast.StarExpr); isStar {
-					if sel, isSel := star.X.(*ast.SelectorExpr); isSel {
-						checkRootTypeRefSelector(info, sel, fset, block)
-					}
-				}
 			}
 			return true
 		})
@@ -360,17 +348,6 @@ func checkDotImportNonCall(fi fileInfo, ident *ast.Ident, fset *token.FileSet, b
 		pos := fset.Position(ident.Pos())
 		block(sourceCall{File: fi.rel, Line: pos.Line, Col: pos.Column, Fn: filepath.Base(pkgPath) + "." + ident.Name})
 	}
-}
-
-func checkRootTypeRef(fi fileInfo, star *ast.StarExpr, fset *token.FileSet, block func(sourceCall)) {
-	if fi.inRootFS {
-		return
-	}
-	sel, ok := star.X.(*ast.SelectorExpr)
-	if !ok {
-		return
-	}
-	checkRootTypeRefSelector(fi, sel, fset, block)
 }
 
 func checkRootTypeRefSelector(fi fileInfo, sel *ast.SelectorExpr, fset *token.FileSet, block func(sourceCall)) {
