@@ -340,40 +340,58 @@ func TestAnchor_SameAnchor_SymlinkAlias(t *testing.T) {
 	}
 }
 
-func TestAnchor_SameAnchor_AfterReplacement(t *testing.T) {
-	dir := t.TempDir()
-	a := mustNewAnchor(t, dir)
+func TestAnchor_SameAnchor_RepointedAliasNotSame(t *testing.T) {
+	// Use a repointable alias so the test exercises the comparison
+	// on both platforms.  Symlink on Unix, junction on Windows.
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
 
-	// Replace the directory content.  The pathname is the same but the
-	// filesystem object differs.
-	replacement := filepath.Join(t.TempDir(), "replacement")
-	if err := os.MkdirAll(replacement, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		// Handle blocks removal; close and retry.
-		_ = a.Close()
-		if err := os.RemoveAll(dir); err != nil {
-			t.Fatal(err)
-		}
-		// Cannot compare after anchor is closed.  Pass.
-		return
-	}
-	if err := os.Rename(replacement, dir); err != nil {
-		t.Fatal(err)
+	if runtime.GOOS == "windows" {
+		junctionOrSkip(t, dir1, alias)
+	} else {
+		symlinkOrSkip(t, dir1, alias)
 	}
 
-	b, err := NewAnchor(dir)
-	if err != nil {
+	a := mustNewAnchor(t, alias)
+
+	// Repoint the alias to a different directory.
+	if err := os.RemoveAll(alias); err != nil {
 		t.Fatal(err)
 	}
-	defer b.Close()
+	if runtime.GOOS == "windows" {
+		junctionOrSkip(t, dir2, alias)
+	} else {
+		symlinkOrSkip(t, dir2, alias)
+	}
+
+	// A new anchor on the same pathname captures the new directory.
+	b := mustNewAnchor(t, alias)
 
 	same, err := a.SameAnchor(b)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if same {
-		t.Error("anchors on replaced directory should not be SameAnchor")
+		t.Error("anchors before and after alias repointing should not be SameAnchor")
+	}
+}
+
+func TestAnchor_SameAnchor_ClosedAnchorReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	a := mustNewAnchor(t, dir)
+	b := mustNewAnchor(t, dir)
+
+	_ = a.Close()
+	_, err := a.SameAnchor(b)
+	if err == nil {
+		t.Error("SameAnchor should error when left anchor is closed")
+	}
+
+	c := mustNewAnchor(t, dir)
+	_ = b.Close()
+	_, err = c.SameAnchor(b)
+	if err == nil {
+		t.Error("SameAnchor should error when right anchor is closed")
 	}
 }

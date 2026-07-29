@@ -42,15 +42,7 @@ func (a *Anchor) Close() error { return a.root.Close() }
 // these the same directory."  pathid.Same resolved two pathnames; this
 // compares the objects those handles actually refer to.
 func (a *Anchor) SameAnchor(other *Anchor) (bool, error) {
-	ai, err := a.root.root.Stat(".")
-	if err != nil {
-		return false, err
-	}
-	bi, err := other.root.root.Stat(".")
-	if err != nil {
-		return false, err
-	}
-	return os.SameFile(ai, bi), nil
+	return a.root.SameDir(other.root)
 }
 
 // Open opens the stored pathname, verifies that the new handle refers to
