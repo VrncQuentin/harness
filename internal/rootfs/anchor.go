@@ -11,7 +11,7 @@ import (
 // os.SameFile is durable — unlike a stored os.FileInfo, a held handle
 // prevents the inode from being reused after deletion.
 //
-// Anchor.Open opens the same pathname fresh, stat's both the new handle
+// Anchor.Open opens the same pathname fresh, stats both the new handle
 // and the pinned handle, compares them with os.SameFile, and returns the
 // verified new handle.  The caller closes the returned Root.
 //
@@ -38,35 +38,31 @@ func (a *Anchor) Close() error { return a.root.Close() }
 // the same filesystem object as the pinned handle, and returns the
 // verified handle.  The caller closes the returned Root.
 func (a *Anchor) Open() (*Root, error) {
-	return a.open(nil, nil)
+	return a.open(nil)
 }
 
 // statFn is the signature of Root.Stat or a test replacement.
 type statFn func(r *Root) (fs.FileInfo, error)
 
-// open is Open with optional stat-replacement functions for each identity
-// check.  If reopenedStat is nil, r.root.Stat(".") is used for the
-// reopened handle.  If pinnedStat is nil, a.root.root.Stat(".") is used
-// for the pinned handle.
-func (a *Anchor) open(reopenedStat, pinnedStat statFn) (*Root, error) {
+// open is Open with an optional stat function replacement.  If stat is
+// non-nil it is called twice — once for the reopened handle and once for
+// the pinned handle — instead of Root.Stat.  A test can use a counter or
+// closure to fail either call.
+func (a *Anchor) open(stat statFn) (*Root, error) {
 	r, err := Open(a.path)
 	if err != nil {
 		return nil, fmt.Errorf("rootfs: cannot reopen anchor %s: %w", a.path, err)
 	}
-	rs := reopenedStat
-	if rs == nil {
-		rs = func(r *Root) (fs.FileInfo, error) { return r.root.Stat(".") }
+	s := stat
+	if s == nil {
+		s = func(r *Root) (fs.FileInfo, error) { return r.root.Stat(".") }
 	}
-	newInfo, err := rs(r)
+	newInfo, err := s(r)
 	if err != nil {
 		_ = r.Close()
 		return nil, fmt.Errorf("rootfs: cannot stat reopened anchor %s: %w", a.path, err)
 	}
-	ps := pinnedStat
-	if ps == nil {
-		ps = func(r *Root) (fs.FileInfo, error) { return r.root.Stat(".") }
-	}
-	pinnedInfo, err := ps(a.root)
+	pinnedInfo, err := s(a.root)
 	if err != nil {
 		_ = r.Close()
 		return nil, fmt.Errorf("rootfs: cannot stat pinned anchor %s: %w", a.path, err)
