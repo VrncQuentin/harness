@@ -258,6 +258,40 @@ func (r *Root) OpenChild(rel string) (*Root, error) {
 	return &Root{root: child}, nil
 }
 
+// OpenChildNoFollow opens rel inside r, verifies the entry is not a link
+// by Lstat'ing it through the parent, and confirms the opened child refers
+// to the same filesystem object as that entry via os.SameFile.  Returns
+// the pinned child on success.  The caller closes it.
+//
+// This closes the check/use window between Lstat and OpenChild: the
+// opened handle is compared against the parent entry, so a swap between
+// inspection and entry is detected.
+func (r *Root) OpenChildNoFollow(rel string) (*Root, error) {
+	child, err := r.root.OpenRoot(rel)
+	if err != nil {
+		return nil, err
+	}
+	entryFi, err := r.root.Lstat(rel)
+	if err != nil {
+		_ = child.Close()
+		return nil, err
+	}
+	if entryFi.Mode()&os.ModeSymlink != 0 || entryFi.Mode()&os.ModeIrregular != 0 {
+		_ = child.Close()
+		return nil, fmt.Errorf("rootfs: refusing to enter link %s", rel)
+	}
+	childFi, err := child.Stat(".")
+	if err != nil {
+		_ = child.Close()
+		return nil, err
+	}
+	if !os.SameFile(entryFi, childFi) {
+		_ = child.Close()
+		return nil, fmt.Errorf("rootfs: %s changed between open and verify", rel)
+	}
+	return &Root{root: child}, nil
+}
+
 // Set is an ordered list of root directories. It converts a caller-supplied
 // path — absolute or relative, in any spelling — into an operation performed
 // inside whichever root physically owns it.

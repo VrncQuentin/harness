@@ -52,9 +52,7 @@ type Entry struct {
 	Size int64
 }
 
-// DirReader serves files from a directory.  Every read operation creates
-// a fresh Anchor, verifies identity, and releases it when done.  Durable
-// Anchor ownership is deferred to PR 9.
+// DirReader serves files from a directory.
 type DirReader struct {
 	root string
 }
@@ -79,7 +77,6 @@ func (r *DirReader) openAnchor() (*rootfs.Anchor, error) {
 	return rootfs.NewAnchor(r.root)
 }
 
-// Read implements Reader.
 func (r *DirReader) Read(relPath string) ([]byte, error) {
 	if err := checkRel(relPath); err != nil {
 		return nil, err
@@ -101,7 +98,6 @@ func (r *DirReader) Read(relPath string) ([]byte, error) {
 	return b, nil
 }
 
-// ListDirs returns direct subdirectories of relPath.
 func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 	if relPath != "" {
 		if err := checkRel(relPath); err != nil {
@@ -135,76 +131,64 @@ func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 	return out, nil
 }
 
-// MkdirAll creates relPath and any necessary parents.
 func (r *DirReader) MkdirAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return err
 	}
-	a, err := r.openAnchor()
-	if err != nil {
-		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
-	}
-	defer func() { _ = a.Close() }()
-	root, err := a.Open()
-	if err != nil {
-		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
-	}
-	defer func() { _ = root.Close() }()
-	if err := root.MkdirAll(filepath.FromSlash(relPath), 0o755); err != nil {
+	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
 	}
 	return nil
 }
 
-// WriteFile implements FileWriter via temp+rename through the anchor.
 func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	a, err := r.openAnchor()
+	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
+	parent := filepath.Dir(abs)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	tmp, err := os.CreateTemp(parent, ".harness-*")
 	if err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	defer func() { _ = a.Close() }()
-	root, err := a.Open()
-	if err != nil {
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	defer func() { _ = root.Close() }()
-	if err := root.MkdirAll(filepath.Dir(filepath.FromSlash(relPath)), 0o755); err != nil {
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	if err := root.WriteStreamAtomic(filepath.FromSlash(relPath), strings.NewReader(string(data)), 0o644); err != nil {
+	if err := os.Rename(tmpPath, abs); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
 	return nil
 }
 
-// RemoveAll removes relPath.
 func (r *DirReader) RemoveAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
-	if relPath == "" || relPath == "." {
+	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
+	if abs == r.root {
 		return fmt.Errorf("memory: remove %s: refusing to remove repo root", relPath)
 	}
-	a, err := r.openAnchor()
-	if err != nil {
-		return fmt.Errorf("memory: remove %s: %w", relPath, err)
-	}
-	defer func() { _ = a.Close() }()
-	root, err := a.Open()
-	if err != nil {
-		return fmt.Errorf("memory: remove %s: %w", relPath, err)
-	}
-	defer func() { _ = root.Close() }()
-	if err := root.RemoveAll(filepath.FromSlash(relPath)); err != nil {
+	if err := os.RemoveAll(abs); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
 	return nil
 }
 
-// Glob implements Reader.
 func (r *DirReader) Glob(pattern string) ([]string, error) {
 	if err := checkRel(pattern); err != nil {
 		return nil, err
@@ -245,11 +229,12 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 	return matches, nil
 }
 
-// Walk implements Walker using rooted traversal.  Before entering a
-// subdirectory, Lstat is called through the parent to check whether the
-// entry is a link — links are refused.  OpenChild follows only after
-// the link check passes.  Children are closed after their subtrees,
-// and the active ancestor stack is used for cycle detection.
+// Walk implements Walker using rooted traversal.  Subdirectories are
+// entered through OpenChildNoFollow, which opens, Lstats through the
+// parent, rejects links, and verifies the opened handle matches the
+// parent entry with os.SameFile — closing the check/use window.
+// Children are closed after their subtrees.  Cycles are detected by
+// ancestor identity.
 func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	if relPath != "" {
 		if err := checkRel(relPath); err != nil {
@@ -297,17 +282,11 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 			if !e.IsDir() {
 				continue
 			}
-			// Lstat through the parent to detect links before
-			// OpenChild would follow them.
-			fi, err := dir.Lstat(name)
+			child, err := dir.OpenChildNoFollow(name)
 			if err != nil {
-				return fmt.Errorf("memory: walk %s: %w", childRel, err)
-			}
-			if fi.Mode()&os.ModeSymlink != 0 || fi.Mode()&os.ModeIrregular != 0 {
-				continue
-			}
-			child, err := dir.OpenChild(name)
-			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					continue
+				}
 				return fmt.Errorf("memory: walk %s: %w", childRel, err)
 			}
 			isCycle := false
@@ -339,17 +318,7 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	startPrefix := ""
 	startAncestors := []*rootfs.Root{root}
 	if relPath != "" {
-		fi, err := root.Lstat(filepath.FromSlash(relPath))
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
-		}
-		if fi.Mode()&os.ModeSymlink != 0 || fi.Mode()&os.ModeIrregular != 0 {
-			return nil, nil
-		}
-		child, err := root.OpenChild(filepath.FromSlash(relPath))
+		child, err := root.OpenChildNoFollow(filepath.FromSlash(relPath))
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return nil, nil
