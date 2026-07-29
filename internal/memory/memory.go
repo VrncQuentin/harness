@@ -300,6 +300,11 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	}
 
 	startDir := root
+	defer func() {
+		if startDir != root {
+			_ = startDir.Close()
+		}
+	}()
 	startPrefix := ""
 	if relPath != "" {
 		components := strings.Split(filepath.FromSlash(relPath), string(filepath.Separator))
@@ -325,9 +330,6 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 
 	if err := walkDir(startDir, startPrefix); err != nil {
 		return nil, err
-	}
-	if startDir != root {
-		_ = startDir.Close()
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
