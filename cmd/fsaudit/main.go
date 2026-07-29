@@ -187,9 +187,6 @@ func collectSourceCalls(root string) (calls []sourceCall, blocked []sourceCall, 
 		if strings.HasPrefix(rel, "cmd/fsaudit/") {
 			return nil
 		}
-		if !strings.HasPrefix(rel, "internal/") && !strings.HasPrefix(rel, "cmd/") {
-			return nil
-		}
 
 		fset := token.NewFileSet()
 		f, parseErr := parser.ParseFile(fset, path, nil, 0)
@@ -392,9 +389,8 @@ func checkRootTypeRefSelector(fi fileInfo, sel *ast.SelectorExpr, fset *token.Fi
 	block(sourceCall{File: fi.rel, Line: pos.Line, Col: pos.Column, Fn: "os.Root"})
 }
 
-// checkRootfsExportedAPI scans exported declarations for os.Root exposure.
-// Any exported function, method, type alias, variable, or struct field that
-// references *os.Root or os.Root is blocked.
+// checkRootfsExportedAPI blocks os.Root references in rootfs files, allowing
+// only the intended private Root.root *os.Root backing field.
 func checkRootfsExportedAPI(f *ast.File, fset *token.FileSet, rel string, block func(sourceCall)) {
 	imports := map[string]string{}
 	for _, imp := range f.Imports {
@@ -406,82 +402,150 @@ func checkRootfsExportedAPI(f *ast.File, fset *token.FileSet, rel string, block 
 		imports[name] = path
 	}
 
+	// Collect local aliases for os.Root: type raw = os.Root
+	rootAliases := map[string]bool{}
 	for _, decl := range f.Decls {
-		switch d := decl.(type) {
-		case *ast.FuncDecl:
-			if !d.Name.IsExported() {
-				continue
-			}
-			if d.Type.Results != nil {
-				for _, field := range d.Type.Results.List {
-					checkTypeExpr(field.Type, imports, rel, fset, block)
-				}
-			}
-			if d.Type.Params != nil {
-				for _, field := range d.Type.Params.List {
-					checkTypeExpr(field.Type, imports, rel, fset, block)
-				}
-			}
-			if d.Recv != nil {
-				for _, field := range d.Recv.List {
-					checkTypeExpr(field.Type, imports, rel, fset, block)
-				}
-			}
-		case *ast.GenDecl:
-			for _, spec := range d.Specs {
-				if ts, ok := spec.(*ast.TypeSpec); ok && ts.Name.IsExported() {
-					checkTypeExpr(ts.Type, imports, rel, fset, block)
-				}
-				if vs, ok := spec.(*ast.ValueSpec); ok {
-					for _, name := range vs.Names {
-						if name.IsExported() && vs.Type != nil {
-							checkTypeExpr(vs.Type, imports, rel, fset, block)
+		if gd, ok := decl.(*ast.GenDecl); ok {
+			for _, spec := range gd.Specs {
+				if ts, ok := spec.(*ast.TypeSpec); ok && ts.Assign.IsValid() {
+					if sel, isSel := ts.Type.(*ast.SelectorExpr); isSel {
+						if pkgIdent, ok := sel.X.(*ast.Ident); ok {
+							if imports[pkgIdent.Name] == "os" && sel.Sel.Name == "Root" {
+								rootAliases[ts.Name.Name] = true
+							}
 						}
 					}
 				}
 			}
 		}
 	}
-}
 
-func checkTypeExpr(expr ast.Expr, imports map[string]string, rel string, fset *token.FileSet, block func(sourceCall)) {
-	if expr == nil {
-		return
-	}
-	switch e := expr.(type) {
-	case *ast.StarExpr:
-		checkTypeExpr(e.X, imports, rel, fset, block)
-	case *ast.SelectorExpr:
-		if pkgIdent, ok := e.X.(*ast.Ident); ok {
-			if pkgPath, ok := imports[pkgIdent.Name]; ok && pkgPath == "os" && e.Sel.Name == "Root" {
-				pos := fset.Position(e.Pos())
-				block(sourceCall{File: rel, Line: pos.Line, Col: pos.Column, Fn: "exported os.Root"})
-			}
+	// Walk struct fields to identify the allowed private backing field.
+	// We allow exactly: struct { root *os.Root } where the field named "root"
+	// is unexported and the enclosing type is "Root".
+	allowedFields := map[token.Pos]bool{}
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok {
+			continue
 		}
-	case *ast.MapType:
-		checkTypeExpr(e.Key, imports, rel, fset, block)
-		checkTypeExpr(e.Value, imports, rel, fset, block)
-	case *ast.ArrayType:
-		checkTypeExpr(e.Elt, imports, rel, fset, block)
-	case *ast.ChanType:
-		checkTypeExpr(e.Value, imports, rel, fset, block)
-	case *ast.StructType:
-		for _, field := range e.Fields.List {
-			if len(field.Names) > 0 && field.Names[0].IsExported() {
-				checkTypeExpr(field.Type, imports, rel, fset, block)
+		for _, spec := range gd.Specs {
+			ts, ok := spec.(*ast.TypeSpec)
+			if !ok || ts.Name.Name != "Root" {
+				continue
 			}
-		}
-	case *ast.InterfaceType:
-		for _, method := range e.Methods.List {
-			if ft, ok := method.Type.(*ast.FuncType); ok {
-				if ft.Results != nil {
-					for _, f := range ft.Results.List {
-						checkTypeExpr(f.Type, imports, rel, fset, block)
+			st, ok := ts.Type.(*ast.StructType)
+			if !ok {
+				continue
+			}
+			for _, field := range st.Fields.List {
+				if len(field.Names) == 1 && field.Names[0].Name == "root" {
+					if star, isStar := field.Type.(*ast.StarExpr); isStar {
+						if sel, isSel := star.X.(*ast.SelectorExpr); isSel {
+							if pkgIdent, ok := sel.X.(*ast.Ident); ok {
+								if imports[pkgIdent.Name] == "os" && sel.Sel.Name == "Root" {
+									allowedFields[sel.Pos()] = true
+								}
+							}
+						}
 					}
 				}
-				if ft.Params != nil {
-					for _, f := range ft.Params.List {
-						checkTypeExpr(f.Type, imports, rel, fset, block)
+			}
+		}
+	}
+
+	// Walk all type positions for os.Root references.  Block every one that
+	// is not the explicitly allowed backing field.
+	var walkTypeExpr func(ast.Expr)
+	walkTypeExpr = func(expr ast.Expr) {
+		if expr == nil {
+			return
+		}
+		switch e := expr.(type) {
+		case *ast.StarExpr:
+			walkTypeExpr(e.X)
+		case *ast.SelectorExpr:
+			if pkgIdent, ok := e.X.(*ast.Ident); ok {
+				if imports[pkgIdent.Name] == "os" && e.Sel.Name == "Root" {
+					if allowedFields[e.Pos()] {
+						return
+					}
+					pos := fset.Position(e.Pos())
+					block(sourceCall{File: rel, Line: pos.Line, Col: pos.Column, Fn: "os.Root in rootfs"})
+				}
+			}
+		case *ast.Ident:
+			// Local alias: type raw = os.Root; then *raw or raw.
+			if rootAliases[e.Name] {
+				pos := fset.Position(e.Pos())
+				block(sourceCall{File: rel, Line: pos.Line, Col: pos.Column, Fn: "os.Root in rootfs"})
+			}
+		case *ast.MapType:
+			walkTypeExpr(e.Key)
+			walkTypeExpr(e.Value)
+		case *ast.ArrayType:
+			walkTypeExpr(e.Elt)
+		case *ast.ChanType:
+			walkTypeExpr(e.Value)
+		case *ast.StructType:
+			for _, field := range e.Fields.List {
+				walkTypeExpr(field.Type)
+			}
+		case *ast.InterfaceType:
+			for _, method := range e.Methods.List {
+				if ft, ok := method.Type.(*ast.FuncType); ok {
+					if ft.Results != nil {
+						for _, f := range ft.Results.List {
+							walkTypeExpr(f.Type)
+						}
+					}
+					if ft.Params != nil {
+						for _, f := range ft.Params.List {
+							walkTypeExpr(f.Type)
+						}
+					}
+				}
+			}
+		case *ast.FuncType:
+			if e.Results != nil {
+				for _, f := range e.Results.List {
+					walkTypeExpr(f.Type)
+				}
+			}
+			if e.Params != nil {
+				for _, f := range e.Params.List {
+					walkTypeExpr(f.Type)
+				}
+			}
+		}
+	}
+
+	for _, decl := range f.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Type.Results != nil {
+				for _, field := range d.Type.Results.List {
+					walkTypeExpr(field.Type)
+				}
+			}
+			if d.Type.Params != nil {
+				for _, field := range d.Type.Params.List {
+					walkTypeExpr(field.Type)
+				}
+			}
+			if d.Recv != nil {
+				for _, field := range d.Recv.List {
+					walkTypeExpr(field.Type)
+				}
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				if ts, ok := spec.(*ast.TypeSpec); ok {
+					walkTypeExpr(ts.Type)
+				}
+				if vs, ok := spec.(*ast.ValueSpec); ok {
+					if vs.Type != nil {
+						walkTypeExpr(vs.Type)
 					}
 				}
 			}

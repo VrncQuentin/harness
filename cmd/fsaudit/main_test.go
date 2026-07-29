@@ -522,7 +522,7 @@ func Raw(root *Root) *os.Root { return root.root }
 	}
 	found := false
 	for _, c := range report.Blocked {
-		if c.Fn == "exported os.Root" {
+		if c.Fn == "os.Root in rootfs" {
 			found = true
 		}
 	}
@@ -545,12 +545,77 @@ type PublicRoot = os.Root
 	}
 	found := false
 	for _, c := range report.Blocked {
-		if c.Fn == "exported os.Root" {
+		if c.Fn == "os.Root in rootfs" {
 			found = true
 		}
 	}
 	if !found {
 		t.Errorf("exported os.Root type alias from rootfs not blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_RootfsEmbeddedOsRootBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/rootfs/embed.go", `package rootfs
+
+import "os"
+
+type Leak struct{ *os.Root }
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root in rootfs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("embedded *os.Root in rootfs struct not blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_RootfsAliasThroughLocalTypeBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/rootfs/alias2.go", `package rootfs
+
+import "os"
+
+type raw = os.Root
+
+func Leak(r *Root) *raw { return r.root }
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root in rootfs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("alias-through-local-type os.Root exposure not blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_ProductionFileOutsideInternalCmdScanned(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "pkg/outside.go", `package pkg
+
+import "os"
+
+func init() { os.RemoveAll("/tmp/x") }
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	if len(report.SourceCalls) == 0 {
+		t.Error("files outside internal/ and cmd/ must be scanned")
 	}
 }
 
