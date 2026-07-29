@@ -402,28 +402,8 @@ func checkRootfsExportedAPI(f *ast.File, fset *token.FileSet, rel string, block 
 		imports[name] = path
 	}
 
-	// Collect local aliases for os.Root: type raw = os.Root
-	rootAliases := map[string]bool{}
-	for _, decl := range f.Decls {
-		if gd, ok := decl.(*ast.GenDecl); ok {
-			for _, spec := range gd.Specs {
-				if ts, ok := spec.(*ast.TypeSpec); ok && ts.Assign.IsValid() {
-					if sel, isSel := ts.Type.(*ast.SelectorExpr); isSel {
-						if pkgIdent, ok := sel.X.(*ast.Ident); ok {
-							if imports[pkgIdent.Name] == "os" && sel.Sel.Name == "Root" {
-								rootAliases[ts.Name.Name] = true
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Walk struct fields to identify the allowed private backing field.
-	// We allow exactly: struct { root *os.Root } where the field named "root"
-	// is unexported and the enclosing type is "Root".
-	allowedFields := map[token.Pos]bool{}
+	// Find the permitted Root.root *os.Root backing field.
+	allowedPos := map[token.Pos]bool{}
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok {
@@ -444,7 +424,7 @@ func checkRootfsExportedAPI(f *ast.File, fset *token.FileSet, rel string, block 
 						if sel, isSel := star.X.(*ast.SelectorExpr); isSel {
 							if pkgIdent, ok := sel.X.(*ast.Ident); ok {
 								if imports[pkgIdent.Name] == "os" && sel.Sel.Name == "Root" {
-									allowedFields[sel.Pos()] = true
+									allowedPos[sel.Pos()] = true
 								}
 							}
 						}
@@ -454,103 +434,27 @@ func checkRootfsExportedAPI(f *ast.File, fset *token.FileSet, rel string, block 
 		}
 	}
 
-	// Walk all type positions for os.Root references.  Block every one that
-	// is not the explicitly allowed backing field.
-	var walkTypeExpr func(ast.Expr)
-	walkTypeExpr = func(expr ast.Expr) {
-		if expr == nil {
-			return
+	// Inspect every SelectorExpr in the file.  Any os.Root reference that
+	// is not the permitted backing field is blocked.
+	ast.Inspect(f, func(n ast.Node) bool {
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
 		}
-		switch e := expr.(type) {
-		case *ast.StarExpr:
-			walkTypeExpr(e.X)
-		case *ast.SelectorExpr:
-			if pkgIdent, ok := e.X.(*ast.Ident); ok {
-				if imports[pkgIdent.Name] == "os" && e.Sel.Name == "Root" {
-					if allowedFields[e.Pos()] {
-						return
-					}
-					pos := fset.Position(e.Pos())
-					block(sourceCall{File: rel, Line: pos.Line, Col: pos.Column, Fn: "os.Root in rootfs"})
-				}
-			}
-		case *ast.Ident:
-			// Local alias: type raw = os.Root; then *raw or raw.
-			if rootAliases[e.Name] {
-				pos := fset.Position(e.Pos())
-				block(sourceCall{File: rel, Line: pos.Line, Col: pos.Column, Fn: "os.Root in rootfs"})
-			}
-		case *ast.MapType:
-			walkTypeExpr(e.Key)
-			walkTypeExpr(e.Value)
-		case *ast.ArrayType:
-			walkTypeExpr(e.Elt)
-		case *ast.ChanType:
-			walkTypeExpr(e.Value)
-		case *ast.StructType:
-			for _, field := range e.Fields.List {
-				walkTypeExpr(field.Type)
-			}
-		case *ast.InterfaceType:
-			for _, method := range e.Methods.List {
-				if ft, ok := method.Type.(*ast.FuncType); ok {
-					if ft.Results != nil {
-						for _, f := range ft.Results.List {
-							walkTypeExpr(f.Type)
-						}
-					}
-					if ft.Params != nil {
-						for _, f := range ft.Params.List {
-							walkTypeExpr(f.Type)
-						}
-					}
-				}
-			}
-		case *ast.FuncType:
-			if e.Results != nil {
-				for _, f := range e.Results.List {
-					walkTypeExpr(f.Type)
-				}
-			}
-			if e.Params != nil {
-				for _, f := range e.Params.List {
-					walkTypeExpr(f.Type)
-				}
-			}
+		pkgIdent, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
 		}
-	}
-
-	for _, decl := range f.Decls {
-		switch d := decl.(type) {
-		case *ast.FuncDecl:
-			if d.Type.Results != nil {
-				for _, field := range d.Type.Results.List {
-					walkTypeExpr(field.Type)
-				}
-			}
-			if d.Type.Params != nil {
-				for _, field := range d.Type.Params.List {
-					walkTypeExpr(field.Type)
-				}
-			}
-			if d.Recv != nil {
-				for _, field := range d.Recv.List {
-					walkTypeExpr(field.Type)
-				}
-			}
-		case *ast.GenDecl:
-			for _, spec := range d.Specs {
-				if ts, ok := spec.(*ast.TypeSpec); ok {
-					walkTypeExpr(ts.Type)
-				}
-				if vs, ok := spec.(*ast.ValueSpec); ok {
-					if vs.Type != nil {
-						walkTypeExpr(vs.Type)
-					}
-				}
-			}
+		if imports[pkgIdent.Name] != "os" || sel.Sel.Name != "Root" {
+			return true
 		}
-	}
+		if allowedPos[sel.Pos()] {
+			return true
+		}
+		pos := fset.Position(sel.Pos())
+		block(sourceCall{File: rel, Line: pos.Line, Col: pos.Column, Fn: "os.Root in rootfs"})
+		return true
+	})
 }
 
 // ---------- keys ----------

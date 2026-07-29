@@ -487,24 +487,95 @@ type MyRoot = os.Root
 	}
 }
 
-func TestAudit_OsRootTypeRefInRootFSIsNotBlocked(t *testing.T) {
+func TestAudit_RootfsBackingFieldAccepted(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "internal/rootfs/root.go", `package rootfs
 
 import "os"
 
-func open(path string) (*os.Root, error) { return os.OpenRoot(path) }
+type Root struct {
+	root *os.Root
+}
 `)
 	report := Audit(dir, makeAllowlist(nil))
 	if report.Err != nil {
 		t.Fatal(report.Err)
 	}
-	// Internal (unexported) os.Root use in rootfs is fine.
-	// Exported would be caught by checkRootfsExportedAPI.
 	for _, c := range report.Blocked {
-		if c.Fn == "exported os.Root" || c.Fn == "os.Root" {
-			t.Errorf("unexported *os.Root inside internal/rootfs should not be blocked: %v", c)
+		if c.Fn == "os.Root in rootfs" {
+			t.Errorf("Root.root backing field should be accepted, got blocked: %v", c)
 		}
+	}
+}
+
+func TestAudit_RootfsUnexportedOsRootBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/rootfs/bad.go", `package rootfs
+
+import "os"
+
+func helper(root *os.Root) {}
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root in rootfs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("unexported *os.Root signature in rootfs should be blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_RootfsParenthesizedBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/rootfs/paren.go", `package rootfs
+
+import "os"
+
+type P = (os.Root)
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root in rootfs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("parenthesized os.Root in rootfs should be blocked: %v", report.Blocked)
+	}
+}
+
+func TestAudit_RootfsGenericIndexBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/rootfs/generic.go", `package rootfs
+
+import "os"
+
+type Box[T any] struct{ v T }
+
+type G = Box[*os.Root]
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root in rootfs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("*os.Root inside generic index in rootfs should be blocked: %v", report.Blocked)
 	}
 }
 
