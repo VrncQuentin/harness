@@ -267,12 +267,21 @@ func (r *Root) OpenChild(rel string) (*Root, error) {
 // opened handle is compared against the parent entry, so a swap between
 // inspection and entry is detected.
 func (r *Root) OpenChildNoFollow(name string) (*Root, fs.FileInfo, error) {
+	return r.openChildNoFollow(name, nil)
+}
+
+// openChildNoFollow is OpenChildNoFollow with an optional hook that runs
+// after OpenRoot and before Lstat.  Tests use it to stage substitutions.
+func (r *Root) openChildNoFollow(name string, afterOpen func()) (*Root, fs.FileInfo, error) {
 	if strings.Contains(name, string(filepath.Separator)) || strings.Contains(name, "/") {
 		return nil, nil, fmt.Errorf("rootfs: OpenChildNoFollow requires a single component, got %q", name)
 	}
 	child, err := r.root.OpenRoot(name)
 	if err != nil {
 		return nil, nil, err
+	}
+	if afterOpen != nil {
+		afterOpen()
 	}
 	entryFi, err := r.root.Lstat(name)
 	if err != nil {

@@ -985,23 +985,14 @@ func TestOpenChildNoFollow_DetectsSubstitution(t *testing.T) {
 	if err := os.MkdirAll(evil, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Place "real" at the name, then swap to "evil" mid-operation.
-	// The substitution is staged via the open hook.
-	// For this test we just verify that after a swap, the check fails.
-	// On Windows, renaming a live directory may not be possible; skip.
-	if runtime.GOOS == "windows" {
-		t.Skip("directory rename under live handle blocked on Windows")
-	}
 	if err := os.Rename(real, filepath.Join(dir, "sub")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(evil, filepath.Join(dir, "real")); err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = root.OpenChildNoFollow("sub")
-	// The child was opened before the rename; the Lstat sees the
-	// old entry's identity but the Stat sees the new (evil)
-	// directory — os.SameFile returns false.
+	_, _, err = root.openChildNoFollow("sub", func() {
+		if err := os.Rename(evil, filepath.Join(dir, "sub")); err != nil {
+			t.Skip("live handle blocked rename substitution")
+		}
+	})
 	if err == nil {
 		t.Error("OpenChildNoFollow should detect substitution")
 	}

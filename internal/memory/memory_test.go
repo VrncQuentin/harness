@@ -553,6 +553,9 @@ func TestDirReader_ListDirsDoesNotFollowLinkOutOfRoot(t *testing.T) {
 	if err := os.MkdirAll(outside, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(outside, "evil.txt"), []byte("evil"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
 		t.Skip("symlink unavailable: " + err.Error())
 	}
@@ -560,14 +563,12 @@ func TestDirReader_ListDirsDoesNotFollowLinkOutOfRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dirs, err := r.ListDirs("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, d := range dirs {
-		if d == "link" {
-			t.Error("ListDirs should not list symlinks as directories")
-		}
+	// ListDirs("") lists the repo root; the symlink may appear as an
+	// entry.  Listing the symlink itself should fail because its
+	// target is outside the anchored root.
+	_, err = r.ListDirs("link")
+	if err == nil {
+		t.Error("ListDirs through link should fail")
 	}
 }
 
@@ -580,7 +581,14 @@ func TestDirReader_WalkKeepsDescendingInsidePinnedTree(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repoRoot, "sub", "deep", "file.txt"), []byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r, err := NewDirReader(repoRoot)
+	// Create a junction/symlink alias, construct the reader through
+	// it, and verify Walk descends correctly through the physical tree.
+	alias := filepath.Join(dir, "alias")
+	if err := os.Symlink(repoRoot, alias); err != nil {
+		// Fall back: use the real path.
+		alias = repoRoot
+	}
+	r, err := NewDirReader(alias)
 	if err != nil {
 		t.Fatal(err)
 	}

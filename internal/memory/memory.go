@@ -114,7 +114,11 @@ func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 		return nil, fmt.Errorf("memory: list dirs %s: %w", relPath, err)
 	}
 	defer func() { _ = root.Close() }()
-	entries, err := root.ReadDir(filepath.FromSlash(relPath))
+	rd := filepath.FromSlash(relPath)
+	if rd == "" {
+		rd = "."
+	}
+	entries, err := root.ReadDir(rd)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -204,7 +208,11 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 		return nil, fmt.Errorf("memory: glob %s: %w", pattern, err)
 	}
 	defer func() { _ = root.Close() }()
-	entries, err := root.ReadDir(filepath.FromSlash(dir))
+	rd := filepath.FromSlash(dir)
+	if rd == "" {
+		rd = "."
+	}
+	entries, err := root.ReadDir(rd)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
