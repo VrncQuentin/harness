@@ -990,6 +990,11 @@ func TestOpenChildNoFollow_DetectsSubstitution(t *testing.T) {
 	}
 	var hookErr error
 	child, _, err := root.openChildNoFollow("sub", func() {
+		// Rename sub aside first so the name is vacant.
+		if e := os.Rename(filepath.Join(dir, "sub"), filepath.Join(dir, "aside")); e != nil {
+			hookErr = e
+			return
+		}
 		hookErr = os.Rename(evil, filepath.Join(dir, "sub"))
 	})
 	if hookErr != nil {

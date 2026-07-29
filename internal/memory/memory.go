@@ -73,20 +73,22 @@ func NewDirReader(root string) (*DirReader, error) {
 	return &DirReader{root: root}, nil
 }
 
-func (r *DirReader) openAnchor() (*rootfs.Anchor, error) {
-	return rootfs.NewAnchor(r.root)
+// openRoot creates an Anchor on the configured root, opens it, closes the
+// Anchor, and returns the verified Root.  The caller closes the Root.
+func (r *DirReader) openRoot() (*rootfs.Root, error) {
+	a, err := rootfs.NewAnchor(r.root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = a.Close() }()
+	return a.Open()
 }
 
 func (r *DirReader) Read(relPath string) ([]byte, error) {
 	if err := checkRel(relPath); err != nil {
 		return nil, err
 	}
-	a, err := r.openAnchor()
-	if err != nil {
-		return nil, fmt.Errorf("memory: read %s: %w", relPath, err)
-	}
-	defer func() { _ = a.Close() }()
-	root, err := a.Open()
+	root, err := r.openRoot()
 	if err != nil {
 		return nil, fmt.Errorf("memory: read %s: %w", relPath, err)
 	}
@@ -104,12 +106,7 @@ func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 			return nil, err
 		}
 	}
-	a, err := r.openAnchor()
-	if err != nil {
-		return nil, fmt.Errorf("memory: list dirs %s: %w", relPath, err)
-	}
-	defer func() { _ = a.Close() }()
-	root, err := a.Open()
+	root, err := r.openRoot()
 	if err != nil {
 		return nil, fmt.Errorf("memory: list dirs %s: %w", relPath, err)
 	}
@@ -198,12 +195,7 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 		return nil, err
 	}
 	dir, file := path.Split(pattern)
-	a, err := r.openAnchor()
-	if err != nil {
-		return nil, fmt.Errorf("memory: glob %s: %w", pattern, err)
-	}
-	defer func() { _ = a.Close() }()
-	root, err := a.Open()
+	root, err := r.openRoot()
 	if err != nil {
 		return nil, fmt.Errorf("memory: glob %s: %w", pattern, err)
 	}
@@ -249,15 +241,7 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 			return nil, err
 		}
 	}
-	a, err := r.openAnchor()
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
-	}
-	defer func() { _ = a.Close() }()
-	root, err := a.Open()
+	root, err := r.openRoot()
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil

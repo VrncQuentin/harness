@@ -294,8 +294,8 @@ guarantees below.
 | Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name | implemented |
 | Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere | implemented |
 | In-process concurrent writers | Per-repository mutation coordinator keyed by physical identity (planned in PR 5); currently writes use temp+rename for file-level atomicity | planned |
-| Check/use races on intermediate directories | Traversal pins each directory with `OpenChild` before inspecting it; what is inspected and what is entered are the same directory | planned (PR 4) |
-| Memory repo reads/writes through pathname | `DirRef`/`Anchor` reopenable directory references; every operation reopens the configured name and verifies identity | planned (PR 2–7) |
+| Check/use races on intermediate directories | `OpenChildNoFollow` opens the child, Lstats the entry through the parent, rejects links, and compares the entry with the opened handle via `os.SameFile` — what is opened and what is checked are the same object | implemented |
+| Memory repo reads/writes through pathname | `DirReader` creates per-operation `Anchor` references; every read, list, glob, and walk verifies identity and operates through a pinned handle | read path implemented (PR 4); writes deferred to PR 5 |
 
 #### Out of scope
 

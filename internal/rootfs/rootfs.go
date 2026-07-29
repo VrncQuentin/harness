@@ -273,7 +273,7 @@ func (r *Root) OpenChildNoFollow(name string) (*Root, fs.FileInfo, error) {
 // openChildNoFollow is OpenChildNoFollow with an optional hook that runs
 // after OpenRoot and before Lstat.  Tests use it to stage substitutions.
 func (r *Root) openChildNoFollow(name string, afterOpen func()) (*Root, fs.FileInfo, error) {
-	if strings.Contains(name, string(filepath.Separator)) || strings.Contains(name, "/") {
+	if name == "" || name == "." || name == ".." || strings.Contains(name, string(filepath.Separator)) || strings.Contains(name, "/") {
 		return nil, nil, fmt.Errorf("rootfs: OpenChildNoFollow requires a single component, got %q", name)
 	}
 	child, err := r.root.OpenRoot(name)
