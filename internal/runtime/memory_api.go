@@ -90,8 +90,18 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		}
 	}
 
-	rt.globalMem = memory.NewDirReader(roots.globalRoot)
-	rt.activeMem = memory.NewDirReader(roots.activeRoot)
+	globalMem, err := memory.NewDirReader(roots.globalRoot)
+	if err != nil {
+		uiServer.AddStartupError(fmt.Errorf("open global memory: %w", err))
+		return false
+	}
+	rt.globalMem = globalMem
+	activeMem, err := memory.NewDirReader(roots.activeRoot)
+	if err != nil {
+		uiServer.AddStartupError(fmt.Errorf("open active memory: %w", err))
+		return false
+	}
+	rt.activeMem = activeMem
 	rt.agentReg = agent.NewDiskRegistry(rt.globalMem, rt.getActiveAgent, rt.setActiveAgent)
 	rt.assembler = prompt.NewProjectDiskAssembler(rt.globalMem, rt.activeMem, rt.agentReg, rt.effectivePromptFor(&rt.cfg)).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
 
@@ -394,7 +404,10 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		rec = metrics.NewRecorder(metricsStore)
 	}
 
-	sessionStore := memory.NewDirReader(repoPath)
+	sessionStore, err := memory.NewDirReader(repoPath)
+	if err != nil {
+		return nil, nil
+	}
 	mgr, err := session.NewManager(session.ManagerDeps{
 		Repo:               repo,
 		Writer:             sessionStore,

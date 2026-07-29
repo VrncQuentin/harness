@@ -40,7 +40,10 @@ func TestManager_ConcurrentSaveAndPromotionShareRepoSafely(t *testing.T) {
 	fi := newFakeInference(scripts...)
 
 	dir, repo := initRepo(t)
-	reader := memory.NewDirReader(dir)
+	reader, err := memory.NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mgr, err := NewManager(ManagerDeps{
 		Repo:               repo,
 		Writer:             reader,

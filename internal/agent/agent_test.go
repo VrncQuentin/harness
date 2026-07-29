@@ -31,7 +31,11 @@ func newRepoWithAgentsRoot(t *testing.T, files map[string]string) (*memory.DirRe
 			t.Fatalf("WriteFile: %v", err)
 		}
 	}
-	return memory.NewDirReader(root), root
+	dr, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dr, root
 }
 
 // activeState is a trivial in-memory stand-in for the active-agent

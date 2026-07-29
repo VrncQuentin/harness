@@ -62,7 +62,10 @@ func scaffoldMemoryRepo(t *testing.T, agentName string) (string, *git.Repo) {
 func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 	t.Helper()
 	root, repo := scaffoldMemoryRepo(t, "coder")
-	reader := memory.NewDirReader(root)
+	reader, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mgr, err := NewManager(ManagerDeps{
 		Repo:               repo,
 		Writer:             reader,
@@ -166,7 +169,10 @@ func TestSavedEpisodeVisibleToPromptRecency(t *testing.T) {
 	// Fresh assembler from the same memory repo. The recency layer
 	// reads episodes/<agent>/*.md, which is exactly
 	// what the session writer produces.
-	reader := memory.NewDirReader(root)
+	reader, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	active := "coder"
 	reg := agent.NewDiskRegistry(reader, func() string { return active }, func(name string) error { active = name; return nil })
 	cfg := config.PromptConfig{RecencyN: 5}
@@ -289,7 +295,10 @@ func TestEpisodeVisibleToMemoryWalker(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	reader := memory.NewDirReader(root)
+	reader, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	entries, err := reader.Walk("episodes")
 	if err != nil {
 		t.Fatalf("Walk: %v", err)

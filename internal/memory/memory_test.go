@@ -25,7 +25,11 @@ func newTestRepo(t *testing.T, files map[string]string) *DirReader {
 			t.Fatalf("WriteFile %s: %v", abs, err)
 		}
 	}
-	return NewDirReader(root)
+	r, err := NewDirReader(root)
+	if err != nil {
+		t.Fatalf("NewDirReader: %v", err)
+	}
+	return r
 }
 
 func TestDirReader_Read(t *testing.T) {
@@ -441,13 +445,9 @@ func TestDirReader_WalkSkipsGitDir(t *testing.T) {
 }
 
 func TestDirReader_WalkMissingRoot(t *testing.T) {
-	r := NewDirReader(filepath.Join(t.TempDir(), "does-not-exist"))
-	got, err := r.Walk("")
-	if err != nil {
-		t.Fatalf("Walk on missing root: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("Walk on missing root = %v, want empty", got)
+	_, err := NewDirReader(filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		t.Error("NewDirReader should fail when the root directory does not exist")
 	}
 }
 

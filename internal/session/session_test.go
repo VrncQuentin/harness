@@ -112,7 +112,10 @@ func initRepo(t *testing.T) (string, *git.Repo) {
 func newTestManager(t *testing.T, fi *fakeInference) (*Manager, *memory.DirReader, string, *fakeMetrics) {
 	t.Helper()
 	dir, repo := initRepo(t)
-	reader := memory.NewDirReader(dir)
+	reader, err := memory.NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	metricsRec := &fakeMetrics{}
 	mgr, err := NewManager(ManagerDeps{
 		Repo:               repo,

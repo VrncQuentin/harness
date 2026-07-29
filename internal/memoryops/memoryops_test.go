@@ -21,9 +21,13 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
 	indexDir := EpisodeIndexDir(root)
+	dr, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	called := false
 	rb := &EpisodeRebuilder{
-		Mem:      memory.NewDirReader(root),
+		Mem:      dr,
 		Embedder: stubEmbedder{vec: []float32{1, 0}},
 		IndexDir: indexDir,
 		OnRebuilt: func(idx *index.Index) {
@@ -70,8 +74,12 @@ func TestEpisodeRebuilderRejectsCorruptIndex(t *testing.T) {
 		t.Fatalf("WriteFile corrupt manifest: %v", err)
 	}
 
+	dr, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rb := &EpisodeRebuilder{
-		Mem:      memory.NewDirReader(root),
+		Mem:      dr,
 		Embedder: stubEmbedder{vec: []float32{1, 0}},
 		IndexDir: indexDir,
 	}
@@ -136,8 +144,12 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 	}
 
 	emb := &countingEmbedder{vec: []float32{1, 0}}
+	dr, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rb := &EpisodeRebuilder{
-		Mem:      memory.NewDirReader(root),
+		Mem:      dr,
 		Embedder: emb,
 		Index:    idx,
 		IndexDir: indexDir,
@@ -186,8 +198,12 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 		t.Fatalf("expected exactly one embed at save, got %d", emb.calls)
 	}
 
+	dr, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rb := &EpisodeRebuilder{
-		Mem:      memory.NewDirReader(root),
+		Mem:      dr,
 		Embedder: emb,
 		Index:    idxService.Current(),
 		IndexDir: EpisodeIndexDir(root),
