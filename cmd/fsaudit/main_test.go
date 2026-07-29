@@ -510,6 +510,29 @@ type P = (os.Root)
 	}
 }
 
+func TestAudit_OsRootConversionBlocked(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "internal/pkg/conv.go", `package pkg
+
+import "os"
+
+func f(r *os.Root) { _ = os.Root(*r) }
+`)
+	report := Audit(dir, makeAllowlist(nil))
+	if report.Err != nil {
+		t.Fatal(report.Err)
+	}
+	found := false
+	for _, c := range report.Blocked {
+		if c.Fn == "os.Root" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("os.Root conversion call not blocked: %v", report.Blocked)
+	}
+}
+
 func TestAudit_OsRootTypeSpecBlocked(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "internal/pkg/rootalias.go", `package pkg

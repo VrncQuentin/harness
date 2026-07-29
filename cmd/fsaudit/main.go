@@ -235,11 +235,11 @@ func collectSourceCalls(root string) (calls []sourceCall, blocked []sourceCall, 
 				}
 
 			case *ast.SelectorExpr:
+				checkRootTypeRefSelector(info, node, fset, block)
 				if callSelPos[node.Pos()] {
 					return true
 				}
 				checkNonCallSelector(info, node, fset, block)
-				checkRootTypeRefSelector(info, node, fset, block)
 
 			case *ast.Ident:
 				if callSelPos[node.Pos()] {
