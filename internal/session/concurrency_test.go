@@ -44,6 +44,7 @@ func TestManager_ConcurrentSaveAndPromotionShareRepoSafely(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = reader.Close() })
 	mgr, err := NewManager(ManagerDeps{
 		Repo:               repo,
 		Writer:             reader,

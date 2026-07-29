@@ -25,6 +25,7 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = dr.Close() })
 	called := false
 	rb := &EpisodeRebuilder{
 		Mem:      dr,
@@ -78,6 +79,7 @@ func TestEpisodeRebuilderRejectsCorruptIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = dr.Close() })
 	rb := &EpisodeRebuilder{
 		Mem:      dr,
 		Embedder: stubEmbedder{vec: []float32{1, 0}},
@@ -148,6 +150,7 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = dr.Close() })
 	rb := &EpisodeRebuilder{
 		Mem:      dr,
 		Embedder: emb,
@@ -202,6 +205,7 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = dr.Close() })
 	rb := &EpisodeRebuilder{
 		Mem:      dr,
 		Embedder: emb,

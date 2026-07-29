@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -124,8 +123,12 @@ func (r *DirReader) MkdirAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return err
 	}
-	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(abs, 0o755); err != nil {
+	root, err := r.openRoot()
+	if err != nil {
+		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.MkdirAll(filepath.FromSlash(relPath), 0o755); err != nil {
 		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
 	}
 	return nil

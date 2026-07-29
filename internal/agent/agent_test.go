@@ -35,6 +35,7 @@ func newRepoWithAgentsRoot(t *testing.T, files map[string]string) (*memory.DirRe
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = dr.Close() })
 	return dr, root
 }
 

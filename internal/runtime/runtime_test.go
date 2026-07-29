@@ -243,6 +243,7 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = mem.Close() })
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
 	rt.started = true
 	rt.globalMem = mem
@@ -1057,6 +1058,7 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = mem.Close() })
 	active := "coder"
 	reg := agent.NewDiskRegistry(mem,
 		func() string { return active },
@@ -1131,6 +1133,7 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = dr.Close() })
 	rt.globalMem = dr
 	rt.activeMem = rt.globalMem
 
@@ -1452,6 +1455,7 @@ func newMemoryRepo(t *testing.T, files map[string]string) *memory.DirReader {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = dr.Close() })
 	return dr
 }
 

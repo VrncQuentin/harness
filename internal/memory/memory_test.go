@@ -29,6 +29,7 @@ func newTestRepo(t *testing.T, files map[string]string) *DirReader {
 	if err != nil {
 		t.Fatalf("NewDirReader: %v", err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	return r
 }
 
@@ -480,6 +481,7 @@ func TestDirReader_ReadDoesNotFollowLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	// Read through the link should be refused because the anchor's
 	// os.Root containment rejects absolute targets.
 	_, err = r.Read("link/evil.txt")
@@ -505,6 +507,7 @@ func TestDirReader_WalkDoesNotEnterSymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	// Walk should not descend into the symlink (OpenChildNoFollow refuses).
 	entries, err := r.Walk("")
 	if err != nil {
@@ -537,6 +540,7 @@ func TestDirReader_GlobDoesNotFollowLinkOutOfRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	_, err = r.Glob("link/*.txt")
 	if err == nil {
 		t.Error("Glob through link should fail")
@@ -563,6 +567,7 @@ func TestDirReader_ListDirsDoesNotFollowLinkOutOfRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	// ListDirs("") lists the repo root; the symlink may appear as an
 	// entry.  Listing the symlink itself should fail because its
 	// target is outside the anchored root.
@@ -591,6 +596,7 @@ func TestDirReader_WalkKeepsDescendingInsidePinnedTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	entries, err := r.Walk("")
 	if err != nil {
 		t.Fatal(err)
@@ -611,6 +617,7 @@ func TestDirReader_WriteFileRejectsRootTarget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	if err := r.WriteFile(".", []byte("x")); err == nil {
 		t.Error("WriteFile('.') should be rejected")
 	}
@@ -632,6 +639,7 @@ func TestDirReader_WriteFileReplacesHardLinkedLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	if err := r.WriteFile("link.txt", []byte("replaced")); err != nil {
 		t.Fatal(err)
 	}
@@ -668,6 +676,7 @@ func TestDirReader_WriteFileRefusesLinkOutOfRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	err = r.WriteFile("link/evil.txt", []byte("evil"))
 	if err == nil {
 		t.Error("WriteFile through link should fail")
@@ -689,6 +698,7 @@ func TestDirReader_MkdirAllRefusesLinkOutOfRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	err = r.MkdirAll("link/subdir")
 	if err == nil {
 		t.Error("MkdirAll through link should fail")
@@ -713,6 +723,7 @@ func TestDirReader_RemoveAllRefusesLinkOutOfRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	err = r.RemoveAll("link/victim")
 	if err == nil {
 		t.Error("RemoveAll through link should fail")
@@ -733,6 +744,7 @@ func TestDirReader_WriteFileCleansTrailingSlash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	// WriteFile("a/b/") with a trailing slash should publish at "a/b"
 	// not create "a/b/b".
 	if err := r.WriteFile("a/b/", []byte("ok")); err != nil {

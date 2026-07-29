@@ -48,6 +48,7 @@ func writeRepo(t *testing.T, files map[string]string) *memory.DirReader {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = dr.Close() })
 	return dr
 }
 
