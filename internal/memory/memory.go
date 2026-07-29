@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -157,8 +156,12 @@ func (r *DirReader) MkdirAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return err
 	}
-	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(abs, 0o755); err != nil {
+	root, err := r.openRoot()
+	if err != nil {
+		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.MkdirAll(filepath.FromSlash(relPath), 0o755); err != nil {
 		return fmt.Errorf("memory: mkdir %s: %w", relPath, err)
 	}
 	return nil
@@ -168,30 +171,16 @@ func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
-	parent := filepath.Dir(abs)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return fmt.Errorf("memory: write %s: %w", relPath, err)
-	}
-	tmp, err := os.CreateTemp(parent, ".harness-*")
+	root, err := r.openRoot()
 	if err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		cleanup()
+	defer func() { _ = root.Close() }()
+	// Ensure parent directory exists before WriteStreamAtomic.
+	if err := root.MkdirAll(filepath.Dir(filepath.FromSlash(relPath)), 0o755); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("memory: write %s: %w", relPath, err)
-	}
-	if err := os.Rename(tmpPath, abs); err != nil {
-		_ = os.Remove(tmpPath)
+	if err := root.WriteStreamAtomic(filepath.FromSlash(relPath), strings.NewReader(string(data)), 0o644); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
 	return nil
@@ -201,11 +190,15 @@ func (r *DirReader) RemoveAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
-	abs := filepath.Join(r.root, filepath.FromSlash(relPath))
-	if abs == r.root {
+	if relPath == "" || relPath == "." {
 		return fmt.Errorf("memory: remove %s: refusing to remove repo root", relPath)
 	}
-	if err := os.RemoveAll(abs); err != nil {
+	root, err := r.openRoot()
+	if err != nil {
+		return fmt.Errorf("memory: remove %s: %w", relPath, err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.RemoveAll(filepath.FromSlash(relPath)); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
 	return nil
