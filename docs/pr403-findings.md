@@ -22,7 +22,7 @@ until the sequence below is merged and the final audit (PR 12) passes.
 
 | # | Finding | Test |
 |---|---------|------|
-| 2.8a | `SameAnchor` compares pinned handles, not pathname re-resolution | `TestAnchor_SameAnchor_*` (4 tests) |
+| 2.8a | `SameAnchor` compares pinned handles, not pathname re-resolution | `TestAnchor_SameAnchor_*` (5 tests) |
 
 ### PR 2c — Opened-object identity integration
 
