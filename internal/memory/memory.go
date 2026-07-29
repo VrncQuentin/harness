@@ -194,7 +194,8 @@ func (r *DirReader) RemoveAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
-	if relPath == "" || relPath == "." {
+	clean := filepath.Clean(filepath.FromSlash(relPath))
+	if clean == "." {
 		return fmt.Errorf("memory: remove %s: refusing to remove repo root", relPath)
 	}
 	root, err := r.openRoot()
@@ -202,7 +203,7 @@ func (r *DirReader) RemoveAll(relPath string) error {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
 	defer func() { _ = root.Close() }()
-	if err := root.RemoveAll(filepath.FromSlash(relPath)); err != nil {
+	if err := root.RemoveAll(clean); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
 	}
 	return nil

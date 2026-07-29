@@ -663,9 +663,7 @@ func TestDirReader_WriteFileRefusesLinkOutOfRoot(t *testing.T) {
 	if err := os.MkdirAll(outside, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
-		t.Skip("symlink unavailable: " + err.Error())
-	}
+	mustLinkDir(t, outside, filepath.Join(repoRoot, "link"))
 	r, err := NewDirReader(repoRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -686,9 +684,7 @@ func TestDirReader_MkdirAllRefusesLinkOutOfRoot(t *testing.T) {
 	if err := os.MkdirAll(outside, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
-		t.Skip("symlink unavailable: " + err.Error())
-	}
+	mustLinkDir(t, outside, filepath.Join(repoRoot, "link"))
 	r, err := NewDirReader(repoRoot)
 	if err != nil {
 		t.Fatal(err)
@@ -706,18 +702,50 @@ func TestDirReader_RemoveAllRefusesLinkOutOfRoot(t *testing.T) {
 	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(outside, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(outside, "victim"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
-		t.Skip("symlink unavailable: " + err.Error())
+	if err := os.WriteFile(filepath.Join(outside, "victim", "f.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	mustLinkDir(t, outside, filepath.Join(repoRoot, "link"))
 	r, err := NewDirReader(repoRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = r.RemoveAll("link")
+	err = r.RemoveAll("link/victim")
 	if err == nil {
 		t.Error("RemoveAll through link should fail")
+	}
+	// The outside victim must survive.
+	content, err := os.ReadFile(filepath.Join(outside, "victim", "f.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "keep" {
+		t.Error("outside victim should survive failed RemoveAll")
+	}
+}
+
+func TestDirReader_WriteFileCleansTrailingSlash(t *testing.T) {
+	dir := t.TempDir()
+	r, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// WriteFile("a/b/") with a trailing slash should publish at "a/b"
+	// not create "a/b/b".
+	if err := r.WriteFile("a/b/", []byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "a", "b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "ok" {
+		t.Errorf("WriteFile('a/b/') should publish at a/b, got content=%q", string(got))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a", "b", "b")); !os.IsNotExist(err) {
+		t.Error("WriteFile('a/b/') should not create a/b/b")
 	}
 }
