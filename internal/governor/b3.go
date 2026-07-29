@@ -37,14 +37,14 @@ func (g *Governor) applyB3(_ context.Context, toolID string, res tools.Result) t
 	if a == nil {
 		return res
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 
 	id := tooloutID(toolID, spill)
 	r, err := a.Open()
 	if err != nil {
 		return res
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	if err := r.WriteStreamAtomic(id, bytes.NewReader([]byte(spill)), 0o644); err != nil {
 		return res
 	}

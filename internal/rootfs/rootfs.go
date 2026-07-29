@@ -104,43 +104,69 @@ func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel
 func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 
 // WriteStreamAtomic writes everything src yields to rel, through a temporary
-// file in the same directory that is then renamed over rel. Every step resolves
-// through the pinned root.
+// file in the same directory that is then renamed over rel.
+//
+// The destination parent directory is pinned once with OpenChild, so every
+// step — temp creation, fsync, identity verification, rename — acts on the
+// same directory.  An intermediate-directory swap cannot redirect later steps.
 //
 // Publishing by rename replaces the directory *entry* and leaves the inode that
-// held the name alone. That is what makes it safe to write into a tree whose
-// entries may be hard links to files elsewhere. Opening the destination and
-// truncating it writes through the link instead: if the entry is a link to some
-// file in the source, that file is emptied — and the obvious guard, comparing
-// the pair being copied with os.SameFile, does not see it, because the
-// destination entry can be linked to a *different* source file than the one
-// being read. Only replacing the entry is safe against a link to anything.
+// held the name alone.  That is what makes it safe to write into a tree whose
+// entries may be hard links to files elsewhere.
 //
 // The data is fsynced before the rename so a crash does not leave the
-// destination half-written.  After the fsync the temporary entry's identity
-// is verified against our open handle — so an external substitute at the
-// temporary name cannot land an attacker's file at the destination.
+// destination half-written.  The temporary file's identity is captured from the
+// open handle before f.Close() and compared with the named entry through the
+// pinned parent directory via os.SameFile — a substituted entry at the
+// temporary name is therefore refused.
 //
 // An external process can still substitute the temporary entry between that
 // identity check and the rename.  Closing that window requires a
 // compare-and-rename primitive on a handle, which no portable Go standard
 // library primitive provides.
+//
+// On failure, the temporary file is NOT removed: removing a name whose
+// ownership may have changed since it was created is unsafe, and portable
+// Go has no unlink-by-handle primitive.  A failed write may leave a partial
+// temporary entry.
 func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) error {
-	tmpRel, f, err := r.createTemp(filepath.Dir(rel), perm)
+	return r.writeStreamAtomic(rel, src, perm, nil)
+}
+
+// writeStreamAtomic is WriteStreamAtomic with an optional hook that runs
+// after the temp file opens.  Tests use it to stage substitutions.
+func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, afterOpen func(*os.File, string)) error {
+	parentDir := filepath.Dir(rel)
+	parent, err := r.OpenChild(parentDir)
 	if err != nil {
 		return err
 	}
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = r.root.Remove(tmpRel)
-		}
-	}()
+	defer parent.Close()
+
+	base := filepath.Base(rel)
+	tmpRel, f, err := parent.createTemp(".", perm)
+	if err != nil {
+		return err
+	}
+
+	if afterOpen != nil {
+		afterOpen(f, tmpRel)
+	}
 
 	if _, err := io.Copy(f, src); err != nil {
 		_ = f.Close()
+		// Do not remove the temp — ownership may have changed.
 		return err
 	}
+
+	// Capture the temp file's identity from the open handle before
+	// closing, so we can compare against the named entry below.
+	tmpHandleInfo, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
 		return err
@@ -149,26 +175,18 @@ func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) er
 		return err
 	}
 
-	// Verify the temporary entry still belongs to us.  Stat the name
-	// and compare its identity with our closed handle's final state.
-	tmpInfo, err := r.root.Stat(tmpRel)
+	// Verify the named entry still refers to the file we authored.
+	tmpNameInfo, err := parent.root.Stat(tmpRel)
 	if err != nil {
 		return err
 	}
-	// After close, we cannot stat the file descriptor — but we can
-	// stat ourselves via the handle we held open.  Since we wrote,
-	// synced, and closed, the identity we verify is the file we
-	// authored.  A substitute at tmpRel after our close would produce
-	// a different filesystem object and fail the rename's effect
-	// (the rename replaces the substitute, not us) but would not be
-	// detected here without a pre-close stat.  The fsync-then-rename
-	// still protects against a crash that leaves a partial temp file.
-	_ = tmpInfo
+	if !os.SameFile(tmpHandleInfo, tmpNameInfo) {
+		return fmt.Errorf("rootfs: temporary entry %s was substituted", tmpRel)
+	}
 
-	if err := r.root.Rename(tmpRel, rel); err != nil {
+	if err := parent.root.Rename(tmpRel, base); err != nil {
 		return err
 	}
-	cleanup = false
 	return nil
 }
 
@@ -193,34 +211,6 @@ func (r *Root) ReadDir(rel string) ([]os.DirEntry, error) {
 		return strings.Compare(a.Name(), b.Name())
 	})
 	return entries, nil
-}
-
-// Remove removes the named file or empty directory.
-func (r *Root) Remove(rel string) error { return r.root.Remove(rel) }
-
-// RemoveAll removes rel and any children it contains.
-func (r *Root) RemoveAll(rel string) error { return r.root.RemoveAll(rel) }
-
-// Stat returns the FileInfo for rel.
-func (r *Root) Stat(rel string) (fs.FileInfo, error) { return r.root.Stat(rel) }
-
-// AppendSync opens rel for append-only writing, writes data, syncs, and
-// closes.  If rel does not exist it is created.  The caller gets no
-// long-lived handle — the write is self-contained.
-func (r *Root) AppendSync(rel string, data []byte) error {
-	f, err := r.root.OpenFile(rel, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 // SameDir reports whether r and other are handles on one directory.
