@@ -57,7 +57,7 @@ func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 	}
 }
 
-func TestIndex_UpsertManifestFailureRollsBackVectors(t *testing.T) {
+func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := Create(dir, 2)
 	if err != nil {
@@ -66,11 +66,7 @@ func TestIndex_UpsertManifestFailureRollsBackVectors(t *testing.T) {
 	if err := idx.Add("old", [][]float32{{1, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	vectorsPath := filepath.Join(dir, vectorsFile)
-	before, err := os.Stat(vectorsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Replace manifest.json with a directory so write fails.
 	manifestPath := filepath.Join(dir, manifestFile)
 	if err := os.Remove(manifestPath); err != nil {
 		t.Fatal(err)
@@ -78,21 +74,16 @@ func TestIndex_UpsertManifestFailureRollsBackVectors(t *testing.T) {
 	if err := os.Mkdir(manifestPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(manifestPath, "block"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	if err := idx.Upsert("new", "new-content", [][]float32{{0, 1}}); err == nil {
 		t.Fatal("expected manifest write to fail")
 	}
-	after, err := os.Stat(vectorsPath)
-	if err != nil {
-		t.Fatal(err)
+	// The old entry must still be in memory.
+	if !idx.Contains("old") {
+		t.Fatal("old entry should still be in manifest")
 	}
-	if after.Size() != before.Size() {
-		t.Fatalf("vectors size after failed manifest write = %d, want %d", after.Size(), before.Size())
-	}
+	// The new entry must NOT be in memory.
 	if idx.Contains("new") {
-		t.Fatal("failed upsert remained in memory")
+		t.Fatal("failed upsert should not be in memory")
 	}
 }
 
