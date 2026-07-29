@@ -94,6 +94,9 @@ func (r *Root) ReadFile(rel string) ([]byte, error) { return r.root.ReadFile(rel
 // Lstat describes rel without following it when it is itself a link.
 func (r *Root) Lstat(rel string) (fs.FileInfo, error) { return r.root.Lstat(rel) }
 
+// Stat returns the FileInfo for rel.
+func (r *Root) Stat(rel string) (fs.FileInfo, error) { return r.root.Stat(rel) }
+
 // Readlink returns the target rel points at, without resolving it. A link
 // whose target lies outside the root is still readable — reading a link is not
 // following one, and callers that represent a link by its target (git stores
@@ -215,9 +218,6 @@ func (r *Root) ReadDir(rel string) ([]os.DirEntry, error) {
 	return entries, nil
 }
 
-// RemoveAll removes rel and any children it contains.
-func (r *Root) RemoveAll(rel string) error { return r.root.RemoveAll(rel) }
-
 // SameDir reports whether r and other are handles on one directory.
 //
 // It compares filesystem objects, not pathnames, and both are already open, so
@@ -258,27 +258,33 @@ func (r *Root) OpenChild(rel string) (*Root, error) {
 	return &Root{root: child}, nil
 }
 
-// OpenChildNoFollow opens rel inside r, verifies the entry is not a link
-// by Lstat'ing it through the parent, and confirms the opened child refers
-// to the same filesystem object as that entry via os.SameFile.  Returns
-// the pinned child on success.  The caller closes it.
+// OpenChildNoFollow opens the single-component name inside r, verifies
+// the entry is not a link by Lstat'ing it through the parent, and
+// confirms the opened child refers to the same filesystem object as that
+// entry via os.SameFile.  Returns the pinned child.  The caller closes it.
+//
+// name must be a single path component (no separators).  For multi-component
+// paths, open each component separately so intermediate symlinks are refused.
 //
 // This closes the check/use window between Lstat and OpenChild: the
 // opened handle is compared against the parent entry, so a swap between
 // inspection and entry is detected.
-func (r *Root) OpenChildNoFollow(rel string) (*Root, error) {
-	child, err := r.root.OpenRoot(rel)
+func (r *Root) OpenChildNoFollow(name string) (*Root, error) {
+	if strings.Contains(name, string(filepath.Separator)) || strings.Contains(name, "/") {
+		return nil, fmt.Errorf("rootfs: OpenChildNoFollow requires a single component, got %q", name)
+	}
+	child, err := r.root.OpenRoot(name)
 	if err != nil {
 		return nil, err
 	}
-	entryFi, err := r.root.Lstat(rel)
+	entryFi, err := r.root.Lstat(name)
 	if err != nil {
 		_ = child.Close()
 		return nil, err
 	}
 	if entryFi.Mode()&os.ModeSymlink != 0 || entryFi.Mode()&os.ModeIrregular != 0 {
 		_ = child.Close()
-		return nil, fmt.Errorf("rootfs: refusing to enter link %s", rel)
+		return nil, fmt.Errorf("rootfs: refusing to enter link %s", name)
 	}
 	childFi, err := child.Stat(".")
 	if err != nil {
@@ -287,7 +293,7 @@ func (r *Root) OpenChildNoFollow(rel string) (*Root, error) {
 	}
 	if !os.SameFile(entryFi, childFi) {
 		_ = child.Close()
-		return nil, fmt.Errorf("rootfs: %s changed between open and verify", rel)
+		return nil, fmt.Errorf("rootfs: %s changed between open and verify", name)
 	}
 	return &Root{root: child}, nil
 }

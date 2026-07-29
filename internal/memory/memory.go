@@ -232,7 +232,8 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 // Walk implements Walker using rooted traversal.  Subdirectories are
 // entered through OpenChildNoFollow, which opens, Lstats through the
 // parent, rejects links, and verifies the opened handle matches the
-// parent entry with os.SameFile — closing the check/use window.
+// parent entry with os.SameFile.  Metadata is obtained from the
+// verified child handle, not from the pre-open ReadDir result.
 // Children are closed after their subtrees.  Cycles are detected by
 // ancestor identity.
 func (r *DirReader) Walk(relPath string) ([]Entry, error) {
@@ -274,12 +275,14 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 			if prefix == "" {
 				childRel = name
 			}
+			// Record file metadata from ReadDir; directories get
+			// metadata from the verified child below.
 			info, err := e.Info()
 			if err != nil {
 				return fmt.Errorf("memory: walk %s: %w", childRel, err)
 			}
-			out = append(out, Entry{Path: childRel, Dir: e.IsDir(), Size: info.Size()})
 			if !e.IsDir() {
+				out = append(out, Entry{Path: childRel, Dir: false, Size: info.Size()})
 				continue
 			}
 			child, err := dir.OpenChildNoFollow(name)
@@ -289,6 +292,13 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 				}
 				return fmt.Errorf("memory: walk %s: %w", childRel, err)
 			}
+			// Obtain directory metadata from the verified child handle.
+			childInfo, err := child.Stat(".")
+			if err != nil {
+				_ = child.Close()
+				return fmt.Errorf("memory: walk %s: %w", childRel, err)
+			}
+			out = append(out, Entry{Path: childRel, Dir: true, Size: childInfo.Size()})
 			isCycle := false
 			for _, anc := range ancestors {
 				same, err := anc.SameDir(child)
@@ -314,25 +324,39 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 		return nil
 	}
 
+	// Open the starting path one component at a time, verifying each
+	// through OpenChildNoFollow so intermediate symlinks are refused.
 	startDir := root
 	startPrefix := ""
 	startAncestors := []*rootfs.Root{root}
 	if relPath != "" {
-		child, err := root.OpenChildNoFollow(filepath.FromSlash(relPath))
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil, nil
+		components := strings.Split(filepath.FromSlash(relPath), string(filepath.Separator))
+		for _, comp := range components {
+			child, err := startDir.OpenChildNoFollow(comp)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
 			}
-			return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
+			if startDir != root {
+				_ = startDir.Close()
+			}
+			startDir = child
+			if startPrefix == "" {
+				startPrefix = comp
+			} else {
+				startPrefix = path.Join(startPrefix, comp)
+			}
+			startAncestors = append(startAncestors, child)
 		}
-		defer func() { _ = child.Close() }()
-		startDir = child
-		startPrefix = relPath
-		startAncestors = append(startAncestors, child)
 	}
 
 	if err := walkDir(startDir, startPrefix, startAncestors); err != nil {
 		return nil, err
+	}
+	if startDir != root {
+		_ = startDir.Close()
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
