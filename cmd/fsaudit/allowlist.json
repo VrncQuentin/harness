@@ -245,13 +245,6 @@
       "notes": "toolout spill directory: bootstrap creation before anchor pin"
     },
     {
-      "file": "internal/tools/gitpush.go",
-      "line": 76,
-      "fn": "os.ReadFile",
-      "pr": "PR 3",
-      "notes": "readHEADBranch: read .git/HEAD; deferred migration"
-    },
-    {
       "file": "cmd/eval-retrieval/main.go",
       "line": 97,
       "fn": "filepath.Glob",

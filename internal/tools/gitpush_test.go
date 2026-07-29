@@ -34,14 +34,7 @@ func TestGitPushTool_DetachedHEAD(t *testing.T) {
 }
 
 func TestGitPushTool_Proposal(t *testing.T) {
-	dir := t.TempDir()
-	gitDir := filepath.Join(dir, ".git")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/feat/my-feature\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	dir := initRepoWithBranch(t, "feat/my-feature")
 	tool := &gitPushTool{}
 	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), c, map[string]any{"root": dir})
@@ -63,14 +56,7 @@ func TestGitPushTool_Proposal(t *testing.T) {
 }
 
 func TestGitPushTool_ExplicitBranchAndRemote(t *testing.T) {
-	dir := t.TempDir()
-	gitDir := filepath.Join(dir, ".git")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	dir := initRepoWithBranch(t, "main")
 	tool := &gitPushTool{}
 	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), c, map[string]any{
@@ -90,14 +76,7 @@ func TestGitPushTool_ExplicitBranchAndRemote(t *testing.T) {
 }
 
 func TestGitPushTool_ForceFlag(t *testing.T) {
-	dir := t.TempDir()
-	gitDir := filepath.Join(dir, ".git")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	dir := initRepoWithBranch(t, "main")
 	tool := &gitPushTool{}
 	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), c, map[string]any{"root": dir, "force": true})
@@ -110,18 +89,56 @@ func TestGitPushTool_ForceFlag(t *testing.T) {
 }
 
 func TestGitPushTool_C2MemoryRepoRejected(t *testing.T) {
-	dir := t.TempDir()
-	gitDir := filepath.Join(dir, ".git")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	dir := initRepoWithBranch(t, "main")
 	tool := &gitPushTool{}
 	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: memoryScopeOver(dir)}
 	res := tool.Execute(context.Background(), c, map[string]any{"root": dir})
 	if res.Error == "" || !strings.Contains(res.Error, "C2") {
 		t.Errorf("expected C2 scope error, got error=%q", res.Error)
 	}
+}
+
+func TestGitPushTool_LinkedWorktreeBranch(t *testing.T) {
+	// Simulate real linked worktree layout.
+	dir := t.TempDir()
+	common := filepath.Join(dir, "common")
+	admin := filepath.Join(common, "wt")
+	if err := os.MkdirAll(admin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "HEAD"), []byte("ref: refs/heads/feat/wt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(dir, "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+filepath.ToSlash(admin)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := &gitPushTool{}
+	c := CallInfo{SandboxRoots: []string{worktree}, MemoryRepoCheck: noMemoryRepos()}
+	res := tool.Execute(context.Background(), c, map[string]any{"root": worktree})
+	if res.Error != "" {
+		t.Fatalf("unexpected error: %s", res.Error)
+	}
+	if !strings.Contains(res.Content, "feat/wt") {
+		t.Errorf("linked-worktree push should mention branch, got: %s", res.Content)
+	}
+}
+
+func initRepoWithBranch(t *testing.T, branch string) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/"+branch+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

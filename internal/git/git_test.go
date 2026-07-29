@@ -136,3 +136,78 @@ func TestErrors(t *testing.T) {
 		t.Errorf("error not wrapped: %v", err)
 	}
 }
+
+func TestCurrentBranch_LinkedWorktreeLayout(t *testing.T) {
+	// Simulate a real linked worktree layout:
+	//   worktree/.git       → points to admin dir (common/wt)
+	//   common/wt/HEAD      → "ref: refs/heads/feat/linked"
+	//   common/wt/commondir → ".." (path relative to admin dir)
+	dir := t.TempDir()
+	common := filepath.Join(dir, "common")
+	admin := filepath.Join(common, "wt")
+	if err := os.MkdirAll(admin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "HEAD"), []byte("ref: refs/heads/feat/linked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("..\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(dir, "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+filepath.ToSlash(admin)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != "feat/linked" {
+		t.Errorf("expected feat/linked, got %s", branch)
+	}
+}
+
+func TestCurrentBranch_DetachedHead(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("abcdef1234567890abcdef1234567890abcdef12\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = repo.CurrentBranch()
+	if err == nil || !strings.Contains(err.Error(), "detached") {
+		t.Errorf("expected detached HEAD error, got %v", err)
+	}
+}
+
+func TestCurrentBranch_RejectsNonBranchSymbolic(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/tags/v1.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = repo.CurrentBranch()
+	if err == nil || !strings.Contains(err.Error(), "non-branch") {
+		t.Errorf("expected non-branch ref error, got %v", err)
+	}
+}

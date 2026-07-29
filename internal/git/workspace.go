@@ -41,6 +41,36 @@ func (r *Repo) HeadSHA() (string, error) {
 	return head.Hash().String(), nil
 }
 
+// CurrentBranch returns the short name of the branch HEAD points to.
+// It reads through the opened go-git handle, so it works on linked
+// worktrees where .git is a file.  Reading unresolved (resolved=false)
+// lets it return the branch name even when the branch ref does not yet
+// exist (unborn branch).  Non-branch symbolic targets (tags, remote
+// refs) are rejected.  Detached HEAD returns a hash error.
+func (r *Repo) CurrentBranch() (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	head, err := r.repo.Reference(plumbing.HEAD, false)
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return "", fmt.Errorf("git: HEAD not found in %s", r.path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("git: head %s: %w", r.path, err)
+	}
+	if head.Type() == plumbing.SymbolicReference {
+		target := head.Target()
+		if target.IsBranch() {
+			return target.Short(), nil
+		}
+		return "", fmt.Errorf("git: HEAD points to non-branch ref %s", target)
+	}
+	short := head.Hash().String()
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return short, fmt.Errorf("git: HEAD is detached at %s — specify branch explicitly", short)
+}
+
 // WorkspaceStageAndCommit stages files and creates a commit from them as a
 // single operation. Paths are relative to the repository root (forward
 // slashes); when files is empty all modified and untracked files are staged
