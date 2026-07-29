@@ -116,7 +116,9 @@ func (idx *Index) Add(sha string, vectors [][]float32) error {
 	return idx.Upsert(sha, sha, vectors)
 }
 
-// Upsert stores vectors for source.
+// Upsert stores vectors for source.  Vectors are assembled via copy-on-write
+// and published through a pinned root.  The old manifest is kept valid until
+// both publications succeed.
 func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error {
 	return idx.upsert(source, contentHash, vectors, nil)
 }
