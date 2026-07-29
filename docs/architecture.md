@@ -329,12 +329,9 @@ window rather than claiming it closed is deliberate.
 
 #### Audit enforcement
 
-Production calls to `os.Open`, `os.OpenFile`, `os.OpenRoot`, `os.ReadFile`,
-`os.WriteFile`, `os.ReadDir`, `os.Create`, `os.CreateTemp`, `os.Rename`,
-`os.Remove`, `os.RemoveAll`, `os.Mkdir`, `os.MkdirAll`, `os.Lstat`, `os.Stat`,
-`os.SameFile`, `os.Truncate`, `os.Link`, `os.Symlink`, `os.Readlink`,
-`os.Chmod`, `os.Chown`, `os.Chtimes`, `filepath.Walk`, `filepath.WalkDir`,
-`filepath.Glob`, and `filepath.EvalSymlinks` are inventoried in
+Production calls to the symbols in `cmd/fsaudit`'s compiled `watched` policy
+(approximately 35 symbols across `os` and `path/filepath`, including
+`MkdirTemp`, `Lchown`, `Chdir`, `CopyFS`, and `DirFS`) are inventoried in
 `cmd/fsaudit/allowlist.json`. Each call is classified as:
 - **migration** — will be routed through `rootfs` in a future PR; or
 - **permanent** — an intentional boundary exception with a justification.
@@ -344,6 +341,12 @@ call appears without a matching entry. The audit scans all production `.go`
 files including `internal/rootfs` and `internal/pathid`. Only the audit tool
 itself (`cmd/fsaudit/`) is exempt. The watched-function policy is compiled into
 the scanner — it is not configurable from the allowlist.
+
+The scanner also blocks capability escapes that cannot be inventoried:
+dot imports of watched packages, extracting watched functions as values, and
+`os.Root` type references outside `internal/rootfs`. Within rootfs, every
+`os.Root` reference is blocked except the single private `Root.root` backing
+field.
 
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).

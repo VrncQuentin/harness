@@ -13,9 +13,9 @@ import (
 	"strings"
 )
 
-// watched maps a canonical import path to the set of symbols classified by
-// the scanner. The policy is compiled in and is not configurable from the
-// allowlist.
+// watched maps a canonical import path to the symbols whose direct calls
+// must be classified in the allowlist.  The policy is compiled in — it is
+// not configurable from the allowlist.
 var watched = map[string][]string{
 	"os": {
 		"Open", "OpenFile", "OpenRoot",
@@ -154,8 +154,9 @@ func Audit(root string, al allowlist) Report {
 
 // ---------- scanning ----------
 
-type fileInfo struct {
+type scanCtx struct {
 	rel        string
+	fset       *token.FileSet
 	imports    map[string]string
 	dotImports map[string]bool
 	inRootFS   bool
@@ -194,66 +195,59 @@ func collectSourceCalls(root string) (calls []sourceCall, blocked []sourceCall, 
 			return fmt.Errorf("parse %s: %w", path, parseErr)
 		}
 
-		inRootFS := strings.HasPrefix(rel, "internal/rootfs/")
 		imports, dotImports := resolveImports(f)
-		info := fileInfo{rel: rel, imports: imports, dotImports: dotImports, inRootFS: inRootFS}
+		ctx := scanCtx{
+			rel:        rel,
+			fset:       fset,
+			imports:    imports,
+			dotImports: dotImports,
+			inRootFS:   strings.HasPrefix(rel, "internal/rootfs/"),
+		}
 
 		add := func(c sourceCall) { calls = append(calls, c) }
 		block := func(c sourceCall) { blocked = append(blocked, c) }
 
-		// Block dot imports of watched packages (the import itself,
-		// not just the calls they enable).
+		// Block dot imports of watched packages.
 		for _, imp := range f.Imports {
 			if imp.Name != nil && imp.Name.Name == "." {
-				path := strings.Trim(imp.Path.Value, `"`)
-				if _, ok := watched[path]; ok {
+				p := strings.Trim(imp.Path.Value, `"`)
+				if _, ok := watched[p]; ok {
 					pos := fset.Position(imp.Pos())
-					block(sourceCall{File: rel, Line: pos.Line, Col: pos.Column, Fn: "import ." + `"` + path + `"`})
+					block(sourceCall{File: rel, Line: pos.Line, Col: pos.Column, Fn: "import ." + `"` + p + `"`})
 				}
 			}
 		}
 
-		// Pre-pass: find call-expression positions so selectors and
-		// identifiers used as direct calls aren't re-flagged.
-		callSelPos := map[token.Pos]bool{}
-		ast.Inspect(f, func(n ast.Node) bool {
-			if ce, ok := n.(*ast.CallExpr); ok {
-				switch ce.Fun.(type) {
-				case *ast.SelectorExpr, *ast.Ident:
-					callSelPos[ce.Fun.Pos()] = true
-				}
-			}
-			return true
-		})
-
+		// Single walk: classify calls first, record their selector
+		// positions to suppress escape-detection on subsequent visits.
+		inCallPos := map[token.Pos]bool{}
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch node := n.(type) {
 			case *ast.CallExpr:
-				c, ok := resolveCall(info, node, fset)
+				c, ok := resolveCall(&ctx, node)
 				if ok {
 					add(c)
+					inCallPos[node.Fun.Pos()] = true
 				}
 
 			case *ast.SelectorExpr:
-				checkRootTypeRefSelector(info, node, fset, block)
-				if callSelPos[node.Pos()] {
+				checkRootTypeRefSelector(&ctx, node, block)
+				if inCallPos[node.Pos()] {
 					return true
 				}
-				checkNonCallSelector(info, node, fset, block)
+				checkNonCallSelector(&ctx, node, block)
 
 			case *ast.Ident:
-				if callSelPos[node.Pos()] {
+				if inCallPos[node.Pos()] {
 					return true
 				}
-				checkDotImportNonCall(info, node, fset, block)
+				checkDotImportNonCall(&ctx, node, block)
 			}
 			return true
 		})
 
-		// If this file is inside internal/rootfs, check its exported
-		// API for os.Root exposure.  See checkRootfsExportedAPI.
-		if inRootFS {
-			checkRootfsExportedAPI(f, fset, rel, block)
+		if ctx.inRootFS {
+			checkRootfsRootRefs(f, imports, fset, rel, block)
 		}
 		return nil
 	})
@@ -296,25 +290,41 @@ func resolveImports(f *ast.File) (imports map[string]string, dotImports map[stri
 	return
 }
 
-func resolveCall(fi fileInfo, call *ast.CallExpr, fset *token.FileSet) (sourceCall, bool) {
+// resolveSelector resolves sel (which must be an os.Func or filepath.Func
+// selector) to a canonical name.  Returns false if the selector is not a
+// watched call.
+func resolveSelector(imports map[string]string, sel *ast.SelectorExpr) (canon string, ok bool) {
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	pkgPath, ok := imports[pkgIdent.Name]
+	if !ok {
+		return "", false
+	}
+	syms, wok := watched[pkgPath]
+	if !wok || !slices.Contains(syms, sel.Sel.Name) {
+		return "", false
+	}
+	return filepath.Base(pkgPath) + "." + sel.Sel.Name, true
+}
+
+func makeSourceCall(ctx *scanCtx, pos token.Pos, fn string) sourceCall {
+	p := ctx.fset.Position(pos)
+	return sourceCall{File: ctx.rel, Line: p.Line, Col: p.Column, Fn: fn}
+}
+
+func resolveCall(ctx *scanCtx, call *ast.CallExpr) (sourceCall, bool) {
 	if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-		if pkgIdent, ok := sel.X.(*ast.Ident); ok {
-			if pkgPath, ok := fi.imports[pkgIdent.Name]; ok {
-				if syms, wok := watched[pkgPath]; wok {
-					if slices.Contains(syms, sel.Sel.Name) {
-						pos := fset.Position(call.Pos())
-						return sourceCall{File: fi.rel, Line: pos.Line, Col: pos.Column, Fn: filepath.Base(pkgPath) + "." + sel.Sel.Name}, true
-					}
-				}
-			}
+		if canon, ok := resolveSelector(ctx.imports, sel); ok {
+			return makeSourceCall(ctx, call.Pos(), canon), true
 		}
 	}
 	if ident, ok := call.Fun.(*ast.Ident); ok {
-		for pkgPath := range fi.dotImports {
+		for pkgPath := range ctx.dotImports {
 			if syms, wok := watched[pkgPath]; wok {
 				if slices.Contains(syms, ident.Name) {
-					pos := fset.Position(call.Pos())
-					return sourceCall{File: fi.rel, Line: pos.Line, Col: pos.Column, Fn: filepath.Base(pkgPath) + "." + ident.Name}, true
+					return makeSourceCall(ctx, call.Pos(), filepath.Base(pkgPath)+"."+ident.Name), true
 				}
 			}
 		}
@@ -322,64 +332,39 @@ func resolveCall(fi fileInfo, call *ast.CallExpr, fset *token.FileSet) (sourceCa
 	return sourceCall{}, false
 }
 
-func checkNonCallSelector(fi fileInfo, sel *ast.SelectorExpr, fset *token.FileSet, block func(sourceCall)) {
-	pkgIdent, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return
+func checkNonCallSelector(ctx *scanCtx, sel *ast.SelectorExpr, block func(sourceCall)) {
+	if canon, ok := resolveSelector(ctx.imports, sel); ok {
+		block(makeSourceCall(ctx, sel.Pos(), canon))
 	}
-	pkgPath, ok := fi.imports[pkgIdent.Name]
-	if !ok {
-		return
-	}
-	syms, wok := watched[pkgPath]
-	if !wok || !slices.Contains(syms, sel.Sel.Name) {
-		return
-	}
-	pos := fset.Position(sel.Pos())
-	block(sourceCall{File: fi.rel, Line: pos.Line, Col: pos.Column, Fn: filepath.Base(pkgPath) + "." + sel.Sel.Name})
 }
 
-func checkDotImportNonCall(fi fileInfo, ident *ast.Ident, fset *token.FileSet, block func(sourceCall)) {
-	for pkgPath := range fi.dotImports {
+func checkDotImportNonCall(ctx *scanCtx, ident *ast.Ident, block func(sourceCall)) {
+	for pkgPath := range ctx.dotImports {
 		syms, wok := watched[pkgPath]
 		if !wok || !slices.Contains(syms, ident.Name) {
 			continue
 		}
-		pos := fset.Position(ident.Pos())
-		block(sourceCall{File: fi.rel, Line: pos.Line, Col: pos.Column, Fn: filepath.Base(pkgPath) + "." + ident.Name})
+		block(makeSourceCall(ctx, ident.Pos(), filepath.Base(pkgPath)+"."+ident.Name))
 	}
 }
 
-func checkRootTypeRefSelector(fi fileInfo, sel *ast.SelectorExpr, fset *token.FileSet, block func(sourceCall)) {
-	if fi.inRootFS {
+func checkRootTypeRefSelector(ctx *scanCtx, sel *ast.SelectorExpr, block func(sourceCall)) {
+	if ctx.inRootFS {
 		return
 	}
 	pkgIdent, ok := sel.X.(*ast.Ident)
 	if !ok {
 		return
 	}
-	pkgPath, ok := fi.imports[pkgIdent.Name]
-	if !ok || pkgPath != "os" || sel.Sel.Name != "Root" {
+	if ctx.imports[pkgIdent.Name] != "os" || sel.Sel.Name != "Root" {
 		return
 	}
-	pos := fset.Position(sel.Pos())
-	block(sourceCall{File: fi.rel, Line: pos.Line, Col: pos.Column, Fn: "os.Root"})
+	block(makeSourceCall(ctx, sel.Pos(), "os.Root"))
 }
 
-// checkRootfsExportedAPI blocks os.Root references in rootfs files, allowing
-// only the intended private Root.root *os.Root backing field.
-func checkRootfsExportedAPI(f *ast.File, fset *token.FileSet, rel string, block func(sourceCall)) {
-	imports := map[string]string{}
-	for _, imp := range f.Imports {
-		path := strings.Trim(imp.Path.Value, `"`)
-		name := filepath.Base(path)
-		if imp.Name != nil && imp.Name.Name != "." {
-			name = imp.Name.Name
-		}
-		imports[name] = path
-	}
-
-	// Find the permitted Root.root *os.Root backing field.
+// checkRootfsRootRefs blocks every os.Root reference in a rootfs file
+// except the private Root.root *os.Root backing field.
+func checkRootfsRootRefs(f *ast.File, imports map[string]string, fset *token.FileSet, rel string, block func(sourceCall)) {
 	allowedPos := map[token.Pos]bool{}
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
@@ -411,8 +396,6 @@ func checkRootfsExportedAPI(f *ast.File, fset *token.FileSet, rel string, block 
 		}
 	}
 
-	// Inspect every SelectorExpr in the file.  Any os.Root reference that
-	// is not the permitted backing field is blocked.
 	ast.Inspect(f, func(n ast.Node) bool {
 		sel, ok := n.(*ast.SelectorExpr)
 		if !ok {
@@ -483,8 +466,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nThese patterns create unclassifiable filesystem access and must be removed:\n")
 		fmt.Fprintf(os.Stderr, "  - dot import of os or path/filepath\n")
 		fmt.Fprintf(os.Stderr, "  - extracting a watched function as a value\n")
-		fmt.Fprintf(os.Stderr, "  - (*os.Root) or os.Root type reference outside internal/rootfs\n")
-		fmt.Fprintf(os.Stderr, "  - exported os.Root from internal/rootfs\n")
+		fmt.Fprintf(os.Stderr, "  - os.Root type reference outside internal/rootfs\n")
+		fmt.Fprintf(os.Stderr, "  - os.Root reference inside internal/rootfs (only Root.root is permitted)\n")
 		fmt.Fprintf(os.Stderr, "\n")
 		exit = true
 	}
