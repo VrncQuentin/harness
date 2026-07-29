@@ -124,12 +124,20 @@ func TestAnchor_SameNameReplacementFailsClosed(t *testing.T) {
 	_ = r.Close()
 
 	if runtime.GOOS == "windows" {
+		// Try deletion while anchor is live.
 		if err := os.RemoveAll(dir); err == nil {
 			t.Error("anchor handle should block directory removal on Windows")
+			return
+		}
+		// Close the anchor and retry; success proves the handle was the defence.
+		_ = a.Close()
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal("removal should succeed after anchor closed:", err)
 		}
 		return
 	}
 
+	// On Linux, replace the directory and assert anchor rejects.
 	replacement := filepath.Join(t.TempDir(), "replacement")
 	if err := os.MkdirAll(replacement, 0o755); err != nil {
 		t.Fatal(err)
@@ -146,6 +154,40 @@ func TestAnchor_SameNameReplacementFailsClosed(t *testing.T) {
 	}
 }
 
+func TestAnchor_RenameAsideFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	a := mustNewAnchor(t, dir)
+	r := mustOpen(t, a)
+	_ = r.Close()
+
+	moved := filepath.Join(t.TempDir(), "moved-aside")
+	renameErr := os.Rename(dir, moved)
+	if renameErr != nil {
+		if runtime.GOOS == "windows" {
+			// Rename may be blocked by the anchor handle — that is
+			// a valid defence.  Close the anchor and retry to
+			// attribute the failure to the handle.
+			_ = a.Close()
+			if err := os.Rename(dir, moved); err != nil {
+				t.Fatal("rename should succeed after anchor closed:", err)
+			}
+			return
+		}
+		t.Fatal("unexpected rename failure:", renameErr)
+	}
+
+	// The original was successfully renamed aside.  Create a
+	// replacement at the configured name and assert the anchor
+	// rejects it.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := a.Open()
+	if err == nil {
+		t.Error("anchor should reject replacement after original renamed aside")
+	}
+}
+
 func TestAnchor_RePointedAliasFailsClosed(t *testing.T) {
 	dir1 := t.TempDir()
 	dir2 := t.TempDir()
@@ -157,9 +199,13 @@ func TestAnchor_RePointedAliasFailsClosed(t *testing.T) {
 	_ = r.Close()
 
 	if err := os.Remove(link); err != nil {
-		// On Windows the anchor handle may block the removal.
-		// If it does, that is its own defence.
 		if runtime.GOOS == "windows" {
+			// Close the anchor and retry to prove the handle was
+			// the cause of the failure.
+			_ = a.Close()
+			if err := os.Remove(link); err != nil {
+				t.Fatal("symlink removal should succeed after anchor closed:", err)
+			}
 			return
 		}
 		t.Fatal("unexpected symlink removal failure:", err)
