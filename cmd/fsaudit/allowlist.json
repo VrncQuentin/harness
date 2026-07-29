@@ -2,9 +2,10 @@
   "description": "Direct filesystem calls in production code, classified by migration status. The fsaudit tool compiles the watched-function policy internally — this file only classifies each call, it does not control what gets scanned. migration = will be routed through rootfs in a future PR. permanent = intentional boundary exception, never to be migrated.",
   "permanent": [
     { "file": "internal/rootfs/rootfs.go", "line": 80,  "fn": "os.OpenRoot",          "justification": "rootfs security primitive: pins a directory" },
-    { "file": "internal/rootfs/rootfs.go", "line": 190, "fn": "os.SameFile",          "justification": "rootfs security primitive: directory identity comparison" },
-    { "file": "internal/rootfs/rootfs.go", "line": 341, "fn": "os.Stat",              "justification": "rootfs security primitive: identity verification via matches()" },
-    { "file": "internal/rootfs/rootfs.go", "line": 345, "fn": "os.SameFile",          "justification": "rootfs security primitive: identity verification via matches()" },
+    { "file": "internal/rootfs/rootfs.go", "line": 181, "fn": "os.SameFile",          "justification": "rootfs security primitive: WriteStreamAtomic temp identity check" },
+    { "file": "internal/rootfs/rootfs.go", "line": 238, "fn": "os.SameFile",          "justification": "rootfs security primitive: directory identity comparison" },
+    { "file": "internal/rootfs/rootfs.go", "line": 389, "fn": "os.Stat",              "justification": "rootfs security primitive: identity verification via matches()" },
+    { "file": "internal/rootfs/rootfs.go", "line": 393, "fn": "os.SameFile",          "justification": "rootfs security primitive: identity verification via matches()" },
     { "file": "internal/rootfs/anchor.go", "line": 81, "fn": "os.SameFile",           "justification": "rootfs security primitive: anchor reopen identity check" },
     { "file": "internal/pathid/canonical_windows.go", "line": 34, "fn": "os.Open",    "justification": "pathid security primitive: GetFinalPathNameByHandle" },
     { "file": "internal/pathid/canonical_other.go", "line": 15, "fn": "filepath.EvalSymlinks", "justification": "pathid security primitive: non-Windows canonical resolution" },
@@ -61,9 +62,8 @@
     { "file": "internal/retrieval/trace.go", "line": 122, "fn": "os.OpenFile",     "pr": "PR 3",  "notes": "NDJSONSink: append to daily trace file" },
     { "file": "internal/retrieval/trace.go", "line": 134, "fn": "os.ReadDir",      "pr": "PR 3",  "notes": "NDJSONSink: list trace files for retention pruning" },
     { "file": "internal/retrieval/trace.go", "line": 148, "fn": "os.Remove",       "pr": "PR 3",  "notes": "NDJSONSink: delete expired trace files" },
-    { "file": "internal/governor/governor.go", "line": 108, "fn": "os.MkdirAll",   "pr": "PR 3",  "notes": "toolout spill directory: bootstrap creation" },
-    { "file": "internal/governor/b3.go",    "line": 44,  "fn": "os.WriteFile",     "pr": "PR 3",  "notes": "B3 tee-on-failure: write spill through pinned root, publish by rename" },
-    { "file": "internal/tools/gitpush.go",  "line": 76,  "fn": "os.ReadFile",      "pr": "PR 3",  "notes": "readHEADBranch: read .git/HEAD; replace with go-git CurrentBranch" },
+    { "file": "internal/governor/governor.go", "line": 109, "fn": "os.MkdirAll",   "pr": "PR 3",  "notes": "toolout spill directory: bootstrap creation before anchor pin" },
+    { "file": "internal/tools/gitpush.go",  "line": 76,  "fn": "os.ReadFile",      "pr": "PR 3",  "notes": "readHEADBranch: read .git/HEAD; deferred migration" },
     { "file": "cmd/eval-retrieval/main.go", "line": 97, "fn": "filepath.Glob",     "pr": "PR 3",  "notes": "eval-retrieval: enumerate episode files through pinned repo instead of filepath.Glob+filepath.Rel" }
   ]
 }

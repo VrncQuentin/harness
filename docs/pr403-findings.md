@@ -30,21 +30,26 @@ until the sequence below is merged and the final audit (PR 12) passes.
 |---|---------|------|
 | 2.8b | Git and memory readers compare identities from later `pathid` resolutions, not from the objects each component actually opened | `TestIdentity_ComparedFromOpenedObjects` |
 
-### PR 3 — Rooted primitive operations and standalone consumers
+### PR 3a — Atomic publication and governor B3
 
 | # | Finding | Test |
 |---|---------|------|
-| 3.1 | B3 spill writes through pre-existing hard-linked entry | `TestApplyB3_DoesNotWriteThroughAHardLinkedSpillEntry` |
-| 3.2 | B3 spill written with `os.WriteFile` — no rename, partial reads possible | `TestApplyB3_PublishesByRename` |
+| 3.1 | B3 spill writes through pre-existing hard-linked entry | `TestB3_ReplacesHardLinkedSpillEntry` (governor) |
+| 3.2 | B3 spill written with `os.WriteFile` — no rename, partial reads possible | migrated: governor uses Anchor + WriteStreamAtomic |
+| 3.7 | `WriteStreamAtomic` does not fsync before rename — crash-unsafe | `TestWriteStreamAtomic_SyncBeforeRename` (sync failure blocks publication) |
+| 3.8 | `WriteStreamAtomic` cleanup deletes by name after rename has consumed it | `TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure` |
+| 3.9 | `WriteStreamAtomic` must preserve a stranger's substituted entry | `TestWriteStreamAtomic_DetectsSubstitutedTemp` (Linux CI, asserts impostor survives) |
+| 3.10 | `WriteStreamAtomic` must pin the destination directory once | `TestWriteStreamAtomic_PinSurvivesIntermediateSwap` (Linux CI) |
+| 3.11 | A failed write may leave its own partial temp entry | `TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure` |
+
+### PR 3b — Remaining standalone consumers
+
+| # | Finding | Test |
+|---|---------|------|
 | 3.3 | Retrieval trace sink opens spill directory by pathname | `TestNDJSONSink_TraceDirectoryIsPinned` |
 | 3.4 | Retrieval trace deletes by pathname, could delete stranger's file | `TestNDJSONSink_RetentionDeletesOnlyOwnFiles` |
 | 3.5 | `git_push` reads `.git/HEAD` by path — fails on linked worktrees | `TestCurrentBranch_LinkedWorktreeLayout` |
 | 3.6 | `eval-retrieval` uses `filepath.Glob` + `filepath.Rel` on operator root | `TestEvalRetrieval_PinnedRepo` |
-| 3.7 | `WriteStreamAtomic` does not fsync before rename — crash-unsafe | `TestWriteStreamAtomic_FsyncsBeforeRename` |
-| 3.8 | `WriteStreamAtomic` cleanup deletes by name after rename has consumed it | `TestWriteStreamAtomic_CleansUpOnlyOwnTemp` |
-| 3.9 | `WriteStreamAtomic` must preserve a stranger's substituted entry | `TestWriteStreamAtomic_PreservesStrangerSubstitution` |
-| 3.10 | `WriteStreamAtomic` must pin the destination directory once for temp creation, cleanup, and rename | `TestWriteStreamAtomic_PinsDestinationOnce` |
-| 3.11 | A failed write may leave its own partial temp entry when ownership cannot be proved | `TestWriteStreamAtomic_AcceptsPartialTempOnFailure` |
 | 3.12 | `Set.Open` resolves the target before pinning each candidate root; must resolve alongside each candidate pin | `TestSet_OpenResolvesAlongsideEachPin` |
 | 3.13 | `Root.Open` exposes `*os.File.Name()`, enabling an authorized read to become a pathname reopen | `TestRoot_OpenDoesNotExposePathname` |
 

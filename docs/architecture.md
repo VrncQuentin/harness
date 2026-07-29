@@ -312,20 +312,16 @@ guarantees below.
 
 #### Acknowledged residual window
 
-Within `WriteStreamAtomic`, the temporary file is created inside a pinned
-destination directory and written, then closed. The rename that follows is a
-single atomic syscall and cannot race with itself in the same process, but an
-external process can substitute a different entry at the temporary name between
-the close and the rename, causing the rename to land the attacker's entry at
-the destination name. Closing this window requires verifying the temporary
-entry's pinned identity against the destination directory immediately before
-the rename, so a substitution fails the comparison. That verification is
-planned for PR 3; the current implementation writes, closes, and renames
-without verifying. Even after that verification, a residual window remains
-between the identity check and the rename — it cannot be closed without a
-compare-and-rename primitive that operates on a handle rather than a name; no
-such primitive exists in the portable Go standard library. Documenting the
-window rather than claiming it closed is deliberate.
+Within `WriteStreamAtomic`, the temporary file is created inside a
+destination parent directory pinned with `OpenChild`.  After writing, the
+data is fsynced and the temp file's identity is captured from the live
+handle with `f.Stat()` and compared against the named entry through the
+pinned parent via `os.SameFile`.  A substituted entry is refused.  The
+remaining window is between that identity comparison and the rename: an
+external process can substitute the entry in that interval.  Closing it
+requires a compare-and-rename primitive that operates on a handle rather
+than a name; no such primitive exists in the portable Go standard library.
+Documenting the window rather than claiming it closed is deliberate.
 
 #### Audit enforcement
 

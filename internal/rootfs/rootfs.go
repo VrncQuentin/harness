@@ -104,43 +104,91 @@ func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel
 func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 
 // WriteStreamAtomic writes everything src yields to rel, through a temporary
-// file in the same directory that is then renamed over rel. Every step resolves
-// through the pinned root.
+// file in the same directory that is then renamed over rel.
+//
+// The destination parent directory is pinned once with OpenChild, so every
+// step — temp creation, fsync, identity verification, rename — acts on the
+// same directory.  An intermediate-directory swap cannot redirect later steps.
 //
 // Publishing by rename replaces the directory *entry* and leaves the inode that
-// held the name alone. That is what makes it safe to write into a tree whose
-// entries may be hard links to files elsewhere. Opening the destination and
-// truncating it writes through the link instead: if the entry is a link to some
-// file in the source, that file is emptied — and the obvious guard, comparing
-// the pair being copied with os.SameFile, does not see it, because the
-// destination entry can be linked to a *different* source file than the one
-// being read. Only replacing the entry is safe against a link to anything.
+// held the name alone.  That is what makes it safe to write into a tree whose
+// entries may be hard links to files elsewhere.
 //
-// The temporary file is removed unless the rename consumes it, so a failed
-// write leaves neither a partial target nor a stray file.
+// The data is fsynced before the rename so a crash does not leave the
+// destination half-written.  The temporary file's identity is captured from the
+// open handle before f.Close() and compared with the named entry through the
+// pinned parent directory via os.SameFile — a substituted entry at the
+// temporary name is therefore refused.
+//
+// An external process can still substitute the temporary entry between that
+// identity check and the rename.  Closing that window requires a
+// compare-and-rename primitive on a handle, which no portable Go standard
+// library primitive provides.
+//
+// On failure, the temporary file is NOT removed: removing a name whose
+// ownership may have changed since it was created is unsafe, and portable
+// Go has no unlink-by-handle primitive.  A failed write may leave a partial
+// temporary entry.
 func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) error {
-	tmpRel, f, err := r.createTemp(filepath.Dir(rel), perm)
+	return r.writeStreamAtomic(rel, src, perm, nil, nil)
+}
+
+// writeStreamAtomic is WriteStreamAtomic with optional hooks for tests.
+// afterOpen runs after the temp file is created and before io.Copy.
+// syncFn, if non-nil, replaces f.Sync().
+func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, afterOpen func(*os.File, string), syncFn func(f *os.File) error) error {
+	parentDir := filepath.Dir(rel)
+	parent, err := r.OpenChild(parentDir)
 	if err != nil {
 		return err
 	}
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = r.root.Remove(tmpRel)
-		}
-	}()
+	defer func() { _ = parent.Close() }()
+
+	base := filepath.Base(rel)
+	tmpRel, f, err := parent.createTemp(".", perm)
+	if err != nil {
+		return err
+	}
+
+	if afterOpen != nil {
+		afterOpen(f, tmpRel)
+	}
 
 	if _, err := io.Copy(f, src); err != nil {
 		_ = f.Close()
 		return err
 	}
+
+	sf := syncFn
+	if sf == nil {
+		sf = func(f *os.File) error { return f.Sync() }
+	}
+	if err := sf(f); err != nil {
+		_ = f.Close()
+		return err
+	}
+
+	tmpHandleInfo, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	tmpNameInfo, err := parent.root.Stat(tmpRel)
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	if !os.SameFile(tmpHandleInfo, tmpNameInfo) {
+		_ = f.Close()
+		return fmt.Errorf("rootfs: temporary entry %s was substituted", tmpRel)
+	}
+
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := r.root.Rename(tmpRel, rel); err != nil {
+	if err := parent.root.Rename(tmpRel, base); err != nil {
 		return err
 	}
-	cleanup = false
 	return nil
 }
 
@@ -495,7 +543,9 @@ func (r *Root) createTemp(dir string, perm fs.FileMode) (string, *os.File, error
 		// would leave the renamed file more restrictive than asked for.
 		if err := f.Chmod(perm); err != nil {
 			_ = f.Close()
-			_ = r.root.Remove(rel)
+			// Do not remove the temp name — ownership may have
+			// changed since creation, and portable Go has no
+			// unlink-by-handle primitive.
 			return "", nil, err
 		}
 		return rel, f, nil

@@ -461,3 +461,53 @@ func TestB3HandleIsResolvableByRead(t *testing.T) {
 		t.Errorf("read did not return the spilled output:\n%s", out.Content)
 	}
 }
+
+func TestB3_ReplacesHardLinkedSpillEntry(t *testing.T) {
+	cacheDir := t.TempDir()
+
+	// Precompute the spill path that B3 will use for a known error.
+	spillDir := filepath.Join(cacheDir, "toolout")
+	if err := os.MkdirAll(spillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	longErr := strings.Repeat("x", b3Threshold)
+	id := tooloutID("exec", longErr)
+	spillPath := filepath.Join(spillDir, id)
+
+	// Place a file there with old content, then hard-link another name.
+	if err := os.WriteFile(spillPath, []byte("old-content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkedPath := filepath.Join(spillDir, "linked-copy")
+	if err := os.Link(spillPath, linkedPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now apply B3: it should replace the spill entry via rename
+	// without modifying the linked inode.
+	g := New(nil, cacheDir)
+	res := g.Apply(context.Background(), "exec", nil,
+		tools.Result{Error: longErr, FullOutput: longErr},
+		"")
+	if res.Error == "" || !strings.Contains(res.Error, "toolout:") {
+		t.Fatal("B3 should have spilled the error")
+	}
+
+	// The hard-linked copy must retain the original content.
+	linked, err := os.ReadFile(linkedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linked) != "old-content" {
+		t.Error("hard-linked source should not be modified by rename publication")
+	}
+
+	// The spill entry must contain the new output.
+	spilled, err := os.ReadFile(spillPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(spilled) != longErr {
+		t.Errorf("spill entry should contain new output (len=%d), got len=%d", len(longErr), len(spilled))
+	}
+}
