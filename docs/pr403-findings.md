@@ -6,17 +6,22 @@ until the sequence below is merged and the final audit (PR 12) passes.
 
 ## Findings mapped to replacement PRs
 
-### PR 2 — Identity-bound directory references
+### PR 2a — Anchor primitive
 
 | # | Finding | Test |
 |---|---------|------|
-| 2.1 | Construction through a stable symlink alias must bind the physical target | `TestAnchor_ConstructionThroughSymlinkAliasSucceeds` |
-| 2.2 | Construction through a stable Windows junction must bind the physical target | `TestAnchor_ConstructionThroughJunctionAliasSucceeds` |
-| 2.3 | Re-pointing a previously-stable alias root fails closed | `TestAnchor_RePointedAliasFailsClosed` |
-| 2.4 | Root re-pointing (rename original aside, replace with evil) | `TestAnchor_RootRepointedAfterPinFails` |
-| 2.5 | Original directory renamed aside — silent switch | `TestAnchor_OriginalRenamedAsideFailsClosed` |
+| 2.1 | Construction through a stable symlink alias must bind the physical target | `TestAnchor_ConstructionThroughSymlinkSucceeds` |
+| 2.2 | Construction through a stable Windows junction must bind the physical target | `TestAnchor_ConstructionThroughJunctionSucceeds` |
+| 2.3 | Re-pointing a previously-stable alias root fails closed | `TestAnchor_RePointedAliasFailsClosed`, `TestAnchor_RePointedJunctionFailsClosed` |
+| 2.4 | Same-name directory replacement fails closed | `TestAnchor_SameNameReplacementFailsClosed` |
+| 2.5 | Original directory renamed aside — silent switch | `TestAnchor_RenameAsideFailsClosed` |
 | 2.6 | Windows filesystem identity not established | `TestAnchor_WindowsIdentity` |
-| 2.7 | Identity failure (e.g. permission) not propagated | `TestAnchor_IdentityFailureFailsClosed` |
+| 2.7 | Identity failure not propagated | `TestAnchor_IdentityFailureFailsClosed` |
+
+### PR 2b — Opened-object identity integration
+
+| # | Finding | Test |
+|---|---------|------|
 | 2.8 | Git and memory readers compare identities from later `pathid` resolutions, not from the objects each component actually opened | `TestIdentity_ComparedFromOpenedObjects` |
 
 ### PR 3 — Rooted primitive operations and standalone consumers
@@ -93,8 +98,8 @@ until the sequence below is merged and the final audit (PR 12) passes.
 |---|---------|------|
 | 8.1 | Repeated getter calls can combine store/committer/runner from different publications | `TestSnapshot_RequestUsesConsistentDependencies` |
 | 8.2 | Detached goroutines hold references across reload without generation lease | `TestSnapshot_DetachedGoroutineCapturesSnapshotBeforeStart` |
-| 8.3 | Old snapshot references remain valid after reload (reopenable, not handle-owned) | `TestSnapshot_OldReferencesRemainValidAfterReload` |
-| 8.4 | `memoryHandles` / `genGate` / route-by-route drain NOT introduced | Eliminated mechanism — snapshot pattern replaces them |
+| 8.3 | Old snapshot references remain valid after reload | `TestSnapshot_OldReferencesRemainValidAfterReload` — deferred to PR 8 |
+| 8.4 | `memoryHandles` / `genGate` / route-by-route drain NOT introduced | Eliminated mechanism — route-by-route genGate is rejected. Snapshot-scoped leasing (if any) is deferred to PR 8. |
 | 8.5 | `memoryAPISnapshot` NOT introduced | Eliminated mechanism — snapshot pattern replaces it |
 
 ### PR 9 — Explicit applied runtime state
@@ -159,12 +164,12 @@ makes them unnecessary.
 
 | Mechanism | Why eliminated |
 |-----------|---------------|
-| `memoryHandles` — runtime holds root handles and closes on shutdown | Replaced by operation-scoped `DirRef`/`Anchor` in PR 2: no generation-lifetime handles to manage |
-| `genGate` — route-by-route drain wrapping | Replaced by immutable UI snapshots in PR 8: a request captures one snapshot, needs no gate |
+| `memoryHandles` — runtime holds root handles and closes on shutdown | Replaced by Anchor in PR 2a: each consumer owns its own Anchor with an explicit Close. The runtime does not track or close handles centrally. |
+| `genGate` — route-by-route drain wrapping | Eliminated. Route-by-route generation gates are rejected. Deferred snapshot-scoped leasing (if any) is designed in PR 8. |
 | `memoryAPISnapshot` — snapshot of memory API per generation | Replaced by immutable UI snapshots in PR 8 |
-| `snapshot.closeReplaced()` — close handles when replacement starts | Replaced by reopenable references in PR 2: no handles to close |
-| `stopMemoryAndAPI` — drops references, does not close | Replaced by no-lifetime-pinning in PR 2: nothing to drop or close |
+| `snapshot.closeReplaced()` — close handles when replacement starts | Deferred to PR 8: Anchor ownership and lifetime design there |
+| `stopMemoryAndAPI` — drops references, does not close | Replaced by Anchor ownership in PR 2a: consumers own and close their Anchors; no runtime stop/drop cycle |
 | `ResolveAbsRepoPath` — session manager method | Replaced by rooted capabilities in PR 7: session manager receives a handle, not a pathname factory |
-| Package-global test hooks for identity verification | Replaced by function-parameter hooks in PR 2: no global state |
+| Package-global test hooks for identity verification | Replaced by function-parameter hooks in PR 2a: no global state |
 | Post-rename `os.Remove` + retry fallback in index | Replaced by copy-on-write + rename publication in PR 5: no name-based cleanup |
 | `.gitkeep` created by joining layout directory absolute path | Replaced by repo-relative addressing through pinned root in PR 6 |

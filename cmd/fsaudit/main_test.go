@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func writeFile(t *testing.T, dir, name, content string) string {
+func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	p := filepath.Join(dir, name)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -15,7 +15,6 @@ func writeFile(t *testing.T, dir, name, content string) string {
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return p
 }
 
 func makeAllowlist(entries []entry) allowlist {
