@@ -99,20 +99,24 @@ func TestGitPushTool_C2MemoryRepoRejected(t *testing.T) {
 }
 
 func TestGitPushTool_LinkedWorktreeBranch(t *testing.T) {
-	// Simulate linked worktree: .git file → common dir with HEAD.
+	// Simulate real linked worktree layout.
 	dir := t.TempDir()
 	common := filepath.Join(dir, "common")
-	if err := os.MkdirAll(common, 0o755); err != nil {
+	admin := filepath.Join(common, "wt")
+	if err := os.MkdirAll(admin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(common, "HEAD"), []byte("ref: refs/heads/feat/wt\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(admin, "HEAD"), []byte("ref: refs/heads/feat/wt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("..\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	worktree := filepath.Join(dir, "worktree")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+filepath.ToSlash(common)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+filepath.ToSlash(admin)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	tool := &gitPushTool{}

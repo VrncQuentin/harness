@@ -138,23 +138,27 @@ func TestErrors(t *testing.T) {
 }
 
 func TestCurrentBranch_LinkedWorktreeLayout(t *testing.T) {
-	// Simulate a linked worktree: .git is a file containing the path
-	// to the common directory containing HEAD, not a directory itself.
+	// Simulate a real linked worktree layout:
+	//   worktree/.git       → points to admin dir (common/wt)
+	//   common/wt/HEAD      → "ref: refs/heads/feat/linked"
+	//   common/wt/commondir → ".." (path relative to admin dir)
 	dir := t.TempDir()
-	commonDir := filepath.Join(dir, "common")
-	if err := os.MkdirAll(commonDir, 0o755); err != nil {
+	common := filepath.Join(dir, "common")
+	admin := filepath.Join(common, "wt")
+	if err := os.MkdirAll(admin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(commonDir, "HEAD"), []byte("ref: refs/heads/feat/linked\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(admin, "HEAD"), []byte("ref: refs/heads/feat/linked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte("..\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	worktree := filepath.Join(dir, "worktree")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	gitFile := filepath.Join(worktree, ".git")
-	content := "gitdir: " + filepath.ToSlash(commonDir) + "\n"
-	if err := os.WriteFile(gitFile, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+filepath.ToSlash(admin)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	repo, err := Open(worktree)
