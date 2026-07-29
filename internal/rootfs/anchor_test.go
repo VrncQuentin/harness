@@ -295,3 +295,103 @@ func TestAnchor_ExplicitCloseReleasesHandle(t *testing.T) {
 		t.Error("directory removal should succeed after anchor handle closed:", err)
 	}
 }
+
+func TestAnchor_SameAnchor_SameDirectory(t *testing.T) {
+	dir := t.TempDir()
+	a := mustNewAnchor(t, dir)
+	b := mustNewAnchor(t, dir)
+
+	same, err := a.SameAnchor(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !same {
+		t.Error("two anchors on the same directory should be SameAnchor")
+	}
+}
+
+func TestAnchor_SameAnchor_DifferentDirectory(t *testing.T) {
+	a := mustNewAnchor(t, t.TempDir())
+	b := mustNewAnchor(t, t.TempDir())
+
+	same, err := a.SameAnchor(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same {
+		t.Error("two anchors on different directories should not be SameAnchor")
+	}
+}
+
+func TestAnchor_SameAnchor_SymlinkAlias(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	symlinkOrSkip(t, dir, link)
+
+	a := mustNewAnchor(t, dir)
+	b := mustNewAnchor(t, link)
+
+	same, err := a.SameAnchor(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !same {
+		t.Error("anchors on same directory via symlink should be SameAnchor")
+	}
+}
+
+func TestAnchor_SameAnchor_RepointedAliasNotSame(t *testing.T) {
+	// Use a repointable alias so the test exercises the comparison
+	// on both platforms.  Symlink on Unix, junction on Windows.
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "alias")
+
+	if runtime.GOOS == "windows" {
+		junctionOrSkip(t, dir1, alias)
+	} else {
+		symlinkOrSkip(t, dir1, alias)
+	}
+
+	a := mustNewAnchor(t, alias)
+
+	// Repoint the alias to a different directory.
+	if err := os.RemoveAll(alias); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		junctionOrSkip(t, dir2, alias)
+	} else {
+		symlinkOrSkip(t, dir2, alias)
+	}
+
+	// A new anchor on the same pathname captures the new directory.
+	b := mustNewAnchor(t, alias)
+
+	same, err := a.SameAnchor(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same {
+		t.Error("anchors before and after alias repointing should not be SameAnchor")
+	}
+}
+
+func TestAnchor_SameAnchor_ClosedAnchorReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	a := mustNewAnchor(t, dir)
+	b := mustNewAnchor(t, dir)
+
+	_ = a.Close()
+	_, err := a.SameAnchor(b)
+	if err == nil {
+		t.Error("SameAnchor should error when left anchor is closed")
+	}
+
+	c := mustNewAnchor(t, dir)
+	_ = b.Close()
+	_, err = c.SameAnchor(b)
+	if err == nil {
+		t.Error("SameAnchor should error when right anchor is closed")
+	}
+}

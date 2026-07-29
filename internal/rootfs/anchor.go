@@ -34,6 +34,17 @@ func NewAnchor(path string) (*Anchor, error) {
 // Close releases the pinned handle.
 func (a *Anchor) Close() error { return a.root.Close() }
 
+// SameAnchor reports whether a and other refer to the same filesystem
+// directory.  The comparison uses os.SameFile on the two pinned handles
+// — no pathname re-resolution is involved.
+//
+// This is how components that opened two different handles answer "are
+// these the same directory."  pathid.Same resolved two pathnames; this
+// compares the objects those handles actually refer to.
+func (a *Anchor) SameAnchor(other *Anchor) (bool, error) {
+	return a.root.SameDir(other.root)
+}
+
 // Open opens the stored pathname, verifies that the new handle refers to
 // the same filesystem object as the pinned handle, and returns the
 // verified handle.  The caller closes the returned Root.

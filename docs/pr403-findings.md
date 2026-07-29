@@ -18,11 +18,17 @@ until the sequence below is merged and the final audit (PR 12) passes.
 | 2.6 | Windows filesystem identity not established | `TestAnchor_WindowsIdentity` |
 | 2.7 | Identity failure not propagated | `TestAnchor_IdentityFailureFailsClosed` |
 
-### PR 2b — Opened-object identity integration
+### PR 2b — Anchor comparison primitive
 
 | # | Finding | Test |
 |---|---------|------|
-| 2.8 | Git and memory readers compare identities from later `pathid` resolutions, not from the objects each component actually opened | `TestIdentity_ComparedFromOpenedObjects` |
+| 2.8a | `SameAnchor` compares pinned handles, not pathname re-resolution | `TestAnchor_SameAnchor_*` (5 tests) |
+
+### PR 2c — Opened-object identity integration
+
+| # | Finding | Test |
+|---|---------|------|
+| 2.8b | Git and memory readers compare identities from later `pathid` resolutions, not from the objects each component actually opened | `TestIdentity_ComparedFromOpenedObjects` |
 
 ### PR 3 — Rooted primitive operations and standalone consumers
 
