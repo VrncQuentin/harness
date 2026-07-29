@@ -171,9 +171,10 @@ func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error 
 		}
 	}
 
-	// Publish vectors first via WriteStreamAtomic. If this fails, the
-	// old manifest (still in effect) only references the old prefix;
-	// the extra bytes at the end are unreferenced and harmless.
+	// Publish vectors first via WriteStreamAtomic. If this succeeds and
+	// a subsequent manifest publication fails, the old manifest (still
+	// in effect) only references the old prefix; the unreferenced tail
+	// bytes at the end of vectors are harmless.
 	if err := root.WriteStreamAtomic(vectorsFile, bytes.NewReader(newVectors), 0o644); err != nil {
 		return fmt.Errorf("index: publish vectors: %w", err)
 	}
