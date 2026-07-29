@@ -30,6 +30,8 @@ jobs:
       - uses: golangci/golangci-lint-action@v7
         with:
           version: v2.11.4
+      - name: FSAudit — every direct filesystem call must be classified
+        run: go run ./cmd/fsaudit
       - name: Vet
         run: go vet ./...
       - name: Build (linux/amd64)

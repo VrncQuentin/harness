@@ -269,6 +269,85 @@ Design constraints:
 - The toolout spill directory is outside every sandbox root, so it opens its own
   `os.Root` in `internal/tools` rather than going through `Set`.
 
+### Filesystem Threat Model
+
+The harness's security architecture for filesystem operations is built on two
+primitives: `internal/pathid` (physical path identity) and `internal/rootfs`
+(rooted directory operations). Together they implement **pin-before-authorize**:
+resolve the configured directory once, bind the open handle to its physical
+identity, and perform all subsequent operations through that handle.
+
+The threat model describes the target state. Packages not yet migrated
+(`internal/memory`, `internal/session`, `internal/index`, `internal/retrieval`,
+`internal/governor`) currently operate by pathname and are tracked as migration
+entries in `cmd/fsaudit/allowlist.json`. Once migrated they will inherit the
+guarantees below.
+
+#### Defended threats
+
+| Threat | Mechanism | Status |
+|--------|-----------|--------|
+| Symlink escape from a sandbox root | `os.Root` resolve-by-handle; absolute-target links refused unconditionally | implemented |
+| Windows junction escape | `pathid` resolves junctions before the root sees the name; `Set.Open` addresses the target through the physical path | implemented |
+| Case / 8.3 alias (Windows) | `pathid.Canonical` resolves to a single physical name; containment checked against the canonical form | implemented |
+| Same-name directory replacement | `OpenIdentified` verifies the pinned handle against the physical identity with `os.SameFile`; a replacement fails the comparison | implemented |
+| Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name | implemented |
+| Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere | implemented |
+| In-process concurrent writers | Per-repository mutation coordinator keyed by physical identity (planned in PR 5); currently writes use temp+rename for file-level atomicity | planned |
+| Check/use races on intermediate directories | Traversal pins each directory with `OpenChild` before inspecting it; what is inspected and what is entered are the same directory | planned (PR 4) |
+| Memory repo reads/writes through pathname | `DirRef`/`Anchor` reopenable directory references; every operation reopens the configured name and verifies identity | planned (PR 2–7) |
+
+#### Out of scope
+
+- **Privileged mount manipulation.** Staging a bind mount, mount point, or
+  `/proc` entry inside a tree requires privileges that already defeat the
+  sandbox. `openat2` with `RESOLVE_NO_XDEV` would close this but has no Windows
+  counterpart.
+- **Subprocess sandboxing.** `exec`, `go_test`, and `go_lint` validate their
+  working directory with `pathid` and hand a pathname to the child process.
+  Command containment is a separate problem.
+- **go-git pathname boundary.** go-git resolves its storage by pathname, not by
+  handle. The harness keeps explicit identity and C2 checks around the go-git
+  boundary.
+
+#### Acknowledged residual window
+
+Within `WriteStreamAtomic`, the temporary file is created inside a pinned
+destination directory and written, then closed. The rename that follows is a
+single atomic syscall and cannot race with itself in the same process, but an
+external process can substitute a different entry at the temporary name between
+the close and the rename, causing the rename to land the attacker's entry at
+the destination name. Closing this window requires verifying the temporary
+entry's pinned identity against the destination directory immediately before
+the rename, so a substitution fails the comparison. That verification is
+planned for PR 3; the current implementation writes, closes, and renames
+without verifying. Even after that verification, a residual window remains
+between the identity check and the rename — it cannot be closed without a
+compare-and-rename primitive that operates on a handle rather than a name; no
+such primitive exists in the portable Go standard library. Documenting the
+window rather than claiming it closed is deliberate.
+
+#### Audit enforcement
+
+Production calls to the symbols in `cmd/fsaudit`'s compiled `watched` policy
+(approximately 35 symbols across `os` and `path/filepath`, including
+`MkdirTemp`, `Lchown`, `Chdir`, `CopyFS`, and `DirFS`) are inventoried in
+`cmd/fsaudit/allowlist.json`. Each call is classified as:
+- **migration** — will be routed through `rootfs` in a future PR; or
+- **permanent** — an intentional boundary exception with a justification.
+
+The `cmd/fsaudit` tool verifies on every CI run that no new direct filesystem
+call appears without a matching entry. The audit scans all production `.go`
+files including `internal/rootfs` and `internal/pathid`. Only the audit tool
+itself (`cmd/fsaudit/`) is exempt. The watched-function policy is compiled into
+the scanner — it is not configurable from the allowlist.
+
+The scanner also blocks capability escapes that cannot be inventoried:
+dot imports of watched packages, extracting watched functions as values, and
+`os.Root` type references outside `internal/rootfs`. Within rootfs, every
+`os.Root` reference is blocked except the single private `Root.root` backing
+field.
+
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).
 
