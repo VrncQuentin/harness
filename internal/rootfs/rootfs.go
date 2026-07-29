@@ -94,9 +94,6 @@ func (r *Root) ReadFile(rel string) ([]byte, error) { return r.root.ReadFile(rel
 // Lstat describes rel without following it when it is itself a link.
 func (r *Root) Lstat(rel string) (fs.FileInfo, error) { return r.root.Lstat(rel) }
 
-// Stat returns the FileInfo for rel.
-func (r *Root) Stat(rel string) (fs.FileInfo, error) { return r.root.Stat(rel) }
-
 // Readlink returns the target rel points at, without resolving it. A link
 // whose target lies outside the root is still readable — reading a link is not
 // following one, and callers that represent a link by its target (git stores
@@ -269,33 +266,33 @@ func (r *Root) OpenChild(rel string) (*Root, error) {
 // This closes the check/use window between Lstat and OpenChild: the
 // opened handle is compared against the parent entry, so a swap between
 // inspection and entry is detected.
-func (r *Root) OpenChildNoFollow(name string) (*Root, error) {
+func (r *Root) OpenChildNoFollow(name string) (*Root, fs.FileInfo, error) {
 	if strings.Contains(name, string(filepath.Separator)) || strings.Contains(name, "/") {
-		return nil, fmt.Errorf("rootfs: OpenChildNoFollow requires a single component, got %q", name)
+		return nil, nil, fmt.Errorf("rootfs: OpenChildNoFollow requires a single component, got %q", name)
 	}
 	child, err := r.root.OpenRoot(name)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	entryFi, err := r.root.Lstat(name)
 	if err != nil {
 		_ = child.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	if entryFi.Mode()&os.ModeSymlink != 0 || entryFi.Mode()&os.ModeIrregular != 0 {
 		_ = child.Close()
-		return nil, fmt.Errorf("rootfs: refusing to enter link %s", name)
+		return nil, nil, fmt.Errorf("rootfs: refusing to enter link %s", name)
 	}
 	childFi, err := child.Stat(".")
 	if err != nil {
 		_ = child.Close()
-		return nil, err
+		return nil, nil, err
 	}
 	if !os.SameFile(entryFi, childFi) {
 		_ = child.Close()
-		return nil, fmt.Errorf("rootfs: %s changed between open and verify", name)
+		return nil, nil, fmt.Errorf("rootfs: %s changed between open and verify", name)
 	}
-	return &Root{root: child}, nil
+	return &Root{root: child}, childFi, nil
 }
 
 // Set is an ordered list of root directories. It converts a caller-supplied

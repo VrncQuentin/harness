@@ -231,11 +231,10 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 
 // Walk implements Walker using rooted traversal.  Subdirectories are
 // entered through OpenChildNoFollow, which opens, Lstats through the
-// parent, rejects links, and verifies the opened handle matches the
-// parent entry with os.SameFile.  Metadata is obtained from the
-// verified child handle, not from the pre-open ReadDir result.
-// Children are closed after their subtrees.  Cycles are detected by
-// ancestor identity.
+// parent, rejects links, and verifies the opened handle via os.SameFile.
+// Metadata comes from the verified child handle.  Children are closed
+// after their subtrees.  Links are refused at every component, so
+// ordinary directory trees cannot cycle; bind mounts remain out of scope.
 func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	if relPath != "" {
 		if err := checkRel(relPath); err != nil {
@@ -260,8 +259,8 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	defer func() { _ = root.Close() }()
 
 	var out []Entry
-	var walkDir func(dir *rootfs.Root, prefix string, ancestors []*rootfs.Root) error
-	walkDir = func(dir *rootfs.Root, prefix string, ancestors []*rootfs.Root) error {
+	var walkDir func(dir *rootfs.Root, prefix string) error
+	walkDir = func(dir *rootfs.Root, prefix string) error {
 		entries, err := dir.ReadDir(".")
 		if err != nil {
 			return fmt.Errorf("memory: walk %s: %w", prefix, err)
@@ -275,47 +274,23 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 			if prefix == "" {
 				childRel = name
 			}
-			// Record file metadata from ReadDir; directories get
-			// metadata from the verified child below.
-			info, err := e.Info()
-			if err != nil {
-				return fmt.Errorf("memory: walk %s: %w", childRel, err)
-			}
 			if !e.IsDir() {
+				info, err := e.Info()
+				if err != nil {
+					return fmt.Errorf("memory: walk %s: %w", childRel, err)
+				}
 				out = append(out, Entry{Path: childRel, Dir: false, Size: info.Size()})
 				continue
 			}
-			child, err := dir.OpenChildNoFollow(name)
+			child, childFi, err := dir.OpenChildNoFollow(name)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					continue
 				}
 				return fmt.Errorf("memory: walk %s: %w", childRel, err)
 			}
-			// Obtain directory metadata from the verified child handle.
-			childInfo, err := child.Stat(".")
-			if err != nil {
-				_ = child.Close()
-				return fmt.Errorf("memory: walk %s: %w", childRel, err)
-			}
-			out = append(out, Entry{Path: childRel, Dir: true, Size: childInfo.Size()})
-			isCycle := false
-			for _, anc := range ancestors {
-				same, err := anc.SameDir(child)
-				if err != nil {
-					_ = child.Close()
-					return err
-				}
-				if same {
-					isCycle = true
-					break
-				}
-			}
-			if isCycle {
-				_ = child.Close()
-				continue
-			}
-			if err := walkDir(child, childRel, append(ancestors, child)); err != nil {
+			out = append(out, Entry{Path: childRel, Dir: true, Size: childFi.Size()})
+			if err := walkDir(child, childRel); err != nil {
 				_ = child.Close()
 				return err
 			}
@@ -324,15 +299,12 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 		return nil
 	}
 
-	// Open the starting path one component at a time, verifying each
-	// through OpenChildNoFollow so intermediate symlinks are refused.
 	startDir := root
 	startPrefix := ""
-	startAncestors := []*rootfs.Root{root}
 	if relPath != "" {
 		components := strings.Split(filepath.FromSlash(relPath), string(filepath.Separator))
 		for _, comp := range components {
-			child, err := startDir.OpenChildNoFollow(comp)
+			child, _, err := startDir.OpenChildNoFollow(comp)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
 					return nil, nil
@@ -348,11 +320,10 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 			} else {
 				startPrefix = path.Join(startPrefix, comp)
 			}
-			startAncestors = append(startAncestors, child)
 		}
 	}
 
-	if err := walkDir(startDir, startPrefix, startAncestors); err != nil {
+	if err := walkDir(startDir, startPrefix); err != nil {
 		return nil, err
 	}
 	if startDir != root {
