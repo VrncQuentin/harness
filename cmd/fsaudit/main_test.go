@@ -516,20 +516,25 @@ func TestAudit_OsRootConversionBlocked(t *testing.T) {
 
 import "os"
 
-func f(r *os.Root) { _ = os.Root(*r) }
+func f(r *os.Root) {
+	_ = os.Root(*r)
+}
 `)
 	report := Audit(dir, makeAllowlist(nil))
 	if report.Err != nil {
 		t.Fatal(report.Err)
 	}
-	found := false
+	// Must see exactly two os.Root diagnostics: the parameter (line 5)
+	// and the conversion expression (line 6).  If the ordering fix is
+	// reverted, only the parameter is found.
+	count := 0
 	for _, c := range report.Blocked {
 		if c.Fn == "os.Root" {
-			found = true
+			count++
 		}
 	}
-	if !found {
-		t.Errorf("os.Root conversion call not blocked: %v", report.Blocked)
+	if count != 2 {
+		t.Errorf("expected 2 os.Root blocked diagnostics (param + conversion), got %d: %v", count, report.Blocked)
 	}
 }
 
