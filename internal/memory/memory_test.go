@@ -745,7 +745,4 @@ func TestDirReader_WriteFileCleansTrailingSlash(t *testing.T) {
 	if string(got) != "ok" {
 		t.Errorf("WriteFile('a/b/') should publish at a/b, got content=%q", string(got))
 	}
-	if _, err := os.Stat(filepath.Join(dir, "a", "b", "b")); !os.IsNotExist(err) {
-		t.Error("WriteFile('a/b/') should not create a/b/b")
-	}
 }

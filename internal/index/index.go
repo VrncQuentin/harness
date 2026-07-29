@@ -4,6 +4,7 @@
 package index
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/vector"
 )
 
@@ -114,49 +116,99 @@ func (idx *Index) Add(sha string, vectors [][]float32) error {
 	return idx.Upsert(sha, sha, vectors)
 }
 
-// Upsert stores vectors for source. A matching source and content hash is a
-// no-op; changed source content replaces its old vectors. Result identifiers
-// are the source path, which makes equal episode basenames in different agent
-// directories distinct.
+// Upsert stores vectors for source.  Vectors are assembled via copy-on-write
+// and published through a pinned root.  The old manifest is kept valid until
+// both publications succeed.
 func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error {
+	return idx.upsert(source, contentHash, vectors, nil)
+}
+
+// upsert is Upsert with an optional manifest-write function.  Tests inject
+// a writer that returns an error to exercise manifest-publication failure
+// without blocking vector publication.
+func (idx *Index) upsert(source, contentHash string, vectors [][]float32, writeManifest func(root *rootfs.Root, data []byte) error) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	previous := idx.manifest
-	for i, e := range idx.manifest.Chunks {
+
+	// Build the next manifest without mutating idx.manifest.
+	next := Manifest{Dim: idx.manifest.Dim, Count: idx.manifest.Count}
+	next.Chunks = make([]Entry, len(idx.manifest.Chunks))
+	copy(next.Chunks, idx.manifest.Chunks)
+
+	for i, e := range next.Chunks {
 		if e.Source == source || (e.Source == "" && e.SHA == source) {
 			if e.ContentHash == contentHash && contentHash != "" {
 				return nil
 			}
-			idx.manifest.Count -= e.Length
-			idx.manifest.Chunks = append(idx.manifest.Chunks[:i], idx.manifest.Chunks[i+1:]...)
+			next.Count -= e.Length
+			next.Chunks = append(next.Chunks[:i], next.Chunks[i+1:]...)
 			break
 		}
 	}
-	offset, err := idx.vectorFileSize()
-	if err != nil {
-		idx.manifest = previous
-		return err
-	}
+
 	for _, v := range vectors {
 		if len(v) != idx.dim {
-			idx.manifest = previous
 			return fmt.Errorf("index: dimension mismatch: got %d, want %d", len(v), idx.dim)
 		}
 	}
-	entry := Entry{SHA: source, Source: source, ContentHash: contentHash, Offset: offset, Length: len(vectors)}
-	if err := idx.appendVectors(vectors); err != nil {
-		idx.manifest = previous
-		return err
+
+	// Pin the index directory first — every subsequent operation uses
+	// this handle so a re-point between read and publish is refused.
+	root, err := rootfs.Open(idx.dir)
+	if err != nil {
+		return fmt.Errorf("index: open root: %w", err)
 	}
-	idx.manifest.Chunks = append(idx.manifest.Chunks, entry)
-	idx.manifest.Count += len(vectors)
-	if err := idx.writeManifest(); err != nil {
-		idx.manifest = previous
-		if truncateErr := idx.truncateVectors(offset); truncateErr != nil {
-			return fmt.Errorf("%w; rollback vectors: %v", err, truncateErr)
+	defer func() { _ = root.Close() }()
+
+	// Read existing vectors through the pinned root to derive the offset.
+	oldVectors, err := root.ReadFile(vectorsFile)
+	if err != nil {
+		return fmt.Errorf("index: read vectors: %w", err)
+	}
+	offset := int64(len(oldVectors))
+
+	// Assemble the complete vectors file.
+	newLen := len(oldVectors) + len(vectors)*idx.dim*4
+	newVectors := make([]byte, newLen)
+	copy(newVectors, oldVectors)
+	pos := len(oldVectors)
+	for _, v := range vectors {
+		for _, val := range v {
+			binary.LittleEndian.PutUint32(newVectors[pos:], math.Float32bits(val))
+			pos += 4
 		}
-		return err
 	}
+
+	// Publish vectors first via WriteStreamAtomic. If this succeeds and
+	// a subsequent manifest publication fails, the old manifest (still
+	// in effect) only references the old prefix; the unreferenced tail
+	// bytes at the end of vectors are harmless.
+	if err := root.WriteStreamAtomic(vectorsFile, bytes.NewReader(newVectors), 0o644); err != nil {
+		return fmt.Errorf("index: publish vectors: %w", err)
+	}
+
+	// Build the updated manifest and publish it.
+	next.Chunks = append(next.Chunks, Entry{
+		SHA: source, Source: source, ContentHash: contentHash,
+		Offset: offset, Length: len(vectors),
+	})
+	next.Count += len(vectors)
+	data, err := json.MarshalIndent(next, "", "  ")
+	if err != nil {
+		return fmt.Errorf("index: marshal manifest: %w", err)
+	}
+
+	wm := writeManifest
+	if wm == nil {
+		wm = func(r *rootfs.Root, d []byte) error {
+			return r.WriteStreamAtomic(manifestFile, bytes.NewReader(d), 0o644)
+		}
+	}
+	if err := wm(root, data); err != nil {
+		return fmt.Errorf("index: publish manifest: %w", err)
+	}
+	// Both publications succeeded — commit the new manifest.
+	idx.manifest = next
 	return nil
 }
 
@@ -236,56 +288,6 @@ func (idx *Index) ContainsCurrent(source, contentHash string) bool {
 		}
 	}
 	return false
-}
-
-func (idx *Index) vectorFileSize() (int64, error) {
-	info, err := os.Stat(filepath.Join(idx.dir, vectorsFile))
-	if err != nil {
-		return 0, fmt.Errorf("index: stat vectors: %w", err)
-	}
-	if info.IsDir() {
-		return 0, fmt.Errorf("index: vectors path is a directory")
-	}
-	return info.Size(), nil
-}
-
-func (idx *Index) truncateVectors(size int64) error {
-	f, err := os.OpenFile(filepath.Join(idx.dir, vectorsFile), os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("index: open vectors for rollback: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-	if err := f.Truncate(size); err != nil {
-		return fmt.Errorf("index: truncate vectors: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("index: sync vectors rollback: %w", err)
-	}
-	return nil
-}
-
-func (idx *Index) appendVectors(vectors [][]float32) error {
-	f, err := os.OpenFile(filepath.Join(idx.dir, vectorsFile), os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("index: open vectors for append: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	buf := make([]byte, len(vectors)*idx.dim*4)
-	pos := 0
-	for _, v := range vectors {
-		for _, val := range v {
-			binary.LittleEndian.PutUint32(buf[pos:], math.Float32bits(val))
-			pos += 4
-		}
-	}
-	if _, err := f.Write(buf); err != nil {
-		return fmt.Errorf("index: write vectors: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("index: sync vectors: %w", err)
-	}
-	return nil
 }
 
 func (idx *Index) writeManifest() error {

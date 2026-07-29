@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 func TestIndex_CreatePersistsEmptyIndex(t *testing.T) {
@@ -57,7 +59,7 @@ func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 	}
 }
 
-func TestIndex_UpsertManifestFailureRollsBackVectors(t *testing.T) {
+func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 	dir := t.TempDir()
 	idx, err := Create(dir, 2)
 	if err != nil {
@@ -66,34 +68,142 @@ func TestIndex_UpsertManifestFailureRollsBackVectors(t *testing.T) {
 	if err := idx.Add("old", [][]float32{{1, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	vectorsPath := filepath.Join(dir, vectorsFile)
-	before, err := os.Stat(vectorsPath)
-	if err != nil {
-		t.Fatal(err)
+	vecSizeBefore := fileSize(t, filepath.Join(dir, vectorsFile))
+
+	sentinel := errors.New("injected manifest failure")
+	err = idx.upsert("new", "new-content", [][]float32{{0, 1}},
+		func(root *rootfs.Root, data []byte) error { return sentinel })
+	if err == nil || !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error, got %v", err)
 	}
-	manifestPath := filepath.Join(dir, manifestFile)
-	if err := os.Remove(manifestPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(manifestPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(manifestPath, "block"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := idx.Upsert("new", "new-content", [][]float32{{0, 1}}); err == nil {
-		t.Fatal("expected manifest write to fail")
-	}
-	after, err := os.Stat(vectorsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if after.Size() != before.Size() {
-		t.Fatalf("vectors size after failed manifest write = %d, want %d", after.Size(), before.Size())
+	if !idx.Contains("old") {
+		t.Fatal("old entry should still be in manifest")
 	}
 	if idx.Contains("new") {
-		t.Fatal("failed upsert remained in memory")
+		t.Fatal("failed upsert should not be in memory")
 	}
+	vecSizeAfter := fileSize(t, filepath.Join(dir, vectorsFile))
+	if vecSizeAfter <= vecSizeBefore {
+		t.Error("vectors.bin should have grown")
+	}
+	idx2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := idx2.Search([]float32{1, 0}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SHA != "old" {
+		t.Fatalf("old entry should be searchable: %v", results)
+	}
+	if idx2.Contains("new") {
+		t.Fatal("new entry should not be present after recovery")
+	}
+}
+
+func TestIndex_UpsertReplacesViaRename(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("first", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	vectorsPath := filepath.Join(dir, vectorsFile)
+	// Create a hard link to the vectors file as a sentinel.
+	sentinel := filepath.Join(dir, "sentinel.bin")
+	if err := os.Link(vectorsPath, sentinel); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("second", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	// The sentinel must still contain only the original data.
+	sentData, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sentData) != 8 { // one vector of 2 floats = 8 bytes
+		t.Fatalf("sentinel should be unchanged, got %d bytes", len(sentData))
+	}
+	// The actual vectors file must have grown (two vectors = 16 bytes).
+	vData, err := os.ReadFile(vectorsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vData) != 16 {
+		t.Fatalf("vectors.bin should have two vectors (16 bytes), got %d", len(vData))
+	}
+}
+
+func TestIndex_UpsertReplacesMiddleEntry(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("a", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("b", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("c", [][]float32{{1, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the middle entry.
+	if err := idx.Upsert("b", "new-b", [][]float32{{2, 2}}); err != nil {
+		t.Fatal(err)
+	}
+	if !idx.ContainsCurrent("b", "new-b") {
+		t.Error("b should be present with new content hash")
+	}
+	if !idx.Contains("a") {
+		t.Error("a should still be present")
+	}
+	if !idx.Contains("c") {
+		t.Error("c should still be present")
+	}
+}
+
+func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("a", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("b", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("injected manifest failure")
+	err = idx.upsert("b", "new-b", [][]float32{{2, 2}},
+		func(root *rootfs.Root, data []byte) error { return sentinel })
+	if err == nil || !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error, got %v", err)
+	}
+	if !idx.Contains("b") {
+		t.Fatal("b should still be in manifest after failed upsert")
+	}
+	if idx.ContainsCurrent("b", "new-b") {
+		t.Fatal("b should not have new content hash")
+	}
+	if !idx.Contains("a") {
+		t.Fatal("a should still be present")
+	}
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Size()
 }
 
 func TestIndex_AddSearchRoundTrip(t *testing.T) {
