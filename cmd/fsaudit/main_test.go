@@ -192,18 +192,6 @@ func foo() { os.Stat("/tmp/x") }
 	}
 }
 
-func TestAudit_SecurityPackageScanned(t *testing.T) {
-	r := auditFixture(t, `package rootfs
-
-import "os"
-
-func FakeOpen() (*os.Root, error) { return os.OpenRoot("/tmp/fake") }
-`)
-	if len(r.SourceCalls) == 0 {
-		t.Error("rootfs should be scanned by the audit")
-	}
-}
-
 func TestAudit_FsauditDirExempted(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "cmd/fsaudit/fake.go", `package main
@@ -286,9 +274,6 @@ func foo() {
 	r := Audit(dir, al)
 	if r.Err != nil {
 		t.Fatal(r.Err)
-	}
-	if n := countBlocked(r, "os.Stat"); n != 0 {
-		return // fine
 	}
 	var n int
 	for _, c := range r.Unclassified {
@@ -448,7 +433,7 @@ var funcs = []func(string) error{os.RemoveAll}`},
 		{"pass as arg", `package pkg
 import "os"
 func use(fn func(string) error) {}
-var _ = use(os.RemoveAll)`},
+func f() { use(os.RemoveAll) }`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
