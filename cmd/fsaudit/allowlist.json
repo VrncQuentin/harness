@@ -259,67 +259,67 @@
       "notes": "eval-retrieval: enumerate episode files through pinned repo instead of filepath.Glob+filepath.Rel"
     },
     {
-      "notes": "ReadManifest: read manifest.json",
-      "fn": "os.ReadFile",
       "line": 71,
       "file": "internal/index/index.go",
-      "pr": "PR 5b"
+      "pr": "PR 5b1",
+      "notes": "ReadManifest: read manifest.json",
+      "fn": "os.ReadFile"
     },
     {
-      "notes": "Create: create index directory",
-      "fn": "os.MkdirAll",
       "line": 93,
       "file": "internal/index/index.go",
-      "pr": "PR 5b"
+      "pr": "PR 5b1",
+      "notes": "Create: create index directory",
+      "fn": "os.MkdirAll"
     },
     {
+      "line": 221,
+      "file": "internal/index/index.go",
+      "pr": "PR 5b1",
       "notes": "Search: open vectors.bin",
-      "fn": "os.Open",
-      "line": 212,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b"
+      "fn": "os.Open"
     },
     {
+      "line": 309,
+      "file": "internal/index/index.go",
+      "pr": "PR 5b1",
       "notes": "validateManifest: check vector file",
-      "fn": "os.Stat",
-      "line": 300,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b"
+      "fn": "os.Stat"
     },
     {
+      "line": 348,
+      "file": "internal/index/index.go",
+      "pr": "PR 5b1",
       "notes": "writeFileAtomic: temp file",
-      "fn": "os.CreateTemp",
-      "line": 339,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b"
+      "fn": "os.CreateTemp"
     },
     {
+      "line": 353,
+      "file": "internal/index/index.go",
+      "pr": "PR 5b1",
       "notes": "writeFileAtomic: cleanup temp",
-      "fn": "os.Remove",
-      "line": 344,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b"
+      "fn": "os.Remove"
     },
     {
-      "notes": "writeFileAtomic: cleanup old",
-      "fn": "os.Remove",
-      "line": 361,
+      "line": 369,
       "file": "internal/index/index.go",
-      "pr": "PR 5b"
-    },
-    {
-      "notes": "writeFileAtomic: retry rename",
-      "fn": "os.Rename",
-      "line": 364,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b"
-    },
-    {
+      "pr": "PR 5b1",
       "notes": "writeFileAtomic: publish",
-      "pr": "PR 5b",
-      "line": 360,
-      "fn": "os.Rename",
-      "file": "internal/index/index.go"
+      "fn": "os.Rename"
+    },
+    {
+      "line": 370,
+      "file": "internal/index/index.go",
+      "pr": "PR 5b1",
+      "notes": "writeFileAtomic: cleanup old",
+      "fn": "os.Remove"
+    },
+    {
+      "line": 373,
+      "file": "internal/index/index.go",
+      "pr": "PR 5b1",
+      "notes": "writeFileAtomic: retry rename",
+      "fn": "os.Rename"
     }
   ]
 }

@@ -116,9 +116,15 @@ func (idx *Index) Add(sha string, vectors [][]float32) error {
 	return idx.Upsert(sha, sha, vectors)
 }
 
-// Upsert stores vectors for source. A matching source and content hash is a
-// no-op; changed source content replaces its old vectors.
+// Upsert stores vectors for source.
 func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error {
+	return idx.upsert(source, contentHash, vectors, nil)
+}
+
+// upsert is Upsert with an optional manifest-write function.  Tests inject
+// a writer that returns an error to exercise manifest-publication failure
+// without blocking vector publication.
+func (idx *Index) upsert(source, contentHash string, vectors [][]float32, writeManifest func(root *rootfs.Root, data []byte) error) error {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 
@@ -189,13 +195,16 @@ func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error 
 	if err != nil {
 		return fmt.Errorf("index: marshal manifest: %w", err)
 	}
-	if err := root.WriteStreamAtomic(manifestFile, bytes.NewReader(data), 0o644); err != nil {
-		// Vectors were already published with unreferenced tail bytes.
-		// The old manifest is still in effect and valid. The next
-		// Upsert will rebuild from the current state.
+
+	wm := writeManifest
+	if wm == nil {
+		wm = func(r *rootfs.Root, d []byte) error {
+			return r.WriteStreamAtomic(manifestFile, bytes.NewReader(d), 0o644)
+		}
+	}
+	if err := wm(root, data); err != nil {
 		return fmt.Errorf("index: publish manifest: %w", err)
 	}
-
 	// Both publications succeeded — commit the new manifest.
 	idx.manifest = next
 	return nil

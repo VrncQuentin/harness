@@ -5,8 +5,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 func TestIndex_CreatePersistsEmptyIndex(t *testing.T) {
@@ -59,9 +60,6 @@ func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 }
 
 func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("chmod-based write blocking not effective on Windows")
-	}
 	dir := t.TempDir()
 	idx, err := Create(dir, 2)
 	if err != nil {
@@ -72,32 +70,22 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 	}
 	vecSizeBefore := fileSize(t, filepath.Join(dir, vectorsFile))
 
-	// Make the directory read-only so WriteStreamAtomic fails on the
-	// manifest publication.  The old manifest remains intact.
-	if err := os.Chmod(dir, 0o555); err != nil {
-		t.Skip("chmod unavailable")
+	sentinel := errors.New("injected manifest failure")
+	err = idx.upsert("new", "new-content", [][]float32{{0, 1}},
+		func(root *rootfs.Root, data []byte) error { return sentinel })
+	if err == nil || !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error, got %v", err)
 	}
-	defer func() { _ = os.Chmod(dir, 0o755) }()
-
-	err = idx.Upsert("new", "new-content", [][]float32{{0, 1}})
-	if err == nil {
-		_ = os.Chmod(dir, 0o755)
-		t.Fatal("expected manifest write to fail")
-	}
-	_ = os.Chmod(dir, 0o755)
-
 	if !idx.Contains("old") {
 		t.Fatal("old entry should still be in manifest")
 	}
 	if idx.Contains("new") {
 		t.Fatal("failed upsert should not be in memory")
 	}
-	// Vectors may have grown (published before manifest failure).
 	vecSizeAfter := fileSize(t, filepath.Join(dir, vectorsFile))
 	if vecSizeAfter <= vecSizeBefore {
-		t.Log("vectors size unchanged — publication may have failed earlier")
+		t.Error("vectors.bin should have grown")
 	}
-	// Reopen directly — no test-side repair.
 	idx2, err := Open(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -181,9 +169,6 @@ func TestIndex_UpsertReplacesMiddleEntry(t *testing.T) {
 }
 
 func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("chmod-based write blocking not effective on Windows")
-	}
 	dir := t.TempDir()
 	idx, err := Create(dir, 2)
 	if err != nil {
@@ -195,16 +180,12 @@ func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
 	if err := idx.Add("b", [][]float32{{0, 1}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o555); err != nil {
-		t.Skip("chmod unavailable")
+	sentinel := errors.New("injected manifest failure")
+	err = idx.upsert("b", "new-b", [][]float32{{2, 2}},
+		func(root *rootfs.Root, data []byte) error { return sentinel })
+	if err == nil || !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error, got %v", err)
 	}
-	defer func() { _ = os.Chmod(dir, 0o755) }()
-	err = idx.Upsert("b", "new-b", [][]float32{{2, 2}})
-	if err == nil {
-		_ = os.Chmod(dir, 0o755)
-		t.Fatal("expected failure")
-	}
-	_ = os.Chmod(dir, 0o755)
 	if !idx.Contains("b") {
 		t.Fatal("b should still be in manifest after failed upsert")
 	}
