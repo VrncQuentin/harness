@@ -605,3 +605,119 @@ func TestDirReader_WalkKeepsDescendingInsidePinnedTree(t *testing.T) {
 		t.Error("Walk should descend into nested directories inside the pinned tree")
 	}
 }
+
+func TestDirReader_WriteFileRejectsRootTarget(t *testing.T) {
+	r, err := NewDirReader(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.WriteFile(".", []byte("x")); err == nil {
+		t.Error("WriteFile('.') should be rejected")
+	}
+	if err := r.WriteFile("./", []byte("x")); err == nil {
+		t.Error("WriteFile('./') should be rejected")
+	}
+}
+
+func TestDirReader_WriteFileReplacesHardLinkedLeaf(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(real, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(real, filepath.Join(dir, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.WriteFile("link.txt", []byte("replaced")); err != nil {
+		t.Fatal(err)
+	}
+	// The hard-linked source must not be modified.
+	linked, err := os.ReadFile(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linked) != "original" {
+		t.Error("hard-linked source should not be modified by rename publication")
+	}
+	// The link name should contain the new content.
+	linkContent, err := os.ReadFile(filepath.Join(dir, "link.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linkContent) != "replaced" {
+		t.Error("link name should contain the new content")
+	}
+}
+
+func TestDirReader_WriteFileRefusesLinkOutOfRoot(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
+		t.Skip("symlink unavailable: " + err.Error())
+	}
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.WriteFile("link/evil.txt", []byte("evil"))
+	if err == nil {
+		t.Error("WriteFile through link should fail")
+	}
+}
+
+func TestDirReader_MkdirAllRefusesLinkOutOfRoot(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
+		t.Skip("symlink unavailable: " + err.Error())
+	}
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.MkdirAll("link/subdir")
+	if err == nil {
+		t.Error("MkdirAll through link should fail")
+	}
+}
+
+func TestDirReader_RemoveAllRefusesLinkOutOfRoot(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
+		t.Skip("symlink unavailable: " + err.Error())
+	}
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.RemoveAll("link")
+	if err == nil {
+		t.Error("RemoveAll through link should fail")
+	}
+}

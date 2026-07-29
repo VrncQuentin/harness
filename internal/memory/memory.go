@@ -4,6 +4,7 @@
 package memory
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -171,16 +172,19 @@ func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
+	clean := filepath.Clean(filepath.FromSlash(relPath))
+	if clean == "." {
+		return fmt.Errorf("memory: write %s: refusing to write to repo root", relPath)
+	}
 	root, err := r.openRoot()
 	if err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
 	defer func() { _ = root.Close() }()
-	// Ensure parent directory exists before WriteStreamAtomic.
-	if err := root.MkdirAll(filepath.Dir(filepath.FromSlash(relPath)), 0o755); err != nil {
+	if err := root.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	if err := root.WriteStreamAtomic(filepath.FromSlash(relPath), strings.NewReader(string(data)), 0o644); err != nil {
+	if err := root.WriteStreamAtomic(clean, bytes.NewReader(data), 0o644); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
 	return nil

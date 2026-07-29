@@ -64,11 +64,16 @@ until the sequence below is merged and the final audit (PR 12) passes.
 | 4.5 | `DirReader.Glob` reads parent directory by pathname | `TestDirReader_GlobDoesNotFollowLinkOutOfRoot` |
 | 4.6 | `DirReader.ListDirs` reads by pathname | `TestDirReader_ListDirsDoesNotFollowLinkOutOfRoot` |
 
-### PR 5 — Memory writes, index, and mutation serialization
+### PR 5a — Memory writes migration
 
 | # | Finding | Test |
 |---|---------|------|
-| 5.1 | `DirReader.WriteFile` writes by pathname, not through a pinned handle | `TestDirReader_WriteFileReplacesHardLinkedLeafInsteadOfWritingThroughIt` |
+| 5.1 | `DirReader.WriteFile` writes by pathname, not through a pinned handle | `TestDirReader_WriteFileReplacesHardLinkedLeaf` |
+
+### PR 5b — Index and mutation serialization
+
+| # | Finding | Test |
+|---|---------|------|
 | 5.2 | Index located by absolute pathname (`<repo>/index/_episodes`) | `TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo` |
 | 5.3 | Index re-pointed after pin — manifests a different repo | `TestEpisodeIndex_RepointedAfterPinFailsClosed` |
 | 5.4 | Post-rename `os.Remove` + retry fallback deletes a stranger's replacement | `TestIndex_WriteManifestDoesNotRemoveStranger` |
