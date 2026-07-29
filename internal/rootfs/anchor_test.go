@@ -295,3 +295,85 @@ func TestAnchor_ExplicitCloseReleasesHandle(t *testing.T) {
 		t.Error("directory removal should succeed after anchor handle closed:", err)
 	}
 }
+
+func TestAnchor_SameAnchor_SameDirectory(t *testing.T) {
+	dir := t.TempDir()
+	a := mustNewAnchor(t, dir)
+	b := mustNewAnchor(t, dir)
+
+	same, err := a.SameAnchor(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !same {
+		t.Error("two anchors on the same directory should be SameAnchor")
+	}
+}
+
+func TestAnchor_SameAnchor_DifferentDirectory(t *testing.T) {
+	a := mustNewAnchor(t, t.TempDir())
+	b := mustNewAnchor(t, t.TempDir())
+
+	same, err := a.SameAnchor(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same {
+		t.Error("two anchors on different directories should not be SameAnchor")
+	}
+}
+
+func TestAnchor_SameAnchor_SymlinkAlias(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	symlinkOrSkip(t, dir, link)
+
+	a := mustNewAnchor(t, dir)
+	b := mustNewAnchor(t, link)
+
+	same, err := a.SameAnchor(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !same {
+		t.Error("anchors on same directory via symlink should be SameAnchor")
+	}
+}
+
+func TestAnchor_SameAnchor_AfterReplacement(t *testing.T) {
+	dir := t.TempDir()
+	a := mustNewAnchor(t, dir)
+
+	// Replace the directory content.  The pathname is the same but the
+	// filesystem object differs.
+	replacement := filepath.Join(t.TempDir(), "replacement")
+	if err := os.MkdirAll(replacement, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		// Handle blocks removal; close and retry.
+		_ = a.Close()
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+		// Cannot compare after anchor is closed.  Pass.
+		return
+	}
+	if err := os.Rename(replacement, dir); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := NewAnchor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+
+	same, err := a.SameAnchor(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same {
+		t.Error("anchors on replaced directory should not be SameAnchor")
+	}
+}
