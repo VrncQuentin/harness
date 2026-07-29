@@ -43,21 +43,26 @@ func (r *Repo) HeadSHA() (string, error) {
 
 // CurrentBranch returns the short name of the branch HEAD points to.
 // It reads through the opened go-git handle, so it works on linked
-// worktrees where .git is a file.  If HEAD is detached or unborn the
-// error describes the state.
+// worktrees where .git is a file.  Reading unresolved (resolved=false)
+// lets it return the branch name even when the branch ref does not yet
+// exist (unborn branch).  Non-branch symbolic targets (tags, remote
+// refs) are rejected.  Detached HEAD returns a hash error.
 func (r *Repo) CurrentBranch() (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Read HEAD unresolved — the target branch may not exist yet.
 	head, err := r.repo.Reference(plumbing.HEAD, false)
 	if errors.Is(err, plumbing.ErrReferenceNotFound) {
-		return "", fmt.Errorf("git: unborn branch in %s", r.path)
+		return "", fmt.Errorf("git: HEAD not found in %s", r.path)
 	}
 	if err != nil {
 		return "", fmt.Errorf("git: head %s: %w", r.path, err)
 	}
 	if head.Type() == plumbing.SymbolicReference {
-		return head.Target().Short(), nil
+		target := head.Target()
+		if target.IsBranch() {
+			return target.Short(), nil
+		}
+		return "", fmt.Errorf("git: HEAD points to non-branch ref %s", target)
 	}
 	short := head.Hash().String()
 	if len(short) > 8 {

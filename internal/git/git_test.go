@@ -136,3 +136,57 @@ func TestErrors(t *testing.T) {
 		t.Errorf("error not wrapped: %v", err)
 	}
 }
+
+func TestCurrentBranch_LinkedWorktreeLayout(t *testing.T) {
+	// Simulate a linked worktree: .git is a file containing the path
+	// to the common directory, not a directory itself.
+	dir := t.TempDir()
+	commonDir := filepath.Join(dir, "common")
+	if err := os.MkdirAll(commonDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The "common" directory holds the real .git content.
+	if err := os.WriteFile(filepath.Join(commonDir, "HEAD"), []byte("ref: refs/heads/feat/linked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The worktree directory has a .git file pointing at commonDir.
+	worktree := filepath.Join(dir, "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitFile := filepath.Join(worktree, ".git")
+	content := "gitdir: " + filepath.ToSlash(commonDir) + "\n"
+	if err := os.WriteFile(gitFile, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(worktree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch, err := repo.CurrentBranch()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if branch != "feat/linked" {
+		t.Errorf("expected feat/linked, got %s", branch)
+	}
+}
+
+func TestCurrentBranch_DetachedHead(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("abc123def456\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = repo.CurrentBranch()
+	if err == nil || !strings.Contains(err.Error(), "detached") {
+		t.Errorf("expected detached HEAD error, got %v", err)
+	}
+}
