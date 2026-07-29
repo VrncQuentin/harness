@@ -139,17 +139,15 @@ func TestErrors(t *testing.T) {
 
 func TestCurrentBranch_LinkedWorktreeLayout(t *testing.T) {
 	// Simulate a linked worktree: .git is a file containing the path
-	// to the common directory, not a directory itself.
+	// to the common directory containing HEAD, not a directory itself.
 	dir := t.TempDir()
 	commonDir := filepath.Join(dir, "common")
 	if err := os.MkdirAll(commonDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// The "common" directory holds the real .git content.
 	if err := os.WriteFile(filepath.Join(commonDir, "HEAD"), []byte("ref: refs/heads/feat/linked\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The worktree directory has a .git file pointing at commonDir.
 	worktree := filepath.Join(dir, "worktree")
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
@@ -178,7 +176,7 @@ func TestCurrentBranch_DetachedHead(t *testing.T) {
 	if err := os.MkdirAll(gitDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("abc123def456\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("abcdef1234567890abcdef1234567890abcdef12\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	repo, err := Open(dir)
@@ -188,5 +186,24 @@ func TestCurrentBranch_DetachedHead(t *testing.T) {
 	_, err = repo.CurrentBranch()
 	if err == nil || !strings.Contains(err.Error(), "detached") {
 		t.Errorf("expected detached HEAD error, got %v", err)
+	}
+}
+
+func TestCurrentBranch_RejectsNonBranchSymbolic(t *testing.T) {
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/tags/v1.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = repo.CurrentBranch()
+	if err == nil || !strings.Contains(err.Error(), "non-branch") {
+		t.Errorf("expected non-branch ref error, got %v", err)
 	}
 }

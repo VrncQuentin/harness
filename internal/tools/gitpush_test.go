@@ -98,6 +98,34 @@ func TestGitPushTool_C2MemoryRepoRejected(t *testing.T) {
 	}
 }
 
+func TestGitPushTool_LinkedWorktreeBranch(t *testing.T) {
+	// Simulate linked worktree: .git file → common dir with HEAD.
+	dir := t.TempDir()
+	common := filepath.Join(dir, "common")
+	if err := os.MkdirAll(common, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(common, "HEAD"), []byte("ref: refs/heads/feat/wt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	worktree := filepath.Join(dir, "worktree")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, ".git"), []byte("gitdir: "+filepath.ToSlash(common)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tool := &gitPushTool{}
+	c := CallInfo{SandboxRoots: []string{worktree}, MemoryRepoCheck: noMemoryRepos()}
+	res := tool.Execute(context.Background(), c, map[string]any{"root": worktree})
+	if res.Error != "" {
+		t.Fatalf("unexpected error: %s", res.Error)
+	}
+	if !strings.Contains(res.Content, "feat/wt") {
+		t.Errorf("linked-worktree push should mention branch, got: %s", res.Content)
+	}
+}
+
 func initRepoWithBranch(t *testing.T, branch string) string {
 	t.Helper()
 	dir := t.TempDir()
