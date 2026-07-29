@@ -1,3 +1,6 @@
+// Package memory mediates reads and writes for the on-disk memory repo.
+// It provides the filesystem-backed view used by prompt assembly, agent
+// management, sessions, and the memory browser.
 package memory
 
 import (
@@ -13,19 +16,26 @@ import (
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
+// Reader is the minimum surface the prompt assembler needs from the memory
+// repo. All paths are forward-slash and relative to the repo root.
 type Reader interface {
 	Read(relPath string) ([]byte, error)
 	Glob(pattern string) ([]string, error)
 }
 
+// FileWriter is an optional capability some Readers expose for writing
+// files under the repo root.
 type FileWriter interface {
 	WriteFile(relPath string, data []byte) error
 }
 
+// Walker is an optional capability some Readers expose for enumerating
+// every entry under a path.
 type Walker interface {
 	Walk(relPath string) ([]Entry, error)
 }
 
+// Repo is the full production memory repository surface.
 type Repo interface {
 	Reader
 	FileWriter
@@ -35,12 +45,16 @@ type Repo interface {
 	RemoveAll(relPath string) error
 }
 
+// Entry describes one path under the memory repo as returned by Walk.
 type Entry struct {
 	Path string
 	Dir  bool
 	Size int64
 }
 
+// DirReader serves files from a directory.  Every read operation creates
+// a fresh Anchor, verifies identity, and releases it when done.  Durable
+// Anchor ownership is deferred to PR 9.
 type DirReader struct {
 	root string
 }
@@ -65,6 +79,7 @@ func (r *DirReader) openAnchor() (*rootfs.Anchor, error) {
 	return rootfs.NewAnchor(r.root)
 }
 
+// Read implements Reader.
 func (r *DirReader) Read(relPath string) ([]byte, error) {
 	if err := checkRel(relPath); err != nil {
 		return nil, err
@@ -86,6 +101,7 @@ func (r *DirReader) Read(relPath string) ([]byte, error) {
 	return b, nil
 }
 
+// ListDirs returns direct subdirectories of relPath.
 func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 	if relPath != "" {
 		if err := checkRel(relPath); err != nil {
@@ -119,6 +135,7 @@ func (r *DirReader) ListDirs(relPath string) ([]string, error) {
 	return out, nil
 }
 
+// MkdirAll creates relPath and any necessary parents.
 func (r *DirReader) MkdirAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return err
@@ -139,6 +156,7 @@ func (r *DirReader) MkdirAll(relPath string) error {
 	return nil
 }
 
+// WriteFile implements FileWriter via temp+rename through the anchor.
 func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
@@ -153,17 +171,16 @@ func (r *DirReader) WriteFile(relPath string, data []byte) error {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
 	defer func() { _ = root.Close() }()
-	abs := filepath.FromSlash(relPath)
-	parent := filepath.Dir(abs)
-	if err := root.MkdirAll(parent, 0o755); err != nil {
+	if err := root.MkdirAll(filepath.Dir(filepath.FromSlash(relPath)), 0o755); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
-	if err := root.WriteStreamAtomic(abs, strings.NewReader(string(data)), 0o644); err != nil {
+	if err := root.WriteStreamAtomic(filepath.FromSlash(relPath), strings.NewReader(string(data)), 0o644); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
 	}
 	return nil
 }
 
+// RemoveAll removes relPath.
 func (r *DirReader) RemoveAll(relPath string) error {
 	if err := checkRel(relPath); err != nil {
 		return fmt.Errorf("memory: remove %s: %w", relPath, err)
@@ -187,6 +204,7 @@ func (r *DirReader) RemoveAll(relPath string) error {
 	return nil
 }
 
+// Glob implements Reader.
 func (r *DirReader) Glob(pattern string) ([]string, error) {
 	if err := checkRel(pattern); err != nil {
 		return nil, err
@@ -227,8 +245,11 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 	return matches, nil
 }
 
-const maxWalkDepth = 256
-
+// Walk implements Walker using rooted traversal.  Before entering a
+// subdirectory, Lstat is called through the parent to check whether the
+// entry is a link — links are refused.  OpenChild follows only after
+// the link check passes.  Children are closed after their subtrees,
+// and the active ancestor stack is used for cycle detection.
 func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	if relPath != "" {
 		if err := checkRel(relPath); err != nil {
@@ -253,74 +274,48 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	defer func() { _ = root.Close() }()
 
 	var out []Entry
-	type frame struct {
-		root  *rootfs.Root
-		rel   string
-		depth int
-	}
-	var stack []frame
-	seenAncestors := []*rootfs.Root{root}
-
-	if relPath == "" {
-		stack = append(stack, frame{root: root, rel: "", depth: 0})
-	} else {
-		child, err := root.OpenChild(filepath.FromSlash(relPath))
+	var walkDir func(dir *rootfs.Root, prefix string, ancestors []*rootfs.Root) error
+	walkDir = func(dir *rootfs.Root, prefix string, ancestors []*rootfs.Root) error {
+		entries, err := dir.ReadDir(".")
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
-		}
-		seenAncestors = append(seenAncestors, child)
-		stack = append(stack, frame{root: child, rel: relPath, depth: 0})
-	}
-
-	for len(stack) > 0 {
-		cur := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
-		entries, err := cur.root.ReadDir(".")
-		if err != nil {
-			return nil, fmt.Errorf("memory: walk %s: %w", cur.rel, err)
+			return fmt.Errorf("memory: walk %s: %w", prefix, err)
 		}
 		for _, e := range entries {
 			name := e.Name()
 			if name == ".git" {
 				continue
 			}
-			childRel := path.Join(cur.rel, name)
-			if cur.rel == "" {
+			childRel := path.Join(prefix, name)
+			if prefix == "" {
 				childRel = name
 			}
 			info, err := e.Info()
 			if err != nil {
-				return nil, fmt.Errorf("memory: walk %s: %w", childRel, err)
+				return fmt.Errorf("memory: walk %s: %w", childRel, err)
 			}
 			out = append(out, Entry{Path: childRel, Dir: e.IsDir(), Size: info.Size()})
 			if !e.IsDir() {
 				continue
 			}
-			if cur.depth+1 >= maxWalkDepth {
-				return nil, fmt.Errorf("memory: walk depth exceeded at %s", childRel)
-			}
-			child, err := cur.root.OpenChild(name)
+			// Lstat through the parent to detect links before
+			// OpenChild would follow them.
+			fi, err := dir.Lstat(name)
 			if err != nil {
-				return nil, fmt.Errorf("memory: walk %s: %w", childRel, err)
-			}
-			fi, err := child.Lstat(".")
-			if err != nil {
-				_ = child.Close()
-				return nil, fmt.Errorf("memory: walk %s: %w", childRel, err)
+				return fmt.Errorf("memory: walk %s: %w", childRel, err)
 			}
 			if fi.Mode()&os.ModeSymlink != 0 || fi.Mode()&os.ModeIrregular != 0 {
-				_ = child.Close()
 				continue
 			}
+			child, err := dir.OpenChild(name)
+			if err != nil {
+				return fmt.Errorf("memory: walk %s: %w", childRel, err)
+			}
 			isCycle := false
-			for _, anc := range seenAncestors {
+			for _, anc := range ancestors {
 				same, err := anc.SameDir(child)
 				if err != nil {
 					_ = child.Close()
-					return nil, err
+					return err
 				}
 				if same {
 					isCycle = true
@@ -331,9 +326,44 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 				_ = child.Close()
 				continue
 			}
-			seenAncestors = append(seenAncestors, child)
-			stack = append(stack, frame{root: child, rel: childRel, depth: cur.depth + 1})
+			if err := walkDir(child, childRel, append(ancestors, child)); err != nil {
+				_ = child.Close()
+				return err
+			}
+			_ = child.Close()
 		}
+		return nil
+	}
+
+	startDir := root
+	startPrefix := ""
+	startAncestors := []*rootfs.Root{root}
+	if relPath != "" {
+		fi, err := root.Lstat(filepath.FromSlash(relPath))
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 || fi.Mode()&os.ModeIrregular != 0 {
+			return nil, nil
+		}
+		child, err := root.OpenChild(filepath.FromSlash(relPath))
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
+		}
+		defer func() { _ = child.Close() }()
+		startDir = child
+		startPrefix = relPath
+		startAncestors = append(startAncestors, child)
+	}
+
+	if err := walkDir(startDir, startPrefix, startAncestors); err != nil {
+		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
