@@ -312,7 +312,7 @@ guarantees below.
 
 #### Acknowledged residual window
 
-Within `WriteStreamAtomic`, the temporary file is created inside a pinned
+Within `WriteStreamAtomic`, the temporary file is created inside a
 destination parent directory pinned with `OpenChild`.  After writing, the
 data is fsynced and the temp file's identity is captured from the live
 handle with `f.Stat()` and compared against the named entry through the

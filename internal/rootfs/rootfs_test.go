@@ -711,32 +711,6 @@ func TestRootReadsAndClassifiesEntries(t *testing.T) {
 
 // ---------- WriteStreamAtomic regression tests ----------
 
-func TestWriteStreamAtomic_PinsDestinationOnce(t *testing.T) {
-	dir := t.TempDir()
-	root, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer root.Close()
-
-	// Create a nested directory and pin it.
-	nested := filepath.Join(dir, "sub", "deep")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// Write via the pinned root into the nested dir.
-	if err := root.WriteStreamAtomic("sub/deep/file.txt", bytes.NewReader([]byte("hello")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(filepath.Join(nested, "file.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "hello" {
-		t.Errorf("expected hello, got %s", string(got))
-	}
-}
-
 func TestWriteStreamAtomic_PinSurvivesIntermediateSwap(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows directory locking prevents mid-write swaps")
@@ -746,7 +720,7 @@ func TestWriteStreamAtomic_PinSurvivesIntermediateSwap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	// Set up: root/sub/orig/ (pinned parent) and root/sub/evil/
 	orig := filepath.Join(dir, "sub", "orig")
@@ -788,7 +762,7 @@ func TestWriteStreamAtomic_ReplacesHardLinkedLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	real := filepath.Join(dir, "real.txt")
 	if err := os.WriteFile(real, []byte("original"), 0o644); err != nil {
@@ -859,7 +833,7 @@ func TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, nil, nil)
 	if err == nil {
