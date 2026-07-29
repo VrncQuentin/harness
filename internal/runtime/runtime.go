@@ -53,6 +53,7 @@ type Runtime struct {
 
 	globalMem  memory.Repo
 	activeMem  memory.Repo
+	sessionMem memory.Repo // session store DirReader, closed on Stop
 	agentReg   *agent.DiskRegistry
 	assembler  *prompt.DiskAssembler
 	apiServer  *api.Server

@@ -90,6 +90,8 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		}
 	}
 
+	// Build the candidate generation entirely in locals.  If any step
+	// fails, close everything and leave the current generation untouched.
 	globalMem, err := memory.NewDirReader(roots.globalRoot)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("open global memory: %w", err))
@@ -101,37 +103,42 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		uiServer.AddStartupError(fmt.Errorf("open active memory: %w", err))
 		return false
 	}
-	// Close old readers before replacing them.
-	if dr, ok := rt.globalMem.(*memory.DirReader); ok {
-		_ = dr.Close()
+	closeCandidates := func() {
+		_ = globalMem.Close()
+		_ = activeMem.Close()
 	}
-	if dr, ok := rt.activeMem.(*memory.DirReader); ok {
-		_ = dr.Close()
-	}
-	rt.globalMem = globalMem
-	rt.activeMem = activeMem
-	rt.agentReg = agent.NewDiskRegistry(rt.globalMem, rt.getActiveAgent, rt.setActiveAgent)
-	rt.assembler = prompt.NewProjectDiskAssembler(rt.globalMem, rt.activeMem, rt.agentReg, rt.effectivePromptFor(&rt.cfg)).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
 
-	// The project-scoped service owns one index handle for prompt retrieval,
-	// scoring, save hooks, and rebuilding. Missing indexes are created lazily;
-	// malformed indexes surface as setup errors instead of being discarded.
+	agentReg := agent.NewDiskRegistry(globalMem, rt.getActiveAgent, rt.setActiveAgent)
+	assembler := prompt.NewProjectDiskAssembler(globalMem, activeMem, agentReg, rt.effectivePromptFor(&rt.cfg)).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
+
 	indexDir := memoryops.EpisodeIndexDir(roots.activeRoot)
 	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir)
 	if err != nil {
+		closeCandidates()
 		uiServer.SetServiceDeps(svcDeps)
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 		return false
 	}
 	embedClient := rt.newEmbedderClient()
-	rt.assembler = rt.assembler.WithBlendedRetrieval(episodeIndex, embedClient)
+	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 	svcDeps.RetrievalScorer = &uiRetrievalScorerAdapter{scorer: &memoryops.EpisodeScorer{
 		Embedder: embedClient,
 		Config:   rt.cfg.Prompt,
 		Index:    episodeIndex,
 	}}
-	svcDeps.MemoryStore = rt.activeMem
-	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: rt.agentReg, globalMem: rt.globalMem, activeMem: rt.activeMem, getProjectSlug: rt.getActiveProjectSlug, setActive: rt.setActiveAgent}
+	svcDeps.MemoryStore = activeMem
+	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: agentReg, globalMem: globalMem, activeMem: activeMem, getProjectSlug: rt.getActiveProjectSlug, setActive: rt.setActiveAgent}
+
+	// Publish the candidate generation and retire the previous one.
+	oldGlobal, oldActive := rt.globalMem, rt.activeMem
+	rt.globalMem, rt.activeMem = globalMem, activeMem
+	rt.agentReg, rt.assembler = agentReg, assembler
+	if dr, ok := oldGlobal.(*memory.DirReader); ok {
+		_ = dr.Close()
+	}
+	if dr, ok := oldActive.(*memory.DirReader); ok {
+		_ = dr.Close()
+	}
 
 	// Session manager is layered on top of the validated memory repo.
 	// A failure to open the git repo surfaces as a startup error and
@@ -417,6 +424,7 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		uiServer.AddStartupError(fmt.Errorf("open session store %s: %w", repoPath, err))
 		return nil, nil
 	}
+	rt.sessionMem = sessionStore
 	mgr, err := session.NewManager(session.ManagerDeps{
 		Repo:               repo,
 		Writer:             sessionStore,
@@ -503,6 +511,8 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	}
 	rt.globalMem = nil
 	rt.activeMem = nil
+	// sessionMem is not cleared here — it is owned by the session
+	// manager and closed on Stop.
 	rt.agentReg = nil
 	rt.assembler = nil
 	rt.gitRepo = nil

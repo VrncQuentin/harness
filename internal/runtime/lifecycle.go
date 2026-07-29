@@ -131,6 +131,11 @@ func (rt *Runtime) Stop() {
 			_ = dr.Close()
 		}
 	}
+	if rt.sessionMem != nil && rt.sessionMem != rt.globalMem && rt.sessionMem != rt.activeMem {
+		if dr, ok := rt.sessionMem.(io.Closer); ok {
+			_ = dr.Close()
+		}
+	}
 	rt.mu.Unlock()
 }
 

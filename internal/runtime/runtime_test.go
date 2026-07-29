@@ -33,6 +33,7 @@ func TestNewStoresInitialConfig(t *testing.T) {
 	cfg.Agent.Active = "coder"
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 
 	if got := rt.getActiveAgent(); got != "coder" {
 		t.Fatalf("active agent = %q, want coder", got)
@@ -65,6 +66,7 @@ func TestEffectiveModelForUsesActiveProjectOverrides(t *testing.T) {
 	projectGPU := 9
 	projectParallel := 3
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		"demo": {
 			Slug:           "demo",
@@ -98,6 +100,7 @@ func TestEffectivePromptForUsesEffectiveModelCtx(t *testing.T) {
 
 	projectCtx := 4096
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		"demo": {
 			Slug:           "demo",
@@ -245,6 +248,7 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mem.Close() })
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.started = true
 	rt.globalMem = mem
 	rt.activeMem = mem
@@ -304,6 +308,7 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 	store := &runtimeConfigStore{cfg: &cfg, saved: true}
 
 	rt := New(cfg, store, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.started = true
 	t.Cleanup(func() { rt.Stop() })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
@@ -362,6 +367,8 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			tc.mutate(&loaded)
 
 			rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+			t.Cleanup(func() { rt.Stop() })
+			t.Cleanup(func() { rt.Stop() })
 			rt.started = true
 			t.Cleanup(func() { rt.Stop() })
 			t.Cleanup(func() { rt.Stop() })
@@ -403,6 +410,7 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 		summary:   "saved partial task",
 	}
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.started = true
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
@@ -463,6 +471,7 @@ func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	cfg.API.Port = port
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.reqQueue = queue.New(1, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -771,6 +780,7 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
 
 	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
@@ -820,6 +830,7 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
@@ -881,6 +892,7 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
 
 	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
@@ -940,6 +952,7 @@ func TestTaskRunnerWiresHTTPClientIntoToolContext(t *testing.T) {
 	}}
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = client
 
 	probe := &httpClientProbeTool{}
@@ -993,6 +1006,7 @@ func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 	}}
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = client
 	rt.projectStore = &runtimeProjectStoreStub{
 		projects: map[string]project.Project{
@@ -1080,6 +1094,7 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	defer q.Stop()
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.globalMem = mem
 	rt.activeMem = mem
 	rt.agentReg = reg
@@ -1134,6 +1149,7 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	dr, err := memory.NewDirReader(root)
 	if err != nil {
 		t.Fatal(err)
