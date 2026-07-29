@@ -295,7 +295,7 @@ guarantees below.
 | Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere | implemented |
 | In-process concurrent writers | Per-repository mutation coordinator keyed by physical identity (planned in PR 5); currently writes use temp+rename for file-level atomicity | planned |
 | Check/use races on intermediate directories | `OpenChildNoFollow` opens the child, Lstats the entry through the parent, rejects links, and compares the entry with the opened handle via `os.SameFile` — what is opened and what is checked are the same object | implemented |
-| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); stable cross-operation identity requires PR 2c; index and serialization require PR 5b | read/write containment implemented; identity, index, and serialization planned |
+| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); stable cross-operation identity requires PR 2c; index rooted identity requires PR 5b2; serialization requires PR 5b3 | read/write/index containment implemented; identity, rooted index, and serialization planned |
 
 #### Out of scope
 

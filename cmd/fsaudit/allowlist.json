@@ -261,14 +261,14 @@
     {
       "line": 71,
       "file": "internal/index/index.go",
-      "pr": "PR 5b1",
+      "pr": "PR 5b2",
       "notes": "ReadManifest: read manifest.json",
       "fn": "os.ReadFile"
     },
     {
       "line": 93,
       "file": "internal/index/index.go",
-      "pr": "PR 5b1",
+      "pr": "PR 5b2",
       "notes": "Create: create index directory",
       "fn": "os.MkdirAll"
     },
