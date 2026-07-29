@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -58,6 +59,9 @@ func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 }
 
 func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based write blocking not effective on Windows")
+	}
 	dir := t.TempDir()
 	idx, err := Create(dir, 2)
 	if err != nil {
@@ -66,26 +70,47 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 	if err := idx.Add("old", [][]float32{{1, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	// Replace manifest.json with a directory — WriteStreamAtomic will
-	// fail trying to rename over it.  This test-side change is the
-	// failure injection; after the Upsert fails, we remove the
-	// blocking directory and verify the old manifest (still in memory
-	// since the deep copy was not corrupted) can be re-persisted.
-	manifestPath := filepath.Join(dir, manifestFile)
-	if err := os.Remove(manifestPath); err != nil {
-		t.Fatal(err)
+	vecSizeBefore := fileSize(t, filepath.Join(dir, vectorsFile))
+
+	// Make the directory read-only so WriteStreamAtomic fails on the
+	// manifest publication.  The old manifest remains intact.
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Skip("chmod unavailable")
 	}
-	if err := os.Mkdir(manifestPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := idx.Upsert("new", "new-content", [][]float32{{0, 1}}); err == nil {
+	defer func() { _ = os.Chmod(dir, 0o755) }()
+
+	err = idx.Upsert("new", "new-content", [][]float32{{0, 1}})
+	if err == nil {
+		_ = os.Chmod(dir, 0o755)
 		t.Fatal("expected manifest write to fail")
 	}
+	_ = os.Chmod(dir, 0o755)
+
 	if !idx.Contains("old") {
-		t.Fatal("old entry should still be in manifest after failed upsert")
+		t.Fatal("old entry should still be in manifest")
 	}
 	if idx.Contains("new") {
 		t.Fatal("failed upsert should not be in memory")
+	}
+	// Vectors may have grown (published before manifest failure).
+	vecSizeAfter := fileSize(t, filepath.Join(dir, vectorsFile))
+	if vecSizeAfter <= vecSizeBefore {
+		t.Log("vectors size unchanged — publication may have failed earlier")
+	}
+	// Reopen directly — no test-side repair.
+	idx2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := idx2.Search([]float32{1, 0}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SHA != "old" {
+		t.Fatalf("old entry should be searchable: %v", results)
+	}
+	if idx2.Contains("new") {
+		t.Fatal("new entry should not be present after recovery")
 	}
 }
 
@@ -156,6 +181,9 @@ func TestIndex_UpsertReplacesMiddleEntry(t *testing.T) {
 }
 
 func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based write blocking not effective on Windows")
+	}
 	dir := t.TempDir()
 	idx, err := Create(dir, 2)
 	if err != nil {
@@ -167,21 +195,16 @@ func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
 	if err := idx.Add("b", [][]float32{{0, 1}}); err != nil {
 		t.Fatal(err)
 	}
-	// Block manifest publication so the Upsert fails after building
-	// the deep copy but before committing it.
-	manifestPath := filepath.Join(dir, manifestFile)
-	if err := os.Remove(manifestPath); err != nil {
-		t.Fatal(err)
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Skip("chmod unavailable")
 	}
-	if err := os.Mkdir(manifestPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	defer func() { _ = os.Chmod(dir, 0o755) }()
 	err = idx.Upsert("b", "new-b", [][]float32{{2, 2}})
 	if err == nil {
+		_ = os.Chmod(dir, 0o755)
 		t.Fatal("expected failure")
 	}
-	// The in-memory manifest must still contain the original "b",
-	// not the replacement.  A shallow copy would have lost it.
+	_ = os.Chmod(dir, 0o755)
 	if !idx.Contains("b") {
 		t.Fatal("b should still be in manifest after failed upsert")
 	}
@@ -191,6 +214,15 @@ func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
 	if !idx.Contains("a") {
 		t.Fatal("a should still be present")
 	}
+}
+
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Size()
 }
 
 func TestIndex_AddSearchRoundTrip(t *testing.T) {
