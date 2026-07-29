@@ -144,18 +144,41 @@ func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error 
 		}
 	}
 	entry := Entry{SHA: source, Source: source, ContentHash: contentHash, Offset: offset, Length: len(vectors)}
-	if err := idx.appendVectors(vectors); err != nil {
+	// Assemble the complete vectors file from scratch (copy-on-write)
+	// and publish by rename.  No in-place append/truncate — safe
+	// against hard links.
+	oldVectors, err := os.ReadFile(filepath.Join(idx.dir, vectorsFile))
+	if err != nil {
 		idx.manifest = previous
-		return err
+		return fmt.Errorf("index: read vectors for rewrite: %w", err)
+	}
+	newVectors := make([]byte, len(oldVectors)+len(vectors)*idx.dim*4)
+	copy(newVectors, oldVectors)
+	pos := len(oldVectors)
+	for _, v := range vectors {
+		for _, val := range v {
+			binary.LittleEndian.PutUint32(newVectors[pos:], math.Float32bits(val))
+			pos += 4
+		}
+	}
+	tmpVectors := filepath.Join(idx.dir, vectorsFile+".tmp")
+	if err := os.WriteFile(tmpVectors, newVectors, 0o644); err != nil {
+		idx.manifest = previous
+		return fmt.Errorf("index: write vectors: %w", err)
 	}
 	idx.manifest.Chunks = append(idx.manifest.Chunks, entry)
 	idx.manifest.Count += len(vectors)
+	// Write manifest first — it references the new offset.
 	if err := idx.writeManifest(); err != nil {
 		idx.manifest = previous
-		if truncateErr := idx.truncateVectors(offset); truncateErr != nil {
-			return fmt.Errorf("%w; rollback vectors: %v", err, truncateErr)
-		}
+		_ = os.Remove(tmpVectors)
 		return err
+	}
+	// Then publish vectors.  If this fails, manifest is already
+	// committed and a subsequent write will rebuild.
+	if err := os.Rename(tmpVectors, filepath.Join(idx.dir, vectorsFile)); err != nil {
+		_ = os.Remove(tmpVectors)
+		return fmt.Errorf("index: publish vectors: %w", err)
 	}
 	return nil
 }
