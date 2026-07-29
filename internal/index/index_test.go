@@ -66,7 +66,11 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 	if err := idx.Add("old", [][]float32{{1, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	// Replace manifest.json with a directory so write fails.
+	// Save the old manifest so we can restore it after failure.
+	oldManifest, err := os.ReadFile(filepath.Join(dir, manifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
 	manifestPath := filepath.Join(dir, manifestFile)
 	if err := os.Remove(manifestPath); err != nil {
 		t.Fatal(err)
@@ -77,13 +81,99 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 	if err := idx.Upsert("new", "new-content", [][]float32{{0, 1}}); err == nil {
 		t.Fatal("expected manifest write to fail")
 	}
-	// The old entry must still be in memory.
 	if !idx.Contains("old") {
 		t.Fatal("old entry should still be in manifest")
 	}
-	// The new entry must NOT be in memory.
 	if idx.Contains("new") {
 		t.Fatal("failed upsert should not be in memory")
+	}
+	// Restore manifest and reopen — old entry must be searchable.
+	if err := os.RemoveAll(manifestPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, oldManifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := idx2.Search([]float32{1, 0}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].SHA != "old" {
+		t.Fatalf("old entry should be searchable after manifest recovery: %v", results)
+	}
+}
+
+func TestIndex_UpsertReplacesViaRename(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("first", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	vectorsPath := filepath.Join(dir, vectorsFile)
+	// Create a hard link to the vectors file as a sentinel.
+	sentinel := filepath.Join(dir, "sentinel.bin")
+	if err := os.Link(vectorsPath, sentinel); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("second", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	// The sentinel must still contain only the original data.
+	sentData, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sentData) != 8 { // one vector of 2 floats = 8 bytes
+		t.Fatalf("sentinel should be unchanged, got %d bytes", len(sentData))
+	}
+	// The actual vectors file must have grown (two vectors = 16 bytes).
+	vData, err := os.ReadFile(vectorsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vData) != 16 {
+		t.Fatalf("vectors.bin should have two vectors (16 bytes), got %d", len(vData))
+	}
+}
+
+func TestIndex_UpsertReplacesMiddleEntry(t *testing.T) {
+	dir := t.TempDir()
+	idx, err := Create(dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("a", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("b", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.Add("c", [][]float32{{1, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	// Replace the middle entry.
+	if err := idx.Upsert("b", "new-b", [][]float32{{2, 2}}); err != nil {
+		t.Fatal(err)
+	}
+	// All three should still be present, "b" with new content.
+	if !idx.ContainsCurrent("b", "new-b") {
+		t.Error("b should be present with new content hash")
+	}
+	if !idx.Contains("a") {
+		t.Error("a should still be present")
+	}
+	if !idx.Contains("c") {
+		t.Error("c should still be present")
+	}
+	if idx.ContainsCurrent("b", "") {
+		t.Error("b should not match empty content hash")
 	}
 }
 

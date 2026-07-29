@@ -273,58 +273,51 @@
       "pr": "PR 5b"
     },
     {
-      "notes": "Upsert: read old vectors for copy-on-write",
-      "fn": "os.ReadFile",
-      "line": 148,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b"
-    },
-    {
       "notes": "Search: open vectors.bin",
       "fn": "os.Open",
-      "line": 210,
+      "line": 211,
       "file": "internal/index/index.go",
       "pr": "PR 5b"
     },
     {
       "notes": "validateManifest: check vector file",
       "fn": "os.Stat",
-      "line": 298,
+      "line": 299,
       "file": "internal/index/index.go",
       "pr": "PR 5b"
     },
     {
       "notes": "writeFileAtomic: temp file",
       "fn": "os.CreateTemp",
-      "line": 337,
+      "line": 338,
       "file": "internal/index/index.go",
       "pr": "PR 5b"
     },
     {
       "notes": "writeFileAtomic: cleanup temp",
       "fn": "os.Remove",
-      "line": 342,
+      "line": 343,
       "file": "internal/index/index.go",
       "pr": "PR 5b"
     },
     {
       "notes": "writeFileAtomic: publish",
       "fn": "os.Rename",
-      "line": 358,
+      "line": 359,
       "file": "internal/index/index.go",
       "pr": "PR 5b"
     },
     {
       "notes": "writeFileAtomic: cleanup old",
       "fn": "os.Remove",
-      "line": 359,
+      "line": 360,
       "file": "internal/index/index.go",
       "pr": "PR 5b"
     },
     {
       "notes": "writeFileAtomic: retry rename",
       "fn": "os.Rename",
-      "line": 362,
+      "line": 363,
       "file": "internal/index/index.go",
       "pr": "PR 5b"
     }

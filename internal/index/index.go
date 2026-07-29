@@ -144,8 +144,16 @@ func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error 
 		}
 	}
 
-	// Read existing vectors to derive the offset for the new entry.
-	oldVectors, err := os.ReadFile(filepath.Join(idx.dir, vectorsFile))
+	// Pin the index directory first — every subsequent operation uses
+	// this handle so a re-point between read and publish is refused.
+	root, err := rootfs.Open(idx.dir)
+	if err != nil {
+		return fmt.Errorf("index: open root: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+
+	// Read existing vectors through the pinned root to derive the offset.
+	oldVectors, err := root.ReadFile(vectorsFile)
 	if err != nil {
 		return fmt.Errorf("index: read vectors: %w", err)
 	}
@@ -162,13 +170,6 @@ func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error 
 			pos += 4
 		}
 	}
-
-	// Pin the index directory and publish vectors and manifest through it.
-	root, err := rootfs.Open(idx.dir)
-	if err != nil {
-		return fmt.Errorf("index: open root: %w", err)
-	}
-	defer func() { _ = root.Close() }()
 
 	// Publish vectors first via WriteStreamAtomic. If this fails, the
 	// old manifest (still in effect) only references the old prefix;
