@@ -95,12 +95,20 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		uiServer.AddStartupError(fmt.Errorf("open global memory: %w", err))
 		return false
 	}
-	rt.globalMem = globalMem
 	activeMem, err := memory.NewDirReader(roots.activeRoot)
 	if err != nil {
+		_ = globalMem.Close()
 		uiServer.AddStartupError(fmt.Errorf("open active memory: %w", err))
 		return false
 	}
+	// Close old readers before replacing them.
+	if dr, ok := rt.globalMem.(*memory.DirReader); ok {
+		_ = dr.Close()
+	}
+	if dr, ok := rt.activeMem.(*memory.DirReader); ok {
+		_ = dr.Close()
+	}
+	rt.globalMem = globalMem
 	rt.activeMem = activeMem
 	rt.agentReg = agent.NewDiskRegistry(rt.globalMem, rt.getActiveAgent, rt.setActiveAgent)
 	rt.assembler = prompt.NewProjectDiskAssembler(rt.globalMem, rt.activeMem, rt.agentReg, rt.effectivePromptFor(&rt.cfg)).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
@@ -492,12 +500,6 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 	if rt.apiServer != nil {
 		rt.apiServer.Stop()
 		rt.apiServer = nil
-	}
-	if dr, ok := rt.globalMem.(*memory.DirReader); ok {
-		_ = dr.Close()
-	}
-	if dr, ok := rt.activeMem.(*memory.DirReader); ok {
-		_ = dr.Close()
 	}
 	rt.globalMem = nil
 	rt.activeMem = nil

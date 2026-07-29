@@ -285,6 +285,7 @@ func TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange(t *testing.T
 	if !result.LiveApplied {
 		t.Fatal("retry did not report live apply after rebuilding missing memory services")
 	}
+	t.Cleanup(func() { rt.Stop() })
 	if rt.SessionManager() == nil || rt.taskRunner == nil || rt.assembler == nil {
 		t.Fatalf("memory/API graph was not rebuilt: session=%T task=%T assembler=%T", rt.SessionManager(), rt.taskRunner, rt.assembler)
 	}
@@ -304,6 +305,7 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 
 	rt := New(cfg, store, LogRings{})
 	rt.started = true
+	t.Cleanup(func() { rt.Stop() })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
@@ -312,6 +314,7 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 	if ok := rt.startMemoryAndAPI(context.Background(), uiServer, nil); !ok {
 		t.Fatal("initial memory service setup failed")
 	}
+	t.Cleanup(func() { rt.Stop() })
 	if rt.apiServer != nil {
 		t.Fatal("api server started while API was disabled")
 	}
@@ -360,6 +363,8 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 
 			rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
 			rt.started = true
+			t.Cleanup(func() { rt.Stop() })
+			t.Cleanup(func() { rt.Stop() })
 			rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 				project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 			}}
