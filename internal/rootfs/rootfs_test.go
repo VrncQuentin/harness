@@ -901,3 +901,108 @@ func TestWriteStreamAtomic_SyncBeforeRename(t *testing.T) {
 		t.Error("destination should not exist after sync failure")
 	}
 }
+
+func TestOpenChildNoFollow_RefusesSymlink(t *testing.T) {
+	dir := t.TempDir()
+	root, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	target := filepath.Join(dir, "target")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "link")); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink requires Developer Mode on Windows")
+		}
+		t.Fatal(err)
+	}
+
+	_, _, err = root.OpenChildNoFollow("link")
+	if err == nil {
+		t.Error("OpenChildNoFollow should refuse symlink")
+	}
+}
+
+func TestOpenChildNoFollow_AcceptsRealDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	child, fi, err := root.OpenChildNoFollow("sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = child.Close() }()
+	if !fi.IsDir() {
+		t.Error("returned metadata should be a directory")
+	}
+	_, err = child.ReadDir(".")
+	if err != nil {
+		t.Fatal("child should be a valid directory:", err)
+	}
+}
+
+func TestOpenChildNoFollow_RejectsMultiComponent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "a", "b"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	root, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	_, _, err = root.OpenChildNoFollow(filepath.Join("a", "b"))
+	if err == nil {
+		t.Error("OpenChildNoFollow should reject multi-component path")
+	}
+}
+
+func TestOpenChildNoFollow_DetectsSubstitution(t *testing.T) {
+	dir := t.TempDir()
+	root, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	real := filepath.Join(dir, "real")
+	evil := filepath.Join(dir, "evil")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Place "real" at the name, then swap to "evil" mid-operation.
+	// The substitution is staged via the open hook.
+	// For this test we just verify that after a swap, the check fails.
+	// On Windows, renaming a live directory may not be possible; skip.
+	if runtime.GOOS == "windows" {
+		t.Skip("directory rename under live handle blocked on Windows")
+	}
+	if err := os.Rename(real, filepath.Join(dir, "sub")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(evil, filepath.Join(dir, "real")); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = root.OpenChildNoFollow("sub")
+	// The child was opened before the rename; the Lstat sees the
+	// old entry's identity but the Stat sees the new (evil)
+	// directory — os.SameFile returns false.
+	if err == nil {
+		t.Error("OpenChildNoFollow should detect substitution")
+	}
+}

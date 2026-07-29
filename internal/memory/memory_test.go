@@ -457,3 +457,144 @@ func TestDirReader_WalkRejectsTraversal(t *testing.T) {
 		t.Error("Walk with traversal: expected error, got nil")
 	}
 }
+
+func TestDirReader_ReadDoesNotFollowLink(t *testing.T) {
+	dir := t.TempDir()
+	// Create two directories: the repo root and an outside dir.
+	repoRoot := filepath.Join(dir, "repo")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "evil.txt"), []byte("evil"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Place a symlink inside the repo pointing outside.
+	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
+		t.Skip("symlink unavailable: " + err.Error())
+	}
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read through the link should be refused because the anchor's
+	// os.Root containment rejects absolute targets.
+	_, err = r.Read("link/evil.txt")
+	if err == nil {
+		t.Error("Read through link should fail")
+	}
+}
+
+func TestDirReader_WalkRefusesSymlinkEscape(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
+		t.Skip("symlink unavailable: " + err.Error())
+	}
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Walk should not descend into the symlink (OpenChildNoFollow refuses).
+	entries, err := r.Walk("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Path, "link/") {
+			t.Errorf("Walk descended into symlink: %s", e.Path)
+		}
+	}
+}
+
+func TestDirReader_GlobDoesNotFollowLinkOutOfRoot(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "evil.txt"), []byte("evil"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
+		t.Skip("symlink unavailable: " + err.Error())
+	}
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Glob("link/*.txt")
+	if err == nil {
+		t.Error("Glob through link should fail")
+	}
+}
+
+func TestDirReader_ListDirsDoesNotFollowLinkOutOfRoot(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(repoRoot, "link")); err != nil {
+		t.Skip("symlink unavailable: " + err.Error())
+	}
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirs, err := r.ListDirs("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range dirs {
+		if d == "link" {
+			t.Error("ListDirs should not list symlinks as directories")
+		}
+	}
+}
+
+func TestDirReader_WalkKeepsDescendingInsidePinnedTree(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	if err := os.MkdirAll(filepath.Join(repoRoot, "sub", "deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "sub", "deep", "file.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := r.Walk("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Path == "sub/deep/file.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Walk should descend into nested directories inside the pinned tree")
+	}
+}
