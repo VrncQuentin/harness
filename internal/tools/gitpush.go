@@ -3,8 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -38,7 +36,7 @@ func (t *gitPushTool) Schema() map[string]any {
 }
 
 func (t *gitPushTool) Execute(_ context.Context, c CallInfo, args map[string]any) Result {
-	_, absRoot, err := workspaceWriteRepo(c, args)
+	repo, absRoot, err := workspaceWriteRepo(c, args)
 	if err != nil {
 		return Result{Error: "git_push: " + err.Error()}
 	}
@@ -50,7 +48,7 @@ func (t *gitPushTool) Execute(_ context.Context, c CallInfo, args map[string]any
 
 	branch, ok := args["branch"].(string)
 	if !ok || strings.TrimSpace(branch) == "" {
-		branch, err = readHEADBranch(absRoot)
+		branch, err = repo.CurrentBranch()
 		if err != nil {
 			return Result{Error: "git_push: " + err.Error()}
 		}
@@ -70,23 +68,6 @@ func (t *gitPushTool) Execute(_ context.Context, c CallInfo, args map[string]any
 		"This action requires human execution. Run the command above in the repository directory "+
 		"or use your preferred Git client.\n", absRoot, cmd)
 	return Result{Content: content, Proposal: true}
-}
-
-func readHEADBranch(repoRoot string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(repoRoot, ".git", "HEAD"))
-	if err != nil {
-		return "", fmt.Errorf("read HEAD: %w", err)
-	}
-	line := strings.TrimSpace(string(data))
-	const prefix = "ref: refs/heads/"
-	if !strings.HasPrefix(line, prefix) {
-		short := line
-		if len(short) > 8 {
-			short = short[:8]
-		}
-		return "", fmt.Errorf("HEAD is detached at %s — specify branch explicitly", short)
-	}
-	return strings.TrimPrefix(line, prefix), nil
 }
 
 func buildPushCommand(remote, branch string, force bool) string {

@@ -34,14 +34,7 @@ func TestGitPushTool_DetachedHEAD(t *testing.T) {
 }
 
 func TestGitPushTool_Proposal(t *testing.T) {
-	dir := t.TempDir()
-	gitDir := filepath.Join(dir, ".git")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/feat/my-feature\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	dir := initRepoWithBranch(t, "feat/my-feature")
 	tool := &gitPushTool{}
 	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), c, map[string]any{"root": dir})
@@ -63,14 +56,7 @@ func TestGitPushTool_Proposal(t *testing.T) {
 }
 
 func TestGitPushTool_ExplicitBranchAndRemote(t *testing.T) {
-	dir := t.TempDir()
-	gitDir := filepath.Join(dir, ".git")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	dir := initRepoWithBranch(t, "main")
 	tool := &gitPushTool{}
 	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), c, map[string]any{
@@ -90,14 +76,7 @@ func TestGitPushTool_ExplicitBranchAndRemote(t *testing.T) {
 }
 
 func TestGitPushTool_ForceFlag(t *testing.T) {
-	dir := t.TempDir()
-	gitDir := filepath.Join(dir, ".git")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	dir := initRepoWithBranch(t, "main")
 	tool := &gitPushTool{}
 	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: noMemoryRepos()}
 	res := tool.Execute(context.Background(), c, map[string]any{"root": dir, "force": true})
@@ -110,18 +89,24 @@ func TestGitPushTool_ForceFlag(t *testing.T) {
 }
 
 func TestGitPushTool_C2MemoryRepoRejected(t *testing.T) {
-	dir := t.TempDir()
-	gitDir := filepath.Join(dir, ".git")
-	if err := os.MkdirAll(gitDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	dir := initRepoWithBranch(t, "main")
 	tool := &gitPushTool{}
 	c := CallInfo{SandboxRoots: []string{dir}, MemoryRepoCheck: memoryScopeOver(dir)}
 	res := tool.Execute(context.Background(), c, map[string]any{"root": dir})
 	if res.Error == "" || !strings.Contains(res.Error, "C2") {
 		t.Errorf("expected C2 scope error, got error=%q", res.Error)
 	}
+}
+
+func initRepoWithBranch(t *testing.T, branch string) string {
+	t.Helper()
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gitDir, "HEAD"), []byte("ref: refs/heads/"+branch+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
