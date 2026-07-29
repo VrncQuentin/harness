@@ -93,7 +93,7 @@ until the sequence below is merged and the final audit (PR 12) passes.
 |---|---------|------|
 | 8.1 | Repeated getter calls can combine store/committer/runner from different publications | `TestSnapshot_RequestUsesConsistentDependencies` |
 | 8.2 | Detached goroutines hold references across reload without generation lease | `TestSnapshot_DetachedGoroutineCapturesSnapshotBeforeStart` |
-| 8.3 | Old snapshot references remain valid after reload (reopenable, not handle-owned) | `TestSnapshot_OldReferencesRemainValidAfterReload` |
+| 8.3 | Old snapshot references remain valid after reload (reopenable, not handle-owned) | `TestSnapshot_OldReferencesRemainValidAfterReload` — deferred to PR 8: snapshot lifetime mechanism, Anchor ownership, and leasing are designed there |
 | 8.4 | `memoryHandles` / `genGate` / route-by-route drain NOT introduced | Eliminated mechanism — snapshot pattern replaces them |
 | 8.5 | `memoryAPISnapshot` NOT introduced | Eliminated mechanism — snapshot pattern replaces it |
 

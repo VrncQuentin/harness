@@ -3,6 +3,7 @@ package rootfs
 import (
 	"bytes"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -122,9 +123,6 @@ func TestAnchor_SameNameReplacementFailsClosed(t *testing.T) {
 	r := mustOpen(t, a)
 	_ = r.Close()
 
-	// On Windows the anchor's handle prevents removal of the
-	// directory.  That is the correct defence — the handle is the
-	// identity, and it cannot be evicted.  Verify the block.
 	if runtime.GOOS == "windows" {
 		if err := os.RemoveAll(dir); err == nil {
 			t.Error("anchor handle should block directory removal on Windows")
@@ -132,9 +130,6 @@ func TestAnchor_SameNameReplacementFailsClosed(t *testing.T) {
 		return
 	}
 
-	// On Linux, open handles do not prevent renames.  Replace the
-	// directory while the anchor remains open and assert it rejects
-	// the replacement.
 	replacement := filepath.Join(t.TempDir(), "replacement")
 	if err := os.MkdirAll(replacement, 0o755); err != nil {
 		t.Fatal(err)
@@ -161,17 +156,13 @@ func TestAnchor_RePointedAliasFailsClosed(t *testing.T) {
 	r := mustOpen(t, a)
 	_ = r.Close()
 
-	if runtime.GOOS == "windows" {
-		// The anchor's handle prevents symlink removal on Windows.
-		if err := os.Remove(link); err == nil {
-			t.Error("anchor handle should block symlink removal on Windows")
-		}
-		return
-	}
-
-	// On Linux, repoint the symlink and assert the anchor rejects.
 	if err := os.Remove(link); err != nil {
-		t.Fatal(err)
+		// On Windows the anchor handle may block the removal.
+		// If it does, that is its own defence.
+		if runtime.GOOS == "windows" {
+			return
+		}
+		t.Fatal("unexpected symlink removal failure:", err)
 	}
 	symlinkOrSkip(t, dir2, link)
 	_, err := a.Open()
@@ -233,17 +224,22 @@ func TestAnchor_WindowsIdentity(t *testing.T) {
 func TestAnchor_IdentityFailureFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	a := mustNewAnchor(t, dir)
-
 	sentinel := errors.New("injected stat failure")
-	_, err := a.open(func() error { return sentinel })
-	if err == nil {
-		t.Error("injected stat hook error should propagate")
-	}
-	if !errors.Is(err, sentinel) {
-		t.Errorf("expected sentinel error, got %v", err)
+	failStat := func(r *Root) (fs.FileInfo, error) { return nil, sentinel }
+
+	// Injured reopened stat.
+	_, err := a.open(failStat, nil)
+	if err == nil || !errors.Is(err, sentinel) {
+		t.Errorf("reopened-stat failure should propagate, got %v", err)
 	}
 
-	// The anchor should still work normally afterwards.
+	// Injured pinned stat.
+	_, err = a.open(nil, failStat)
+	if err == nil || !errors.Is(err, sentinel) {
+		t.Errorf("pinned-stat failure should propagate, got %v", err)
+	}
+
+	// Anchor still works after injected failures.
 	r := mustOpen(t, a)
 	_ = r.Close()
 }
@@ -275,5 +271,23 @@ func TestAnchor_ExplicitCloseReleasesHandle(t *testing.T) {
 	}
 	if err := a.Close(); err != nil {
 		t.Fatal("Close should succeed:", err)
+	}
+
+	// Open must fail after Close.
+	_, err = a.Open()
+	if err == nil {
+		t.Error("Open should fail after Close")
+	}
+
+	// On Windows, the directory removal that was blocked by the
+	// live handle must now succeed.
+	if runtime.GOOS == "windows" {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error("directory removal should succeed after anchor handle closed:", err)
+		}
+	} else {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Error("directory removal should succeed:", err)
+		}
 	}
 }
