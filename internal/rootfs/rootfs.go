@@ -215,6 +215,9 @@ func (r *Root) ReadDir(rel string) ([]os.DirEntry, error) {
 	return entries, nil
 }
 
+// RemoveAll removes rel and any children it contains.
+func (r *Root) RemoveAll(rel string) error { return r.root.RemoveAll(rel) }
+
 // SameDir reports whether r and other are handles on one directory.
 //
 // It compares filesystem objects, not pathnames, and both are already open, so

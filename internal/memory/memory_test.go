@@ -605,3 +605,147 @@ func TestDirReader_WalkKeepsDescendingInsidePinnedTree(t *testing.T) {
 		t.Error("Walk should descend into nested directories inside the pinned tree")
 	}
 }
+
+func TestDirReader_WriteFileRejectsRootTarget(t *testing.T) {
+	r, err := NewDirReader(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.WriteFile(".", []byte("x")); err == nil {
+		t.Error("WriteFile('.') should be rejected")
+	}
+	if err := r.WriteFile("./", []byte("x")); err == nil {
+		t.Error("WriteFile('./') should be rejected")
+	}
+}
+
+func TestDirReader_WriteFileReplacesHardLinkedLeaf(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(real, []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(real, filepath.Join(dir, "link.txt")); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.WriteFile("link.txt", []byte("replaced")); err != nil {
+		t.Fatal(err)
+	}
+	// The hard-linked source must not be modified.
+	linked, err := os.ReadFile(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linked) != "original" {
+		t.Error("hard-linked source should not be modified by rename publication")
+	}
+	// The link name should contain the new content.
+	linkContent, err := os.ReadFile(filepath.Join(dir, "link.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(linkContent) != "replaced" {
+		t.Error("link name should contain the new content")
+	}
+}
+
+func TestDirReader_WriteFileRefusesLinkOutOfRoot(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustLinkDir(t, outside, filepath.Join(repoRoot, "link"))
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.WriteFile("link/evil.txt", []byte("evil"))
+	if err == nil {
+		t.Error("WriteFile through link should fail")
+	}
+}
+
+func TestDirReader_MkdirAllRefusesLinkOutOfRoot(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustLinkDir(t, outside, filepath.Join(repoRoot, "link"))
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.MkdirAll("link/subdir")
+	if err == nil {
+		t.Error("MkdirAll through link should fail")
+	}
+}
+
+func TestDirReader_RemoveAllRefusesLinkOutOfRoot(t *testing.T) {
+	dir := t.TempDir()
+	repoRoot := filepath.Join(dir, "repo")
+	outside := filepath.Join(dir, "outside")
+	if err := os.MkdirAll(repoRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(outside, "victim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "victim", "f.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustLinkDir(t, outside, filepath.Join(repoRoot, "link"))
+	r, err := NewDirReader(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.RemoveAll("link/victim")
+	if err == nil {
+		t.Error("RemoveAll through link should fail")
+	}
+	// The outside victim must survive.
+	content, err := os.ReadFile(filepath.Join(outside, "victim", "f.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "keep" {
+		t.Error("outside victim should survive failed RemoveAll")
+	}
+}
+
+func TestDirReader_WriteFileCleansTrailingSlash(t *testing.T) {
+	dir := t.TempDir()
+	r, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// WriteFile("a/b/") with a trailing slash should publish at "a/b"
+	// not create "a/b/b".
+	if err := r.WriteFile("a/b/", []byte("ok")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "a", "b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "ok" {
+		t.Errorf("WriteFile('a/b/') should publish at a/b, got content=%q", string(got))
+	}
+	if _, err := os.Stat(filepath.Join(dir, "a", "b", "b")); !os.IsNotExist(err) {
+		t.Error("WriteFile('a/b/') should not create a/b/b")
+	}
+}
