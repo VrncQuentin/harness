@@ -59,7 +59,7 @@ until the sequence below is merged and the final audit (PR 12) passes.
 |---|---------|------|
 | 4.1 | `DirReader.Read` re-joins `r.root + rel` — every read is a fresh TOCTOU | `TestDirReader_ReadDoesNotFollowLink` |
 | 4.2 | `DirReader.Walk` navigates by pathname, not pinned child | `TestDirReader_WalkKeepsDescendingInsidePinnedTree` |
-| 4.3 | Symlink/junction escape during walk not prevented | `TestDirReader_WalkRefusesSymlinkEscape` |
+| 4.3 | Symlink/junction escape during walk not prevented | `TestOpenChildNoFollow_DetectsSubstitution` (rootfs, mid-open substitution); `TestDirReader_WalkDoesNotEnterSymlink` (static behavior) |
 | 4.4 | Directory cycle detected by depth only | Eliminated: no-follow component traversal makes filesystem cycles impossible within the stated threat model (bind mounts out of scope) |
 | 4.5 | `DirReader.Glob` reads parent directory by pathname | `TestDirReader_GlobDoesNotFollowLinkOutOfRoot` |
 | 4.6 | `DirReader.ListDirs` reads by pathname | `TestDirReader_ListDirsDoesNotFollowLinkOutOfRoot` |

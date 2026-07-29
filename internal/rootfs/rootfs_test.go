@@ -989,11 +989,20 @@ func TestOpenChildNoFollow_DetectsSubstitution(t *testing.T) {
 		t.Fatal(err)
 	}
 	var hookErr error
-	_, _, err = root.openChildNoFollow("sub", func() {
+	child, _, err := root.openChildNoFollow("sub", func() {
 		hookErr = os.Rename(evil, filepath.Join(dir, "sub"))
 	})
 	if hookErr != nil {
-		t.Skip("live handle blocked rename substitution")
+		if child != nil {
+			_ = child.Close()
+		}
+		if runtime.GOOS == "windows" {
+			t.Skip("live handle blocked rename substitution")
+		}
+		t.Fatalf("staging rename failed: %v", hookErr)
+	}
+	if child != nil {
+		_ = child.Close()
 	}
 	if err == nil {
 		t.Error("OpenChildNoFollow should detect substitution")
