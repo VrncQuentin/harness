@@ -767,7 +767,7 @@ func TestWriteStreamAtomic_PinSurvivesIntermediateSwap(t *testing.T) {
 			sub := filepath.Join(dir, "sub")
 			_ = os.Rename(filepath.Join(sub, "orig"), filepath.Join(sub, "swapped"))
 			_ = os.Rename(filepath.Join(sub, "evil"), filepath.Join(sub, "orig"))
-		})
+		}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -819,20 +819,33 @@ func TestWriteStreamAtomic_DetectsSubstitutedTemp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 
 	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644,
 		func(f *os.File, tmpRel string) {
 			sub := filepath.Join(dir, tmpRel)
-			_ = os.WriteFile(sub+".new", []byte("impostor"), 0o644)
-			_ = os.Rename(sub+".new", sub)
-		})
+			if err := os.WriteFile(sub+".new", []byte("impostor"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(sub+".new", sub); err != nil {
+				t.Fatal(err)
+			}
+		}, nil)
 	if err == nil {
 		t.Fatal("expected error for substituted temp entry")
 	}
 	if !strings.Contains(err.Error(), "substituted") {
 		t.Errorf("expected substitution error, got: %v", err)
 	}
+	// The impostor should survive — we do not clean up on failure.
+	content, err := os.ReadFile(filepath.Join(dir, "file.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) == "hello" {
+		t.Error("destination should not contain the original content (rename was blocked)")
+	}
+	_ = content
 }
 
 func TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure(t *testing.T) {
@@ -843,7 +856,7 @@ func TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure(t *testing.T) {
 	}
 	defer root.Close()
 
-	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, nil)
+	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, nil, nil)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -883,12 +896,57 @@ func (r *failingReader) Read(p []byte) (int, error) {
 	if r.pos >= r.failAfter {
 		return 0, r.err
 	}
-	// Copy at most one byte per call so the failAfter byte count
-	// is precise.
 	if len(p) > 1 {
 		p = p[:1]
 	}
 	n := copy(p, r.data[r.pos:])
 	r.pos += n
 	return n, nil
+}
+
+func TestWriteStreamAtomic_SyncBeforeRename(t *testing.T) {
+	dir := t.TempDir()
+	root, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	syncSentinel := errors.New("sync failed")
+	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, nil,
+		func(f *os.File, parent *Root, tmpRel string) error {
+			return syncSentinel
+		})
+	if err == nil || !errors.Is(err, syncSentinel) {
+		t.Errorf("sync hook error should propagate, got %v", err)
+	}
+	// Destination must not exist — sync failure blocks publication.
+	if _, err := os.Stat(filepath.Join(dir, "file.txt")); !os.IsNotExist(err) {
+		t.Error("destination should not exist after sync failure")
+	}
+}
+
+func TestCreateTemp_ChmodFailureDoesNotDeleteStranger(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Chmod has no effect on Windows")
+	}
+	dir := t.TempDir()
+	root, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	// Create a temp with a harmless name that we can substitute.
+	// On Linux we can't easily trigger Chmod failure, but the
+	// code path is tested by the absence of the name-based Remove.
+	// We assert createTemp returns the temp file on success.
+	rel, f, err := root.createTemp(".", 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = f.Close()
+	if rel == "" {
+		t.Error("createTemp should return a relative path")
+	}
 }

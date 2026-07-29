@@ -130,18 +130,19 @@ func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 // Go has no unlink-by-handle primitive.  A failed write may leave a partial
 // temporary entry.
 func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) error {
-	return r.writeStreamAtomic(rel, src, perm, nil)
+	return r.writeStreamAtomic(rel, src, perm, nil, nil)
 }
 
-// writeStreamAtomic is WriteStreamAtomic with an optional hook that runs
-// after the temp file opens.  Tests use it to stage substitutions.
-func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, afterOpen func(*os.File, string)) error {
+// writeStreamAtomic is WriteStreamAtomic with optional hooks for tests.
+// afterOpen runs after the temp file is created and before io.Copy.
+// beforeRename, if non-nil, replaces the sync-and-identity-check sequence.
+func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, afterOpen func(*os.File, string), beforeRename func(f *os.File, parent *Root, tmpRel string) error) error {
 	parentDir := filepath.Dir(rel)
 	parent, err := r.OpenChild(parentDir)
 	if err != nil {
 		return err
 	}
-	defer parent.Close()
+	defer func() { _ = parent.Close() }()
 
 	base := filepath.Base(rel)
 	tmpRel, f, err := parent.createTemp(".", perm)
@@ -158,26 +159,29 @@ func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, af
 		return err
 	}
 
-	if err := f.Sync(); err != nil {
-		_ = f.Close()
-		return err
-	}
-
-	// Compare identities while the handle is live so os.SameFile
-	// cannot be fooled by inode reuse after close.
-	tmpHandleInfo, err := f.Stat()
-	if err != nil {
-		_ = f.Close()
-		return err
-	}
-	tmpNameInfo, err := parent.root.Stat(tmpRel)
-	if err != nil {
-		_ = f.Close()
-		return err
-	}
-	if !os.SameFile(tmpHandleInfo, tmpNameInfo) {
-		_ = f.Close()
-		return fmt.Errorf("rootfs: temporary entry %s was substituted", tmpRel)
+	if beforeRename != nil {
+		if err := beforeRename(f, parent, tmpRel); err != nil {
+			return err
+		}
+	} else {
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return err
+		}
+		tmpHandleInfo, err := f.Stat()
+		if err != nil {
+			_ = f.Close()
+			return err
+		}
+		tmpNameInfo, err := parent.root.Stat(tmpRel)
+		if err != nil {
+			_ = f.Close()
+			return err
+		}
+		if !os.SameFile(tmpHandleInfo, tmpNameInfo) {
+			_ = f.Close()
+			return fmt.Errorf("rootfs: temporary entry %s was substituted", tmpRel)
+		}
 	}
 
 	if err := f.Close(); err != nil {
