@@ -135,8 +135,8 @@ func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) er
 
 // writeStreamAtomic is WriteStreamAtomic with optional hooks for tests.
 // afterOpen runs after the temp file is created and before io.Copy.
-// beforeRename, if non-nil, replaces the sync-and-identity-check sequence.
-func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, afterOpen func(*os.File, string), beforeRename func(f *os.File, parent *Root, tmpRel string) error) error {
+// syncFn, if non-nil, replaces f.Sync().
+func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, afterOpen func(*os.File, string), syncFn func(f *os.File) error) error {
 	parentDir := filepath.Dir(rel)
 	parent, err := r.OpenChild(parentDir)
 	if err != nil {
@@ -159,29 +159,28 @@ func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, af
 		return err
 	}
 
-	if beforeRename != nil {
-		if err := beforeRename(f, parent, tmpRel); err != nil {
-			return err
-		}
-	} else {
-		if err := f.Sync(); err != nil {
-			_ = f.Close()
-			return err
-		}
-		tmpHandleInfo, err := f.Stat()
-		if err != nil {
-			_ = f.Close()
-			return err
-		}
-		tmpNameInfo, err := parent.root.Stat(tmpRel)
-		if err != nil {
-			_ = f.Close()
-			return err
-		}
-		if !os.SameFile(tmpHandleInfo, tmpNameInfo) {
-			_ = f.Close()
-			return fmt.Errorf("rootfs: temporary entry %s was substituted", tmpRel)
-		}
+	sf := syncFn
+	if sf == nil {
+		sf = func(f *os.File) error { return f.Sync() }
+	}
+	if err := sf(f); err != nil {
+		_ = f.Close()
+		return err
+	}
+
+	tmpHandleInfo, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	tmpNameInfo, err := parent.root.Stat(tmpRel)
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	if !os.SameFile(tmpHandleInfo, tmpNameInfo) {
+		_ = f.Close()
+		return fmt.Errorf("rootfs: temporary entry %s was substituted", tmpRel)
 	}
 
 	if err := f.Close(); err != nil {

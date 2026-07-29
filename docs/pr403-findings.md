@@ -34,11 +34,11 @@ until the sequence below is merged and the final audit (PR 12) passes.
 
 | # | Finding | Test |
 |---|---------|------|
-| 3.1 | B3 spill writes through pre-existing hard-linked entry | `TestWriteStreamAtomic_ReplacesHardLinkedLeaf` (rootfs) |
+| 3.1 | B3 spill writes through pre-existing hard-linked entry | `TestB3_ReplacesHardLinkedSpillEntry` (governor) |
 | 3.2 | B3 spill written with `os.WriteFile` — no rename, partial reads possible | migrated: governor uses Anchor + WriteStreamAtomic |
-| 3.7 | `WriteStreamAtomic` does not fsync before rename — crash-unsafe | implemented: f.Sync() before close |
+| 3.7 | `WriteStreamAtomic` does not fsync before rename — crash-unsafe | `TestWriteStreamAtomic_SyncBeforeRename` (sync failure blocks publication) |
 | 3.8 | `WriteStreamAtomic` cleanup deletes by name after rename has consumed it | `TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure` |
-| 3.9 | `WriteStreamAtomic` must preserve a stranger's substituted entry | `TestWriteStreamAtomic_DetectsSubstitutedTemp` (Linux CI) |
+| 3.9 | `WriteStreamAtomic` must preserve a stranger's substituted entry | `TestWriteStreamAtomic_DetectsSubstitutedTemp` (Linux CI, asserts impostor survives) |
 | 3.10 | `WriteStreamAtomic` must pin the destination directory once | `TestWriteStreamAtomic_PinSurvivesIntermediateSwap` (Linux CI) |
 | 3.11 | A failed write may leave its own partial temp entry | `TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure` |
 
