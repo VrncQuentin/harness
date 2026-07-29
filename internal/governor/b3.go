@@ -1,11 +1,10 @@
 package governor
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"github.com/VrncQuentin/harness/internal/tools"
 )
@@ -34,15 +33,19 @@ func (g *Governor) applyB3(_ context.Context, toolID string, res tools.Result) t
 	if len(spill) < b3Threshold {
 		return res
 	}
-	dir := g.tooloutDir()
-	if dir == "" {
+	a := g.spillAnchor()
+	if a == nil {
 		return res
 	}
+	defer a.Close()
 
 	id := tooloutID(toolID, spill)
-	path := filepath.Join(dir, id)
-	if err := os.WriteFile(path, []byte(spill), 0o644); err != nil {
-		// Write failure — return unchanged.
+	r, err := a.Open()
+	if err != nil {
+		return res
+	}
+	defer r.Close()
+	if err := r.WriteStreamAtomic(id, bytes.NewReader([]byte(spill)), 0o644); err != nil {
 		return res
 	}
 

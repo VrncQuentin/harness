@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/VrncQuentin/harness/internal/parser"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/tools"
 )
 
@@ -98,15 +99,19 @@ func TooloutDir(cacheDir string) string {
 	return filepath.Join(cacheDir, "toolout")
 }
 
-// tooloutDir returns the B3 spill directory, creating it if needed.
-func (g *Governor) tooloutDir() string {
+// spillAnchor returns a pinned Anchor on the spill directory, creating the
+// directory if needed.  The caller closes the Anchor when done.
+func (g *Governor) spillAnchor() *rootfs.Anchor {
 	dir := TooloutDir(g.cacheDir)
 	if dir == "" {
-		return ""
+		return nil
 	}
-	// best-effort; B3 degrades gracefully if this fails
 	_ = os.MkdirAll(dir, 0o755)
-	return dir
+	a, err := rootfs.NewAnchor(dir)
+	if err != nil {
+		return nil
+	}
+	return a
 }
 
 // activeQueryTokens splits a query string into lowercase, alpha-only tokens
