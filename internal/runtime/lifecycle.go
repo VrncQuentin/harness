@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -121,6 +122,16 @@ func (rt *Runtime) Stop() {
 	if q != nil {
 		q.Stop()
 	}
+	rt.mu.Lock()
+	if dr, ok := rt.globalMem.(io.Closer); ok {
+		_ = dr.Close()
+	}
+	if rt.activeMem != nil && rt.activeMem != rt.globalMem {
+		if dr, ok := rt.activeMem.(io.Closer); ok {
+			_ = dr.Close()
+		}
+	}
+	rt.mu.Unlock()
 }
 
 // WaitManagers waits for process manager goroutines to exit after their context

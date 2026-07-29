@@ -493,6 +493,12 @@ func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
 		rt.apiServer.Stop()
 		rt.apiServer = nil
 	}
+	if dr, ok := rt.globalMem.(*memory.DirReader); ok {
+		_ = dr.Close()
+	}
+	if dr, ok := rt.activeMem.(*memory.DirReader); ok {
+		_ = dr.Close()
+	}
 	rt.globalMem = nil
 	rt.activeMem = nil
 	rt.agentReg = nil
