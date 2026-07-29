@@ -159,11 +159,11 @@ makes them unnecessary.
 
 | Mechanism | Why eliminated |
 |-----------|---------------|
-| `memoryHandles` — runtime holds root handles and closes on shutdown | Replaced by operation-scoped `DirRef`/`Anchor` in PR 2: no generation-lifetime handles to manage |
+| `memoryHandles` — runtime holds root handles and closes on shutdown | Replaced by Anchor in PR 2: each consumer owns its own Anchor with an explicit Close. The runtime does not track or close handles centrally; no generation-lifetime handle map. |
 | `genGate` — route-by-route drain wrapping | Replaced by immutable UI snapshots in PR 8: a request captures one snapshot, needs no gate |
 | `memoryAPISnapshot` — snapshot of memory API per generation | Replaced by immutable UI snapshots in PR 8 |
-| `snapshot.closeReplaced()` — close handles when replacement starts | Replaced by reopenable references in PR 2: no handles to close |
-| `stopMemoryAndAPI` — drops references, does not close | Replaced by no-lifetime-pinning in PR 2: nothing to drop or close |
+| `snapshot.closeReplaced()` — close handles when replacement starts | Replaced by Anchor in PR 2: consumers own their Anchors and close them when the consumer is destroyed. The runtime does not close handles on behalf of in-flight requests. |
+| `stopMemoryAndAPI` — drops references, does not close | Replaced by Anchor ownership in PR 2: consumers own and close their Anchors; no runtime stop/drop cycle |
 | `ResolveAbsRepoPath` — session manager method | Replaced by rooted capabilities in PR 7: session manager receives a handle, not a pathname factory |
 | Package-global test hooks for identity verification | Replaced by function-parameter hooks in PR 2: no global state |
 | Post-rename `os.Remove` + retry fallback in index | Replaced by copy-on-write + rename publication in PR 5: no name-based cleanup |

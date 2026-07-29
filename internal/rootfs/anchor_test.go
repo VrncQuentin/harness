@@ -2,6 +2,7 @@ package rootfs
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,7 +38,7 @@ func mustNewAnchor(t *testing.T, path string) *Anchor {
 	if err != nil {
 		t.Fatalf("NewAnchor(%s): %v", path, err)
 	}
-	t.Cleanup(func() { a.Close() })
+	t.Cleanup(func() { _ = a.Close() })
 	return a
 }
 
@@ -47,7 +48,7 @@ func mustOpen(t *testing.T, a *Anchor) *Root {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(func() { r.Close() })
+	t.Cleanup(func() { _ = r.Close() })
 	return r
 }
 
@@ -74,13 +75,13 @@ func TestAnchor_NormalReopen(t *testing.T) {
 	a := mustNewAnchor(t, dir)
 	r := mustOpen(t, a)
 	writeRoot(t, r, "hello.txt", "world")
-	r.Close()
+	_ = r.Close()
 
 	r2 := mustOpen(t, a)
 	if got := readRoot(t, r2, "hello.txt"); got != "world" {
 		t.Errorf("expected world, got %s", got)
 	}
-	r2.Close()
+	_ = r2.Close()
 }
 
 func TestAnchor_ConstructionThroughSymlinkSucceeds(t *testing.T) {
@@ -90,13 +91,13 @@ func TestAnchor_ConstructionThroughSymlinkSucceeds(t *testing.T) {
 	a := mustNewAnchor(t, link)
 	r := mustOpen(t, a)
 	writeRoot(t, r, "f", "ok")
-	r.Close()
+	_ = r.Close()
 
 	r2 := mustOpen(t, a)
 	if got := readRoot(t, r2, "f"); got != "ok" {
 		t.Error("stable symlink should bind physical target")
 	}
-	r2.Close()
+	_ = r2.Close()
 }
 
 func TestAnchor_ConstructionThroughJunctionSucceeds(t *testing.T) {
@@ -106,26 +107,34 @@ func TestAnchor_ConstructionThroughJunctionSucceeds(t *testing.T) {
 	a := mustNewAnchor(t, link)
 	r := mustOpen(t, a)
 	writeRoot(t, r, "f", "ok")
-	r.Close()
+	_ = r.Close()
 
 	r2 := mustOpen(t, a)
 	if got := readRoot(t, r2, "f"); got != "ok" {
 		t.Error("stable junction should bind physical target")
 	}
-	r2.Close()
+	_ = r2.Close()
 }
 
 func TestAnchor_SameNameReplacementFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	a := mustNewAnchor(t, dir)
 	r := mustOpen(t, a)
-	r.Close()
+	_ = r.Close()
 
-	// On Windows the anchor's handle blocks deletion of the directory.
-	// Close it first so we can replace, then create a new anchor to
-	// confirm the new identity differs from the old anchor.
-	a.Close()
+	// On Windows the anchor's handle prevents removal of the
+	// directory.  That is the correct defence — the handle is the
+	// identity, and it cannot be evicted.  Verify the block.
+	if runtime.GOOS == "windows" {
+		if err := os.RemoveAll(dir); err == nil {
+			t.Error("anchor handle should block directory removal on Windows")
+		}
+		return
+	}
 
+	// On Linux, open handles do not prevent renames.  Replace the
+	// directory while the anchor remains open and assert it rejects
+	// the replacement.
 	replacement := filepath.Join(t.TempDir(), "replacement")
 	if err := os.MkdirAll(replacement, 0o755); err != nil {
 		t.Fatal(err)
@@ -136,35 +145,10 @@ func TestAnchor_SameNameReplacementFailsClosed(t *testing.T) {
 	if err := os.Rename(replacement, dir); err != nil {
 		t.Fatal(err)
 	}
-
-	// The old anchor is closed, so Open would fail on the closed handle.
-	// A new anchor on the same path works because it captures the new identity.
-	a2, err := NewAnchor(dir)
-	if err != nil {
-		t.Fatal("new anchor on replacement should succeed:", err)
+	_, err := a.Open()
+	if err == nil {
+		t.Error("anchor should reject replacement under same pathname")
 	}
-	defer a2.Close()
-	r2, err := a2.Open()
-	if err != nil {
-		t.Fatal("open on new anchor should succeed:", err)
-	}
-	r2.Close()
-}
-
-func TestAnchor_HandlePreventsReplacement(t *testing.T) {
-	if runtime.GOOS == "linux" {
-		t.Skip("on Linux open handles do not block renames; covered by ReplacementFailsClosed")
-	}
-	dir := t.TempDir()
-	a := mustNewAnchor(t, dir)
-	r := mustOpen(t, a)
-	r.Close()
-
-	// The anchor's handle should block removal on Windows.
-	if err := os.RemoveAll(dir); err == nil {
-		t.Error("anchor handle should block directory removal on Windows")
-	}
-	a.Close()
 }
 
 func TestAnchor_RePointedAliasFailsClosed(t *testing.T) {
@@ -175,30 +159,24 @@ func TestAnchor_RePointedAliasFailsClosed(t *testing.T) {
 
 	a := mustNewAnchor(t, link)
 	r := mustOpen(t, a)
-	r.Close()
+	_ = r.Close()
 
-	// On Windows the handle blocks symlink removal; close first.
 	if runtime.GOOS == "windows" {
-		a.Close()
+		// The anchor's handle prevents symlink removal on Windows.
+		if err := os.Remove(link); err == nil {
+			t.Error("anchor handle should block symlink removal on Windows")
+		}
+		return
 	}
 
+	// On Linux, repoint the symlink and assert the anchor rejects.
 	if err := os.Remove(link); err != nil {
 		t.Fatal(err)
 	}
 	symlinkOrSkip(t, dir2, link)
-
-	if runtime.GOOS == "windows" {
-		a2, err := NewAnchor(link)
-		if err != nil {
-			t.Fatal("new anchor on re-pointed symlink should succeed:", err)
-		}
-		a2.Close()
-		return
-	}
-
 	_, err := a.Open()
 	if err == nil {
-		t.Error("re-pointed symlink alias should fail identity check on Linux")
+		t.Error("anchor should reject re-pointed symlink alias")
 	}
 }
 
@@ -210,7 +188,7 @@ func TestAnchor_RePointedJunctionFailsClosed(t *testing.T) {
 
 	a := mustNewAnchor(t, link)
 	r := mustOpen(t, a)
-	r.Close()
+	_ = r.Close()
 
 	if err := os.RemoveAll(link); err != nil {
 		t.Fatal(err)
@@ -219,7 +197,7 @@ func TestAnchor_RePointedJunctionFailsClosed(t *testing.T) {
 
 	_, err := a.Open()
 	if err == nil {
-		t.Error("re-pointed junction alias should fail identity check")
+		t.Error("anchor should reject re-pointed junction alias")
 	}
 }
 
@@ -243,30 +221,31 @@ func TestAnchor_WindowsIdentity(t *testing.T) {
 	a := mustNewAnchor(t, lower)
 	r := mustOpen(t, a)
 	writeRoot(t, r, "f", "ok")
-	r.Close()
+	_ = r.Close()
 
 	r2 := mustOpen(t, a)
 	if got := readRoot(t, r2, "f"); got != "ok" {
 		t.Error("case-insensitive path should bind same directory on Windows")
 	}
-	r2.Close()
+	_ = r2.Close()
 }
 
 func TestAnchor_IdentityFailureFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	a := mustNewAnchor(t, dir)
 
-	// Close the anchor's handle so the dir can be removed.
-	a.Close()
-
-	if err := os.RemoveAll(dir); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := a.Open()
+	sentinel := errors.New("injected stat failure")
+	_, err := a.open(func() error { return sentinel })
 	if err == nil {
-		t.Error("removed directory should fail to reopen")
+		t.Error("injected stat hook error should propagate")
 	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("expected sentinel error, got %v", err)
+	}
+
+	// The anchor should still work normally afterwards.
+	r := mustOpen(t, a)
+	_ = r.Close()
 }
 
 func TestAnchor_WritesThroughReopenedRootAreVisible(t *testing.T) {
@@ -275,17 +254,17 @@ func TestAnchor_WritesThroughReopenedRootAreVisible(t *testing.T) {
 
 	r1 := mustOpen(t, a)
 	writeRoot(t, r1, "a", "1")
-	r1.Close()
+	_ = r1.Close()
 
 	r2 := mustOpen(t, a)
 	writeRoot(t, r2, "b", "2")
-	r2.Close()
+	_ = r2.Close()
 
 	r3 := mustOpen(t, a)
 	if readRoot(t, r3, "a") != "1" || readRoot(t, r3, "b") != "2" {
 		t.Error("writes through separate reopens should be visible")
 	}
-	r3.Close()
+	_ = r3.Close()
 }
 
 func TestAnchor_ExplicitCloseReleasesHandle(t *testing.T) {

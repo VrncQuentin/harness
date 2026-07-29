@@ -37,9 +37,23 @@ func (a *Anchor) Close() error { return a.root.Close() }
 // the same filesystem object as the pinned handle, and returns the
 // verified handle.  The caller closes the returned Root.
 func (a *Anchor) Open() (*Root, error) {
+	return a.open(nil)
+}
+
+// open is Open with an optional hook that runs after the fresh root opens
+// but before either stat.  If the hook returns a non-nil error, that
+// error is returned.  Tests use this to force identity-establishment
+// failures without package-global state.
+func (a *Anchor) open(statHook func() error) (*Root, error) {
 	r, err := Open(a.path)
 	if err != nil {
 		return nil, fmt.Errorf("rootfs: cannot reopen anchor %s: %w", a.path, err)
+	}
+	if statHook != nil {
+		if herr := statHook(); herr != nil {
+			_ = r.Close()
+			return nil, herr
+		}
 	}
 	newInfo, err := r.root.Stat(".")
 	if err != nil {
