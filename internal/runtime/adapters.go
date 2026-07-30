@@ -117,12 +117,6 @@ type apiAssemblerAdapter struct {
 }
 
 func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, conversation []inference.Message) ([]inference.Message, error) {
-	if agentName == "" {
-		agentName = ad.rt.getActiveAgent()
-	}
-	if agentName == "" {
-		return nil, errNoActiveAgent
-	}
 	asm, _, _, release := ad.rt.AcquireRequestGeneration()
 	defer release()
 	if asm == nil {

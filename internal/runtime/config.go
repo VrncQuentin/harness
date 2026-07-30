@@ -70,6 +70,7 @@ func (rt *Runtime) ApplyConfig(
 			old.Loop != loaded.Loop ||
 			old.Agent.Active != loaded.Agent.Active ||
 			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug ||
+			modelEndpointChanged ||
 			embedderEndpointChanged ||
 			needsMemoryAPIRetry
 

@@ -1193,21 +1193,6 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	}
 }
 
-func newTestRuntime(t *testing.T) (*Runtime, *ui.Server, config.Config, string) {
-	t.Helper()
-	root := initRuntimeProjectRepo(t)
-	cfg := config.Defaults()
-	seedRequiredConfigFiles(t, &cfg)
-	cfg.Project.ActiveProjectSlug = project.GlobalSlug
-	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
-	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
-		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
-	}}
-	uiServer := ui.NewServer(0)
-	return rt, uiServer, cfg, root
-}
-
 func initRuntimeProjectRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
