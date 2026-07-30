@@ -59,53 +59,96 @@ func (a *uiRetrievalScorerAdapter) ScoreEpisodes(ctx context.Context, query stri
 	return out, nil
 }
 
-// startMemoryAndAPI brings up the memory reader, agent registry, prompt
-// assembler, hot-reload watcher, session manager, and API server.
-// Caller must hold rt.mu.
-//
-// metricsStore may be nil; the session manager simply skips metric
-// emission in that case.
+type memoryCandidate struct {
+	globalMem    *memory.DirReader
+	activeMem    *memory.DirReader
+	sessionStore *memory.DirReader
+	agentReg     *agent.DiskRegistry
+	assembler    *prompt.DiskAssembler
+	episodeIndex *memoryops.EpisodeIndex
+	gitRepo      *gitw.Repo
+	sessionMgr   *session.Manager
+	sessionAd    *uiSessionStoreAdapter
+	taskRunner   *taskRunnerAdapter
+	apiServer    *api.Server
+	serviceDeps  ui.ServiceDeps
+}
+
+func closeReaders(readers ...memory.Repo) {
+	closed := map[*memory.DirReader]bool{}
+	for _, r := range readers {
+		if dr, ok := r.(*memory.DirReader); ok && !closed[dr] {
+			closed[dr] = true
+			_ = dr.Close()
+		}
+	}
+}
+
 func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store) bool {
+	candidate := rt.buildCandidate(ctx, uiServer, metricsStore)
+	if candidate == nil {
+		return false
+	}
+
+	oldGlobal := rt.globalMem
+	oldActive := rt.activeMem
+	oldSession := rt.sessionMem
+	oldAPI := rt.apiServer
+
+	rt.globalMem = candidate.globalMem
+	rt.activeMem = candidate.activeMem
+	rt.sessionMem = candidate.sessionStore
+	rt.agentReg = candidate.agentReg
+	rt.assembler = candidate.assembler
+	rt.gitRepo = candidate.gitRepo
+	rt.setSessionManager(candidate.sessionMgr)
+	rt.taskRunner = candidate.taskRunner
+	rt.apiServer = candidate.apiServer
+
+	uiServer.SetServiceDeps(candidate.serviceDeps)
+
+	if oldAPI != nil {
+		oldAPI.Stop()
+	}
+	closeReaders(oldGlobal, oldActive, oldSession)
+
+	return true
+}
+
+func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store) *memoryCandidate {
 	roots, err := rt.resolveProjectRepoRootsForSlug(rt.cfg.Project.ActiveProjectSlug)
 	if err != nil {
-		uiServer.SetServiceDeps(ui.ServiceDeps{})
 		uiServer.AddStartupError(fmt.Errorf("project memory repos: %w", err))
 		if rt.cfg.API.Enabled {
 			uiServer.AddStartupError(errors.New("api server disabled: project memory repos are not valid"))
 		}
-		return false
+		return nil
 	}
 
-	svcDeps := ui.ServiceDeps{MemoryRepoPath: roots.activeRoot}
 	if err := memory.ValidateProjectRepo(roots.globalRoot, true); err != nil {
-		uiServer.SetServiceDeps(svcDeps)
 		uiServer.AddStartupError(fmt.Errorf("global memory repo: %w", err))
-		return false
+		return nil
 	}
 	if roots.activeSlug != project.GlobalSlug {
 		if err := memory.ValidateProjectRepo(roots.activeRoot, false); err != nil {
-			uiServer.SetServiceDeps(svcDeps)
 			uiServer.AddStartupError(fmt.Errorf("active memory repo: %w", err))
-			return false
+			return nil
 		}
 	}
 
-	// Build the candidate generation entirely in locals.  If any step
-	// fails, close everything and leave the current generation untouched.
 	globalMem, err := memory.NewDirReader(roots.globalRoot)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("open global memory: %w", err))
-		return false
+		return nil
 	}
 	activeMem, err := memory.NewDirReader(roots.activeRoot)
 	if err != nil {
 		_ = globalMem.Close()
 		uiServer.AddStartupError(fmt.Errorf("open active memory: %w", err))
-		return false
+		return nil
 	}
-	closeCandidates := func() {
-		_ = globalMem.Close()
-		_ = activeMem.Close()
+	doClose := func() {
+		closeReaders(globalMem, activeMem)
 	}
 
 	agentReg := agent.NewDiskRegistry(globalMem, rt.getActiveAgent, rt.setActiveAgent)
@@ -114,177 +157,79 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	indexDir := memoryops.EpisodeIndexDir(roots.activeRoot)
 	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir)
 	if err != nil {
-		closeCandidates()
-		uiServer.SetServiceDeps(svcDeps)
+		doClose()
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
-		return false
+		return nil
 	}
 	embedClient := rt.newEmbedderClient()
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
-	svcDeps.RetrievalScorer = &uiRetrievalScorerAdapter{scorer: &memoryops.EpisodeScorer{
-		Embedder: embedClient,
-		Config:   rt.cfg.Prompt,
-		Index:    episodeIndex,
-	}}
-	svcDeps.MemoryStore = activeMem
-	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: agentReg, globalMem: globalMem, activeMem: activeMem, getProjectSlug: rt.getActiveProjectSlug, setActive: rt.setActiveAgent}
 
-	// Publish the candidate generation and retire the previous one.
-	oldGlobal, oldActive := rt.globalMem, rt.activeMem
-	rt.globalMem, rt.activeMem = globalMem, activeMem
-	rt.agentReg, rt.assembler = agentReg, assembler
-	if dr, ok := oldGlobal.(*memory.DirReader); ok {
-		_ = dr.Close()
-	}
-	if dr, ok := oldActive.(*memory.DirReader); ok {
-		_ = dr.Close()
-	}
-
-	// Session manager is layered on top of the validated memory repo.
-	// A failure to open the git repo surfaces as a startup error and
-	// silently disables save/resume so the rest of the harness stays
-	// usable.
-	sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient, episodeIndex)
-	rt.setSessionManager(sessionMgr)
-	if sessionAdapter != nil {
-		svcDeps.SessionStore = sessionAdapter
-	}
-
-	// Wire active-project fact/note promotion and deduplication.
-	if rt.gitRepo != nil {
-		svcDeps.Committer = rt.gitRepo
-	}
-	svcDeps.Dedup = &memoryops.DedupChecker{
-		Mem:      rt.activeMem,
-		Embedder: embedClient,
-	}
-	svcDeps.PromotionDedupThreshold = rt.cfg.Prompt.PromotionDedupThreshold
+	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient, episodeIndex)
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
-	svcDeps.IndexRebuilder = &memoryops.EpisodeRebuilder{
-		Mem:       rt.activeMem,
-		Embedder:  embedClient,
-		Index:     episodeIndex.Current(),
-		IndexDir:  indexDir,
-		Repo:      rt.gitRepo,
-		OnRebuilt: episodeIndex.Replace,
-	}
-	if rt.reqQueue != nil {
-		svcDeps.ChatRunner = &chatRunnerAdapter{
-			asm: asmAdapter,
-			q:   rt.reqQueue,
-			mgr: sessionMgr,
-		}
-	}
 
-	if rt.cfg.API.Enabled && rt.reqQueue != nil {
-		var apiRec api.SessionRecorder
-		if sessionMgr != nil {
-			apiRec = &apiSessionAdapter{mgr: sessionMgr}
-		}
-		srv := api.NewServer(rt.cfg.API.Port, asmAdapter, rt.reqQueue, apiRec)
-		if err := srv.Start(ctx); err != nil {
-			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
-		} else {
-			rt.apiServer = srv
-			slog.Info("api server listening", "port", rt.cfg.API.Port)
-		}
+	loopCfg := rt.cfg.Loop
+	userLayer := approvals.Layer{Name: "user-config"}
+	if !loopCfg.EditEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "edit", Decision: approvals.Denied, Source: "user: edit disabled in config"})
 	}
-
-	// Wire the task runner with assembler + queue.
-	registry := tools.NewRegistry()
-	if err := tools.RegisterBuiltins(registry); err != nil {
-		uiServer.SetServiceDeps(svcDeps)
-		uiServer.AddStartupError(fmt.Errorf("task tools: %w", err))
-		return false
+	if !loopCfg.ExecEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "exec", Decision: approvals.Denied, Source: "user: exec disabled in config"})
 	}
+	if !loopCfg.GoTestEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "go_test", Decision: approvals.Denied, Source: "user: go_test disabled in config"})
+	}
+	if !loopCfg.GoLintEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "go_lint", Decision: approvals.Denied, Source: "user: go_lint disabled in config"})
+	}
+	if !loopCfg.GitCommitEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "git_commit", Decision: approvals.Denied, Source: "user: git_commit disabled in config"})
+	}
+	if !loopCfg.GitBranchEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "git_branch", Decision: approvals.Denied, Source: "user: git_branch disabled in config"})
+	}
+	if !loopCfg.GitCheckoutEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "git_checkout", Decision: approvals.Denied, Source: "user: git_checkout disabled in config"})
+	}
+	if !loopCfg.WebSearchEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "web_search", Decision: approvals.Denied, Source: "user: web_search disabled in config"})
+	}
+	if !loopCfg.MemoryQueryEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "memory_query", Decision: approvals.Denied, Source: "user: memory_query disabled in config"})
+	}
+	if !loopCfg.GitPushEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "git_push", Decision: approvals.Denied, Source: "user: git_push disabled in config"})
+	}
+	if !loopCfg.GHPRCreateEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "gh_pr_create", Decision: approvals.Denied, Source: "user: gh_pr_create disabled in config"})
+	}
+	if !loopCfg.GHPRMergeEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "gh_pr_merge", Decision: approvals.Denied, Source: "user: gh_pr_merge disabled in config"})
+	}
+	if !loopCfg.GHPRWaitEnabled {
+		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "gh_pr_wait", Decision: approvals.Denied, Source: "user: gh_pr_wait disabled in config"})
+	}
+	approvalLayers := []approvals.Layer{approvals.DefaultLayer(), userLayer}
 
-	// Build the governor (B1 + B3). Failures to resolve the harness home or
-	// create the parser registry degrade gracefully — the governor is omitted
-	// rather than blocking the rest of startup.
 	var gov agentloop.Governor
 	var tooloutDir string
 	if harnessHome, err := home.Default(); err == nil {
 		cacheDir := filepath.Join(harnessHome, "cache")
-		// Resolved from the same cache dir the governor spills into, so the
-		// handles B3 emits and the directory read resolves them against cannot
-		// drift apart.
 		tooloutDir = governor.TooloutDir(cacheDir)
 		if parsers, err := parser.NewRegistry(parser.NewGoFrontEnd()); err == nil {
 			gov = governor.New(parsers, cacheDir)
 		}
 	}
 
-	// Build the permission base layers. Each task engine gets a fresh
-	// evaluator so mutable session approval rules stay scoped to that session.
-	loopCfg := rt.cfg.Loop
-	userLayer := approvals.Layer{Name: "user-config"}
-	if !loopCfg.EditEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "edit", Decision: approvals.Denied, Source: "user: edit disabled in config",
-		})
+	registry := tools.NewRegistry()
+	if err := tools.RegisterBuiltins(registry); err != nil {
+		doClose()
+		if sessionStore != nil {
+			_ = sessionStore.Close()
+		}
+		uiServer.AddStartupError(fmt.Errorf("task tools: %w", err))
+		return nil
 	}
-	if !loopCfg.ExecEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "exec", Decision: approvals.Denied, Source: "user: exec disabled in config",
-		})
-	}
-	if !loopCfg.GoTestEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "go_test", Decision: approvals.Denied, Source: "user: go_test disabled in config",
-		})
-	}
-	if !loopCfg.GoLintEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "go_lint", Decision: approvals.Denied, Source: "user: go_lint disabled in config",
-		})
-	}
-	if !loopCfg.GitCommitEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "git_commit", Decision: approvals.Denied, Source: "user: git_commit disabled in config",
-		})
-	}
-	if !loopCfg.GitBranchEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "git_branch", Decision: approvals.Denied, Source: "user: git_branch disabled in config",
-		})
-	}
-	if !loopCfg.GitCheckoutEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "git_checkout", Decision: approvals.Denied, Source: "user: git_checkout disabled in config",
-		})
-	}
-	if !loopCfg.WebSearchEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "web_search", Decision: approvals.Denied, Source: "user: web_search disabled in config",
-		})
-	}
-	if !loopCfg.MemoryQueryEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "memory_query", Decision: approvals.Denied, Source: "user: memory_query disabled in config",
-		})
-	}
-	if !loopCfg.GitPushEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "git_push", Decision: approvals.Denied, Source: "user: git_push disabled in config",
-		})
-	}
-	if !loopCfg.GHPRCreateEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "gh_pr_create", Decision: approvals.Denied, Source: "user: gh_pr_create disabled in config",
-		})
-	}
-	if !loopCfg.GHPRMergeEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "gh_pr_merge", Decision: approvals.Denied, Source: "user: gh_pr_merge disabled in config",
-		})
-	}
-	if !loopCfg.GHPRWaitEnabled {
-		userLayer.Rules = append(userLayer.Rules, approvals.Rule{
-			ToolID: "gh_pr_wait", Decision: approvals.Denied, Source: "user: gh_pr_wait disabled in config",
-		})
-	}
-	approvalLayers := []approvals.Layer{approvals.DefaultLayer(), userLayer}
 
 	var loopMetrics agentloop.MetricsRecorder
 	if metricsStore != nil {
@@ -301,58 +246,72 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		gov:            gov,
 		tooloutDir:     tooloutDir,
 	}
-	rt.taskRunner = taskAdapter
-	svcDeps.TaskRunner = taskAdapter
-	uiServer.SetServiceDeps(svcDeps)
-	return true
-}
 
-func (rt *Runtime) memoryAPIUnavailable() bool {
-	return rt.globalMem == nil ||
-		rt.activeMem == nil ||
-		rt.agentReg == nil ||
-		rt.assembler == nil ||
-		rt.taskRunner == nil ||
-		rt.SessionManager() == nil ||
-		(rt.cfg.API.Enabled && rt.apiServer == nil)
-}
-
-type memoryAPISnapshot struct {
-	globalMem   memory.Repo
-	activeMem   memory.Repo
-	agentReg    *agent.DiskRegistry
-	assembler   *prompt.DiskAssembler
-	apiServer   *api.Server
-	gitRepo     *gitw.Repo
-	sessionMgr  *session.Manager
-	taskRunner  *taskRunnerAdapter
-	serviceDeps ui.ServiceDeps
-}
-
-func (rt *Runtime) snapshotMemoryAndAPI(uiServer *ui.Server) memoryAPISnapshot {
-	return memoryAPISnapshot{
-		globalMem:   rt.globalMem,
-		activeMem:   rt.activeMem,
-		agentReg:    rt.agentReg,
-		assembler:   rt.assembler,
-		apiServer:   rt.apiServer,
-		gitRepo:     rt.gitRepo,
-		sessionMgr:  rt.SessionManager(),
-		taskRunner:  rt.taskRunner,
-		serviceDeps: uiServer.ServiceDepsSnapshot(),
+	var apiSrv *api.Server
+	if rt.cfg.API.Enabled && rt.reqQueue != nil {
+		var apiRec api.SessionRecorder
+		if sessionMgr != nil {
+			apiRec = &apiSessionAdapter{mgr: sessionMgr}
+		}
+		srv := api.NewServer(rt.cfg.API.Port, asmAdapter, rt.reqQueue, apiRec)
+		if err := srv.Start(ctx); err != nil {
+			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
+		} else {
+			apiSrv = srv
+			slog.Info("api server listening", "port", rt.cfg.API.Port)
+		}
 	}
-}
 
-func (rt *Runtime) restoreMemoryAndAPI(uiServer *ui.Server, snap memoryAPISnapshot) {
-	rt.globalMem = snap.globalMem
-	rt.activeMem = snap.activeMem
-	rt.agentReg = snap.agentReg
-	rt.assembler = snap.assembler
-	rt.apiServer = snap.apiServer
-	rt.gitRepo = snap.gitRepo
-	rt.setSessionManager(snap.sessionMgr)
-	rt.taskRunner = snap.taskRunner
-	uiServer.SetServiceDeps(snap.serviceDeps)
+	svcDeps := ui.ServiceDeps{MemoryRepoPath: roots.activeRoot}
+	svcDeps.RetrievalScorer = &uiRetrievalScorerAdapter{scorer: &memoryops.EpisodeScorer{
+		Embedder: embedClient,
+		Config:   rt.cfg.Prompt,
+		Index:    episodeIndex,
+	}}
+	svcDeps.MemoryStore = activeMem
+	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: agentReg, globalMem: globalMem, activeMem: activeMem, getProjectSlug: rt.getActiveProjectSlug, setActive: rt.setActiveAgent}
+	if sessionAdapter != nil {
+		svcDeps.SessionStore = sessionAdapter
+	}
+	if gitRepo != nil {
+		svcDeps.Committer = gitRepo
+	}
+	svcDeps.Dedup = &memoryops.DedupChecker{
+		Mem:      activeMem,
+		Embedder: embedClient,
+	}
+	svcDeps.PromotionDedupThreshold = rt.cfg.Prompt.PromotionDedupThreshold
+	svcDeps.IndexRebuilder = &memoryops.EpisodeRebuilder{
+		Mem:       activeMem,
+		Embedder:  embedClient,
+		Index:     episodeIndex.Current(),
+		IndexDir:  indexDir,
+		Repo:      gitRepo,
+		OnRebuilt: episodeIndex.Replace,
+	}
+	if rt.reqQueue != nil {
+		svcDeps.ChatRunner = &chatRunnerAdapter{
+			asm: asmAdapter,
+			q:   rt.reqQueue,
+			mgr: sessionMgr,
+		}
+	}
+	svcDeps.TaskRunner = taskAdapter
+
+	return &memoryCandidate{
+		globalMem:    globalMem,
+		activeMem:    activeMem,
+		sessionStore: sessionStore,
+		agentReg:     agentReg,
+		assembler:    assembler,
+		episodeIndex: episodeIndex,
+		gitRepo:      gitRepo,
+		sessionMgr:   sessionMgr,
+		sessionAd:    sessionAdapter,
+		taskRunner:   taskAdapter,
+		apiServer:    apiSrv,
+		serviceDeps:  svcDeps,
+	}
 }
 
 type projectRepoRoots struct {
@@ -393,25 +352,12 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 	}, nil
 }
 
-func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndexes ...*memoryops.EpisodeIndex) (*session.Manager, *uiSessionStoreAdapter) {
+func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex) (*gitw.Repo, *memory.DirReader, *session.Manager, *uiSessionStoreAdapter) {
 	repoPath := roots.activeRoot
 	repo, err := gitw.Open(repoPath)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
-		return nil, nil
-	}
-	rt.gitRepo = repo
-
-	var episodeIndex *memoryops.EpisodeIndex
-	if len(episodeIndexes) > 0 {
-		episodeIndex = episodeIndexes[0]
-	}
-	if episodeIndex == nil {
-		episodeIndex, err = memoryops.NewEpisodeIndex(memoryops.EpisodeIndexDir(repoPath))
-		if err != nil {
-			uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
-			return nil, nil
-		}
+		return nil, nil, nil, nil
 	}
 
 	var rec session.MetricsRecorder
@@ -422,9 +368,8 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 	sessionStore, err := memory.NewDirReader(repoPath)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("open session store %s: %w", repoPath, err))
-		return nil, nil
+		return repo, nil, nil, nil
 	}
-	rt.sessionMem = sessionStore
 	mgr, err := session.NewManager(session.ManagerDeps{
 		Repo:               repo,
 		Writer:             sessionStore,
@@ -433,14 +378,14 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		Metrics:            rec,
 		SummarizerPrompt:   rt.summarizerPromptFn(),
 		ResolveAbsRepoPath: repoPath,
-		AfterSave:          memoryops.AfterSaveEmbed(embedClient, episodeIndex, rt.gitRepo),
+		AfterSave:          memoryops.AfterSaveEmbed(embedClient, episodeIndex, repo),
 	}, rt.cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
-		return nil, nil
+		return repo, sessionStore, nil, nil
 	}
 	adapter := &uiSessionStoreAdapter{mgr: mgr, getActive: rt.getActiveAgent}
-	return mgr, adapter
+	return repo, sessionStore, mgr, adapter
 }
 
 // summarizerPromptFn returns a getter that reads the live config
@@ -501,24 +446,14 @@ func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context) {
 	rt.mu.Lock()
 }
 
-// stopMemoryAndAPI tears down memory, sessions, task, and API services. Caller
-// must hold rt.mu and should call quiesceMemoryAndAPI first when replacing live
-// services during reload.
-func (rt *Runtime) stopMemoryAndAPI(uiServer *ui.Server) {
-	if rt.apiServer != nil {
-		rt.apiServer.Stop()
-		rt.apiServer = nil
-	}
-	rt.globalMem = nil
-	rt.activeMem = nil
-	// sessionMem is not cleared here — it is owned by the session
-	// manager and closed on Stop.
-	rt.agentReg = nil
-	rt.assembler = nil
-	rt.gitRepo = nil
-	rt.setSessionManager(nil)
-	uiServer.SetServiceDeps(ui.ServiceDeps{})
-	rt.taskRunner = nil
+func (rt *Runtime) memoryAPIUnavailable() bool {
+	return rt.globalMem == nil ||
+		rt.activeMem == nil ||
+		rt.agentReg == nil ||
+		rt.assembler == nil ||
+		rt.taskRunner == nil ||
+		rt.SessionManager() == nil ||
+		(rt.cfg.API.Enabled && rt.apiServer == nil)
 }
 
 func (rt *Runtime) getActiveAgent() string {

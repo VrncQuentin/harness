@@ -4,8 +4,10 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -31,6 +33,28 @@ func newTestRepo(t *testing.T, files map[string]string) *DirReader {
 	}
 	t.Cleanup(func() { _ = r.Close() })
 	return r
+}
+
+func symlinkOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlink requires Developer Mode on Windows")
+		}
+		t.Fatal(err)
+	}
+}
+
+func junctionOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		t.Skip("junction is Windows-only")
+	}
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", link, target)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("mklink /J %s -> %s failed: %v\n%s", link, target, err, string(out))
+	}
 }
 
 func TestDirReader_Read(t *testing.T) {
@@ -263,14 +287,13 @@ func TestDirReader_WriteFileOverwritesAtomic(t *testing.T) {
 	}
 
 	// Confirm the atomic rename did not leave a .harness-* tempfile behind.
-	parent := filepath.Join(r.root, "agents", "coder")
-	entries, err := os.ReadDir(parent)
+	entries, err := r.Walk("agents/coder")
 	if err != nil {
-		t.Fatalf("ReadDir parent: %v", err)
+		t.Fatalf("Walk parent: %v", err)
 	}
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".harness-") {
-			t.Errorf("WriteFile left tempfile behind: %s", e.Name())
+		if strings.HasPrefix(filepath.Base(e.Path), ".harness-") {
+			t.Errorf("WriteFile left tempfile behind: %s", e.Path)
 		}
 	}
 }
@@ -339,9 +362,6 @@ func TestDirReader_RemoveAllRemovesSubtree(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, []string{"reviewer"}) {
 		t.Errorf("ListDirs after RemoveAll = %v, want [reviewer]", got)
-	}
-	if _, err := os.Stat(filepath.Join(r.root, "agents", "coder")); !os.IsNotExist(err) {
-		t.Errorf("agents/coder still exists: stat err = %v", err)
 	}
 }
 
@@ -757,4 +777,151 @@ func TestDirReader_WriteFileCleansTrailingSlash(t *testing.T) {
 	if string(got) != "ok" {
 		t.Errorf("WriteFile('a/b/') should publish at a/b, got content=%q", string(got))
 	}
+}
+
+func TestSameDirReader_SameDirectory(t *testing.T) {
+	dir := t.TempDir()
+	a, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	b, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	same, err := a.SameDirReader(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !same {
+		t.Error("two DirReaders on the same directory should be SameDirReader")
+	}
+}
+
+func TestSameDirReader_DifferentDirectory(t *testing.T) {
+	a, err := NewDirReader(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	b, err := NewDirReader(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	same, err := a.SameDirReader(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same {
+		t.Error("two DirReaders on different directories should not be SameDirReader")
+	}
+}
+
+func TestSameDirReader_AliasAndPhysicalTarget(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	symlinkOrSkip(t, dir, link)
+
+	a, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	b, err := NewDirReader(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	same, err := a.SameDirReader(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !same {
+		t.Error("DirReaders on alias and physical target should be SameDirReader")
+	}
+}
+
+func TestSameDirReader_LeftReaderClosed(t *testing.T) {
+	dir := t.TempDir()
+	a, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+
+	_ = a.Close()
+	_, err = a.SameDirReader(b)
+	if err == nil {
+		t.Error("SameDirReader should error when left reader is closed")
+	}
+}
+
+func TestSameDirReader_RightReaderClosed(t *testing.T) {
+	dir := t.TempDir()
+	a, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	b, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_ = b.Close()
+	_, err = a.SameDirReader(b)
+	if err == nil {
+		t.Error("SameDirReader should error when right reader is closed")
+	}
+}
+
+func TestDirReader_ReplacedDirectoryFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "known.txt"), []byte("original"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := r.Read("known.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("Read before replacement = %q, want original", string(got))
+	}
+
+	// Try to remove the directory. If the pinned handle blocks it, close
+	// and re-create to prove the handle was the cause.
+	if err := os.RemoveAll(dir); err != nil {
+		_ = r.Close()
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "known.txt"), []byte("replacement"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = r.Read("known.txt")
+	if err == nil {
+		t.Error("Read should fail after the configured directory was replaced")
+	}
+	t.Cleanup(func() { _ = r.Close() })
 }

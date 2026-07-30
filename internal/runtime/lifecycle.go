@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"time"
 
@@ -95,12 +94,34 @@ func (rt *Runtime) RestartEmbedder() {
 // rather than block shutdown indefinitely. The .json sidecars survive
 // in the working tree for next-session resume even if the summary
 // commit never lands.
+//
+// Stop captures and clears every owned field under the lock, then
+// releases the lock before acting on the captured values. A second
+// call is a no-op — every field was cleared on the first pass.
 func (rt *Runtime) Stop() {
 	rt.mu.Lock()
 	q := rt.reqQueue
 	apiSrv := rt.apiServer
 	tasks := rt.taskRunner
+	global := rt.globalMem
+	active := rt.activeMem
+	session := rt.sessionMem
+
+	rt.reqQueue = nil
+	rt.apiServer = nil
+	rt.taskRunner = nil
+	rt.globalMem = nil
+	rt.activeMem = nil
+	rt.sessionMem = nil
+	rt.agentReg = nil
+	rt.assembler = nil
+	rt.gitRepo = nil
+	rt.started = false
 	rt.mu.Unlock()
+
+	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && session == nil {
+		return
+	}
 
 	if tasks != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -122,21 +143,7 @@ func (rt *Runtime) Stop() {
 	if q != nil {
 		q.Stop()
 	}
-	rt.mu.Lock()
-	if dr, ok := rt.globalMem.(io.Closer); ok {
-		_ = dr.Close()
-	}
-	if rt.activeMem != nil && rt.activeMem != rt.globalMem {
-		if dr, ok := rt.activeMem.(io.Closer); ok {
-			_ = dr.Close()
-		}
-	}
-	if rt.sessionMem != nil && rt.sessionMem != rt.globalMem && rt.sessionMem != rt.activeMem {
-		if dr, ok := rt.sessionMem.(io.Closer); ok {
-			_ = dr.Close()
-		}
-	}
-	rt.mu.Unlock()
+	closeReaders(global, active, session)
 }
 
 // WaitManagers waits for process manager goroutines to exit after their context

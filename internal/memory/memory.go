@@ -43,7 +43,6 @@ type Entry struct {
 }
 
 type DirReader struct {
-	root   string
 	anchor *rootfs.Anchor
 }
 
@@ -59,11 +58,10 @@ func NewDirReader(root string) (*DirReader, error) {
 	if err != nil {
 		return nil, fmt.Errorf("memory: open dir reader %s: %w", root, err)
 	}
-	return &DirReader{root: root, anchor: a}, nil
+	return &DirReader{anchor: a}, nil
 }
 
-func (r *DirReader) Anchor() *rootfs.Anchor { return r.anchor }
-func (r *DirReader) Close() error           { return r.anchor.Close() }
+func (r *DirReader) Close() error { return r.anchor.Close() }
 
 func (r *DirReader) SameDirReader(other *DirReader) (bool, error) {
 	return r.anchor.SameAnchor(other.anchor)

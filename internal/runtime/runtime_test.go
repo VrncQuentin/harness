@@ -308,7 +308,6 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 	store := &runtimeConfigStore{cfg: &cfg, saved: true}
 
 	rt := New(cfg, store, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
 	rt.started = true
 	t.Cleanup(func() { rt.Stop() })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
@@ -319,7 +318,6 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 	if ok := rt.startMemoryAndAPI(context.Background(), uiServer, nil); !ok {
 		t.Fatal("initial memory service setup failed")
 	}
-	t.Cleanup(func() { rt.Stop() })
 	if rt.apiServer != nil {
 		t.Fatal("api server started while API was disabled")
 	}
@@ -367,10 +365,7 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			tc.mutate(&loaded)
 
 			rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
-			t.Cleanup(func() { rt.Stop() })
-			t.Cleanup(func() { rt.Stop() })
 			rt.started = true
-			t.Cleanup(func() { rt.Stop() })
 			t.Cleanup(func() { rt.Stop() })
 			rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 				project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
@@ -418,11 +413,13 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 	rt.inferClient = client
 	rt.reqQueue = startRuntimeTestQueue(t, client)
 
-	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
-	}, client, nil)
+	}, client, nil, nil)
+	rt.gitRepo = gitRepo
+	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 	rt.taskRunner = &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: rt.reqQueue}
 
@@ -783,11 +780,13 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
 
-	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, rt.ensureInferenceClient(), nil, nil)
+	rt.gitRepo = gitRepo
+	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
 	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
@@ -831,11 +830,13 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
 	t.Cleanup(func() { rt.Stop() })
-	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, rt.ensureInferenceClient(), nil, nil)
+	rt.gitRepo = gitRepo
+	rt.sessionMem = sessionStore
 	if mgr == nil {
 		t.Fatal("buildSessionManager returned nil")
 	}
@@ -895,11 +896,13 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
 
-	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, rt.ensureInferenceClient(), nil, nil)
+	rt.gitRepo = gitRepo
+	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
 	s := mgr.Start("coder")
@@ -1158,11 +1161,13 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	rt.globalMem = dr
 	rt.activeMem = rt.globalMem
 
-	mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	gitRepo, sessionStore, mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, rt.ensureInferenceClient(), nil, nil)
+	rt.gitRepo = gitRepo
+	rt.sessionMem = sessionStore
 	if mgr == nil || adapter == nil {
 		t.Fatal("buildSessionManager returned nil manager")
 	}
@@ -1492,4 +1497,145 @@ func freeTCPPort(t *testing.T) int {
 		t.Fatalf("listener addr is %T, want *net.TCPAddr", ln.Addr())
 	}
 	return addr.Port
+}
+
+func TestReloadReleasesPreviousHandles(t *testing.T) {
+	oldRoot := initRuntimeProjectRepo(t)
+	newRoot := initRuntimeProjectRepo(t)
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	rt.started = true
+	t.Cleanup(func() { rt.Stop() })
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: newRoot},
+	}}
+
+	uiServer := ui.NewServer(0)
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		t.Fatal("first reload to newRoot did not report live apply")
+	}
+
+	// After switching to newRoot, the old root should be removable.
+	if err := os.RemoveAll(oldRoot); err != nil {
+		t.Fatalf("old root was not released after successful reload: %v", err)
+	}
+}
+
+func TestCandidateFailureReleasesAllCandidateHandles(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	loaded := cfg
+	loaded.Project.ActiveProjectSlug = "missing"
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	rt.started = true
+	t.Cleanup(func() { rt.Stop() })
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	uiServer := ui.NewServer(0)
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if result.LiveApplied {
+		t.Fatal("reload to missing project should not report live apply")
+	}
+
+	// The original root directory should still be accessible — no handles
+	// were leaked on the candidate path that would block the original root.
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("original root is not accessible after failed reload: %v", err)
+	}
+}
+
+func TestFailedReloadPreservesReadableGeneration(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	mem, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mem.Close() })
+
+	loaded := cfg
+	loaded.Project.ActiveProjectSlug = "missing"
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	rt.started = true
+	t.Cleanup(func() { rt.Stop() })
+	rt.globalMem = mem
+	rt.activeMem = mem
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	if err := os.WriteFile(filepath.Join(root, "known.txt"), []byte("restored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	uiServer := ui.NewServer(0)
+	uiServer.SetServiceDeps(ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem})
+
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if result.LiveApplied {
+		t.Fatal("failed memory/API reload should not report live apply")
+	}
+
+	got, gerr := mem.Read("known.txt")
+	if gerr != nil {
+		t.Fatalf("restored generation Read failed: %v", gerr)
+	}
+	if string(got) != "restored" {
+		t.Fatalf("restored generation Read = %q, want restored", string(got))
+	}
+}
+
+func TestSessionStoreOwnershipRetiredOnStop(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt := New(cfg, nil, LogRings{})
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: project.GlobalSlug,
+	}, rt.ensureInferenceClient(), nil, nil)
+	rt.gitRepo = gitRepo
+	rt.sessionMem = sessionStore
+	rt.setSessionManager(mgr)
+
+	rt.Stop()
+
+	// After Stop, session store should be closed. A read via the closed
+	// DirReader should fail.
+	if _, err := sessionStore.Read("rules.md"); err == nil {
+		t.Error("session store Read should fail after Runtime.Stop closed it")
+	}
+}
+
+func TestStopIsIdempotent(t *testing.T) {
+	cfg := config.Defaults()
+	rt := New(cfg, nil, LogRings{})
+
+	rt.Stop()
+	rt.Stop()
 }

@@ -91,19 +91,12 @@ func (rt *Runtime) ApplyConfig(
 			embedderEndpointChanged ||
 			needsMemoryAPIRetry {
 			rt.quiesceMemoryAndAPI(ctx)
-			// Project switch optionally reloads llama-server before rebuilding
-			// memory services. Live work has already been quiesced above so it
-			// is committed under the previous project manager.
 			if old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
 				rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
 			}
 			slog.Info("rebuilding memory and api services")
-			snapshot := rt.snapshotMemoryAndAPI(uiServer)
-			rt.stopMemoryAndAPI(uiServer)
 			if rt.startMemoryAndAPI(ctx, uiServer, metricsStore) {
 				result.LiveApplied = true
-			} else {
-				rt.restoreMemoryAndAPI(uiServer, snapshot)
 			}
 		}
 	}
