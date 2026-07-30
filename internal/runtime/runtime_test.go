@@ -365,7 +365,6 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			tc.mutate(&loaded)
 
 			rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
-			rt.started = true
 			t.Cleanup(func() { rt.Stop() })
 			rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 				project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
@@ -375,13 +374,28 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			rt.inferClient = rt.newInferenceClient()
 			rt.reqQueue = queue.New(cfg.Queue.MaxDepth, rt.inferClient)
 
+			// Start a healthy old generation first so the endpoint
+			// change predicate (not memoryAPIUnavailable) triggers
+			// the rebuild.
 			uiServer := ui.NewServer(0)
+			if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &cfg) {
+				t.Fatal("initial memory startup failed")
+			}
+			rt.started = true
+			oldMgr := rt.SessionManager()
+			if oldMgr == nil {
+				t.Fatal("old session manager absent after startup")
+			}
+
 			result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
 			if !result.LiveApplied {
 				t.Fatal("endpoint-only reload did not report a live apply")
 			}
 			if rt.SessionManager() == nil {
 				t.Fatal("endpoint-only reload did not rebuild the session manager")
+			}
+			if rt.SessionManager() == oldMgr {
+				t.Fatal("session manager was not replaced by endpoint change")
 			}
 			deps := uiServer.ServiceDepsSnapshot()
 			if deps.MemoryRepoPath != root || deps.SessionStore == nil || deps.RetrievalScorer == nil || deps.IndexRebuilder == nil {
