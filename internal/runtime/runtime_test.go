@@ -5,17 +5,20 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/VrncQuentin/harness/internal/agent"
 	"github.com/VrncQuentin/harness/internal/agentloop"
+	"github.com/VrncQuentin/harness/internal/api"
 	"github.com/VrncQuentin/harness/internal/approvals"
 	"github.com/VrncQuentin/harness/internal/config"
 	gitw "github.com/VrncQuentin/harness/internal/git"
@@ -1883,6 +1886,7 @@ func TestGenLeaseReleasedOnHandlerError(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 	cfg.API.Enabled = true
 	cfg.API.Port = freeTCPPort(t)
+	cfg.Agent.Active = "coder"
 
 	rt := New(cfg, nil, LogRings{})
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
@@ -1897,37 +1901,58 @@ func TestGenLeaseReleasedOnHandlerError(t *testing.T) {
 	}
 	t.Cleanup(func() { rt.Stop() })
 
-	// Assembly error: empty agent.
-	asm, _, _, release := rt.AcquireRequestGeneration()
-	_, err := asm.Assemble(context.Background(), "", nil)
+	// Count releases from WithGenLease to confirm the handler path
+	// releases exactly once on assembly error.
+	var releases int32
+	rt.apiServer.WithGenLease(func() (api.Assembler, api.SessionRecorder, string, func()) {
+		a, r, active, rel := rt.AcquireRequestGeneration()
+		return a, r, active, func() {
+			atomic.AddInt32(&releases, 1)
+			rel()
+		}
+	})
+
+	// Assembly error: agent persona missing. Handler assembles, gets
+	// error, writes 500, and returns. Deferred release must fire once.
+	req, _ := http.NewRequest("POST", "/v1/chat/completions", strings.NewReader(
+		`{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+	))
+	req.Header.Set("X-Harness-Agent", "nonexistent")
+	rt.apiServer.Handler().ServeHTTP(httptest.NewRecorder(), req)
+	if atomic.LoadInt32(&releases) != 1 {
+		t.Fatalf("assembly-error path: expected 1 release, got %d", releases)
+	}
+
+	// The captured active agent reaches the assembler when request omits
+	// agent.  Prove by direct acquisition — staticAssembler resolves "".
+	asm, _, active, release := rt.AcquireRequestGeneration()
+	if active != "coder" {
+		release()
+		t.Fatalf("captured active agent = %q, want coder", active)
+	}
+	_, err := asm.Assemble(context.Background(), "", []inference.Message{{Role: "user", Content: "hi"}})
 	if err == nil {
 		release()
-		t.Fatal("expected error for empty agent")
+		t.Fatal("expected assembly error for nonexistent agent with empty request agent")
 	}
 	release()
-
-	// Session path with no errors.
-	_, rec, _, release2 := rt.AcquireRequestGeneration()
-	sess := rec.Start(context.Background(), "coder")
-	if sess.ID == "" {
-		release2()
-		t.Fatal("Start failed")
-	}
-	rec.End(sess.ID)
-	release2()
-
-	// Acquire and release without any operations.
-	_, _, _, release3 := rt.AcquireRequestGeneration()
-	release3()
 }
 
 func TestStopWithInFlightLease(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "agents", "coder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agents", "coder", "persona.md"), []byte("coder persona"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "known.txt"), []byte("leased"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.Defaults()
 	seedRequiredConfigFiles(t, &cfg)
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
-	cfg.API.Enabled = true
-	cfg.API.Port = freeTCPPort(t)
+	cfg.Agent.Active = "coder"
 
 	rt := New(cfg, nil, LogRings{})
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
@@ -1942,14 +1967,29 @@ func TestStopWithInFlightLease(t *testing.T) {
 	}
 
 	asm, _, _, release := rt.AcquireRequestGeneration()
-	_ = asm
 
-	// Stop with an in-flight lease.
+	// Stop while the lease is held.
 	rt.Stop()
 
-	// Release the lease after Stop.
+	// The lease protects the captured generation. Assemble must
+	// still work — the generation's readers are pinned.
+	_, err := asm.Assemble(context.Background(), "coder", []inference.Message{{Role: "user", Content: "read known"}})
+	if err != nil {
+		release()
+		t.Fatalf("assemble after Stop with held lease: %v", err)
+	}
+
+	// The root must still be pinned on Windows.
+	if err := os.RemoveAll(root); err == nil {
+		if runtime.GOOS == "windows" {
+			release()
+			t.Fatal("root was removable despite held lease after Stop")
+		}
+	}
+
+	// Release drops the last lease. The old readers close.
 	release()
 
-	// Second Stop must be a no-op.
+	// Second Stop is a no-op.
 	rt.Stop()
 }

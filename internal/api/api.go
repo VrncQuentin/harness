@@ -148,6 +148,9 @@ func (s *Server) handler() http.Handler {
 	return mux
 }
 
+// Handler returns the HTTP handler for use in tests.
+func (s *Server) Handler() http.Handler { return s.handler() }
+
 // chatRequest is the OpenAI-compatible request body. Agent is a harness
 // extension; the X-Harness-Agent header takes precedence if both are set.
 type chatRequest struct {
