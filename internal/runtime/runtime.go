@@ -54,7 +54,11 @@ type Runtime struct {
 	globalMem  memory.Repo
 	activeMem  memory.Repo
 	sessionMem memory.Repo // session store DirReader, closed on Stop
-	agentReg   *agent.DiskRegistry
+	// apiSessionReader holds the previous session reader when the API
+	// was carried forward across a same-config reload. It is closed
+	// on Stop or when the API is eventually rebuilt.
+	apiSessionReader memory.Repo
+	agentReg         *agent.DiskRegistry
 	assembler  *prompt.DiskAssembler
 	apiServer  *api.Server
 	gitRepo    *gitw.Repo

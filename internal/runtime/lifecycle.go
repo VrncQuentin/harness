@@ -28,7 +28,7 @@ func (rt *Runtime) Start(
 	defer rt.mu.Unlock()
 	rt.refreshProjectDirectoryWarnings(uiServer)
 	rt.startServices(ctx, uiServer, events, metricsStore)
-	rt.startMemoryAndAPI(ctx, uiServer, metricsStore, &rt.cfg)
+	rt.startMemoryAndAPI(ctx, uiServer, metricsStore, &rt.cfg, false)
 }
 
 // Managers returns the process managers currently owned by the runtime.
@@ -115,6 +115,7 @@ func (rt *Runtime) Stop() {
 	global := rt.globalMem
 	active := rt.activeMem
 	session := rt.sessionMem
+	apiSession := rt.apiSessionReader
 	sessionMgr := rt.SessionManager()
 
 	rt.reqQueue = nil
@@ -123,6 +124,7 @@ func (rt *Runtime) Stop() {
 	rt.globalMem = nil
 	rt.activeMem = nil
 	rt.sessionMem = nil
+	rt.apiSessionReader = nil
 	rt.agentReg = nil
 	rt.assembler = nil
 	rt.gitRepo = nil
@@ -130,7 +132,7 @@ func (rt *Runtime) Stop() {
 	rt.setSessionManager(nil)
 	rt.mu.Unlock()
 
-	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && session == nil {
+	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && session == nil && apiSession == nil {
 		return
 	}
 
@@ -154,7 +156,7 @@ func (rt *Runtime) Stop() {
 	if q != nil {
 		q.Stop()
 	}
-	closeReaders(global, active, session)
+	closeReaders(global, active, session, apiSession)
 }
 
 // WaitManagers waits for process manager goroutines to exit after their context
