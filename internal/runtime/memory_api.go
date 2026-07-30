@@ -101,13 +101,13 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	}
 
 	if candidate.apiServer != nil {
-		if rt.apiServer != nil {
-			rt.apiServer.Stop()
-		}
 		if err := candidate.apiServer.Start(ctx); err != nil {
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
 			candidate.close()
 			return false
+		}
+		if rt.apiServer != nil {
+			rt.apiServer.Stop()
 		}
 	} else if apiPortChanged {
 		rt.apiServer.Stop()

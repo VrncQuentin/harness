@@ -392,11 +392,13 @@ func (ad *uiSessionStoreAdapter) Resume(id string) error {
 }
 
 // apiSessionAdapter implements api.SessionRecorder by resolving the
-// session manager from Runtime at call time. This allows the API server
-// to survive same-port reloads — the listener stays up and its adapters
-// pick up the new generation after publication without ever stopping.
+// session manager from Runtime at call time. Start captures the current
+// manager and records it per session ID; subsequent Append/Save/End use
+// that captured manager so a mid-request reload does not switch managers.
 type apiSessionAdapter struct {
-	rt *Runtime
+	rt   *Runtime
+	mu   sync.Mutex
+	mgrs map[string]*session.Manager
 }
 
 func (a *apiSessionAdapter) Start(agentName string) api.Session {
@@ -405,11 +407,17 @@ func (a *apiSessionAdapter) Start(agentName string) api.Session {
 		return api.Session{}
 	}
 	s := mgr.Start(agentName)
+	a.mu.Lock()
+	if a.mgrs == nil {
+		a.mgrs = make(map[string]*session.Manager)
+	}
+	a.mgrs[s.ID] = mgr
+	a.mu.Unlock()
 	return api.Session{ID: s.ID, Agent: s.Agent}
 }
 
 func (a *apiSessionAdapter) Append(id, role, content string) error {
-	mgr := a.rt.SessionManager()
+	mgr := a.mgrFor(id)
 	if mgr == nil {
 		return errors.New("session: api adapter has no manager")
 	}
@@ -417,7 +425,7 @@ func (a *apiSessionAdapter) Append(id, role, content string) error {
 }
 
 func (a *apiSessionAdapter) Save(ctx context.Context, id string) error {
-	mgr := a.rt.SessionManager()
+	mgr := a.mgrFor(id)
 	if mgr == nil {
 		return errors.New("session: api adapter has no manager")
 	}
@@ -426,10 +434,23 @@ func (a *apiSessionAdapter) Save(ctx context.Context, id string) error {
 }
 
 func (a *apiSessionAdapter) End(id string) {
-	mgr := a.rt.SessionManager()
+	mgr := a.mgrFor(id)
 	if mgr != nil {
 		mgr.End(id)
 	}
+	a.mu.Lock()
+	delete(a.mgrs, id)
+	a.mu.Unlock()
+}
+
+func (a *apiSessionAdapter) mgrFor(id string) *session.Manager {
+	a.mu.Lock()
+	mgr := a.mgrs[id]
+	a.mu.Unlock()
+	if mgr != nil {
+		return mgr
+	}
+	return a.rt.SessionManager()
 }
 
 type taskRunnerAdapter struct {
