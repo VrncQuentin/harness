@@ -73,13 +73,6 @@ func (rt *Runtime) ensureInferenceClient() inference.Client {
 	return rt.inferClient
 }
 
-func (rt *Runtime) newEmbedderClient() embedder.Client {
-	return embedder.NewClient(
-		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
-		httpclient.NewStreaming(),
-	)
-}
-
 func (rt *Runtime) newEmbedderClientFor(cfg *config.Config) embedder.Client {
 	return embedder.NewClient(
 		fmt.Sprintf("http://127.0.0.1:%d", cfg.Embedder.Port),
@@ -202,12 +195,13 @@ func (rt *Runtime) startServices(
 	})
 	go rt.llamaMgr.Run(ctx)
 
+	embedCfg := cfg.Embedder
 	rt.embedMgr = proc.NewManager(proc.ManagerConfig{
 		Name: "embedder",
 		BuildArgs: func() (string, []string) {
-			return embedderArgsForConfig(cfg.Embedder)
+			return embedderArgsForConfig(embedCfg)
 		},
-		HealthURL:   embedderHealthURL(cfg.Embedder),
+		HealthURL:   embedderHealthURL(embedCfg),
 		Events:      events,
 		CheckPeriod: 5 * time.Second,
 		HTTPClient:  httpclient.New(),

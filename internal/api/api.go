@@ -82,12 +82,6 @@ func NewServer(port int, asm Assembler, q Enqueuer, rec SessionRecorder) *Server
 	}
 }
 
-// SetSessionRecorder replaces the session recorder. It is safe to call
-// while the server is running.
-func (s *Server) SetSessionRecorder(rec SessionRecorder) {
-	s.rec = rec
-}
-
 // Start binds and begins serving in a background goroutine. It returns early
 // on bind failure so main.go can surface the error to the UI instead of
 // silently never listening. Shutdown is triggered by cancelling ctx.

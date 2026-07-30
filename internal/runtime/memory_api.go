@@ -86,20 +86,15 @@ func closeReaders(readers ...memory.Repo) {
 }
 
 func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config, apiConfigChanged bool) bool {
+	oldAPI := rt.apiServer
+	if oldAPI != nil {
+		oldAPI.Stop()
+		rt.apiServer = nil
+	}
+
 	candidate := rt.buildCandidate(ctx, uiServer, metricsStore, candidateCfg, apiConfigChanged)
 	if candidate == nil {
 		return false
-	}
-
-	oldAPI := rt.apiServer
-
-	// Carry the old API server forward when the API config has not changed
-	// and the candidate did not build one. Swap its session recorder so
-	// it resolves to the new session manager dynamically.
-	if candidate.apiServer == nil && oldAPI != nil && !apiConfigChanged {
-		oldAPI.SetSessionRecorder(&apiSessionAdapter{rt: rt})
-		candidate.apiServer = oldAPI
-		oldAPI = nil
 	}
 
 	oldGlobal := rt.globalMem
@@ -118,9 +113,10 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 	uiServer.SetServiceDeps(candidate.serviceDeps)
 
-	if oldAPI != nil {
-		oldAPI.Stop()
-	}
+	// Close the old generation's readers. In-flight UI handlers that
+	// captured a ServiceDepsSnapshot before this swap may retain
+	// references to these closed readers. That race is deferred to a
+	// follow-up generation-leasing mechanism (see PR 8).
 	closeReaders(oldGlobal, oldActive, oldSession)
 
 	return true
@@ -267,17 +263,8 @@ func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metr
 
 	var apiSrv *api.Server
 	if cfg.API.Enabled && rt.reqQueue != nil {
-		apiRec := &apiSessionAdapter{rt: rt}
-		srv := api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, apiRec)
+		srv := api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, &apiSessionAdapter{mgr: sessionMgr})
 		if err := srv.Start(ctx); err != nil {
-			if apiConfigChanged {
-				doClose()
-				if sessionStore != nil {
-					_ = sessionStore.Close()
-				}
-				uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
-				return nil
-			}
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
 		} else {
 			apiSrv = srv

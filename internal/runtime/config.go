@@ -64,32 +64,17 @@ func (rt *Runtime) ApplyConfig(
 		result.LiveApplied = true
 	} else {
 		needsMemoryAPIRetry := rt.memoryAPIUnavailable()
-		if oldModel != newModel {
-			slog.Info("reconfiguring llama-server", "old_port", oldModel.Port, "new_port", newModel.Port)
-			rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(newModel) }, llamaHealthURL(newModel))
-			result.LiveApplied = true
-		}
-		if old.Embedder != loaded.Embedder {
-			slog.Info("reconfiguring embedder", "old_port", old.Embedder.Port, "new_port", loaded.Embedder.Port)
-			rt.embedMgr.Reconfigure(func() (string, []string) {
-				return embedderArgsForConfig(loaded.Embedder)
-			}, embedderHealthURL(loaded.Embedder))
-			result.LiveApplied = true
-		}
-		if modelEndpointChanged && rt.reqQueue != nil {
-			client := rt.newInferenceClientFor(loaded)
-			rt.inferClient = client
-			rt.reqQueue.SetClient(client)
-		}
 
-		if old.Prompt != loaded.Prompt ||
+		rebuild := old.Prompt != loaded.Prompt ||
 			old.API != loaded.API ||
 			old.Loop != loaded.Loop ||
 			old.Agent.Active != loaded.Agent.Active ||
 			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug ||
 			modelEndpointChanged ||
 			embedderEndpointChanged ||
-			needsMemoryAPIRetry {
+			needsMemoryAPIRetry
+
+		if rebuild {
 			rt.quiesceMemoryAndAPI(ctx)
 			if old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
 				rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
@@ -100,8 +85,40 @@ func (rt *Runtime) ApplyConfig(
 				rt.cfg = *loaded
 				rt.refreshProjectDirectoryWarnings(uiServer)
 				result.LiveApplied = true
+				if oldModel != newModel {
+					slog.Info("reconfiguring llama-server", "old_port", oldModel.Port, "new_port", newModel.Port)
+					rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(newModel) }, llamaHealthURL(newModel))
+				}
+				if old.Embedder != loaded.Embedder {
+					slog.Info("reconfiguring embedder", "old_port", old.Embedder.Port, "new_port", loaded.Embedder.Port)
+					rt.embedMgr.Reconfigure(func() (string, []string) {
+						return embedderArgsForConfig(loaded.Embedder)
+					}, embedderHealthURL(loaded.Embedder))
+				}
+				if modelEndpointChanged && rt.reqQueue != nil {
+					client := rt.newInferenceClientFor(loaded)
+					rt.inferClient = client
+					rt.reqQueue.SetClient(client)
+				}
 			}
 		} else {
+			if oldModel != newModel {
+				slog.Info("reconfiguring llama-server", "old_port", oldModel.Port, "new_port", newModel.Port)
+				rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(newModel) }, llamaHealthURL(newModel))
+				result.LiveApplied = true
+			}
+			if old.Embedder != loaded.Embedder {
+				slog.Info("reconfiguring embedder", "old_port", old.Embedder.Port, "new_port", loaded.Embedder.Port)
+				rt.embedMgr.Reconfigure(func() (string, []string) {
+					return embedderArgsForConfig(loaded.Embedder)
+				}, embedderHealthURL(loaded.Embedder))
+				result.LiveApplied = true
+			}
+			if modelEndpointChanged && rt.reqQueue != nil {
+				client := rt.newInferenceClientFor(loaded)
+				rt.inferClient = client
+				rt.reqQueue.SetClient(client)
+			}
 			rt.cfg = *loaded
 			rt.refreshProjectDirectoryWarnings(uiServer)
 		}
