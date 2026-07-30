@@ -249,6 +249,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		asm, rec, release = s.genLease()
 		defer release()
 	}
+	if asm == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, apiErrorBody{
+			Message: "service temporarily unavailable",
+			Type:    "server_error",
+		})
+		return
+	}
 
 	assembled, err := asm.Assemble(ctx, agent, req.Messages)
 	if err != nil {

@@ -131,20 +131,30 @@ func (rt *Runtime) AcquireRequestGeneration() (api.Assembler, api.SessionRecorde
 	g.acquire()
 	asm := g.assembler
 	mgr := g.sessionMgr
+	active := rt.cfg.Agent.Active
 	rt.mu.Unlock()
 
 	var rec api.SessionRecorder
 	if mgr != nil {
 		rec = &staticSessionRecorder{mgr: mgr}
 	}
-	return &staticAssembler{asm: asm}, rec, g.release
+	return &staticAssembler{asm: asm, active: active}, rec, g.release
 }
 
 // staticAssembler implements api.Assembler against a concrete assembler
 // captured from one generation. It does not reread Runtime fields.
-type staticAssembler struct{ asm *prompt.DiskAssembler }
+type staticAssembler struct {
+	asm    *prompt.DiskAssembler
+	active string
+}
 
 func (a *staticAssembler) Assemble(ctx context.Context, agentName string, conversation []inference.Message) ([]inference.Message, error) {
+	if agentName == "" {
+		agentName = a.active
+	}
+	if agentName == "" {
+		return nil, errNoActiveAgent
+	}
 	msgs, _, err := a.asm.Assemble(ctx, agentName, conversation)
 	return msgs, err
 }

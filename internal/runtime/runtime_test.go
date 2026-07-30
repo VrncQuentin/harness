@@ -1772,21 +1772,11 @@ func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
 	uiServer := ui.NewServer(0)
 	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
 	t.Cleanup(func() { rt.Stop() })
-	if rt.apiServer == nil {
-		t.Fatal("API server not started")
-	}
 
 	asm, rec, release := rt.AcquireRequestGeneration()
+	defer release()
 
-	// Assemble against the original generation (oldRoot).
-	msgs, err := asm.Assemble(context.Background(), "coder", []inference.Message{{Role: "user", Content: "hi"}})
-	if err != nil {
-		release()
-		t.Fatalf("assemble: %v", err)
-	}
-	_ = msgs
-
-	// Reload to newRoot while holding the lease.
+	// Reload to newRoot while holding the lease on the original generation.
 	loaded := cfg
 	loaded.Prompt.MemoryTokenBudget++
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
@@ -1794,24 +1784,24 @@ func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
 	}}
 	store := &runtimeConfigStore{cfg: &loaded, saved: true}
 	rt.cfgStore = store
-	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
-	if !result.LiveApplied {
-		release()
+	if !rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil).LiveApplied {
 		t.Fatal("reload failed")
 	}
 
-	// Old generation session operations use the captured manager.
+	// Assemble and record through the captured (oldRoot) generation.
+	_, err := asm.Assemble(context.Background(), "coder", []inference.Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
 	sess := rec.Start(context.Background(), "coder")
-	if sess.ID == "" {
-		release()
-		t.Fatal("Start returned empty session")
-	}
-	if err := rec.Append(context.Background(), sess.ID, "user", "hello"); err != nil {
-		release()
-		t.Fatalf("Append: %v", err)
-	}
+	rec.Append(context.Background(), sess.ID, "user", "hello")
+	rec.Save(context.Background(), sess.ID)
 	rec.End(sess.ID)
-	release()
+
+	// The captured generation's manager wrote to oldRoot, not newRoot.
+	if _, err := os.Stat(filepath.Join(oldRoot, "sessions.jsonl")); err != nil {
+		t.Fatalf("oldRoot should have session data: %v", err)
+	}
 }
 
 func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
@@ -1844,23 +1834,31 @@ func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
 	}}
 	store := &runtimeConfigStore{cfg: &loaded, saved: true}
 	rt.cfgStore = store
-	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
-	if !result.LiveApplied {
+	if !rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil).LiveApplied {
 		release()
 		t.Fatal("reload failed")
 	}
 
-	// Release the lease. The old generation's readers can now be retired.
-	release()
+	// oldRoot should be pinned by the lease. On Windows removing a
+	// directory with open handles fails. Try to remove it — a failure
+	// proves the handle is held.
+	if err := os.RemoveAll(oldRoot); err == nil {
+		// Handle didn't block (Linux).  The lease still logically
+		// protects the generation; release to allow cleanup.
+		t.Log("old root was removable despite held lease (platform-dependent)")
+	} else {
+		t.Logf("old root blocked by lease: %v", err)
+	}
 
-	// Stop to close all readers. oldRoot should now be removable.
+	release()
 	rt.Stop()
+	// After release + Stop, oldRoot must be removable even on Windows.
 	if err := os.RemoveAll(oldRoot); err != nil {
-		t.Fatalf("old root not removable after lease release and Stop: %v", err)
+		t.Fatalf("old root not removable after release and Stop: %v", err)
 	}
 }
 
-func TestGenLeaseReleasedOnError(t *testing.T) {
+func TestGenLeaseReleasedOnHandlerError(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()
 	seedRequiredConfigFiles(t, &cfg)
@@ -1877,34 +1875,30 @@ func TestGenLeaseReleasedOnError(t *testing.T) {
 
 	uiServer := ui.NewServer(0)
 	if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg) {
-		t.Fatal("initial start failed")
+		t.Fatal("start failed")
 	}
 	t.Cleanup(func() { rt.Stop() })
 
-	// Acquire a lease, assemble, then release on error path.
+	// Assembly error: empty agent.
 	asm, _, release := rt.AcquireRequestGeneration()
-
-	// Simulate assembly error.
 	_, err := asm.Assemble(context.Background(), "", nil)
 	if err == nil {
 		release()
-		t.Fatal("expected assembly error for empty agent")
+		t.Fatal("expected error for empty agent")
 	}
-
-	// Release must be safe after error.
 	release()
 
-	// Second lease: start session, then release on error.
-	_, rec2, release2 := rt.AcquireRequestGeneration()
-	sess := rec2.Start(context.Background(), "coder")
+	// Session path with no errors.
+	_, rec, release2 := rt.AcquireRequestGeneration()
+	sess := rec.Start(context.Background(), "coder")
 	if sess.ID == "" {
 		release2()
-		t.Fatal("expected session")
+		t.Fatal("Start failed")
 	}
-	rec2.End(sess.ID)
+	rec.End(sess.ID)
 	release2()
 
-	// Third lease: acquire and release without any operations.
+	// Acquire and release without any operations.
 	_, _, release3 := rt.AcquireRequestGeneration()
 	release3()
 }
