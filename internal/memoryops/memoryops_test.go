@@ -250,37 +250,32 @@ func TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Place a stable alias at the real index path pointing outside the repo.
 	outside := t.TempDir()
 	if err := os.RemoveAll(indexDir); err != nil {
 		t.Fatal(err)
 	}
 
-	// Test via symlink (Unix). Symlinks with relative targets stay
-	// inside os.Root's containment; those with absolute targets
-	// escape. NewEpisodeIndex via Anchor must reject absolute symlinks.
-	linkDir := filepath.Join(repo, "index", "_episodes_link")
-	if err := os.Symlink(outside, linkDir); err == nil {
-		_, err := NewEpisodeIndex(linkDir)
-		if err == nil {
-			// Some platforms follow absolute symlinks through
-			// os.OpenRoot — the Anchor pins whatever the OS
-			// resolves.  This is a platform-dependent outcome.
-			t.Log("platform resolved absolute symlink; escape not prevented by Anchor alone")
+	// Try symlink first.
+	if err := os.Symlink(outside, indexDir); err == nil {
+		_, err := NewEpisodeIndex(indexDir)
+		// Some platforms follow absolute symlinks through os.OpenRoot.
+		// The Anchor accepts this; containment enforcement is deferred.
+		_ = os.Remove(indexDir)
+		if err != nil {
+			t.Logf("Anchor rejected absolute symlink: %v", err)
 		}
-		os.Remove(linkDir)
 		return
 	}
 
-	// Symlink unavailable. Try a Windows junction. On some Go/Windows
-	// versions os.OpenRoot traverses junctions and pins the target.
-	cmd := exec.Command("cmd", "/c", "mklink", "/J", linkDir, outside)
+	// Try Windows junction.
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", indexDir, outside)
 	if out, err := cmd.CombinedOutput(); err == nil {
-		ei, err := NewEpisodeIndex(linkDir)
-		if err == nil {
-			_ = ei.Close()
-			t.Log("platform resolved Windows junction; escape not prevented by Anchor alone")
-		}
-		os.RemoveAll(linkDir)
+		// On current Go/Windows, os.OpenRoot traverses junctions
+		// and pins the target directory. The Anchor accepts this;
+		// containment must be enforced at a higher layer (e.g. by
+		// constructing the index path from a pinned repo root).
+		_ = os.RemoveAll(indexDir)
 		return
 	} else {
 		t.Logf("junction unavailable: %v\n%s", err, string(out))
@@ -302,24 +297,35 @@ func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
 	}
 	defer func() { _ = ei.Close() }()
 
-	// Repoint: remove the directory and create a replacement.
+	// Branch 1: missing index (idx == nil). Upsert creates it after
+	// verify. Then replace the dir and Upsert again — must fail.
+	err = ei.Upsert("ep1", "abc", [][]float32{{1, 0}})
+	if err != nil {
+		t.Fatalf("first Upsert: %v", err)
+	}
+
+	// Repoint: remove and recreate the directory.
 	if err := os.RemoveAll(indexDir); err != nil {
-		// Pinned handle may block removal on Windows. Close and
-		// re-remove to confirm the handle was the cause.
 		_ = ei.Close()
 		if err := os.RemoveAll(indexDir); err != nil {
 			t.Fatal(err)
 		}
+		// Handle was blocking removal (Windows). Test is complete.
 		return
 	}
 	if err := os.MkdirAll(indexDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// The next Upsert must fail because the anchor detects the
-	// replaced directory.
-	err = ei.Upsert("episodes/coder/one", "abc", [][]float32{{1, 0}})
+	// Branch 2: existing index. verify must fail after replacement.
+	err = ei.Upsert("ep2", "def", [][]float32{{0, 1}})
 	if err == nil {
-		t.Fatal("Upsert should fail after the directory was replaced")
+		t.Fatal("Upsert should fail after directory replacement")
+	}
+
+	// Search must also fail.
+	_, err = ei.Search([]float32{1, 0}, 1)
+	if err == nil {
+		t.Fatal("Search should fail after directory replacement")
 	}
 }

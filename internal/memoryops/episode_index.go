@@ -29,10 +29,10 @@ func EpisodeIndexCommitPaths() []string {
 	return []string{path.Clean(EpisodeIndexVectorsRel), path.Clean(EpisodeIndexManifestRel)}
 }
 
-// EpisodeIndex owns the synchronized index handle for one project. Every
-// retrieval and mutation path shares this handle, so newly saved episodes are
-// visible immediately without a runtime restart. The index directory is pinned
-// through a rootfs Anchor so repointing or escaping is detected.
+// EpisodeIndex owns the synchronized index handle for one project. The index
+// directory is pinned through a rootfs Anchor so repointing is detected.
+// The caller is responsible for establishing containment within the project
+// repository (e.g. by constructing the path from a pinned repo root).
 type EpisodeIndex struct {
 	mu     sync.Mutex
 	dir    string
@@ -74,6 +74,9 @@ func (e *EpisodeIndex) Search(query []float32, k int) ([]index.Result, error) {
 	if idx == nil {
 		return nil, nil
 	}
+	if err := e.verify(); err != nil {
+		return nil, err
+	}
 	return idx.Search(query, k)
 }
 
@@ -82,7 +85,13 @@ func (e *EpisodeIndex) Contains(source string) bool {
 	e.mu.Lock()
 	idx := e.idx
 	e.mu.Unlock()
-	return idx != nil && idx.Contains(source)
+	if idx == nil {
+		return false
+	}
+	if err := e.verify(); err != nil {
+		return false
+	}
+	return idx.Contains(source)
 }
 
 // Upsert creates the index on first use and replaces obsolete vectors for a
@@ -99,10 +108,10 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if err := e.verify(); err != nil {
+		return err
+	}
 	if e.idx == nil {
-		if err := e.verify(); err != nil {
-			return err
-		}
 		idx, err := index.Create(e.dir, dim)
 		if err != nil {
 			return fmt.Errorf("episode index: create %s: %w", e.dir, err)

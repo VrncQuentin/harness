@@ -153,6 +153,9 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 func (c *memoryCandidate) close() {
 	closeReaders(c.globalMem, c.activeMem, c.sessionStore)
+	for _, h := range c.handles {
+		_ = h.Close()
+	}
 }
 
 func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, buildAPI bool) *memoryCandidate {
@@ -190,6 +193,12 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	doClose := func() {
 		closeReaders(globalMem, activeMem)
 	}
+	var handles []io.Closer
+	closeHandles := func() {
+		for _, h := range handles {
+			_ = h.Close()
+		}
+	}
 
 	agentReg := agent.NewDiskRegistry(globalMem, rt.getActiveAgent, rt.setActiveAgent)
 	assembler := prompt.NewProjectDiskAssembler(globalMem, activeMem, agentReg, rt.effectivePromptFor(cfg)).WithProjectSlug(cfg.Project.ActiveProjectSlug)
@@ -201,7 +210,6 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 		return nil
 	}
-	var handles []io.Closer
 	handles = append(handles, episodeIndex)
 	embedClient := rt.newEmbedderClientFor(cfg)
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
@@ -210,6 +218,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, infClient, embedClient, episodeIndex, cfg.Project.ActiveProjectSlug)
 	if sessionMgr == nil {
 		doClose()
+		closeHandles()
 		if sessionStore != nil {
 			_ = sessionStore.Close()
 		}
@@ -274,6 +283,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	registry := tools.NewRegistry()
 	if err := tools.RegisterBuiltins(registry); err != nil {
 		doClose()
+		closeHandles()
 		if sessionStore != nil {
 			_ = sessionStore.Close()
 		}
