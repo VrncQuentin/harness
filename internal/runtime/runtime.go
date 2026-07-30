@@ -118,15 +118,15 @@ func (rt *Runtime) AcquireLease() (release func()) {
 
 // AcquireRequestGeneration captures the current generation's assembler and
 // session manager under the lock, increments the generation lease count,
-// and returns static adapters bound to the captured concrete objects. The
-// caller must use the returned adapters (not Runtime fields) and call
-// release when the request completes.
-func (rt *Runtime) AcquireRequestGeneration() (api.Assembler, api.SessionRecorder, func()) {
+// and returns static adapters bound to the captured concrete objects plus
+// the captured active agent. The caller must use the returned adapters
+// (not Runtime fields) and call release when the request completes.
+func (rt *Runtime) AcquireRequestGeneration() (api.Assembler, api.SessionRecorder, string, func()) {
 	rt.mu.Lock()
 	g := rt.gen
 	if g == nil {
 		rt.mu.Unlock()
-		return nil, nil, func() {}
+		return nil, nil, "", func() {}
 	}
 	g.acquire()
 	asm := g.assembler
@@ -138,7 +138,7 @@ func (rt *Runtime) AcquireRequestGeneration() (api.Assembler, api.SessionRecorde
 	if mgr != nil {
 		rec = &staticSessionRecorder{mgr: mgr}
 	}
-	return &staticAssembler{asm: asm, active: active}, rec, g.release
+	return &staticAssembler{asm: asm, active: active}, rec, active, g.release
 }
 
 // staticAssembler implements api.Assembler against a concrete assembler

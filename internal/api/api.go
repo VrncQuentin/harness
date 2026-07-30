@@ -60,19 +60,18 @@ type Server struct {
 	asm       Assembler
 	q         Enqueuer
 	rec       SessionRecorder
-	genLease  func() (Assembler, SessionRecorder, func())
+	genLease  func() (Assembler, SessionRecorder, string, func())
 	startTime time.Time
 	logger    *slog.Logger
 
 	httpSrv *http.Server
 }
 
-// WithGenLease sets a function that acquires a generation-bound assembler
-// and session recorder for each request. When set, the handler calls it
-// at the start of each request and uses the returned resources instead of
-// the server's static asm/rec. The returned release function must be
-// called after the request completes.
-func (s *Server) WithGenLease(fn func() (Assembler, SessionRecorder, func())) {
+// WithGenLease sets a function that acquires a generation-bound assembler,
+// session recorder, active agent, and release function for each request.
+// When set, the handler calls it at the start of each request and uses
+// the returned resources instead of the server's static asm/rec.
+func (s *Server) WithGenLease(fn func() (Assembler, SessionRecorder, string, func())) {
 	s.genLease = fn
 }
 
@@ -246,8 +245,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	asm, rec := s.asm, s.rec
 	var release func()
 	if s.genLease != nil {
-		asm, rec, release = s.genLease()
+		var active string
+		asm, rec, active, release = s.genLease()
 		defer release()
+		if agent == "" {
+			agent = active
+		}
 	}
 	if asm == nil {
 		writeJSONError(w, http.StatusServiceUnavailable, apiErrorBody{

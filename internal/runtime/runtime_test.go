@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1704,7 +1705,7 @@ func TestGenLeaseSurvivesReload(t *testing.T) {
 	}
 	t.Cleanup(func() { rt.Stop() })
 
-	asm, rec, release := rt.AcquireRequestGeneration()
+	asm, rec, _, release := rt.AcquireRequestGeneration()
 
 	// Reload while holding the lease on the original generation.
 	loaded := cfg
@@ -1748,6 +1749,9 @@ func TestGenLeaseSurvivesReload(t *testing.T) {
 }
 
 func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
+	modelPort, shutdownModel := startFakeModelServer(t, "test summary")
+	defer shutdownModel()
+
 	oldRoot := initRuntimeProjectRepo(t)
 	newRoot := initRuntimeProjectRepo(t)
 	if err := os.MkdirAll(filepath.Join(oldRoot, "agents", "coder"), 0o755); err != nil {
@@ -1760,8 +1764,8 @@ func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
 	cfg := config.Defaults()
 	seedRequiredConfigFiles(t, &cfg)
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
-	cfg.API.Enabled = true
-	cfg.API.Port = freeTCPPort(t)
+	cfg.Model.Port = modelPort
+	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
@@ -1773,7 +1777,7 @@ func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
 	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
 	t.Cleanup(func() { rt.Stop() })
 
-	asm, rec, release := rt.AcquireRequestGeneration()
+	asm, rec, _, release := rt.AcquireRequestGeneration()
 	defer release()
 
 	// Reload to newRoot while holding the lease on the original generation.
@@ -1794,13 +1798,26 @@ func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
 		t.Fatalf("assemble: %v", err)
 	}
 	sess := rec.Start(context.Background(), "coder")
-	rec.Append(context.Background(), sess.ID, "user", "hello")
-	rec.Save(context.Background(), sess.ID)
+	if err := rec.Append(context.Background(), sess.ID, "user", "hello"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := rec.Save(context.Background(), sess.ID); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
 	rec.End(sess.ID)
 
-	// The captured generation's manager wrote to oldRoot, not newRoot.
-	if _, err := os.Stat(filepath.Join(oldRoot, "sessions.jsonl")); err != nil {
-		t.Fatalf("oldRoot should have session data: %v", err)
+	// Episode files must exist in oldRoot (captured generation's manager),
+	// not in newRoot (generation published by reload).
+	ep := filepath.Join("episodes", "coder", sess.ID+".md")
+	js := filepath.Join("episodes", "coder", sess.ID+".json")
+	if _, err := os.Stat(filepath.Join(oldRoot, filepath.FromSlash(ep))); err != nil {
+		t.Fatalf("episode not in oldRoot %s: %v", ep, err)
+	}
+	if _, err := os.Stat(filepath.Join(oldRoot, filepath.FromSlash(js))); err != nil {
+		t.Fatalf("sidecar not in oldRoot %s: %v", js, err)
+	}
+	if _, err := os.Stat(filepath.Join(newRoot, filepath.FromSlash(ep))); !os.IsNotExist(err) {
+		t.Fatalf("episode incorrectly landed in newRoot: %s", ep)
 	}
 }
 
@@ -1824,7 +1841,7 @@ func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
 	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
 	t.Cleanup(func() { rt.Stop() })
 
-	_, _, release := rt.AcquireRequestGeneration()
+	_, _, _, release := rt.AcquireRequestGeneration()
 
 	// Reload to newRoot while holding the lease.
 	loaded := cfg
@@ -1840,12 +1857,13 @@ func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
 	}
 
 	// oldRoot should be pinned by the lease. On Windows removing a
-	// directory with open handles fails. Try to remove it — a failure
-	// proves the handle is held.
+	// directory with open handles must fail.
 	if err := os.RemoveAll(oldRoot); err == nil {
-		// Handle didn't block (Linux).  The lease still logically
-		// protects the generation; release to allow cleanup.
-		t.Log("old root was removable despite held lease (platform-dependent)")
+		if runtime.GOOS == "windows" {
+			release()
+			t.Fatal("old root was removable despite held lease on Windows")
+		}
+		// Unix: inode-based handles allow removal even while open.
 	} else {
 		t.Logf("old root blocked by lease: %v", err)
 	}
@@ -1880,7 +1898,7 @@ func TestGenLeaseReleasedOnHandlerError(t *testing.T) {
 	t.Cleanup(func() { rt.Stop() })
 
 	// Assembly error: empty agent.
-	asm, _, release := rt.AcquireRequestGeneration()
+	asm, _, _, release := rt.AcquireRequestGeneration()
 	_, err := asm.Assemble(context.Background(), "", nil)
 	if err == nil {
 		release()
@@ -1889,7 +1907,7 @@ func TestGenLeaseReleasedOnHandlerError(t *testing.T) {
 	release()
 
 	// Session path with no errors.
-	_, rec, release2 := rt.AcquireRequestGeneration()
+	_, rec, _, release2 := rt.AcquireRequestGeneration()
 	sess := rec.Start(context.Background(), "coder")
 	if sess.ID == "" {
 		release2()
@@ -1899,7 +1917,7 @@ func TestGenLeaseReleasedOnHandlerError(t *testing.T) {
 	release2()
 
 	// Acquire and release without any operations.
-	_, _, release3 := rt.AcquireRequestGeneration()
+	_, _, _, release3 := rt.AcquireRequestGeneration()
 	release3()
 }
 
@@ -1923,7 +1941,7 @@ func TestStopWithInFlightLease(t *testing.T) {
 		t.Fatal("initial start failed")
 	}
 
-	asm, _, release := rt.AcquireRequestGeneration()
+	asm, _, _, release := rt.AcquireRequestGeneration()
 	_ = asm
 
 	// Stop with an in-flight lease.
