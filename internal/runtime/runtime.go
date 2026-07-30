@@ -2,6 +2,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -20,12 +21,15 @@ import (
 	"github.com/VrncQuentin/harness/internal/session"
 )
 
-// generation holds the readers of one reload cycle. Operations acquire a
-// lease before using the generation's resources and release it after. When
-// the lease count reaches zero, the generation's readers are closed.
+// generation owns the concrete resources of one reload cycle: readers,
+// assembler, and session manager. Operations acquire a lease before using
+// any generation resource and release it after. When the lease count
+// reaches zero, the generation's readers are closed.
 type generation struct {
-	readers []memory.Repo
-	leases  atomic.Int64
+	readers    []memory.Repo
+	assembler  *prompt.DiskAssembler
+	sessionMgr *session.Manager
+	leases     atomic.Int64
 }
 
 func (g *generation) acquire() { g.leases.Add(1) }
@@ -111,3 +115,56 @@ func (rt *Runtime) AcquireLease() (release func()) {
 	}
 	return func() {}
 }
+
+// AcquireRequestGeneration captures the current generation's assembler and
+// session manager under the lock, increments the generation lease count,
+// and returns static adapters bound to the captured concrete objects. The
+// caller must use the returned adapters (not Runtime fields) and call
+// release when the request completes.
+func (rt *Runtime) AcquireRequestGeneration() (api.Assembler, api.SessionRecorder, func()) {
+	rt.mu.Lock()
+	g := rt.gen
+	if g == nil {
+		rt.mu.Unlock()
+		return nil, nil, func() {}
+	}
+	g.acquire()
+	asm := g.assembler
+	mgr := g.sessionMgr
+	rt.mu.Unlock()
+
+	var rec api.SessionRecorder
+	if mgr != nil {
+		rec = &staticSessionRecorder{mgr: mgr}
+	}
+	return &staticAssembler{asm: asm}, rec, g.release
+}
+
+// staticAssembler implements api.Assembler against a concrete assembler
+// captured from one generation. It does not reread Runtime fields.
+type staticAssembler struct{ asm *prompt.DiskAssembler }
+
+func (a *staticAssembler) Assemble(ctx context.Context, agentName string, conversation []inference.Message) ([]inference.Message, error) {
+	msgs, _, err := a.asm.Assemble(ctx, agentName, conversation)
+	return msgs, err
+}
+
+// staticSessionRecorder implements api.SessionRecorder against a concrete
+// session manager captured from one generation.
+type staticSessionRecorder struct{ mgr *session.Manager }
+
+func (r *staticSessionRecorder) Start(ctx context.Context, agentName string) api.Session {
+	s := r.mgr.Start(agentName)
+	return api.Session{ID: s.ID, Agent: s.Agent}
+}
+
+func (r *staticSessionRecorder) Append(ctx context.Context, id, role, content string) error {
+	return r.mgr.Append(id, inference.Message{Role: role, Content: content})
+}
+
+func (r *staticSessionRecorder) Save(ctx context.Context, id string) error {
+	_, err := r.mgr.Save(ctx, id)
+	return err
+}
+
+func (r *staticSessionRecorder) End(id string) { r.mgr.End(id) }

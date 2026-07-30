@@ -60,10 +60,20 @@ type Server struct {
 	asm       Assembler
 	q         Enqueuer
 	rec       SessionRecorder
+	genLease  func() (Assembler, SessionRecorder, func())
 	startTime time.Time
 	logger    *slog.Logger
 
 	httpSrv *http.Server
+}
+
+// WithGenLease sets a function that acquires a generation-bound assembler
+// and session recorder for each request. When set, the handler calls it
+// at the start of each request and uses the returned resources instead of
+// the server's static asm/rec. The returned release function must be
+// called after the request completes.
+func (s *Server) WithGenLease(fn func() (Assembler, SessionRecorder, func())) {
+	s.genLease = fn
 }
 
 // NewServer constructs a Server bound to the given port. The caller owns
@@ -233,7 +243,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	ctx := reqid.WithID(r.Context(), reqID)
 	logger := s.logger.With(slog.String("request_id", reqID))
 
-	assembled, err := s.asm.Assemble(ctx, agent, req.Messages)
+	asm, rec := s.asm, s.rec
+	var release func()
+	if s.genLease != nil {
+		asm, rec, release = s.genLease()
+		defer release()
+	}
+
+	assembled, err := asm.Assemble(ctx, agent, req.Messages)
 	if err != nil {
 		logger.Error("assemble failed", slog.String("agent", agent), slog.Any("err", err))
 		writeJSONError(w, http.StatusInternalServerError, apiErrorBody{
@@ -297,31 +314,31 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Mint one session per call so each API request can land an episode in git.
 	// External clients do not currently pin an API session id across requests.
 	var sess Session
-	if s.rec != nil {
-		sess = s.rec.Start(ctx, agent)
+	if rec != nil {
+		sess = rec.Start(ctx, agent)
 		// Append the request's user-side messages so the eventual
 		// summary captures what was asked.
 		for _, m := range req.Messages {
 			if m.Role == "" || m.Content == "" {
 				continue
 			}
-			if err := s.rec.Append(ctx, sess.ID, m.Role, m.Content); err != nil {
+			if err := rec.Append(ctx, sess.ID, m.Role, m.Content); err != nil {
 				logger.Warn("session append (request)", slog.Any("err", err))
 			}
 		}
 	}
 
-	s.streamTokensWithSession(ctx, w, flusher, respCh, reqID, modelEcho, sess)
+	s.streamTokensWithSession(ctx, w, flusher, respCh, reqID, modelEcho, sess, rec)
 }
 
 // streamTokensWithSession is streamTokens plus an optional Session
 // that receives the assistant's joined content as a single Append once
 // the stream ends. Pass a zero-value Session to skip recording.
-func (s *Server) streamTokensWithSession(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, respCh <-chan inference.Token, reqID, modelEcho string, sess Session) {
+func (s *Server) streamTokensWithSession(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, respCh <-chan inference.Token, reqID, modelEcho string, sess Session, rec SessionRecorder) {
 	stopReason := "stop"
 	var assistant strings.Builder
-	if s.rec != nil && sess.ID != "" {
-		defer s.finalizeSession(context.WithoutCancel(ctx), sess, &assistant)
+	if rec != nil && sess.ID != "" {
+		defer s.finalizeSession(context.WithoutCancel(ctx), sess, &assistant, rec)
 	}
 	for tok := range respCh {
 		if tok.Err != nil {
@@ -372,16 +389,16 @@ func (s *Server) streamTokensWithSession(ctx context.Context, w http.ResponseWri
 
 }
 
-func (s *Server) finalizeSession(ctx context.Context, sess Session, assistant *strings.Builder) {
+func (s *Server) finalizeSession(ctx context.Context, sess Session, assistant *strings.Builder, rec SessionRecorder) {
 	if assistant != nil && assistant.Len() > 0 {
-		if err := s.rec.Append(ctx, sess.ID, "assistant", assistant.String()); err != nil {
+		if err := rec.Append(ctx, sess.ID, "assistant", assistant.String()); err != nil {
 			s.logger.Warn("session append (assistant)", slog.Any("err", err))
 		}
 	}
-	if err := s.rec.Save(ctx, sess.ID); err != nil {
+	if err := rec.Save(ctx, sess.ID); err != nil {
 		s.logger.Warn("session save (api)", slog.Any("err", err))
 	}
-	s.rec.End(sess.ID)
+	rec.End(sess.ID)
 }
 
 // modelsResponse is the /v1/models payload.

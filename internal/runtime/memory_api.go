@@ -143,7 +143,10 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	} else if oldGlobal != nil || oldActive != nil || oldSession != nil {
 		closeReaders(oldGlobal, oldActive, oldSession)
 	}
-	rt.gen = &generation{}
+	rt.gen = &generation{
+		assembler:  candidate.assembler,
+		sessionMgr: candidate.sessionMgr,
+	}
 	rt.gen.acquire()
 
 	return true
@@ -296,6 +299,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	var apiSrv *api.Server
 	if buildAPI {
 		apiSrv = api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, &apiSessionAdapter{rt: rt})
+		apiSrv.WithGenLease(rt.AcquireRequestGeneration)
 	}
 
 	svcDeps := ui.ServiceDeps{MemoryRepoPath: roots.activeRoot}
