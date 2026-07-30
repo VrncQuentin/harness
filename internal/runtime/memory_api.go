@@ -296,6 +296,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	var apiSrv *api.Server
 	if buildAPI {
 		apiSrv = api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, &apiSessionAdapter{rt: rt})
+		apiSrv.WithGenLease(rt.AcquireRequestLease)
 	}
 
 	svcDeps := ui.ServiceDeps{MemoryRepoPath: roots.activeRoot}

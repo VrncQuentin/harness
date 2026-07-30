@@ -95,19 +95,29 @@ func NewEventChannel() chan proc.Event {
 	return make(chan proc.Event, EventBufferSize)
 }
 
-// AcquireLease pins the current generation so its readers survive reloads
-// for the duration of the caller's operation. The returned function must
-// be called when the operation completes.
-func (rt *Runtime) AcquireLease() (release func()) {
+// AcquireRequestLease captures the current generation's assembler and
+// session recorder under the lock, pins the generation so its readers
+// survive reloads, and returns the captured resources plus a release
+// function. The caller must use the returned resources (not Runtime
+// fields) for the duration of the request and call release when done.
+func (rt *Runtime) AcquireRequestLease() (api.Assembler, api.SessionRecorder, func()) {
 	rt.mu.Lock()
 	g := rt.gen
+	asm := &apiAssemblerAdapter{rt: rt}
+	var rec api.SessionRecorder
+	if rt.sessionMg != nil {
+		rec = &apiSessionAdapter{rt: rt}
+	}
 	if g != nil {
 		g.acquire()
 	}
 	rt.mu.Unlock()
 
+	var release func()
 	if g != nil {
-		return g.release
+		release = g.release
+	} else {
+		release = func() {}
 	}
-	return func() {}
+	return asm, rec, release
 }

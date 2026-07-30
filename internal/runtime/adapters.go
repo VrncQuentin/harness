@@ -124,22 +124,12 @@ func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, c
 	if agentName == "" {
 		return nil, errNoActiveAgent
 	}
-	release := ad.rt.AcquireLease()
-	ctx = context.WithValue(ctx, releaseKey{}, release)
 	asm := ad.rt.getAssembler()
 	if asm == nil {
-		release()
 		return nil, errors.New("api: prompt assembler unavailable")
 	}
 	msgs, _, err := asm.Assemble(ctx, agentName, conversation)
 	return msgs, err
-}
-
-type releaseKey struct{}
-
-func releaseFromContext(ctx context.Context) func() {
-	r, _ := ctx.Value(releaseKey{}).(func())
-	return r
 }
 
 func chatMessagesToInference(conversation []ui.ChatMessage) []inference.Message {
@@ -401,9 +391,9 @@ func (ad *uiSessionStoreAdapter) Resume(id string) error {
 	return nil
 }
 
-// apiSessionAdapter implements api.SessionRecorder. Each session holds a
-// generation lease from Start through End so its manager's readers survive
-// reloads.
+// apiSessionAdapter implements api.SessionRecorder. Each session records
+// the manager that created it so Append/Save/End use a consistent manager
+// across reloads. Generation lifetime is managed by the API handler's lease.
 type apiSessionAdapter struct {
 	rt       *Runtime
 	mu       sync.Mutex
@@ -411,18 +401,12 @@ type apiSessionAdapter struct {
 }
 
 type sessionHandle struct {
-	mgr     *session.Manager
-	release func()
+	mgr *session.Manager
 }
 
 func (a *apiSessionAdapter) Start(ctx context.Context, agentName string) api.Session {
-	release := releaseFromContext(ctx)
-	if release == nil {
-		release = a.rt.AcquireLease()
-	}
 	mgr := a.rt.SessionManager()
 	if mgr == nil {
-		release()
 		return api.Session{}
 	}
 	s := mgr.Start(agentName)
@@ -430,7 +414,7 @@ func (a *apiSessionAdapter) Start(ctx context.Context, agentName string) api.Ses
 	if a.sessions == nil {
 		a.sessions = make(map[string]*sessionHandle)
 	}
-	a.sessions[s.ID] = &sessionHandle{mgr: mgr, release: release}
+	a.sessions[s.ID] = &sessionHandle{mgr: mgr}
 	a.mu.Unlock()
 	return api.Session{ID: s.ID, Agent: s.Agent}
 }
@@ -457,11 +441,8 @@ func (a *apiSessionAdapter) End(id string) {
 	h := a.sessions[id]
 	delete(a.sessions, id)
 	a.mu.Unlock()
-	if h != nil {
-		if h.mgr != nil {
-			h.mgr.End(id)
-		}
-		h.release()
+	if h != nil && h.mgr != nil {
+		h.mgr.End(id)
 	}
 }
 
