@@ -59,12 +59,12 @@ type Runtime struct {
 	// on Stop or when the API is eventually rebuilt.
 	apiSessionReader memory.Repo
 	agentReg         *agent.DiskRegistry
-	assembler  *prompt.DiskAssembler
-	apiServer  *api.Server
-	gitRepo    *gitw.Repo
-	sessionMu  sync.RWMutex
-	sessionMg  *session.Manager
-	taskRunner *taskRunnerAdapter
+	assembler        *prompt.DiskAssembler
+	apiServer        *api.Server
+	gitRepo          *gitw.Repo
+	sessionMu        sync.RWMutex
+	sessionMg        *session.Manager
+	taskRunner       *taskRunnerAdapter
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.
