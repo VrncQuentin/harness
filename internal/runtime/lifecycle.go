@@ -115,6 +115,7 @@ func (rt *Runtime) Stop() {
 	global := rt.globalMem
 	active := rt.activeMem
 	session := rt.sessionMem
+	pending := rt.pendingClose
 	sessionMgr := rt.SessionManager()
 
 	rt.reqQueue = nil
@@ -123,6 +124,7 @@ func (rt *Runtime) Stop() {
 	rt.globalMem = nil
 	rt.activeMem = nil
 	rt.sessionMem = nil
+	rt.pendingClose = nil
 	rt.agentReg = nil
 	rt.assembler = nil
 	rt.gitRepo = nil
@@ -130,7 +132,7 @@ func (rt *Runtime) Stop() {
 	rt.setSessionManager(nil)
 	rt.mu.Unlock()
 
-	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && session == nil {
+	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && session == nil && len(pending) == 0 {
 		return
 	}
 
@@ -155,6 +157,7 @@ func (rt *Runtime) Stop() {
 		q.Stop()
 	}
 	closeReaders(global, active, session)
+	closeReaders(pending...)
 }
 
 // WaitManagers waits for process manager goroutines to exit after their context
