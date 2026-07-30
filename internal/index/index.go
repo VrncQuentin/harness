@@ -186,8 +186,19 @@ func (idx *Index) SearchRooted(root *rootfs.Root, query []float32, k int) ([]Res
 	var results []scored
 
 	for _, entry := range idx.manifest.Chunks {
-		vecs := make([]float32, entry.Length*idx.dim)
-		r := bytes.NewReader(data[entry.Offset : entry.Offset+int64(entry.Length*idx.dim*4)])
+		entryLen := int64(entry.Length)
+		dim := int64(idx.dim)
+		stride := dim * 4
+		byteLen := entryLen * stride
+		if entryLen < 0 || dim <= 0 || byteLen/stride != entryLen {
+			return nil, fmt.Errorf("index: manifest entry %s has invalid length %d or dim %d", entry.SHA, entry.Length, idx.dim)
+		}
+		end := entry.Offset + byteLen
+		if entry.Offset < 0 || end > int64(len(data)) {
+			return nil, fmt.Errorf("index: manifest entry %s range [%d:%d] exceeds vectors len %d", entry.SHA, entry.Offset, end, len(data))
+		}
+		vecs := make([]float32, entryLen*dim)
+		r := bytes.NewReader(data[entry.Offset:end])
 		if err := binary.Read(r, binary.LittleEndian, &vecs); err != nil {
 			return nil, fmt.Errorf("index: read vectors at %d: %w", entry.Offset, err)
 		}
@@ -303,8 +314,8 @@ func validateManifestRooted(root *rootfs.Root, dir string, manifest Manifest) er
 	if info.IsDir() {
 		return fmt.Errorf("index: vectors path is a directory in %s", dir)
 	}
-	stride := int64(manifest.Dim * 4)
-	if info.Size()%stride != 0 {
+	stride := int64(manifest.Dim) * 4
+	if stride <= 0 || info.Size()%stride != 0 {
 		return fmt.Errorf("index: vector file size %d is not aligned to dimension %d in %s", info.Size(), manifest.Dim, dir)
 	}
 	count := 0
@@ -446,5 +457,3 @@ func (idx *Index) ContainsCurrent(source, contentHash string) bool {
 	}
 	return false
 }
-
-

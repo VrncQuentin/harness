@@ -51,10 +51,12 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = dr.Close() })
 	called := false
+	ei := newTestEpisodeIndex(t, root)
 	rb := &EpisodeRebuilder{
 		Mem:      dr,
 		Embedder: stubEmbedder{vec: []float32{1, 0}},
 		IndexDir: indexDir,
+		EI:       ei,
 		OnRebuilt: func(idx *index.Index) {
 			called = true
 			if !idx.Contains("episodes/coder/ep1") {
@@ -94,20 +96,25 @@ func TestEpisodeRebuilderRejectsCorruptIndex(t *testing.T) {
 	if err := os.MkdirAll(indexDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll index dir: %v", err)
 	}
-	manifestPath := filepath.Join(indexDir, "manifest.json")
-	if err := os.WriteFile(manifestPath, []byte(`{"dim":2,`), 0o644); err != nil {
-		t.Fatalf("WriteFile corrupt manifest: %v", err)
-	}
 
 	dr, err := memory.NewDirReader(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = dr.Close() })
+	ei := newTestEpisodeIndex(t, root)
+
+	// Corrupt the manifest after the EpisodeIndex is created.
+	manifestPath := filepath.Join(indexDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"dim":2,`), 0o644); err != nil {
+		t.Fatalf("WriteFile corrupt manifest: %v", err)
+	}
+
 	rb := &EpisodeRebuilder{
 		Mem:      dr,
 		Embedder: stubEmbedder{vec: []float32{1, 0}},
 		IndexDir: indexDir,
+		EI:       ei,
 	}
 
 	if err := rb.Rebuild(context.Background()); err == nil {
@@ -180,6 +187,7 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 		Embedder: emb,
 		Index:    idx,
 		IndexDir: indexDir,
+		EI:       newTestEpisodeIndex(t, root),
 	}
 	if err := rb.Rebuild(context.Background()); err != nil {
 		t.Fatalf("Rebuild: %v", err)
@@ -232,6 +240,7 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 		Embedder: emb,
 		Index:    idxService.Current(),
 		IndexDir: EpisodeIndexDir(root),
+		EI:       idxService,
 	}
 	if err := rb.Rebuild(context.Background()); err != nil {
 		t.Fatalf("Rebuild: %v", err)
