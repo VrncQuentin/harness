@@ -1675,3 +1675,269 @@ func TestStopIsIdempotent(t *testing.T) {
 	}
 	rt.Stop()
 }
+
+func TestGenLeaseSurvivesReload(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	// Create agent persona so assembly succeeds.
+	if err := os.MkdirAll(filepath.Join(root, "agents", "coder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agents", "coder", "persona.md"), []byte("coder persona"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.API.Enabled = true
+	cfg.API.Port = freeTCPPort(t)
+
+	rt := New(cfg, nil, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+	rt.started = true
+
+	uiServer := ui.NewServer(0)
+	if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg) {
+		t.Fatal("initial start failed")
+	}
+	t.Cleanup(func() { rt.Stop() })
+
+	asm, rec, release := rt.AcquireRequestGeneration()
+
+	// Reload while holding the lease on the original generation.
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+	store := &runtimeConfigStore{cfg: &loaded, saved: true}
+	rt.cfgStore = store
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		release()
+		t.Fatal("reload failed while holding lease")
+	}
+
+	// Reload a second time.
+	loaded.Prompt.MemoryTokenBudget++
+	store.cfg = &loaded
+	result = rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		release()
+		t.Fatal("second reload failed while holding lease")
+	}
+
+	// The captured assembler and recorder must still be usable —
+	// their generation's readers are pinned by the lease.
+	msgs, err := asm.Assemble(context.Background(), "coder", []inference.Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		release()
+		t.Fatalf("assemble after reloads: %v", err)
+	}
+	if len(msgs) == 0 {
+		release()
+		t.Fatal("assemble returned no messages")
+	}
+
+	sess := rec.Start(context.Background(), "coder")
+	if sess.ID == "" {
+		release()
+		t.Fatal("session Start failed")
+	}
+	rec.End(sess.ID)
+	release()
+}
+
+func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
+	oldRoot := initRuntimeProjectRepo(t)
+	newRoot := initRuntimeProjectRepo(t)
+	if err := os.MkdirAll(filepath.Join(oldRoot, "agents", "coder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldRoot, "agents", "coder", "persona.md"), []byte("coder persona"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.API.Enabled = true
+	cfg.API.Port = freeTCPPort(t)
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: oldRoot},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+
+	uiServer := ui.NewServer(0)
+	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
+	t.Cleanup(func() { rt.Stop() })
+	if rt.apiServer == nil {
+		t.Fatal("API server not started")
+	}
+
+	asm, rec, release := rt.AcquireRequestGeneration()
+
+	// Assemble against the original generation (oldRoot).
+	msgs, err := asm.Assemble(context.Background(), "coder", []inference.Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		release()
+		t.Fatalf("assemble: %v", err)
+	}
+	_ = msgs
+
+	// Reload to newRoot while holding the lease.
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: newRoot},
+	}}
+	store := &runtimeConfigStore{cfg: &loaded, saved: true}
+	rt.cfgStore = store
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		release()
+		t.Fatal("reload failed")
+	}
+
+	// Old generation session operations use the captured manager.
+	sess := rec.Start(context.Background(), "coder")
+	if sess.ID == "" {
+		release()
+		t.Fatal("Start returned empty session")
+	}
+	if err := rec.Append(context.Background(), sess.ID, "user", "hello"); err != nil {
+		release()
+		t.Fatalf("Append: %v", err)
+	}
+	rec.End(sess.ID)
+	release()
+}
+
+func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
+	oldRoot := initRuntimeProjectRepo(t)
+	newRoot := initRuntimeProjectRepo(t)
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.API.Enabled = true
+	cfg.API.Port = freeTCPPort(t)
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: oldRoot},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+
+	uiServer := ui.NewServer(0)
+	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
+	t.Cleanup(func() { rt.Stop() })
+
+	_, _, release := rt.AcquireRequestGeneration()
+
+	// Reload to newRoot while holding the lease.
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: newRoot},
+	}}
+	store := &runtimeConfigStore{cfg: &loaded, saved: true}
+	rt.cfgStore = store
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		release()
+		t.Fatal("reload failed")
+	}
+
+	// Release the lease. The old generation's readers can now be retired.
+	release()
+
+	// Stop to close all readers. oldRoot should now be removable.
+	rt.Stop()
+	if err := os.RemoveAll(oldRoot); err != nil {
+		t.Fatalf("old root not removable after lease release and Stop: %v", err)
+	}
+}
+
+func TestGenLeaseReleasedOnError(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.API.Enabled = true
+	cfg.API.Port = freeTCPPort(t)
+
+	rt := New(cfg, nil, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+	rt.started = true
+
+	uiServer := ui.NewServer(0)
+	if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg) {
+		t.Fatal("initial start failed")
+	}
+	t.Cleanup(func() { rt.Stop() })
+
+	// Acquire a lease, assemble, then release on error path.
+	asm, _, release := rt.AcquireRequestGeneration()
+
+	// Simulate assembly error.
+	_, err := asm.Assemble(context.Background(), "", nil)
+	if err == nil {
+		release()
+		t.Fatal("expected assembly error for empty agent")
+	}
+
+	// Release must be safe after error.
+	release()
+
+	// Second lease: start session, then release on error.
+	_, rec2, release2 := rt.AcquireRequestGeneration()
+	sess := rec2.Start(context.Background(), "coder")
+	if sess.ID == "" {
+		release2()
+		t.Fatal("expected session")
+	}
+	rec2.End(sess.ID)
+	release2()
+
+	// Third lease: acquire and release without any operations.
+	_, _, release3 := rt.AcquireRequestGeneration()
+	release3()
+}
+
+func TestStopWithInFlightLease(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.API.Enabled = true
+	cfg.API.Port = freeTCPPort(t)
+
+	rt := New(cfg, nil, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+	rt.started = true
+
+	uiServer := ui.NewServer(0)
+	if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg) {
+		t.Fatal("initial start failed")
+	}
+
+	asm, _, release := rt.AcquireRequestGeneration()
+	_ = asm
+
+	// Stop with an in-flight lease.
+	rt.Stop()
+
+	// Release the lease after Stop.
+	release()
+
+	// Second Stop must be a no-op.
+	rt.Stop()
+}
