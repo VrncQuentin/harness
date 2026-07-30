@@ -60,7 +60,7 @@ func (rt *Runtime) ApplyConfig(
 		rt.cfg = *loaded
 		rt.refreshProjectDirectoryWarnings(uiServer)
 		rt.startServices(ctx, uiServer, events, metricsStore)
-		rt.startMemoryAndAPI(ctx, uiServer, metricsStore, loaded, false)
+		rt.startMemoryAndAPI(ctx, uiServer, metricsStore, loaded)
 		result.LiveApplied = true
 	} else {
 		needsMemoryAPIRetry := rt.memoryAPIUnavailable()
@@ -80,8 +80,7 @@ func (rt *Runtime) ApplyConfig(
 				rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
 			}
 			slog.Info("rebuilding memory and api services")
-			apiConfigChanged := old.API != loaded.API
-			if rt.startMemoryAndAPI(ctx, uiServer, metricsStore, loaded, apiConfigChanged) {
+			if rt.startMemoryAndAPI(ctx, uiServer, metricsStore, loaded) {
 				rt.cfg = *loaded
 				rt.refreshProjectDirectoryWarnings(uiServer)
 				result.LiveApplied = true

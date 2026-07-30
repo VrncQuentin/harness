@@ -71,7 +71,7 @@ type memoryCandidate struct {
 	sessionMgr   *session.Manager
 	sessionAd    *uiSessionStoreAdapter
 	taskRunner   *taskRunnerAdapter
-	apiServer    *api.Server
+	apiServer    *api.Server // created but not yet started
 	serviceDeps  ui.ServiceDeps
 }
 
@@ -85,14 +85,8 @@ func closeReaders(readers ...memory.Repo) {
 	}
 }
 
-func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config, apiConfigChanged bool) bool {
-	oldAPI := rt.apiServer
-	if oldAPI != nil {
-		oldAPI.Stop()
-		rt.apiServer = nil
-	}
-
-	candidate := rt.buildCandidate(ctx, uiServer, metricsStore, candidateCfg, apiConfigChanged)
+func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config) bool {
+	candidate := rt.buildCandidate(ctx, uiServer, metricsStore, candidateCfg)
 	if candidate == nil {
 		return false
 	}
@@ -100,6 +94,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	oldGlobal := rt.globalMem
 	oldActive := rt.activeMem
 	oldSession := rt.sessionMem
+	oldAPI := rt.apiServer
 
 	rt.globalMem = candidate.globalMem
 	rt.activeMem = candidate.activeMem
@@ -109,20 +104,29 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.gitRepo = candidate.gitRepo
 	rt.setSessionManager(candidate.sessionMgr)
 	rt.taskRunner = candidate.taskRunner
-	rt.apiServer = candidate.apiServer
 
 	uiServer.SetServiceDeps(candidate.serviceDeps)
 
-	// Close the old generation's readers. In-flight UI handlers that
-	// captured a ServiceDepsSnapshot before this swap may retain
-	// references to these closed readers. That race is deferred to a
-	// follow-up generation-leasing mechanism (see PR 8).
+	// Start the API server after the generation is installed so it
+	// resolves the current assembler and session manager.
+	if candidate.apiServer != nil {
+		if err := candidate.apiServer.Start(ctx); err != nil {
+			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
+		} else {
+			rt.apiServer = candidate.apiServer
+			slog.Info("api server listening", "port", candidateCfg.API.Port)
+		}
+	}
+
+	if oldAPI != nil {
+		oldAPI.Stop()
+	}
 	closeReaders(oldGlobal, oldActive, oldSession)
 
 	return true
 }
 
-func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, apiConfigChanged bool) *memoryCandidate {
+func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config) *memoryCandidate {
 	roots, err := rt.resolveProjectRepoRootsForSlug(cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("project memory repos: %w", err))
@@ -171,7 +175,8 @@ func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metr
 	embedClient := rt.newEmbedderClientFor(cfg)
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 
-	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient, episodeIndex, cfg.Project.ActiveProjectSlug)
+	infClient := rt.newInferenceClientFor(cfg)
+	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, infClient, embedClient, episodeIndex, cfg.Project.ActiveProjectSlug)
 	if sessionMgr == nil {
 		doClose()
 		if sessionStore != nil {
@@ -263,13 +268,7 @@ func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metr
 
 	var apiSrv *api.Server
 	if cfg.API.Enabled && rt.reqQueue != nil {
-		srv := api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, &apiSessionAdapter{mgr: sessionMgr})
-		if err := srv.Start(ctx); err != nil {
-			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
-		} else {
-			apiSrv = srv
-			slog.Info("api server listening", "port", cfg.API.Port)
-		}
+		apiSrv = api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, &apiSessionAdapter{mgr: sessionMgr})
 	}
 
 	svcDeps := ui.ServiceDeps{MemoryRepoPath: roots.activeRoot}
