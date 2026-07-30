@@ -79,6 +79,7 @@ type Runtime struct {
 	sessionMg  *session.Manager
 	taskRunner *taskRunnerAdapter
 	gen        *generation
+	pendingSnap *GenSnapshot // set by Assemble, consumed by Start/End
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.
@@ -95,16 +96,44 @@ func NewEventChannel() chan proc.Event {
 	return make(chan proc.Event, EventBufferSize)
 }
 
-// AcquireLease pins the current generation so its readers are not closed
-// before the caller finishes. The returned release function must be called
-// when the operation completes.
-func (rt *Runtime) AcquireLease() func() {
+// GenSnapshot is an immutable handle to one generation's resources. The
+// caller must call Release when done.
+type GenSnapshot struct {
+	Assembler  *prompt.DiskAssembler
+	SessionMgr *session.Manager
+	release    func()
+}
+
+// Release drops the generation lease.
+func (s *GenSnapshot) Release() {
+	if s.release != nil {
+		s.release()
+	}
+}
+
+// AcquireGenSnapshot captures the current generation's assembler and session
+// manager under the lock and increments the generation lease count. The
+// snapshot's resources are guaranteed to belong to the leased generation.
+// The caller must call Release when done.
+func (rt *Runtime) AcquireGenSnapshot() *GenSnapshot {
 	rt.mu.Lock()
 	g := rt.gen
-	rt.mu.Unlock()
+	asm := rt.assembler
+	mgr := rt.SessionManager()
 	if g != nil {
 		g.acquire()
-		return g.release
 	}
-	return func() {}
+	rt.mu.Unlock()
+
+	var release func()
+	if g != nil {
+		release = g.release
+	} else {
+		release = func() {}
+	}
+	return &GenSnapshot{
+		Assembler:  asm,
+		SessionMgr: mgr,
+		release:    release,
+	}
 }

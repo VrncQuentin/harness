@@ -124,13 +124,14 @@ func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, c
 	if agentName == "" {
 		return nil, errNoActiveAgent
 	}
-	release := ad.rt.AcquireLease()
-	defer release()
-	asm := ad.rt.getAssembler()
-	if asm == nil {
+	snap := ad.rt.AcquireGenSnapshot()
+	ad.rt.mu.Lock()
+	ad.rt.pendingSnap = snap
+	ad.rt.mu.Unlock()
+	if snap.Assembler == nil {
 		return nil, errors.New("api: prompt assembler unavailable")
 	}
-	msgs, _, err := asm.Assemble(ctx, agentName, conversation)
+	msgs, _, err := snap.Assembler.Assemble(ctx, agentName, conversation)
 	return msgs, err
 }
 
@@ -393,10 +394,9 @@ func (ad *uiSessionStoreAdapter) Resume(id string) error {
 	return nil
 }
 
-// apiSessionAdapter implements api.SessionRecorder by resolving the
-// session manager from Runtime at call time. Start captures the current
-// manager and records it per session ID; a generation lease is held
-// from Start through End so the manager's readers survive reloads.
+// apiSessionAdapter implements api.SessionRecorder. Start consumes the
+// generation snapshot set by the assembler adapter so assembly and session
+// recording use the same generation. End releases the snapshot.
 type apiSessionAdapter struct {
 	rt       *Runtime
 	mu       sync.Mutex
@@ -404,15 +404,26 @@ type apiSessionAdapter struct {
 }
 
 type sessionHandle struct {
-	mgr     *session.Manager
-	release func()
+	mgr  *session.Manager
+	snap *GenSnapshot
 }
 
 func (a *apiSessionAdapter) Start(agentName string) api.Session {
-	release := a.rt.AcquireLease()
-	mgr := a.rt.SessionManager()
+	a.rt.mu.Lock()
+	snap := a.rt.pendingSnap
+	a.rt.pendingSnap = nil
+	a.rt.mu.Unlock()
+
+	var mgr *session.Manager
+	if snap != nil {
+		mgr = snap.SessionMgr
+	} else {
+		mgr = a.rt.SessionManager()
+	}
 	if mgr == nil {
-		release()
+		if snap != nil {
+			snap.Release()
+		}
 		return api.Session{}
 	}
 	s := mgr.Start(agentName)
@@ -420,7 +431,7 @@ func (a *apiSessionAdapter) Start(agentName string) api.Session {
 	if a.sessions == nil {
 		a.sessions = make(map[string]*sessionHandle)
 	}
-	a.sessions[s.ID] = &sessionHandle{mgr: mgr, release: release}
+	a.sessions[s.ID] = &sessionHandle{mgr: mgr, snap: snap}
 	a.mu.Unlock()
 	return api.Session{ID: s.ID, Agent: s.Agent}
 }
@@ -451,7 +462,9 @@ func (a *apiSessionAdapter) End(id string) {
 		if h.mgr != nil {
 			h.mgr.End(id)
 		}
-		h.release()
+		if h.snap != nil {
+			h.snap.Release()
+		}
 	}
 }
 

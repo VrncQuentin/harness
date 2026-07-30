@@ -140,6 +140,8 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			rt.gen.readers = []memory.Repo{oldGlobal, oldActive, oldSession}
 		}
 		rt.gen.release()
+	} else if oldGlobal != nil || oldActive != nil || oldSession != nil {
+		closeReaders(oldGlobal, oldActive, oldSession)
 	}
 	rt.gen = &generation{}
 	rt.gen.acquire()
