@@ -75,7 +75,6 @@ func (s *Server) WithGenLease(fn func() (Assembler, SessionRecorder, func())) {
 	s.genLease = fn
 }
 
-
 // NewServer constructs a Server bound to the given port. The caller owns
 // enable/disable: main.go decides whether to call Start based on the config
 // flag, this type always assumes it should serve when asked.
