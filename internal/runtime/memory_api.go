@@ -88,17 +88,15 @@ func closeReaders(readers ...memory.Repo) {
 func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config, apiConfigChanged bool) bool {
 	buildAPI := candidateCfg.API.Enabled && (apiConfigChanged || rt.apiServer == nil)
 
-	candidate := rt.buildCandidate(uiServer, metricsStore, candidateCfg, buildAPI, ctx)
+	candidate := rt.buildCandidate(uiServer, metricsStore, candidateCfg, buildAPI)
 	if candidate == nil {
 		return false
 	}
 
-	// Start the API listener before publishing the candidate so bind
-	// failure can abort without committing a partial generation. When
-	// apiConfigChanged the new port is different — no collision.
 	if candidate.apiServer != nil {
 		if err := candidate.apiServer.Start(ctx); err != nil {
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
+			candidate.close()
 			return false
 		}
 	}
@@ -116,21 +114,31 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.gitRepo = candidate.gitRepo
 	rt.setSessionManager(candidate.sessionMgr)
 	rt.taskRunner = candidate.taskRunner
-	rt.apiServer = candidate.apiServer
+	if candidate.apiServer != nil {
+		rt.apiServer = candidate.apiServer
+		slog.Info("api server listening", "port", candidateCfg.API.Port)
+	}
 
 	uiServer.SetServiceDeps(candidate.serviceDeps)
 
-	if oldAPI != nil {
+	if candidate.apiServer != nil && oldAPI != nil {
+		// Replaced the API — stop the old listener on the old port.
 		oldAPI.Stop()
 	}
 
 	// When the API was not rebuilt and the old server is still running,
-	// retain oldSession — the old API adapter still references the old
-	// session manager which reads through it. Track it so Stop() and
-	// later rebuilds can close it.
-	if candidate.apiServer == nil && oldAPI != nil && oldSession != nil {
-		closeReaders(oldGlobal, oldActive, rt.apiSessionReader)
-		rt.apiSessionReader = oldSession
+	// keep oldSession alive: the old API's session adapter still references
+	// the old session manager which reads through it.
+	if candidate.apiServer == nil && oldAPI != nil {
+		closeReaders(oldGlobal, oldActive)
+		// Track the reader the carried API owns.  On a second carry the
+		// API still references the first tracked reader, not oldSession,
+		// so keep the existing apiSessionReader and close oldSession.
+		if rt.apiSessionReader == nil {
+			rt.apiSessionReader = oldSession
+		} else {
+			closeReaders(oldSession)
+		}
 	} else {
 		closeReaders(oldGlobal, oldActive, oldSession, rt.apiSessionReader)
 		rt.apiSessionReader = nil
@@ -139,7 +147,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	return true
 }
 
-func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, buildAPI bool, ctx context.Context) *memoryCandidate {
+func (c *memoryCandidate) close() {
+	closeReaders(c.globalMem, c.activeMem, c.sessionStore)
+}
+
+func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, buildAPI bool) *memoryCandidate {
 	roots, err := rt.resolveProjectRepoRootsForSlug(cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("project memory repos: %w", err))
