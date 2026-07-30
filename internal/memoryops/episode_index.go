@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/VrncQuentin/harness/internal/index"
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
@@ -29,10 +30,9 @@ func EpisodeIndexCommitPaths() []string {
 	return []string{path.Clean(EpisodeIndexVectorsRel), path.Clean(EpisodeIndexManifestRel)}
 }
 
-// EpisodeIndex owns the synchronized index handle for one project. The index
-// directory is pinned through a rootfs Anchor so repointing is detected.
-// The caller is responsible for establishing containment within the project
-// repository (e.g. by constructing the path from a pinned repo root).
+// EpisodeIndex owns the synchronized index handle for one project. The
+// index directory is pinned through a rootfs Anchor so repointing is
+// detected and containment within the repository is verified.
 type EpisodeIndex struct {
 	mu     sync.Mutex
 	dir    string
@@ -40,16 +40,22 @@ type EpisodeIndex struct {
 	idx    *index.Index
 }
 
-// NewEpisodeIndex pins the index directory at dir through a rootfs Anchor
-// and opens an existing index. If the directory does not exist it is created
-// before pinning. A missing index after creation means no episodes have been
-// embedded yet; the caller creates the index lazily on first Upsert.
-func NewEpisodeIndex(dir string) (*EpisodeIndex, error) {
+// NewEpisodeIndex pins the index directory at dir and verifies it is
+// contained within repoRoot via pathid. If the directory does not exist
+// it is created before pinning. A missing index after creation means no
+// episodes have been embedded yet.
+func NewEpisodeIndex(dir, repoRoot string) (*EpisodeIndex, error) {
+	if err := verifyContained(repoRoot, dir); err != nil {
+		return nil, err
+	}
 	a, err := rootfs.NewAnchor(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			if mkerr := os.MkdirAll(dir, 0o755); mkerr != nil {
 				return nil, fmt.Errorf("episode index: mkdir %s: %w", dir, mkerr)
+			}
+			if verr := verifyContained(repoRoot, dir); verr != nil {
+				return nil, verr
 			}
 			a, err = rootfs.NewAnchor(dir)
 		}
@@ -63,6 +69,22 @@ func NewEpisodeIndex(dir string) (*EpisodeIndex, error) {
 		return nil, err
 	}
 	return &EpisodeIndex{dir: dir, anchor: a, idx: idx}, nil
+}
+
+// verifyContained confirms that child is physically inside parent.
+func verifyContained(parent, child string) error {
+	parentID, err := pathid.Resolve(parent)
+	if err != nil {
+		return fmt.Errorf("episode index: resolve repo root %s: %w", parent, err)
+	}
+	childID, err := pathid.Resolve(child)
+	if err != nil {
+		return fmt.Errorf("episode index: resolve index dir %s: %w", child, err)
+	}
+	if !parentID.Contains(childID) {
+		return fmt.Errorf("episode index: %s is not inside repository %s", child, parent)
+	}
+	return nil
 }
 
 // Search implements index.Searcher. A missing index produces no semantic

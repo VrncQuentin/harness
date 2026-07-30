@@ -315,7 +315,7 @@
       "fn": "os.Rename"
     },
     {
-      "line": 51,
+      "line": 54,
       "file": "internal/memoryops/episode_index.go",
       "pr": "PR 5b2",
       "notes": "NewEpisodeIndex: create missing index directory before pinning via Anchor",

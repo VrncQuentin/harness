@@ -181,7 +181,7 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
 
-	idxService, err := NewEpisodeIndex(EpisodeIndexDir(root))
+	idxService, err := NewEpisodeIndex(EpisodeIndexDir(root), root)
 	if err != nil {
 		t.Fatalf("NewEpisodeIndex: %v", err)
 	}
@@ -223,7 +223,8 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 }
 
 func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
-	service, err := NewEpisodeIndex(EpisodeIndexDir(t.TempDir()))
+	root := t.TempDir()
+	service, err := NewEpisodeIndex(EpisodeIndexDir(root), root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,26 +257,30 @@ func TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Try symlink first.
+	// Try symlink first. pathid.Resolve on the symlink resolves to the
+	// physical target (outside), which pathid.Contains rejects.
 	if err := os.Symlink(outside, indexDir); err == nil {
-		_, err := NewEpisodeIndex(indexDir)
-		// Some platforms follow absolute symlinks through os.OpenRoot.
-		// The Anchor accepts this; containment enforcement is deferred.
+		ei, err := NewEpisodeIndex(indexDir, repo)
 		_ = os.Remove(indexDir)
-		if err != nil {
-			t.Logf("Anchor rejected absolute symlink: %v", err)
+		if err == nil {
+			_ = ei.Close()
+			t.Fatal("NewEpisodeIndex accepted symlink to outside directory")
 		}
+		t.Logf("containment rejected symlink: %v", err)
 		return
 	}
 
-	// Try Windows junction.
+	// Try Windows junction. pathid resolves junctions to the physical
+	// target, so containment check rejects it.
 	cmd := exec.Command("cmd", "/c", "mklink", "/J", indexDir, outside)
 	if out, err := cmd.CombinedOutput(); err == nil {
-		// On current Go/Windows, os.OpenRoot traverses junctions
-		// and pins the target directory. The Anchor accepts this;
-		// containment must be enforced at a higher layer (e.g. by
-		// constructing the index path from a pinned repo root).
+		ei, err := NewEpisodeIndex(indexDir, repo)
 		_ = os.RemoveAll(indexDir)
+		if err == nil {
+			_ = ei.Close()
+			t.Fatal("NewEpisodeIndex accepted junction to outside directory")
+		}
+		t.Logf("containment rejected junction: %v", err)
 		return
 	} else {
 		t.Logf("junction unavailable: %v\n%s", err, string(out))
@@ -291,39 +296,41 @@ func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ei, err := NewEpisodeIndex(indexDir)
+	ei, err := NewEpisodeIndex(indexDir, repo)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = ei.Close() }()
 
-	// Branch 1: missing index (idx == nil). Upsert creates it after
-	// verify. Then replace the dir and Upsert again — must fail.
+	// Create the index so we can test both missing and existing branches.
 	err = ei.Upsert("ep1", "abc", [][]float32{{1, 0}})
 	if err != nil {
 		t.Fatalf("first Upsert: %v", err)
 	}
 
-	// Repoint: remove and recreate the directory.
+	// Try to remove the directory while the Anchor holds it.
 	if err := os.RemoveAll(indexDir); err != nil {
+		// Windows: pinned handle blocks removal. Prove the handle
+		// was the cause by closing and re-removing.
 		_ = ei.Close()
 		if err := os.RemoveAll(indexDir); err != nil {
-			t.Fatal(err)
+			t.Fatal("removal should succeed after Anchor closed:", err)
 		}
-		// Handle was blocking removal (Windows). Test is complete.
+		// Anchor actively protected the directory.
 		return
 	}
+
+	// Non-Windows: removal succeeded despite open handle. Replace
+	// the directory and verify operations fail closed.
 	if err := os.MkdirAll(indexDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Branch 2: existing index. verify must fail after replacement.
 	err = ei.Upsert("ep2", "def", [][]float32{{0, 1}})
 	if err == nil {
 		t.Fatal("Upsert should fail after directory replacement")
 	}
 
-	// Search must also fail.
 	_, err = ei.Search([]float32{1, 0}, 1)
 	if err == nil {
 		t.Fatal("Search should fail after directory replacement")

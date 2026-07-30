@@ -80,7 +80,7 @@ func run() error {
 	}
 
 	indexDir := memoryops.EpisodeIndexDir(*repoPath)
-	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir)
+	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir, *repoPath)
 	if err != nil {
 		return fmt.Errorf("open episode index: %w", err)
 	}

@@ -204,7 +204,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	assembler := prompt.NewProjectDiskAssembler(globalMem, activeMem, agentReg, rt.effectivePromptFor(cfg)).WithProjectSlug(cfg.Project.ActiveProjectSlug)
 
 	indexDir := memoryops.EpisodeIndexDir(roots.activeRoot)
-	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir)
+	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir, roots.activeRoot)
 	if err != nil {
 		doClose()
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
