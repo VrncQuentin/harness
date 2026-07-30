@@ -110,6 +110,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	if oldAPI != nil {
 		oldAPI.Stop()
 	}
+	rt.apiServer = nil
 	if candidate.apiServer != nil {
 		if err := candidate.apiServer.Start(ctx); err != nil {
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
@@ -117,8 +118,6 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 			rt.apiServer = candidate.apiServer
 			slog.Info("api server listening", "port", candidateCfg.API.Port)
 		}
-	} else {
-		rt.apiServer = nil
 	}
 
 	closeReaders(oldGlobal, oldActive, oldSession)
