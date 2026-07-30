@@ -132,21 +132,17 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 	uiServer.SetServiceDeps(candidate.serviceDeps)
 
-	// Global and active readers are only reachable through Runtime
-	// fields, which are atomically swapped above. Close them now.
-	closeReaders(oldGlobal, oldActive)
-
-	// When the API was not rebuilt and the old server is still running,
-	// defer closing oldSession — the API adapter may reference the old
-	// session manager which reads through it. Close these deferred
-	// readers when the API is eventually stopped or on Runtime.Stop.
-	if candidate.apiServer == nil && rt.apiServer != nil {
-		rt.pendingClose = append(rt.pendingClose, oldSession)
-	} else {
-		closeReaders(oldSession)
-		closeReaders(rt.pendingClose...)
-		rt.pendingClose = nil
+	// Retire the old generation: attach the retired readers and release
+	// the publisher lease. When the last in-flight operation releases
+	// its lease, the generation's readers are closed.
+	if rt.gen != nil {
+		if oldGlobal != nil || oldActive != nil || oldSession != nil {
+			rt.gen.readers = []memory.Repo{oldGlobal, oldActive, oldSession}
+		}
+		rt.gen.release()
 	}
+	rt.gen = &generation{}
+	rt.gen.acquire()
 
 	return true
 }

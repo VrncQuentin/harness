@@ -10,6 +10,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/embedder"
 	"github.com/VrncQuentin/harness/internal/httpclient"
 	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/metrics"
 	"github.com/VrncQuentin/harness/internal/proc"
 	"github.com/VrncQuentin/harness/internal/queue"
@@ -115,7 +116,7 @@ func (rt *Runtime) Stop() {
 	global := rt.globalMem
 	active := rt.activeMem
 	session := rt.sessionMem
-	pending := rt.pendingClose
+	g := rt.gen
 	sessionMgr := rt.SessionManager()
 
 	rt.reqQueue = nil
@@ -124,7 +125,7 @@ func (rt *Runtime) Stop() {
 	rt.globalMem = nil
 	rt.activeMem = nil
 	rt.sessionMem = nil
-	rt.pendingClose = nil
+	rt.gen = nil
 	rt.agentReg = nil
 	rt.assembler = nil
 	rt.gitRepo = nil
@@ -132,7 +133,7 @@ func (rt *Runtime) Stop() {
 	rt.setSessionManager(nil)
 	rt.mu.Unlock()
 
-	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && session == nil && len(pending) == 0 {
+	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && session == nil && g == nil {
 		return
 	}
 
@@ -156,8 +157,12 @@ func (rt *Runtime) Stop() {
 	if q != nil {
 		q.Stop()
 	}
-	closeReaders(global, active, session)
-	closeReaders(pending...)
+	if g != nil {
+		g.readers = []memory.Repo{global, active, session}
+		g.release()
+	} else {
+		closeReaders(global, active, session)
+	}
 }
 
 // WaitManagers waits for process manager goroutines to exit after their context

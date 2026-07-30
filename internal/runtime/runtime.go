@@ -4,6 +4,7 @@ package runtime
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/VrncQuentin/harness/internal/agent"
 	"github.com/VrncQuentin/harness/internal/api"
@@ -18,6 +19,22 @@ import (
 	"github.com/VrncQuentin/harness/internal/queue"
 	"github.com/VrncQuentin/harness/internal/session"
 )
+
+// generation holds the readers of one reload cycle. Operations acquire a
+// lease before using the generation's resources and release it after. When
+// the lease count reaches zero, the generation's readers are closed.
+type generation struct {
+	readers []memory.Repo
+	leases  atomic.Int64
+}
+
+func (g *generation) acquire() { g.leases.Add(1) }
+
+func (g *generation) release() {
+	if g.leases.Add(-1) == 0 {
+		closeReaders(g.readers...)
+	}
+}
 
 // ErrConfigStoreUnavailable is surfaced when the harness DB could not be
 // opened, so the user sees one consistent message in the status page and the
@@ -58,10 +75,10 @@ type Runtime struct {
 	assembler    *prompt.DiskAssembler
 	apiServer    *api.Server
 	gitRepo      *gitw.Repo
-	sessionMu    sync.RWMutex
-	sessionMg    *session.Manager
-	taskRunner   *taskRunnerAdapter
-	pendingClose []memory.Repo // readers deferred until API stops or Runtime.Stop
+	sessionMu  sync.RWMutex
+	sessionMg  *session.Manager
+	taskRunner *taskRunnerAdapter
+	gen        *generation
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.
@@ -76,4 +93,18 @@ func New(cfg config.Config, cfgStore config.Store, rings LogRings) *Runtime {
 // NewEventChannel returns the process event channel shared by all managers.
 func NewEventChannel() chan proc.Event {
 	return make(chan proc.Event, EventBufferSize)
+}
+
+// AcquireLease pins the current generation so its readers are not closed
+// before the caller finishes. The returned release function must be called
+// when the operation completes.
+func (rt *Runtime) AcquireLease() func() {
+	rt.mu.Lock()
+	g := rt.gen
+	rt.mu.Unlock()
+	if g != nil {
+		g.acquire()
+		return g.release
+	}
+	return func() {}
 }
