@@ -124,6 +124,8 @@ func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, c
 	if agentName == "" {
 		return nil, errNoActiveAgent
 	}
+	release := ad.rt.AcquireLease()
+	defer release()
 	asm := ad.rt.getAssembler()
 	if asm == nil {
 		return nil, errors.New("api: prompt assembler unavailable")
@@ -401,12 +403,15 @@ type apiSessionAdapter struct {
 }
 
 type sessionHandle struct {
-	mgr *session.Manager
+	mgr     *session.Manager
+	release func()
 }
 
 func (a *apiSessionAdapter) Start(ctx context.Context, agentName string) api.Session {
+	release := a.rt.AcquireLease()
 	mgr := a.rt.SessionManager()
 	if mgr == nil {
+		release()
 		return api.Session{}
 	}
 	s := mgr.Start(agentName)
@@ -414,7 +419,7 @@ func (a *apiSessionAdapter) Start(ctx context.Context, agentName string) api.Ses
 	if a.sessions == nil {
 		a.sessions = make(map[string]*sessionHandle)
 	}
-	a.sessions[s.ID] = &sessionHandle{mgr: mgr}
+	a.sessions[s.ID] = &sessionHandle{mgr: mgr, release: release}
 	a.mu.Unlock()
 	return api.Session{ID: s.ID, Agent: s.Agent}
 }
@@ -441,8 +446,11 @@ func (a *apiSessionAdapter) End(id string) {
 	h := a.sessions[id]
 	delete(a.sessions, id)
 	a.mu.Unlock()
-	if h != nil && h.mgr != nil {
-		h.mgr.End(id)
+	if h != nil {
+		if h.mgr != nil {
+			h.mgr.End(id)
+		}
+		h.release()
 	}
 }
 
