@@ -52,15 +52,15 @@ func (rt *Runtime) ApplyConfig(
 	newModel := rt.effectiveModelFor(loaded)
 	modelEndpointChanged := oldModel.Port != newModel.Port
 	embedderEndpointChanged := old.Embedder.Port != loaded.Embedder.Port
-	rt.cfg = *loaded
-	rt.refreshProjectDirectoryWarnings(uiServer)
 
 	var result ui.ApplyResult
 
 	if !rt.started {
 		slog.Info("starting services", "model_port", newModel.Port, "embed_port", loaded.Embedder.Port)
+		rt.cfg = *loaded
+		rt.refreshProjectDirectoryWarnings(uiServer)
 		rt.startServices(ctx, uiServer, events, metricsStore)
-		rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
+		rt.startMemoryAndAPI(ctx, uiServer, metricsStore, loaded, false)
 		result.LiveApplied = true
 	} else {
 		needsMemoryAPIRetry := rt.memoryAPIUnavailable()
@@ -95,9 +95,15 @@ func (rt *Runtime) ApplyConfig(
 				rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
 			}
 			slog.Info("rebuilding memory and api services")
-			if rt.startMemoryAndAPI(ctx, uiServer, metricsStore) {
+			apiConfigChanged := old.API != loaded.API
+			if rt.startMemoryAndAPI(ctx, uiServer, metricsStore, loaded, apiConfigChanged) {
+				rt.cfg = *loaded
+				rt.refreshProjectDirectoryWarnings(uiServer)
 				result.LiveApplied = true
 			}
+		} else {
+			rt.cfg = *loaded
+			rt.refreshProjectDirectoryWarnings(uiServer)
 		}
 	}
 

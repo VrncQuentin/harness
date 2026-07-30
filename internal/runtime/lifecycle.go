@@ -27,7 +27,7 @@ func (rt *Runtime) Start(
 	defer rt.mu.Unlock()
 	rt.refreshProjectDirectoryWarnings(uiServer)
 	rt.startServices(ctx, uiServer, events, metricsStore)
-	rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
+	rt.startMemoryAndAPI(ctx, uiServer, metricsStore, &rt.cfg, false)
 }
 
 // Managers returns the process managers currently owned by the runtime.
@@ -106,6 +106,7 @@ func (rt *Runtime) Stop() {
 	global := rt.globalMem
 	active := rt.activeMem
 	session := rt.sessionMem
+	sessionMgr := rt.SessionManager()
 
 	rt.reqQueue = nil
 	rt.apiServer = nil
@@ -117,6 +118,7 @@ func (rt *Runtime) Stop() {
 	rt.assembler = nil
 	rt.gitRepo = nil
 	rt.started = false
+	rt.setSessionManager(nil)
 	rt.mu.Unlock()
 
 	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && session == nil {
@@ -130,9 +132,9 @@ func (rt *Runtime) Stop() {
 		}
 		cancel()
 	}
-	if mgr := rt.SessionManager(); mgr != nil {
+	if sessionMgr != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := mgr.FlushAll(ctx); err != nil {
+		if err := sessionMgr.FlushAll(ctx); err != nil {
 			slog.Warn("session flush on shutdown", "err", err)
 		}
 		cancel()

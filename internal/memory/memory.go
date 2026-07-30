@@ -23,6 +23,9 @@ type FileWriter interface {
 	WriteFile(relPath string, data []byte) error
 }
 
+// Walker walks the directory tree rooted at relPath, returning every entry
+// sorted by path. It skips .git and does not follow symlinks out of the
+// pinned root.
 type Walker interface {
 	Walk(relPath string) ([]Entry, error)
 }
@@ -42,6 +45,13 @@ type Entry struct {
 	Size int64
 }
 
+// DirReader reads and writes files through a pinned directory anchor.
+// Every operation resolves paths relative to the anchor, so the caller
+// cannot escape the root — not by symlink, junction, or path traversal.
+// The anchor's identity is compared against a fresh open on every
+// operation, so a directory replaced at the same pathname is refused.
+//
+// Close releases the pinned handle. After Close, every operation fails.
 type DirReader struct {
 	anchor *rootfs.Anchor
 }
@@ -63,6 +73,14 @@ func NewDirReader(root string) (*DirReader, error) {
 
 func (r *DirReader) Close() error { return r.anchor.Close() }
 
+// SameDirReader reports whether r and other are anchored to the same
+// filesystem directory. The comparison uses os.SameFile on the two
+// pinned handles — no pathname re-resolution is involved.
+//
+// This surfaces rootfs.Anchor.SameAnchor to DirReader callers so they
+// can compare directory identity without accessing the underlying
+// Anchor. There is currently no production caller; integration with
+// the git repository opened-object comparison is deferred.
 func (r *DirReader) SameDirReader(other *DirReader) (bool, error) {
 	return r.anchor.SameAnchor(other.anchor)
 }

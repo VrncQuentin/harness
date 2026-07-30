@@ -13,6 +13,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/agentloop"
 	"github.com/VrncQuentin/harness/internal/api"
 	"github.com/VrncQuentin/harness/internal/approvals"
+	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/embedder"
 	gitw "github.com/VrncQuentin/harness/internal/git"
 	"github.com/VrncQuentin/harness/internal/governor"
@@ -84,16 +85,22 @@ func closeReaders(readers ...memory.Repo) {
 	}
 }
 
-func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store) bool {
-	candidate := rt.buildCandidate(ctx, uiServer, metricsStore)
+func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config, apiConfigChanged bool) bool {
+	candidate := rt.buildCandidate(ctx, uiServer, metricsStore, candidateCfg)
 	if candidate == nil {
 		return false
+	}
+
+	oldAPI := rt.apiServer
+
+	if candidate.apiServer == nil && oldAPI != nil && !apiConfigChanged {
+		candidate.apiServer = oldAPI
+		oldAPI = nil
 	}
 
 	oldGlobal := rt.globalMem
 	oldActive := rt.activeMem
 	oldSession := rt.sessionMem
-	oldAPI := rt.apiServer
 
 	rt.globalMem = candidate.globalMem
 	rt.activeMem = candidate.activeMem
@@ -115,11 +122,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	return true
 }
 
-func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store) *memoryCandidate {
-	roots, err := rt.resolveProjectRepoRootsForSlug(rt.cfg.Project.ActiveProjectSlug)
+func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config) *memoryCandidate {
+	roots, err := rt.resolveProjectRepoRootsForSlug(cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("project memory repos: %w", err))
-		if rt.cfg.API.Enabled {
+		if cfg.API.Enabled {
 			uiServer.AddStartupError(errors.New("api server disabled: project memory repos are not valid"))
 		}
 		return nil
@@ -152,7 +159,7 @@ func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metr
 	}
 
 	agentReg := agent.NewDiskRegistry(globalMem, rt.getActiveAgent, rt.setActiveAgent)
-	assembler := prompt.NewProjectDiskAssembler(globalMem, activeMem, agentReg, rt.effectivePromptFor(&rt.cfg)).WithProjectSlug(rt.cfg.Project.ActiveProjectSlug)
+	assembler := prompt.NewProjectDiskAssembler(globalMem, activeMem, agentReg, rt.effectivePromptFor(cfg)).WithProjectSlug(cfg.Project.ActiveProjectSlug)
 
 	indexDir := memoryops.EpisodeIndexDir(roots.activeRoot)
 	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir)
@@ -164,11 +171,11 @@ func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metr
 	embedClient := rt.newEmbedderClient()
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 
-	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient, episodeIndex)
+	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient, episodeIndex, cfg.Project.ActiveProjectSlug)
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
 
-	loopCfg := rt.cfg.Loop
+	loopCfg := cfg.Loop
 	userLayer := approvals.Layer{Name: "user-config"}
 	if !loopCfg.EditEnabled {
 		userLayer.Rules = append(userLayer.Rules, approvals.Rule{ToolID: "edit", Decision: approvals.Denied, Source: "user: edit disabled in config"})
@@ -240,7 +247,7 @@ func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metr
 		registry:       registry,
 		asm:            asmAdapter,
 		q:              rt.reqQueue,
-		memScorer:      &memoryops.EpisodeScorer{Embedder: embedClient, Config: rt.cfg.Prompt, Index: episodeIndex},
+		memScorer:      &memoryops.EpisodeScorer{Embedder: embedClient, Config: cfg.Prompt, Index: episodeIndex},
 		approvalLayers: approvalLayers,
 		metrics:        loopMetrics,
 		gov:            gov,
@@ -248,24 +255,24 @@ func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metr
 	}
 
 	var apiSrv *api.Server
-	if rt.cfg.API.Enabled && rt.reqQueue != nil {
+	if cfg.API.Enabled && rt.reqQueue != nil {
 		var apiRec api.SessionRecorder
 		if sessionMgr != nil {
 			apiRec = &apiSessionAdapter{mgr: sessionMgr}
 		}
-		srv := api.NewServer(rt.cfg.API.Port, asmAdapter, rt.reqQueue, apiRec)
+		srv := api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, apiRec)
 		if err := srv.Start(ctx); err != nil {
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
 		} else {
 			apiSrv = srv
-			slog.Info("api server listening", "port", rt.cfg.API.Port)
+			slog.Info("api server listening", "port", cfg.API.Port)
 		}
 	}
 
 	svcDeps := ui.ServiceDeps{MemoryRepoPath: roots.activeRoot}
 	svcDeps.RetrievalScorer = &uiRetrievalScorerAdapter{scorer: &memoryops.EpisodeScorer{
 		Embedder: embedClient,
-		Config:   rt.cfg.Prompt,
+		Config:   cfg.Prompt,
 		Index:    episodeIndex,
 	}}
 	svcDeps.MemoryStore = activeMem
@@ -280,7 +287,7 @@ func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metr
 		Mem:      activeMem,
 		Embedder: embedClient,
 	}
-	svcDeps.PromotionDedupThreshold = rt.cfg.Prompt.PromotionDedupThreshold
+	svcDeps.PromotionDedupThreshold = cfg.Prompt.PromotionDedupThreshold
 	svcDeps.IndexRebuilder = &memoryops.EpisodeRebuilder{
 		Mem:       activeMem,
 		Embedder:  embedClient,
@@ -352,7 +359,7 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 	}, nil
 }
 
-func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex) (*gitw.Repo, *memory.DirReader, *session.Manager, *uiSessionStoreAdapter) {
+func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex, projectSlug string) (*gitw.Repo, *memory.DirReader, *session.Manager, *uiSessionStoreAdapter) {
 	repoPath := roots.activeRoot
 	repo, err := gitw.Open(repoPath)
 	if err != nil {
@@ -379,7 +386,7 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		SummarizerPrompt:   rt.summarizerPromptFn(),
 		ResolveAbsRepoPath: repoPath,
 		AfterSave:          memoryops.AfterSaveEmbed(embedClient, episodeIndex, repo),
-	}, rt.cfg.Project.ActiveProjectSlug)
+	}, projectSlug)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
 		return repo, sessionStore, nil, nil

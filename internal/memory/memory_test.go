@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -42,18 +41,6 @@ func symlinkOrSkip(t *testing.T, target, link string) {
 			t.Skip("symlink requires Developer Mode on Windows")
 		}
 		t.Fatal(err)
-	}
-}
-
-func junctionOrSkip(t *testing.T, target, link string) {
-	t.Helper()
-	if runtime.GOOS != "windows" {
-		t.Skip("junction is Windows-only")
-	}
-	cmd := exec.Command("cmd", "/c", "mklink", "/J", link, target)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("mklink /J %s -> %s failed: %v\n%s", link, target, err, string(out))
 	}
 }
 
@@ -903,15 +890,22 @@ func TestDirReader_ReplacedDirectoryFailsClosed(t *testing.T) {
 		t.Fatalf("Read before replacement = %q, want original", string(got))
 	}
 
-	// Try to remove the directory. If the pinned handle blocks it, close
-	// and re-create to prove the handle was the cause.
+	// Try to remove the directory while the reader holds it open.
+	// On Windows the pinned handle blocks removal; on Linux removal
+	// succeeds because the dentry is gone but the inode handle keeps
+	// the reference alive. Both paths are valid security outcomes:
+	// either the replacement is blocked or it is detected.
 	if err := os.RemoveAll(dir); err != nil {
+		// Pinned handle blocked removal. Close it and re-remove to
+		// prove the handle was the cause.
 		_ = r.Close()
 		if err := os.RemoveAll(dir); err != nil {
-			t.Fatal(err)
+			t.Fatal("removal should succeed after anchor closed:", err)
 		}
 		return
 	}
+	// Directory was replaced (Linux path). Recreate and verify the
+	// reader detects the substitution and refuses further reads.
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
