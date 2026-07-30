@@ -39,7 +39,7 @@
     },
     {
       "file": "internal/rootfs/anchor.go",
-      "line": 104,
+      "line": 107,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: anchor reopen identity check"
     },
@@ -246,7 +246,7 @@
     },
     {
       "file": "cmd/eval-retrieval/main.go",
-      "line": 106,
+      "line": 112,
       "fn": "filepath.Glob",
       "pr": "PR 3",
       "notes": "eval-retrieval: enumerate episode files through pinned repo instead of filepath.Glob+filepath.Rel"

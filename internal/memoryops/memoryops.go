@@ -147,9 +147,15 @@ type EpisodeRebuilder struct {
 	IndexDir  string
 	Repo      *gitw.Repo
 	OnRebuilt func(*index.Index)
+	EI        *EpisodeIndex
 }
 
 func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
+	if rb.EI != nil {
+		if err := rb.EI.verify(); err != nil {
+			return err
+		}
+	}
 	if rb.Index == nil {
 		idx, err := index.Open(rb.IndexDir)
 		if err == nil {

@@ -19,11 +19,15 @@ func newTestEpisodeIndex(t *testing.T, projectRoot string) *EpisodeIndex {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = dr.Close() })
-	a, err := dr.SubAnchor("")
+	indexDir := EpisodeIndexDir(projectRoot)
+	if err := dr.MkdirAll("index/_episodes"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := dr.SubAnchor("index/_episodes")
 	if err != nil {
 		t.Fatal(err)
 	}
-	ei, err := NewEpisodeIndex(a)
+	ei, err := NewEpisodeIndex(a, indexDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,30 +272,25 @@ func TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Try symlink first. pathid.Resolve on the symlink resolves to the
-	// physical target (outside), which pathid.Contains rejects.
+	// Try symlink first. SubAnchor navigates through OpenChild which
+	// rejects links, so the Anchor construction itself fails.
 	if err := os.Symlink(outside, indexDir); err == nil {
 		dr, drErr := memory.NewDirReader(repo)
 		if drErr != nil {
 			t.Fatal(drErr)
 		}
 		defer func() { _ = dr.Close() }()
-		a, aErr := dr.SubAnchor("")
-		if aErr != nil {
-			t.Fatal(aErr)
-		}
-		ei, err := NewEpisodeIndex(a)
+		_, err := dr.SubAnchor("index/_episodes")
 		_ = os.Remove(indexDir)
 		if err == nil {
-			_ = ei.Close()
-			t.Fatal("NewEpisodeIndex accepted symlink to outside directory")
+			t.Fatal("SubAnchor accepted symlink at index/_episodes")
 		}
-		t.Logf("containment rejected symlink: %v", err)
+		t.Logf("SubAnchor rejected symlink: %v", err)
 		return
 	}
 
-	// Try Windows junction. pathid resolves junctions to the physical
-	// target, so containment check rejects it.
+	// Try Windows junction. SubAnchor traverses through OpenChild which
+	// rejects links.
 	cmd := exec.Command("cmd", "/c", "mklink", "/J", indexDir, outside)
 	if out, err := cmd.CombinedOutput(); err == nil {
 		dr, drErr := memory.NewDirReader(repo)
@@ -299,17 +298,12 @@ func TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo(t *testing.T) {
 			t.Fatal(drErr)
 		}
 		defer func() { _ = dr.Close() }()
-		a, aErr := dr.SubAnchor("")
-		if aErr != nil {
-			t.Fatal(aErr)
-		}
-		ei, err := NewEpisodeIndex(a)
+		_, err := dr.SubAnchor("index/_episodes")
 		_ = os.RemoveAll(indexDir)
 		if err == nil {
-			_ = ei.Close()
-			t.Fatal("NewEpisodeIndex accepted junction to outside directory")
+			t.Fatal("SubAnchor accepted junction at index/_episodes")
 		}
-		t.Logf("containment rejected junction: %v", err)
+		t.Logf("SubAnchor rejected junction: %v", err)
 		return
 	} else {
 		t.Logf("junction unavailable: %v\n%s", err, string(out))
@@ -330,11 +324,14 @@ func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = dr.Close() }()
-	a, aErr := dr.SubAnchor("")
-	if aErr != nil {
-		t.Fatal(aErr)
+	if err := dr.MkdirAll("index/_episodes"); err != nil {
+		t.Fatal(err)
 	}
-	ei, err := NewEpisodeIndex(a)
+	a, err := dr.SubAnchor("index/_episodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ei, err := NewEpisodeIndex(a, indexDir)
 	if err != nil {
 		t.Fatal(err)
 	}

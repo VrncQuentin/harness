@@ -204,14 +204,20 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	assembler := prompt.NewProjectDiskAssembler(globalMem, activeMem, agentReg, rt.effectivePromptFor(cfg)).WithProjectSlug(cfg.Project.ActiveProjectSlug)
 
 	indexDir := memoryops.EpisodeIndexDir(roots.activeRoot)
-	repoAnchor, err := activeMem.SubAnchor("")
+	if err := activeMem.MkdirAll("index/_episodes"); err != nil {
+		doClose()
+		uiServer.AddStartupError(fmt.Errorf("episode index: mkdir: %w", err))
+		return nil
+	}
+	indexAnchor, err := activeMem.SubAnchor("index/_episodes")
 	if err != nil {
 		doClose()
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 		return nil
 	}
-	episodeIndex, err := memoryops.NewEpisodeIndex(repoAnchor)
+	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir)
 	if err != nil {
+		_ = indexAnchor.Close()
 		doClose()
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 		return nil
@@ -345,6 +351,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		IndexDir:  indexDir,
 		Repo:      gitRepo,
 		OnRebuilt: episodeIndex.Replace,
+		EI:        episodeIndex,
 	}
 	if rt.reqQueue != nil {
 		svcDeps.ChatRunner = &chatRunnerAdapter{

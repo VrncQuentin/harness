@@ -38,51 +38,40 @@ type EpisodeIndex struct {
 	idx    *index.Index
 }
 
-// NewEpisodeIndex opens the repository's index directory through repoAnchor
-// and pins it.  The directory path is used only for index file operations;
-// identity verification and containment are derived from repoAnchor.  If
-// the directory does not exist it is created before pinning.
-func NewEpisodeIndex(repoAnchor *rootfs.Anchor) (*EpisodeIndex, error) {
-	a, err := openIndex(repoAnchor)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			// The directory doesn't exist. Create it through the
-			// repo handle so we never touch a pathname outside.
-			r, rerr := repoAnchor.Open()
-			if rerr != nil {
-				return nil, rerr
-			}
-			mkerr := r.MkdirAll(filepath.FromSlash("index/_episodes"), 0o755)
-			_ = r.Close()
-			if mkerr != nil {
-				return nil, fmt.Errorf("episode index: mkdir index/_episodes: %w", mkerr)
-			}
-			a, err = openIndex(repoAnchor)
-		}
-		if err != nil {
-			return nil, fmt.Errorf("episode index: pin index/_episodes: %w", err)
-		}
+// NewEpisodeIndex verifies that anchor and dir refer to the same directory
+// and opens an existing index.  The caller must have established the anchor
+// through the repository's DirReader.SubAnchor, guaranteeing containment.
+func NewEpisodeIndex(anchor *rootfs.Anchor, dir string) (*EpisodeIndex, error) {
+	if anchor == nil {
+		return nil, errors.New("episode index: anchor is nil")
 	}
-	dir := a.Path()
+	if err := sameDir(anchor, dir); err != nil {
+		return nil, err
+	}
 	idx, idxErr := index.Open(dir)
 	if idxErr != nil && !errors.Is(idxErr, fs.ErrNotExist) {
-		_ = a.Close()
 		return nil, idxErr
 	}
-	return &EpisodeIndex{dir: dir, anchor: a, idx: idx}, nil
+	return &EpisodeIndex{dir: dir, anchor: anchor, idx: idx}, nil
 }
 
-func openIndex(repoAnchor *rootfs.Anchor) (*rootfs.Anchor, error) {
-	idx, err := repoAnchor.OpenChild("index")
+func sameDir(anchor *rootfs.Anchor, dir string) error {
+	r, err := rootfs.Open(dir)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("episode index: open dir %s: %w", dir, err)
 	}
-	ep, err := idx.OpenChild("_episodes")
-	_ = idx.Close()
+	defer func() { _ = r.Close() }()
+	same, err := anchor.SameRoot(r)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("episode index: compare anchor and dir %s: %w", dir, err)
 	}
-	return ep, nil
+	if !same {
+		return fmt.Errorf("episode index: anchor and dir %s identify different directories", dir)
+	}
+	return nil
 }
 
 // Search implements index.Searcher. A missing index produces no semantic

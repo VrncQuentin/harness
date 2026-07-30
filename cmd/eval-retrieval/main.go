@@ -85,14 +85,20 @@ func run() error {
 		return fmt.Errorf("open repo: %w", err)
 	}
 	defer func() { _ = repoDirReader.Close() }()
-	repoAnchor, err := repoDirReader.SubAnchor("")
-	if err != nil {
-		return fmt.Errorf("repo anchor: %w", err)
+	indexDir := memoryops.EpisodeIndexDir(*repoPath)
+	if err := repoDirReader.MkdirAll("index/_episodes"); err != nil {
+		return fmt.Errorf("mkdir index: %w", err)
 	}
-	episodeIndex, err := memoryops.NewEpisodeIndex(repoAnchor)
+	indexAnchor, err := repoDirReader.SubAnchor("index/_episodes")
 	if err != nil {
+		return fmt.Errorf("index anchor: %w", err)
+	}
+	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir)
+	if err != nil {
+		_ = indexAnchor.Close()
 		return fmt.Errorf("open episode index: %w", err)
 	}
+	defer func() { _ = episodeIndex.Close() }()
 
 	emb := embedder.NewClient(*embedderURL, http.DefaultClient)
 	scorer := &memoryops.EpisodeScorer{
