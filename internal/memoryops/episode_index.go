@@ -48,7 +48,12 @@ func NewEpisodeIndex(anchor *rootfs.Anchor, dir string) (*EpisodeIndex, error) {
 	if err := sameDir(anchor, dir); err != nil {
 		return nil, err
 	}
-	idx, idxErr := index.Open(dir)
+	r, rerr := anchor.Open()
+	if rerr != nil {
+		return nil, fmt.Errorf("episode index: open anchor: %w", rerr)
+	}
+	idx, idxErr := index.OpenRooted(r, dir)
+	_ = r.Close()
 	if idxErr != nil && !errors.Is(idxErr, fs.ErrNotExist) {
 		return nil, idxErr
 	}
@@ -85,7 +90,7 @@ func (e *EpisodeIndex) Search(query []float32, k int) ([]index.Result, error) {
 		return nil, err
 	}
 	defer func() { _ = r.Close() }()
-	return idx.Search(query, k)
+	return idx.SearchRooted(r, query, k)
 }
 
 // Contains reports whether source has a current entry in the shared index.
@@ -124,7 +129,7 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 	}
 	defer func() { _ = r.Close() }()
 	if e.idx == nil {
-		idx, err := index.Create(e.dir, dim)
+		idx, err := index.CreateRooted(r, e.dir, dim)
 		if err != nil {
 			return fmt.Errorf("episode index: create %s: %w", e.dir, err)
 		}
@@ -133,7 +138,7 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 	if e.idx.Dim() != dim {
 		return fmt.Errorf("episode index: dimension mismatch: index has %d, got %d", e.idx.Dim(), dim)
 	}
-	return e.idx.Upsert(source, contentHash, vectors)
+	return e.idx.UpsertRooted(r, source, contentHash, vectors)
 }
 
 // verified opens the pinned directory and confirms it has not been replaced.

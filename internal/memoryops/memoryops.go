@@ -20,6 +20,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/index"
 	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/retrieval"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/session"
 	"github.com/VrncQuentin/harness/internal/vector"
 )
@@ -152,16 +153,28 @@ type EpisodeRebuilder struct {
 
 func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 	if rb.Index == nil {
+		var r *rootfs.Root
 		if rb.EI != nil {
-			if _, err := rb.EI.verified(); err != nil {
+			var err error
+			r, err = rb.EI.verified()
+			if err != nil {
 				return err
 			}
 		}
-		idx, err := index.Open(rb.IndexDir)
-		if err == nil {
+		var idx *index.Index
+		var idxErr error
+		if r != nil {
+			idx, idxErr = index.OpenRooted(r, rb.IndexDir)
+		} else {
+			idx, idxErr = index.Open(rb.IndexDir)
+		}
+		if r != nil {
+			_ = r.Close()
+		}
+		if idxErr == nil {
 			rb.Index = idx
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("index rebuild: open index %s: %w", rb.IndexDir, err)
+		} else if !errors.Is(idxErr, fs.ErrNotExist) {
+			return fmt.Errorf("index rebuild: open index %s: %w", rb.IndexDir, idxErr)
 		}
 	}
 
@@ -237,14 +250,26 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		}
 	}
 	if rb.Index == nil {
+		var r *rootfs.Root
 		if rb.EI != nil {
-			if _, err := rb.EI.verified(); err != nil {
+			var err error
+			r, err = rb.EI.verified()
+			if err != nil {
 				return err
 			}
 		}
-		idx, err := index.Create(rb.IndexDir, dim)
-		if err != nil {
-			return fmt.Errorf("index rebuild: create index %s: %w", rb.IndexDir, err)
+		var idx *index.Index
+		var cerr error
+		if r != nil {
+			idx, cerr = index.CreateRooted(r, rb.IndexDir, dim)
+		} else {
+			idx, cerr = index.Create(rb.IndexDir, dim)
+		}
+		if r != nil {
+			_ = r.Close()
+		}
+		if cerr != nil {
+			return fmt.Errorf("index rebuild: create index %s: %w", rb.IndexDir, cerr)
 		}
 		rb.Index = idx
 	}
@@ -261,13 +286,19 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		epVecs := vectors[offset : offset+n]
 		offset += n
 		if rb.EI != nil {
-			if _, verr := rb.EI.verified(); verr != nil {
-				slog.Warn("index rebuild: verify", "err", verr)
-				continue
+			r, err := rb.EI.verified()
+			if err != nil {
+				return err
 			}
-		}
-		if err := rb.Index.Upsert(retrieval.EpisodeID(w.path), w.hash, epVecs); err != nil {
-			slog.Warn("index rebuild: add episode", "path", w.path, "err", err)
+			uerr := rb.Index.UpsertRooted(r, retrieval.EpisodeID(w.path), w.hash, epVecs)
+			_ = r.Close()
+			if uerr != nil {
+				slog.Warn("index rebuild: add episode", "path", w.path, "err", uerr)
+			}
+		} else {
+			if err := rb.Index.Upsert(retrieval.EpisodeID(w.path), w.hash, epVecs); err != nil {
+				slog.Warn("index rebuild: add episode", "path", w.path, "err", err)
+			}
 		}
 	}
 
