@@ -70,10 +70,10 @@ func (rt *Runtime) ApplyConfig(
 			old.Loop != loaded.Loop ||
 			old.Agent.Active != loaded.Agent.Active ||
 			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug ||
-			modelEndpointChanged ||
 			embedderEndpointChanged ||
 			needsMemoryAPIRetry
 
+		commit := true
 		if rebuild {
 			rt.quiesceMemoryAndAPI(ctx)
 			if old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
@@ -81,26 +81,12 @@ func (rt *Runtime) ApplyConfig(
 			}
 			slog.Info("rebuilding memory and api services")
 			if rt.startMemoryAndAPI(ctx, uiServer, metricsStore, loaded) {
-				rt.cfg = *loaded
-				rt.refreshProjectDirectoryWarnings(uiServer)
 				result.LiveApplied = true
-				if oldModel != newModel {
-					slog.Info("reconfiguring llama-server", "old_port", oldModel.Port, "new_port", newModel.Port)
-					rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(newModel) }, llamaHealthURL(newModel))
-				}
-				if old.Embedder != loaded.Embedder {
-					slog.Info("reconfiguring embedder", "old_port", old.Embedder.Port, "new_port", loaded.Embedder.Port)
-					rt.embedMgr.Reconfigure(func() (string, []string) {
-						return embedderArgsForConfig(loaded.Embedder)
-					}, embedderHealthURL(loaded.Embedder))
-				}
-				if modelEndpointChanged && rt.reqQueue != nil {
-					client := rt.newInferenceClientFor(loaded)
-					rt.inferClient = client
-					rt.reqQueue.SetClient(client)
-				}
+			} else {
+				commit = false
 			}
-		} else {
+		}
+		if commit {
 			if oldModel != newModel {
 				slog.Info("reconfiguring llama-server", "old_port", oldModel.Port, "new_port", newModel.Port)
 				rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(newModel) }, llamaHealthURL(newModel))

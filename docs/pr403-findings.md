@@ -195,7 +195,7 @@ makes them unnecessary.
 
 | Mechanism | Why eliminated |
 |-----------|---------------|
-| `memoryHandles` — runtime holds root handles and closes on shutdown | Replaced by Anchor in PR 2a: each consumer owns its own Anchor with an explicit Close. The runtime does not track or close handles centrally. |
+| `memoryHandles` — runtime holds root handles and closes on shutdown | Replaced by generation lease model: the `Runtime` tracks generations through `generation.leases` and closes old-generation readers when the last in-flight operation releases its lease. |
 | `genGate` — route-by-route drain wrapping | Eliminated. Route-by-route generation gates are rejected. Deferred snapshot-scoped leasing (if any) is designed in PR 8. |
 | `memoryAPISnapshot` — snapshot of memory API per generation | Replaced by immutable UI snapshots in PR 8 |
 | `snapshot.closeReplaced()` — close handles when replacement starts | Deferred to PR 8: Anchor ownership and lifetime design there |

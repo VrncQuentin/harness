@@ -10,7 +10,6 @@ import (
 	"github.com/VrncQuentin/harness/internal/agent"
 	"github.com/VrncQuentin/harness/internal/api"
 	"github.com/VrncQuentin/harness/internal/config"
-	gitw "github.com/VrncQuentin/harness/internal/git"
 	"github.com/VrncQuentin/harness/internal/inference"
 	"github.com/VrncQuentin/harness/internal/logbuf"
 	"github.com/VrncQuentin/harness/internal/memory"
@@ -78,7 +77,6 @@ type Runtime struct {
 	agentReg   *agent.DiskRegistry
 	assembler  *prompt.DiskAssembler
 	apiServer  *api.Server
-	gitRepo    *gitw.Repo
 	sessionMu  sync.RWMutex
 	sessionMg  *session.Manager
 	taskRunner *taskRunnerAdapter
@@ -97,23 +95,6 @@ func New(cfg config.Config, cfgStore config.Store, rings LogRings) *Runtime {
 // NewEventChannel returns the process event channel shared by all managers.
 func NewEventChannel() chan proc.Event {
 	return make(chan proc.Event, EventBufferSize)
-}
-
-// AcquireLease pins the current generation so its readers survive reloads
-// for the duration of the caller's operation. The returned function must
-// be called when the operation completes.
-func (rt *Runtime) AcquireLease() (release func()) {
-	rt.mu.Lock()
-	g := rt.gen
-	if g != nil {
-		g.acquire()
-	}
-	rt.mu.Unlock()
-
-	if g != nil {
-		return g.release
-	}
-	return func() {}
 }
 
 // AcquireRequestGeneration captures the current generation's assembler and
@@ -163,12 +144,12 @@ func (a *staticAssembler) Assemble(ctx context.Context, agentName string, conver
 // session manager captured from one generation.
 type staticSessionRecorder struct{ mgr *session.Manager }
 
-func (r *staticSessionRecorder) Start(ctx context.Context, agentName string) api.Session {
+func (r *staticSessionRecorder) Start(agentName string) api.Session {
 	s := r.mgr.Start(agentName)
 	return api.Session{ID: s.ID, Agent: s.Agent}
 }
 
-func (r *staticSessionRecorder) Append(ctx context.Context, id, role, content string) error {
+func (r *staticSessionRecorder) Append(id, role, content string) error {
 	return r.mgr.Append(id, inference.Message{Role: role, Content: content})
 }
 

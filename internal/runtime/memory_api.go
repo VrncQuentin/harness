@@ -66,10 +66,7 @@ type memoryCandidate struct {
 	sessionStore *memory.DirReader
 	agentReg     *agent.DiskRegistry
 	assembler    *prompt.DiskAssembler
-	episodeIndex *memoryops.EpisodeIndex
-	gitRepo      *gitw.Repo
 	sessionMgr   *session.Manager
-	sessionAd    *uiSessionStoreAdapter
 	taskRunner   *taskRunnerAdapter
 	apiServer    *api.Server // created but not yet started
 	serviceDeps  ui.ServiceDeps
@@ -123,7 +120,6 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.sessionMem = candidate.sessionStore
 	rt.agentReg = candidate.agentReg
 	rt.assembler = candidate.assembler
-	rt.gitRepo = candidate.gitRepo
 	rt.setSessionManager(candidate.sessionMgr)
 	rt.taskRunner = candidate.taskRunner
 	if candidate.apiServer != nil {
@@ -298,7 +294,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 
 	var apiSrv *api.Server
 	if buildAPI {
-		apiSrv = api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, &apiSessionAdapter{rt: rt})
+		apiSrv = api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, nil)
 		apiSrv.WithGenLease(rt.AcquireRequestGeneration)
 	}
 
@@ -344,10 +340,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		sessionStore: sessionStore,
 		agentReg:     agentReg,
 		assembler:    assembler,
-		episodeIndex: episodeIndex,
-		gitRepo:      gitRepo,
 		sessionMgr:   sessionMgr,
-		sessionAd:    sessionAdapter,
 		taskRunner:   taskAdapter,
 		apiServer:    apiSrv,
 		serviceDeps:  svcDeps,
@@ -510,12 +503,6 @@ func (rt *Runtime) getActiveProjectSlug() string {
 		slug = "global"
 	}
 	return slug
-}
-
-func (rt *Runtime) getAssembler() *prompt.DiskAssembler {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	return rt.assembler
 }
 
 func (rt *Runtime) setActiveAgent(name string) error {

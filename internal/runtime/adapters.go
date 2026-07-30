@@ -12,7 +12,6 @@ import (
 
 	"github.com/VrncQuentin/harness/internal/agent"
 	"github.com/VrncQuentin/harness/internal/agentloop"
-	"github.com/VrncQuentin/harness/internal/api"
 	"github.com/VrncQuentin/harness/internal/approvals"
 	"github.com/VrncQuentin/harness/internal/httpclient"
 	"github.com/VrncQuentin/harness/internal/inference"
@@ -124,14 +123,12 @@ func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, c
 	if agentName == "" {
 		return nil, errNoActiveAgent
 	}
-	release := ad.rt.AcquireLease()
+	asm, _, _, release := ad.rt.AcquireRequestGeneration()
 	defer release()
-	asm := ad.rt.getAssembler()
 	if asm == nil {
 		return nil, errors.New("api: prompt assembler unavailable")
 	}
-	msgs, _, err := asm.Assemble(ctx, agentName, conversation)
-	return msgs, err
+	return asm.Assemble(ctx, agentName, conversation)
 }
 
 func chatMessagesToInference(conversation []ui.ChatMessage) []inference.Message {
@@ -391,74 +388,6 @@ func (ad *uiSessionStoreAdapter) Resume(id string) error {
 		return err
 	}
 	return nil
-}
-
-// apiSessionAdapter implements api.SessionRecorder. Each session records
-// the manager that created it so Append/Save/End use a consistent manager
-// across reloads. Generation lifetime is managed by the API handler's lease.
-type apiSessionAdapter struct {
-	rt       *Runtime
-	mu       sync.Mutex
-	sessions map[string]*sessionHandle
-}
-
-type sessionHandle struct {
-	mgr     *session.Manager
-	release func()
-}
-
-func (a *apiSessionAdapter) Start(ctx context.Context, agentName string) api.Session {
-	release := a.rt.AcquireLease()
-	mgr := a.rt.SessionManager()
-	if mgr == nil {
-		release()
-		return api.Session{}
-	}
-	s := mgr.Start(agentName)
-	a.mu.Lock()
-	if a.sessions == nil {
-		a.sessions = make(map[string]*sessionHandle)
-	}
-	a.sessions[s.ID] = &sessionHandle{mgr: mgr, release: release}
-	a.mu.Unlock()
-	return api.Session{ID: s.ID, Agent: s.Agent}
-}
-
-func (a *apiSessionAdapter) Append(ctx context.Context, id, role, content string) error {
-	h := a.handle(id)
-	if h == nil {
-		return errors.New("session: api adapter has no manager")
-	}
-	return h.mgr.Append(id, inference.Message{Role: role, Content: content})
-}
-
-func (a *apiSessionAdapter) Save(ctx context.Context, id string) error {
-	h := a.handle(id)
-	if h == nil {
-		return errors.New("session: api adapter has no manager")
-	}
-	_, err := h.mgr.Save(ctx, id)
-	return err
-}
-
-func (a *apiSessionAdapter) End(id string) {
-	a.mu.Lock()
-	h := a.sessions[id]
-	delete(a.sessions, id)
-	a.mu.Unlock()
-	if h != nil {
-		if h.mgr != nil {
-			h.mgr.End(id)
-		}
-		h.release()
-	}
-}
-
-func (a *apiSessionAdapter) handle(id string) *sessionHandle {
-	a.mu.Lock()
-	h := a.sessions[id]
-	a.mu.Unlock()
-	return h
 }
 
 type taskRunnerAdapter struct {

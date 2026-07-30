@@ -123,7 +123,7 @@ type stubSessionRecorder struct {
 	saveErr error
 }
 
-func (r *stubSessionRecorder) Start(_ context.Context, agent string) Session {
+func (r *stubSessionRecorder) Start(agent string) Session {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.nextID++
@@ -132,7 +132,7 @@ func (r *stubSessionRecorder) Start(_ context.Context, agent string) Session {
 	return s
 }
 
-func (r *stubSessionRecorder) Append(_ context.Context, id, role, content string) error {
+func (r *stubSessionRecorder) Append(id, role, content string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.appends = append(r.appends, sessionAppendRecord{ID: id, Role: role, Content: content})
@@ -794,39 +794,65 @@ func TestHandler_RoutesRegistered(t *testing.T) {
 }
 
 func TestGenLeaseActiveAgentFallback(t *testing.T) {
-	var asmAgent string
-	stubAsm := &stubAssembler{
-		build: func(agent string, conv []inference.Message) []inference.Message {
-			asmAgent = agent
-			return []inference.Message{{Role: "assistant", Content: "ok"}}
-		},
-	}
-	stubRec := &stubSessionRecorder{}
-	var releases int32
+	t.Run("success", func(t *testing.T) {
+		var asmAgent string
+		stubAsm := &stubAssembler{
+			build: func(agent string, conv []inference.Message) []inference.Message {
+				asmAgent = agent
+				return []inference.Message{{Role: "assistant", Content: "ok"}}
+			},
+		}
+		stubRec := &stubSessionRecorder{}
+		var releases int32
 
-	s := NewServer(0, nil, newStubEnqueuer(nil), nil)
-	s.WithGenLease(func() (Assembler, SessionRecorder, string, func()) {
-		return stubAsm, stubRec, "coder", func() {
-			atomic.AddInt32(&releases, 1)
+		s := NewServer(0, nil, newStubEnqueuer(nil), nil)
+		s.WithGenLease(func() (Assembler, SessionRecorder, string, func()) {
+			return stubAsm, stubRec, "coder", func() {
+				atomic.AddInt32(&releases, 1)
+			}
+		})
+
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(
+			`{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		))
+		rr := httptest.NewRecorder()
+		s.handler().ServeHTTP(rr, req)
+
+		if asmAgent != "coder" {
+			t.Errorf("assembler received agent %q, want coder", asmAgent)
+		}
+		starts, _, _, _ := stubRec.snapshot()
+		if len(starts) == 0 || starts[0].Agent != "coder" {
+			t.Errorf("session recorder Start agent = %v, want coder", starts)
+		}
+		if atomic.LoadInt32(&releases) != 1 {
+			t.Errorf("expected 1 release, got %d", releases)
 		}
 	})
 
-	// Request with no agent — handler must apply captured "coder" to both
-	// assembly and session recording.
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(
-		`{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}`,
-	))
-	rr := httptest.NewRecorder()
-	s.handler().ServeHTTP(rr, req)
+	t.Run("assembly-error", func(t *testing.T) {
+		stubAsm := &stubAssembler{err: errors.New("persona missing")}
+		var releases int32
 
-	if asmAgent != "coder" {
-		t.Errorf("assembler received agent %q, want coder", asmAgent)
-	}
-	starts, _, _, _ := stubRec.snapshot()
-	if len(starts) == 0 || starts[0].Agent != "coder" {
-		t.Errorf("session recorder Start agent = %v, want coder", starts)
-	}
-	if atomic.LoadInt32(&releases) != 1 {
-		t.Errorf("expected 1 release, got %d", releases)
-	}
+		s := NewServer(0, nil, newStubEnqueuer(nil), nil)
+		s.WithGenLease(func() (Assembler, SessionRecorder, string, func()) {
+			return stubAsm, nil, "coder", func() {
+				atomic.AddInt32(&releases, 1)
+			}
+		})
+
+		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(
+			`{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}`,
+		))
+		req.Header.Set("X-Harness-Agent", "nonexistent")
+		rr := httptest.NewRecorder()
+		s.handler().ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusInternalServerError {
+			t.Errorf("status = %d, want 500", rr.Code)
+		}
+		if atomic.LoadInt32(&releases) != 1 {
+			t.Errorf("assembly-error path: expected 1 release, got %d", releases)
+		}
+	})
 }

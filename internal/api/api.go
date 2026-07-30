@@ -41,8 +41,8 @@ type Enqueuer interface {
 // messages and assistant response are appended so API traffic can produce
 // the same episode records as browser chat.
 type SessionRecorder interface {
-	Start(ctx context.Context, agent string) Session
-	Append(ctx context.Context, id string, role, content string) error
+	Start(agent string) Session
+	Append(id string, role, content string) error
 	Save(ctx context.Context, id string) error
 	End(id string)
 }
@@ -147,9 +147,6 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/v1/models", s.handleModels)
 	return mux
 }
-
-// Handler returns the HTTP handler for use in tests.
-func (s *Server) Handler() http.Handler { return s.handler() }
 
 // chatRequest is the OpenAI-compatible request body. Agent is a harness
 // extension; the X-Harness-Agent header takes precedence if both are set.
@@ -328,14 +325,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// External clients do not currently pin an API session id across requests.
 	var sess Session
 	if rec != nil {
-		sess = rec.Start(ctx, agent)
+		sess = rec.Start(agent)
 		// Append the request's user-side messages so the eventual
 		// summary captures what was asked.
 		for _, m := range req.Messages {
 			if m.Role == "" || m.Content == "" {
 				continue
 			}
-			if err := rec.Append(ctx, sess.ID, m.Role, m.Content); err != nil {
+			if err := rec.Append(sess.ID, m.Role, m.Content); err != nil {
 				logger.Warn("session append (request)", slog.Any("err", err))
 			}
 		}
@@ -404,7 +401,7 @@ func (s *Server) streamTokensWithSession(ctx context.Context, w http.ResponseWri
 
 func (s *Server) finalizeSession(ctx context.Context, sess Session, assistant *strings.Builder, rec SessionRecorder) {
 	if assistant != nil && assistant.Len() > 0 {
-		if err := rec.Append(ctx, sess.ID, "assistant", assistant.String()); err != nil {
+		if err := rec.Append(sess.ID, "assistant", assistant.String()); err != nil {
 			s.logger.Warn("session append (assistant)", slog.Any("err", err))
 		}
 	}

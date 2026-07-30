@@ -5,20 +5,17 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/VrncQuentin/harness/internal/agent"
 	"github.com/VrncQuentin/harness/internal/agentloop"
-	"github.com/VrncQuentin/harness/internal/api"
 	"github.com/VrncQuentin/harness/internal/approvals"
 	"github.com/VrncQuentin/harness/internal/config"
 	gitw "github.com/VrncQuentin/harness/internal/git"
@@ -416,12 +413,11 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 	rt.inferClient = client
 	rt.reqQueue = startRuntimeTestQueue(t, client)
 
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
 	}, client, nil, nil, project.GlobalSlug)
-	rt.gitRepo = gitRepo
 	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 	rt.taskRunner = &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: rt.reqQueue}
@@ -783,12 +779,11 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
 
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
 	}, rt.ensureInferenceClient(), nil, nil, "global")
-	rt.gitRepo = gitRepo
 	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
@@ -833,12 +828,11 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
 	t.Cleanup(func() { rt.Stop() })
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
 	}, rt.ensureInferenceClient(), nil, nil, "global")
-	rt.gitRepo = gitRepo
 	rt.sessionMem = sessionStore
 	if mgr == nil {
 		t.Fatal("buildSessionManager returned nil")
@@ -899,12 +893,11 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
 
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
 	}, rt.ensureInferenceClient(), nil, nil, "global")
-	rt.gitRepo = gitRepo
 	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
@@ -1105,6 +1098,8 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	rt.activeMem = mem
 	rt.agentReg = reg
 	rt.assembler = prompt.NewProjectDiskAssembler(mem, mem, reg, cfg.Prompt).WithProjectSlug("global")
+	rt.gen = &generation{assembler: rt.assembler}
+	rt.gen.acquire()
 	rt.inferClient = failingInferenceClient{err: fmt.Errorf("direct inference path used")}
 
 	ad := &taskRunnerAdapter{
@@ -1164,12 +1159,11 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	rt.globalMem = dr
 	rt.activeMem = rt.globalMem
 
-	gitRepo, sessionStore, mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
 	}, rt.ensureInferenceClient(), nil, nil, "global")
-	rt.gitRepo = gitRepo
 	rt.sessionMem = sessionStore
 	if mgr == nil || adapter == nil {
 		t.Fatal("buildSessionManager returned nil manager")
@@ -1197,6 +1191,21 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 			t.Fatalf("expected %s to exist: %v", rel, err)
 		}
 	}
+}
+
+func newTestRuntime(t *testing.T) (*Runtime, *ui.Server, config.Config, string) {
+	t.Helper()
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	uiServer := ui.NewServer(0)
+	return rt, uiServer, cfg, root
 }
 
 func initRuntimeProjectRepo(t *testing.T) string {
@@ -1634,12 +1643,11 @@ func TestSessionStoreOwnershipRetiredOnStop(t *testing.T) {
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
 
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
 	}, rt.ensureInferenceClient(), nil, nil, project.GlobalSlug)
-	rt.gitRepo = gitRepo
 	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
@@ -1664,12 +1672,11 @@ func TestStopIsIdempotent(t *testing.T) {
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
 
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
 	}, rt.ensureInferenceClient(), nil, nil, project.GlobalSlug)
-	rt.gitRepo = gitRepo
 	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
@@ -1742,7 +1749,7 @@ func TestGenLeaseSurvivesReload(t *testing.T) {
 		t.Fatal("assemble returned no messages")
 	}
 
-	sess := rec.Start(context.Background(), "coder")
+	sess := rec.Start("coder")
 	if sess.ID == "" {
 		release()
 		t.Fatal("session Start failed")
@@ -1800,8 +1807,8 @@ func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
-	sess := rec.Start(context.Background(), "coder")
-	if err := rec.Append(context.Background(), sess.ID, "user", "hello"); err != nil {
+	sess := rec.Start("coder")
+	if err := rec.Append(sess.ID, "user", "hello"); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := rec.Save(context.Background(), sess.ID); err != nil {
@@ -1877,65 +1884,6 @@ func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
 	if err := os.RemoveAll(oldRoot); err != nil {
 		t.Fatalf("old root not removable after release and Stop: %v", err)
 	}
-}
-
-func TestGenLeaseReleasedOnHandlerError(t *testing.T) {
-	root := initRuntimeProjectRepo(t)
-	cfg := config.Defaults()
-	seedRequiredConfigFiles(t, &cfg)
-	cfg.Project.ActiveProjectSlug = project.GlobalSlug
-	cfg.API.Enabled = true
-	cfg.API.Port = freeTCPPort(t)
-	cfg.Agent.Active = "coder"
-
-	rt := New(cfg, nil, LogRings{})
-	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
-		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
-	}}
-	rt.reqQueue = queue.New(1, nil)
-	rt.started = true
-
-	uiServer := ui.NewServer(0)
-	if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg) {
-		t.Fatal("start failed")
-	}
-	t.Cleanup(func() { rt.Stop() })
-
-	// Count releases from WithGenLease to confirm the handler path
-	// releases exactly once on assembly error.
-	var releases int32
-	rt.apiServer.WithGenLease(func() (api.Assembler, api.SessionRecorder, string, func()) {
-		a, r, active, rel := rt.AcquireRequestGeneration()
-		return a, r, active, func() {
-			atomic.AddInt32(&releases, 1)
-			rel()
-		}
-	})
-
-	// Assembly error: agent persona missing. Handler assembles, gets
-	// error, writes 500, and returns. Deferred release must fire once.
-	req, _ := http.NewRequest("POST", "/v1/chat/completions", strings.NewReader(
-		`{"model":"test","messages":[{"role":"user","content":"hi"}],"stream":true}`,
-	))
-	req.Header.Set("X-Harness-Agent", "nonexistent")
-	rt.apiServer.Handler().ServeHTTP(httptest.NewRecorder(), req)
-	if atomic.LoadInt32(&releases) != 1 {
-		t.Fatalf("assembly-error path: expected 1 release, got %d", releases)
-	}
-
-	// The captured active agent reaches the assembler when request omits
-	// agent.  Prove by direct acquisition — staticAssembler resolves "".
-	asm, _, active, release := rt.AcquireRequestGeneration()
-	if active != "coder" {
-		release()
-		t.Fatalf("captured active agent = %q, want coder", active)
-	}
-	_, err := asm.Assemble(context.Background(), "", []inference.Message{{Role: "user", Content: "hi"}})
-	if err == nil {
-		release()
-		t.Fatal("expected assembly error for nonexistent agent with empty request agent")
-	}
-	release()
 }
 
 func TestStopWithInFlightLease(t *testing.T) {

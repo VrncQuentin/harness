@@ -128,7 +128,6 @@ func (rt *Runtime) Stop() {
 	rt.gen = nil
 	rt.agentReg = nil
 	rt.assembler = nil
-	rt.gitRepo = nil
 	rt.started = false
 	rt.setSessionManager(nil)
 	rt.mu.Unlock()
