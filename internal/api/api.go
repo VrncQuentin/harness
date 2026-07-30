@@ -41,8 +41,8 @@ type Enqueuer interface {
 // messages and assistant response are appended so API traffic can produce
 // the same episode records as browser chat.
 type SessionRecorder interface {
-	Start(agent string) Session
-	Append(id string, role, content string) error
+	Start(ctx context.Context, agent string) Session
+	Append(ctx context.Context, id string, role, content string) error
 	Save(ctx context.Context, id string) error
 	End(id string)
 }
@@ -298,14 +298,14 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// External clients do not currently pin an API session id across requests.
 	var sess Session
 	if s.rec != nil {
-		sess = s.rec.Start(agent)
+		sess = s.rec.Start(ctx, agent)
 		// Append the request's user-side messages so the eventual
 		// summary captures what was asked.
 		for _, m := range req.Messages {
 			if m.Role == "" || m.Content == "" {
 				continue
 			}
-			if err := s.rec.Append(sess.ID, m.Role, m.Content); err != nil {
+			if err := s.rec.Append(ctx, sess.ID, m.Role, m.Content); err != nil {
 				logger.Warn("session append (request)", slog.Any("err", err))
 			}
 		}
@@ -374,7 +374,7 @@ func (s *Server) streamTokensWithSession(ctx context.Context, w http.ResponseWri
 
 func (s *Server) finalizeSession(ctx context.Context, sess Session, assistant *strings.Builder) {
 	if assistant != nil && assistant.Len() > 0 {
-		if err := s.rec.Append(sess.ID, "assistant", assistant.String()); err != nil {
+		if err := s.rec.Append(ctx, sess.ID, "assistant", assistant.String()); err != nil {
 			s.logger.Warn("session append (assistant)", slog.Any("err", err))
 		}
 	}

@@ -123,7 +123,7 @@ type stubSessionRecorder struct {
 	saveErr error
 }
 
-func (r *stubSessionRecorder) Start(agent string) Session {
+func (r *stubSessionRecorder) Start(_ context.Context, agent string) Session {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.nextID++
@@ -132,7 +132,7 @@ func (r *stubSessionRecorder) Start(agent string) Session {
 	return s
 }
 
-func (r *stubSessionRecorder) Append(id, role, content string) error {
+func (r *stubSessionRecorder) Append(_ context.Context, id, role, content string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.appends = append(r.appends, sessionAppendRecord{ID: id, Role: role, Content: content})

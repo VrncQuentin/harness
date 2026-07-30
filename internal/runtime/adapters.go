@@ -125,13 +125,21 @@ func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, c
 		return nil, errNoActiveAgent
 	}
 	release := ad.rt.AcquireLease()
-	defer release()
+	ctx = context.WithValue(ctx, releaseKey{}, release)
 	asm := ad.rt.getAssembler()
 	if asm == nil {
+		release()
 		return nil, errors.New("api: prompt assembler unavailable")
 	}
 	msgs, _, err := asm.Assemble(ctx, agentName, conversation)
 	return msgs, err
+}
+
+type releaseKey struct{}
+
+func releaseFromContext(ctx context.Context) func() {
+	r, _ := ctx.Value(releaseKey{}).(func())
+	return r
 }
 
 func chatMessagesToInference(conversation []ui.ChatMessage) []inference.Message {
@@ -407,8 +415,11 @@ type sessionHandle struct {
 	release func()
 }
 
-func (a *apiSessionAdapter) Start(agentName string) api.Session {
-	release := a.rt.AcquireLease()
+func (a *apiSessionAdapter) Start(ctx context.Context, agentName string) api.Session {
+	release := releaseFromContext(ctx)
+	if release == nil {
+		release = a.rt.AcquireLease()
+	}
 	mgr := a.rt.SessionManager()
 	if mgr == nil {
 		release()
@@ -424,7 +435,7 @@ func (a *apiSessionAdapter) Start(agentName string) api.Session {
 	return api.Session{ID: s.ID, Agent: s.Agent}
 }
 
-func (a *apiSessionAdapter) Append(id, role, content string) error {
+func (a *apiSessionAdapter) Append(ctx context.Context, id, role, content string) error {
 	h := a.handle(id)
 	if h == nil {
 		return errors.New("session: api adapter has no manager")
