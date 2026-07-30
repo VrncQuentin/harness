@@ -6,9 +6,11 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/embedder"
 	"github.com/VrncQuentin/harness/internal/httpclient"
 	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/metrics"
 	"github.com/VrncQuentin/harness/internal/proc"
 	"github.com/VrncQuentin/harness/internal/queue"
@@ -27,7 +29,7 @@ func (rt *Runtime) Start(
 	defer rt.mu.Unlock()
 	rt.refreshProjectDirectoryWarnings(uiServer)
 	rt.startServices(ctx, uiServer, events, metricsStore)
-	rt.startMemoryAndAPI(ctx, uiServer, metricsStore)
+	rt.startMemoryAndAPI(ctx, uiServer, metricsStore, &rt.cfg)
 }
 
 // Managers returns the process managers currently owned by the runtime.
@@ -57,6 +59,14 @@ func (rt *Runtime) newInferenceClient() inference.Client {
 	)
 }
 
+func (rt *Runtime) newInferenceClientFor(cfg *config.Config) inference.Client {
+	model := rt.effectiveModelFor(cfg)
+	return inference.NewClient(
+		fmt.Sprintf("http://127.0.0.1:%d", model.Port),
+		httpclient.NewStreaming(),
+	)
+}
+
 func (rt *Runtime) ensureInferenceClient() inference.Client {
 	if rt.inferClient == nil {
 		rt.inferClient = rt.newInferenceClient()
@@ -64,9 +74,9 @@ func (rt *Runtime) ensureInferenceClient() inference.Client {
 	return rt.inferClient
 }
 
-func (rt *Runtime) newEmbedderClient() embedder.Client {
+func (rt *Runtime) newEmbedderClientFor(cfg *config.Config) embedder.Client {
 	return embedder.NewClient(
-		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
+		fmt.Sprintf("http://127.0.0.1:%d", cfg.Embedder.Port),
 		httpclient.NewStreaming(),
 	)
 }
@@ -94,12 +104,37 @@ func (rt *Runtime) RestartEmbedder() {
 // rather than block shutdown indefinitely. The .json sidecars survive
 // in the working tree for next-session resume even if the summary
 // commit never lands.
+//
+// Stop captures and clears every owned field under the lock, then
+// releases the lock before acting on the captured values. A second
+// call is a no-op — every field was cleared on the first pass.
 func (rt *Runtime) Stop() {
 	rt.mu.Lock()
 	q := rt.reqQueue
 	apiSrv := rt.apiServer
 	tasks := rt.taskRunner
+	global := rt.globalMem
+	active := rt.activeMem
+	session := rt.sessionMem
+	g := rt.gen
+	sessionMgr := rt.SessionManager()
+
+	rt.reqQueue = nil
+	rt.apiServer = nil
+	rt.taskRunner = nil
+	rt.globalMem = nil
+	rt.activeMem = nil
+	rt.sessionMem = nil
+	rt.gen = nil
+	rt.agentReg = nil
+	rt.assembler = nil
+	rt.started = false
+	rt.setSessionManager(nil)
 	rt.mu.Unlock()
+
+	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && session == nil && g == nil {
+		return
+	}
 
 	if tasks != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -108,9 +143,9 @@ func (rt *Runtime) Stop() {
 		}
 		cancel()
 	}
-	if mgr := rt.SessionManager(); mgr != nil {
+	if sessionMgr != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := mgr.FlushAll(ctx); err != nil {
+		if err := sessionMgr.FlushAll(ctx); err != nil {
 			slog.Warn("session flush on shutdown", "err", err)
 		}
 		cancel()
@@ -120,6 +155,12 @@ func (rt *Runtime) Stop() {
 	}
 	if q != nil {
 		q.Stop()
+	}
+	if g != nil {
+		g.readers = []memory.Repo{global, active, session}
+		g.release()
+	} else {
+		closeReaders(global, active, session)
 	}
 }
 
@@ -161,12 +202,13 @@ func (rt *Runtime) startServices(
 	})
 	go rt.llamaMgr.Run(ctx)
 
+	embedCfg := cfg.Embedder
 	rt.embedMgr = proc.NewManager(proc.ManagerConfig{
 		Name: "embedder",
 		BuildArgs: func() (string, []string) {
-			return embedderArgsForConfig(cfg.Embedder)
+			return embedderArgsForConfig(embedCfg)
 		},
-		HealthURL:   embedderHealthURL(cfg.Embedder),
+		HealthURL:   embedderHealthURL(embedCfg),
 		Events:      events,
 		CheckPeriod: 5 * time.Second,
 		HTTPClient:  httpclient.New(),

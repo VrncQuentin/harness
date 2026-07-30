@@ -1,6 +1,4 @@
 // Package memory mediates reads and writes for the on-disk memory repo.
-// It provides the filesystem-backed view used by prompt assembly, agent
-// management, sessions, and the memory browser.
 package memory
 
 import (
@@ -16,48 +14,30 @@ import (
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
-// Reader is the minimum surface the prompt assembler needs from the memory
-// repo. All paths are forward-slash and relative to the repo root.
+// Reader provides read-only access to the memory repo. Every path is
+// resolved relative to the pinned root; absolute paths and ".." escapes
+// are rejected.
 type Reader interface {
-	// Read returns the bytes of relPath. A missing file returns an error
-	// that satisfies errors.Is(err, fs.ErrNotExist).
 	Read(relPath string) ([]byte, error)
-
-	// Glob returns relative paths of files matching pattern
-	// (path.Match syntax), sorted lexicographically. Directories are
-	// not included. A missing parent directory yields an empty slice
-	// and no error.
 	Glob(pattern string) ([]string, error)
 }
 
-// FileWriter is an optional capability some Readers expose for
-// writing files under the repo root. The agent registry and the UI
-// memory editor both use this to persist edits to markdown files;
-// callers can type-assert on it.
+// FileWriter writes through the pinned root using atomic rename. The
+// write lands in a temp file and is renamed over the destination, so a
+// crash never leaves a half-written file behind.
 type FileWriter interface {
-	// WriteFile writes data to relPath, replacing any existing file
-	// at that path. The parent directory is created if missing.
-	// Implementations must publish the new content atomically so
-	// concurrent readers never observe a partial write.
 	WriteFile(relPath string, data []byte) error
 }
 
-// Walker is an optional capability some Readers expose for enumerating
-// every entry under a path. The UI memory page uses it to render the
-// repo as a tree with token estimates per file.
+// Walker walks the directory tree rooted at relPath, returning every entry
+// sorted by path. It skips .git and does not follow symlinks out of the
+// pinned root.
 type Walker interface {
-	// Walk returns all entries under relPath (excluding relPath
-	// itself), depth-first, sorted lexicographically. An empty
-	// relPath enumerates the whole repo. A missing relPath yields
-	// an empty slice and no error so callers can tolerate a
-	// partially-scaffolded repo. The .git directory is skipped so
-	// internal git plumbing never leaks into the UI.
 	Walk(relPath string) ([]Entry, error)
 }
 
-// Repo is the full production memory repository surface. Narrower consumers may
-// still accept Reader, but runtime wiring and mutable memory features use Repo
-// so missing capabilities fail at compile time instead of at request time.
+// Repo combines reading, writing, walking, and directory management
+// through a single pinned root.
 type Repo interface {
 	Reader
 	FileWriter
@@ -67,19 +47,22 @@ type Repo interface {
 	RemoveAll(relPath string) error
 }
 
-// Entry describes one path under the memory repo as returned by Walk.
-// Path is forward-slash relative to the repo root.
+// Entry describes a single filesystem entry within a Walk result.
 type Entry struct {
 	Path string
 	Dir  bool
 	Size int64
 }
 
-// DirReader serves files from a directory.  Read operations use a
-// pinned os.Root handle for containment.  Durable identity across
-// operations is deferred to PR 2c.
+// DirReader reads and writes files through a pinned directory anchor.
+// Every operation resolves paths relative to the anchor, so the caller
+// cannot escape the root — not by symlink, junction, or path traversal.
+// The anchor's identity is compared against a fresh open on every
+// operation, so a directory replaced at the same pathname is refused.
+//
+// Close releases the pinned handle. After Close, every operation fails.
 type DirReader struct {
-	root string
+	anchor *rootfs.Anchor
 }
 
 var (
@@ -89,21 +72,32 @@ var (
 	_ Walker     = (*DirReader)(nil)
 )
 
+// NewDirReader opens root, pins its identity via an Anchor, and returns a
+// DirReader that resolves every operation through that pinned handle. The
+// caller must close the reader when done.
 func NewDirReader(root string) (*DirReader, error) {
-	// Validate the directory exists by opening it once.
-	r, err := rootfs.Open(root)
+	a, err := rootfs.NewAnchor(root)
 	if err != nil {
 		return nil, fmt.Errorf("memory: open dir reader %s: %w", root, err)
 	}
-	_ = r.Close()
-	return &DirReader{root: root}, nil
+	return &DirReader{anchor: a}, nil
 }
 
-// openRoot opens the configured root.  The caller closes it.  Durable
-// identity across operations is deferred to PR 2c.
-func (r *DirReader) openRoot() (*rootfs.Root, error) {
-	return rootfs.Open(r.root)
+func (r *DirReader) Close() error { return r.anchor.Close() }
+
+// SameDirReader reports whether r and other are anchored to the same
+// filesystem directory. The comparison uses os.SameFile on the two
+// pinned handles — no pathname re-resolution is involved.
+//
+// This surfaces rootfs.Anchor.SameAnchor to DirReader callers so they
+// can compare directory identity without accessing the underlying
+// Anchor. There is currently no production caller; integration with
+// the git repository opened-object comparison is deferred.
+func (r *DirReader) SameDirReader(other *DirReader) (bool, error) {
+	return r.anchor.SameAnchor(other.anchor)
 }
+
+func (r *DirReader) openRoot() (*rootfs.Root, error) { return r.anchor.Open() }
 
 func (r *DirReader) Read(relPath string) ([]byte, error) {
 	if err := checkRel(relPath); err != nil {
@@ -248,12 +242,6 @@ func (r *DirReader) Glob(pattern string) ([]string, error) {
 	return matches, nil
 }
 
-// Walk implements Walker using rooted traversal.  Subdirectories are
-// entered through OpenChildNoFollow, which opens, Lstats through the
-// parent, rejects links, and verifies the opened handle via os.SameFile.
-// Metadata comes from the verified child handle.  Children are closed
-// after their subtrees.  Links are refused at every component, so
-// ordinary directory trees cannot cycle; bind mounts remain out of scope.
 func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	if relPath != "" {
 		if err := checkRel(relPath); err != nil {
@@ -318,8 +306,8 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	}()
 	startPrefix := ""
 	if relPath != "" {
-		components := strings.Split(filepath.FromSlash(relPath), string(filepath.Separator))
-		for _, comp := range components {
+		comps := strings.Split(filepath.FromSlash(relPath), string(filepath.Separator))
+		for _, comp := range comps {
 			child, _, err := startDir.OpenChildNoFollow(comp)
 			if err != nil {
 				if errors.Is(err, fs.ErrNotExist) {
@@ -338,7 +326,6 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 			}
 		}
 	}
-
 	if err := walkDir(startDir, startPrefix); err != nil {
 		return nil, err
 	}

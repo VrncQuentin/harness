@@ -12,7 +12,6 @@ import (
 
 	"github.com/VrncQuentin/harness/internal/agent"
 	"github.com/VrncQuentin/harness/internal/agentloop"
-	"github.com/VrncQuentin/harness/internal/api"
 	"github.com/VrncQuentin/harness/internal/approvals"
 	"github.com/VrncQuentin/harness/internal/httpclient"
 	"github.com/VrncQuentin/harness/internal/inference"
@@ -118,18 +117,12 @@ type apiAssemblerAdapter struct {
 }
 
 func (ad *apiAssemblerAdapter) Assemble(ctx context.Context, agentName string, conversation []inference.Message) ([]inference.Message, error) {
-	if agentName == "" {
-		agentName = ad.rt.getActiveAgent()
-	}
-	if agentName == "" {
-		return nil, errNoActiveAgent
-	}
-	asm := ad.rt.getAssembler()
+	asm, _, _, release := ad.rt.AcquireRequestGeneration()
+	defer release()
 	if asm == nil {
 		return nil, errors.New("api: prompt assembler unavailable")
 	}
-	msgs, _, err := asm.Assemble(ctx, agentName, conversation)
-	return msgs, err
+	return asm.Assemble(ctx, agentName, conversation)
 }
 
 func chatMessagesToInference(conversation []ui.ChatMessage) []inference.Message {
@@ -389,44 +382,6 @@ func (ad *uiSessionStoreAdapter) Resume(id string) error {
 		return err
 	}
 	return nil
-}
-
-// apiSessionAdapter implements api.SessionRecorder so the API server can
-// mint a fresh session per /v1/chat/completions request and append the
-// user-side messages plus the assistant turn. API requests are recorded
-// independently from any client-side conversation lifecycle.
-type apiSessionAdapter struct {
-	mgr *session.Manager
-}
-
-func (a *apiSessionAdapter) Start(agentName string) api.Session {
-	if a.mgr == nil {
-		return api.Session{}
-	}
-	s := a.mgr.Start(agentName)
-	return api.Session{ID: s.ID, Agent: s.Agent}
-}
-
-func (a *apiSessionAdapter) Append(id, role, content string) error {
-	if a.mgr == nil {
-		return errors.New("session: api adapter has no manager")
-	}
-	return a.mgr.Append(id, inference.Message{Role: role, Content: content})
-}
-
-func (a *apiSessionAdapter) Save(ctx context.Context, id string) error {
-	if a.mgr == nil {
-		return errors.New("session: api adapter has no manager")
-	}
-	_, err := a.mgr.Save(ctx, id)
-	return err
-}
-
-func (a *apiSessionAdapter) End(id string) {
-	if a.mgr == nil {
-		return
-	}
-	a.mgr.End(id)
 }
 
 type taskRunnerAdapter struct {

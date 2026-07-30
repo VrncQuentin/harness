@@ -66,6 +66,7 @@ func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = reader.Close() })
 	mgr, err := NewManager(ManagerDeps{
 		Repo:               repo,
 		Writer:             reader,
@@ -173,6 +174,7 @@ func TestSavedEpisodeVisibleToPromptRecency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = reader.Close() })
 	active := "coder"
 	reg := agent.NewDiskRegistry(reader, func() string { return active }, func(name string) error { active = name; return nil })
 	cfg := config.PromptConfig{RecencyN: 5}
@@ -299,6 +301,7 @@ func TestEpisodeVisibleToMemoryWalker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = reader.Close() })
 	entries, err := reader.Walk("episodes")
 	if err != nil {
 		t.Fatalf("Walk: %v", err)

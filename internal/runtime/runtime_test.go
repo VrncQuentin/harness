@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,7 @@ func TestNewStoresInitialConfig(t *testing.T) {
 	cfg.Agent.Active = "coder"
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 
 	if got := rt.getActiveAgent(); got != "coder" {
 		t.Fatalf("active agent = %q, want coder", got)
@@ -65,6 +67,7 @@ func TestEffectiveModelForUsesActiveProjectOverrides(t *testing.T) {
 	projectGPU := 9
 	projectParallel := 3
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		"demo": {
 			Slug:           "demo",
@@ -98,6 +101,7 @@ func TestEffectivePromptForUsesEffectiveModelCtx(t *testing.T) {
 
 	projectCtx := 4096
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		"demo": {
 			Slug:           "demo",
@@ -243,7 +247,9 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = mem.Close() })
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.started = true
 	rt.globalMem = mem
 	rt.activeMem = mem
@@ -284,6 +290,7 @@ func TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange(t *testing.T
 	if !result.LiveApplied {
 		t.Fatal("retry did not report live apply after rebuilding missing memory services")
 	}
+	t.Cleanup(func() { rt.Stop() })
 	if rt.SessionManager() == nil || rt.taskRunner == nil || rt.assembler == nil {
 		t.Fatalf("memory/API graph was not rebuilt: session=%T task=%T assembler=%T", rt.SessionManager(), rt.taskRunner, rt.assembler)
 	}
@@ -303,12 +310,13 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 
 	rt := New(cfg, store, LogRings{})
 	rt.started = true
+	t.Cleanup(func() { rt.Stop() })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
 	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, rt.newInferenceClient())
 	uiServer := ui.NewServer(0)
-	if ok := rt.startMemoryAndAPI(context.Background(), uiServer, nil); !ok {
+	if ok := rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg); !ok {
 		t.Fatal("initial memory service setup failed")
 	}
 	if rt.apiServer != nil {
@@ -327,7 +335,6 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 	if rt.apiServer == nil {
 		t.Fatal("API server was not retried when enabled but absent")
 	}
-	t.Cleanup(rt.apiServer.Stop)
 }
 func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 	tests := []struct {
@@ -358,7 +365,7 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			tc.mutate(&loaded)
 
 			rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
-			rt.started = true
+			t.Cleanup(func() { rt.Stop() })
 			rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 				project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 			}}
@@ -367,13 +374,28 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			rt.inferClient = rt.newInferenceClient()
 			rt.reqQueue = queue.New(cfg.Queue.MaxDepth, rt.inferClient)
 
+			// Start a healthy old generation first so the endpoint
+			// change predicate (not memoryAPIUnavailable) triggers
+			// the rebuild.
 			uiServer := ui.NewServer(0)
+			if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &cfg) {
+				t.Fatal("initial memory startup failed")
+			}
+			rt.started = true
+			oldMgr := rt.SessionManager()
+			if oldMgr == nil {
+				t.Fatal("old session manager absent after startup")
+			}
+
 			result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
 			if !result.LiveApplied {
 				t.Fatal("endpoint-only reload did not report a live apply")
 			}
 			if rt.SessionManager() == nil {
 				t.Fatal("endpoint-only reload did not rebuild the session manager")
+			}
+			if rt.SessionManager() == oldMgr {
+				t.Fatal("session manager was not replaced by endpoint change")
 			}
 			deps := uiServer.ServiceDepsSnapshot()
 			if deps.MemoryRepoPath != root || deps.SessionStore == nil || deps.RetrievalScorer == nil || deps.IndexRebuilder == nil {
@@ -397,6 +419,7 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 		summary:   "saved partial task",
 	}
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.started = true
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
@@ -404,11 +427,12 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 	rt.inferClient = client
 	rt.reqQueue = startRuntimeTestQueue(t, client)
 
-	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
-	}, client, nil)
+	}, client, nil, nil, project.GlobalSlug)
+	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 	rt.taskRunner = &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: rt.reqQueue}
 
@@ -457,11 +481,12 @@ func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	cfg.API.Port = port
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.reqQueue = queue.New(1, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rt.startMemoryAndAPI(ctx, ui.NewServer(0), nil)
+	rt.startMemoryAndAPI(ctx, ui.NewServer(0), nil, &rt.cfg)
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
@@ -765,13 +790,15 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
 
-	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, rt.ensureInferenceClient(), nil, nil, "global")
+	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
 	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
@@ -814,11 +841,13 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
-	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	t.Cleanup(func() { rt.Stop() })
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, rt.ensureInferenceClient(), nil, nil, "global")
+	rt.sessionMem = sessionStore
 	if mgr == nil {
 		t.Fatal("buildSessionManager returned nil")
 	}
@@ -875,13 +904,15 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
 
-	mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, rt.ensureInferenceClient(), nil, nil, "global")
+	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
 	s := mgr.Start("coder")
@@ -934,6 +965,7 @@ func TestTaskRunnerWiresHTTPClientIntoToolContext(t *testing.T) {
 	}}
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = client
 
 	probe := &httpClientProbeTool{}
@@ -987,6 +1019,7 @@ func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 	}}
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = client
 	rt.projectStore = &runtimeProjectStoreStub{
 		projects: map[string]project.Project{
@@ -1057,6 +1090,7 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = mem.Close() })
 	active := "coder"
 	reg := agent.NewDiskRegistry(mem,
 		func() string { return active },
@@ -1073,10 +1107,13 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	defer q.Stop()
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	rt.globalMem = mem
 	rt.activeMem = mem
 	rt.agentReg = reg
 	rt.assembler = prompt.NewProjectDiskAssembler(mem, mem, reg, cfg.Prompt).WithProjectSlug("global")
+	rt.gen = &generation{assembler: rt.assembler}
+	rt.gen.acquire()
 	rt.inferClient = failingInferenceClient{err: fmt.Errorf("direct inference path used")}
 
 	ad := &taskRunnerAdapter{
@@ -1127,18 +1164,21 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, nil, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
 	dr, err := memory.NewDirReader(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = dr.Close() })
 	rt.globalMem = dr
 	rt.activeMem = rt.globalMem
 
-	mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	_, sessionStore, mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil)
+	}, rt.ensureInferenceClient(), nil, nil, "global")
+	rt.sessionMem = sessionStore
 	if mgr == nil || adapter == nil {
 		t.Fatal("buildSessionManager returned nil manager")
 	}
@@ -1452,6 +1492,7 @@ func newMemoryRepo(t *testing.T, files map[string]string) *memory.DirReader {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = dr.Close() })
 	return dr
 }
 
@@ -1467,4 +1508,435 @@ func freeTCPPort(t *testing.T) int {
 		t.Fatalf("listener addr is %T, want *net.TCPAddr", ln.Addr())
 	}
 	return addr.Port
+}
+
+func TestReloadReleasesPreviousHandles(t *testing.T) {
+	oldRoot := initRuntimeProjectRepo(t)
+	newRoot := initRuntimeProjectRepo(t)
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: oldRoot},
+	}}
+
+	uiServer := ui.NewServer(0)
+	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
+	t.Cleanup(func() { rt.Stop() })
+
+	// Now reload to newRoot. After success, oldRoot should be removable.
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: newRoot},
+	}}
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+	store := &runtimeConfigStore{cfg: &loaded, saved: true}
+	rt.cfgStore = store
+
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		t.Fatal("reload to newRoot did not report live apply")
+	}
+
+	if err := os.RemoveAll(oldRoot); err != nil {
+		t.Fatalf("old root was not released after successful reload: %v", err)
+	}
+}
+
+func TestCandidateFailureReleasesAllCandidateHandles(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+
+	// Place a corrupt manifest inside index/_episodes so NewEpisodeIndex
+	// fails after DirReaders are open. This exercises handle cleanup on
+	// the candidate path.
+	manifestDir := filepath.Join(root, "index", "_episodes")
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "manifest.json"), []byte("{not json}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	rt.started = true
+	t.Cleanup(func() { rt.Stop() })
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	uiServer := ui.NewServer(0)
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if result.LiveApplied {
+		t.Fatal("reload with blocked episode index should not report live apply")
+	}
+
+	// The original root should still be accessible after candidate failure.
+	if _, err := os.ReadFile(filepath.Join(root, "rules.md")); err != nil {
+		t.Fatalf("original root files not accessible after failed reload: %v", err)
+	}
+}
+
+func TestFailedReloadPreservesReadableGeneration(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	mem, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = mem.Close() })
+
+	loaded := cfg
+	loaded.Project.ActiveProjectSlug = "missing"
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	rt.started = true
+	t.Cleanup(func() { rt.Stop() })
+	rt.globalMem = mem
+	rt.activeMem = mem
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	if err := os.WriteFile(filepath.Join(root, "known.txt"), []byte("restored"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	uiServer := ui.NewServer(0)
+	uiServer.SetServiceDeps(ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem})
+
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if result.LiveApplied {
+		t.Fatal("failed memory/API reload should not report live apply")
+	}
+
+	got, gerr := mem.Read("known.txt")
+	if gerr != nil {
+		t.Fatalf("restored generation Read failed: %v", gerr)
+	}
+	if string(got) != "restored" {
+		t.Fatalf("restored generation Read = %q, want restored", string(got))
+	}
+}
+
+func TestSessionStoreOwnershipRetiredOnStop(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt := New(cfg, nil, LogRings{})
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: project.GlobalSlug,
+	}, rt.ensureInferenceClient(), nil, nil, project.GlobalSlug)
+	rt.sessionMem = sessionStore
+	rt.setSessionManager(mgr)
+
+	rt.Stop()
+
+	// After Stop, session store should be closed. A read via the closed
+	// DirReader should fail.
+	if _, err := sessionStore.Read("rules.md"); err == nil {
+		t.Error("session store Read should fail after Runtime.Stop closed it")
+	}
+}
+
+func TestStopIsIdempotent(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt := New(cfg, nil, LogRings{})
+	rt.started = true
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	_, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: project.GlobalSlug,
+	}, rt.ensureInferenceClient(), nil, nil, project.GlobalSlug)
+	rt.sessionMem = sessionStore
+	rt.setSessionManager(mgr)
+
+	rt.Stop()
+	if rt.SessionManager() != nil {
+		t.Error("SessionManager should return nil after Stop")
+	}
+	rt.Stop()
+}
+
+func TestGenLeaseSurvivesReload(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	// Create agent persona so assembly succeeds.
+	if err := os.MkdirAll(filepath.Join(root, "agents", "coder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agents", "coder", "persona.md"), []byte("coder persona"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.API.Enabled = true
+	cfg.API.Port = freeTCPPort(t)
+
+	rt := New(cfg, nil, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+	rt.started = true
+
+	uiServer := ui.NewServer(0)
+	if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg) {
+		t.Fatal("initial start failed")
+	}
+	t.Cleanup(func() { rt.Stop() })
+
+	asm, rec, _, release := rt.AcquireRequestGeneration()
+
+	// Reload while holding the lease on the original generation.
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+	store := &runtimeConfigStore{cfg: &loaded, saved: true}
+	rt.cfgStore = store
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		release()
+		t.Fatal("reload failed while holding lease")
+	}
+
+	// Reload a second time.
+	loaded.Prompt.MemoryTokenBudget++
+	store.cfg = &loaded
+	result = rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		release()
+		t.Fatal("second reload failed while holding lease")
+	}
+
+	// The captured assembler and recorder must still be usable —
+	// their generation's readers are pinned by the lease.
+	msgs, err := asm.Assemble(context.Background(), "coder", []inference.Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		release()
+		t.Fatalf("assemble after reloads: %v", err)
+	}
+	if len(msgs) == 0 {
+		release()
+		t.Fatal("assemble returned no messages")
+	}
+
+	sess := rec.Start("coder")
+	if sess.ID == "" {
+		release()
+		t.Fatal("session Start failed")
+	}
+	rec.End(sess.ID)
+	release()
+}
+
+func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
+	modelPort, shutdownModel := startFakeModelServer(t, "test summary")
+	defer shutdownModel()
+
+	oldRoot := initRuntimeProjectRepo(t)
+	newRoot := initRuntimeProjectRepo(t)
+	if err := os.MkdirAll(filepath.Join(oldRoot, "agents", "coder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldRoot, "agents", "coder", "persona.md"), []byte("coder persona"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.Model.Port = modelPort
+	cfg.Embedder.Port = freeTCPPort(t)
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: oldRoot},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+
+	uiServer := ui.NewServer(0)
+	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
+	t.Cleanup(func() { rt.Stop() })
+
+	asm, rec, _, release := rt.AcquireRequestGeneration()
+	defer release()
+
+	// Reload to newRoot while holding the lease on the original generation.
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: newRoot},
+	}}
+	store := &runtimeConfigStore{cfg: &loaded, saved: true}
+	rt.cfgStore = store
+	if !rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil).LiveApplied {
+		t.Fatal("reload failed")
+	}
+
+	// Assemble and record through the captured (oldRoot) generation.
+	_, err := asm.Assemble(context.Background(), "coder", []inference.Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	sess := rec.Start("coder")
+	if err := rec.Append(sess.ID, "user", "hello"); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := rec.Save(context.Background(), sess.ID); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	rec.End(sess.ID)
+
+	// Episode files must exist in oldRoot (captured generation's manager),
+	// not in newRoot (generation published by reload).
+	ep := filepath.Join("episodes", "coder", sess.ID+".md")
+	js := filepath.Join("episodes", "coder", sess.ID+".json")
+	if _, err := os.Stat(filepath.Join(oldRoot, filepath.FromSlash(ep))); err != nil {
+		t.Fatalf("episode not in oldRoot %s: %v", ep, err)
+	}
+	if _, err := os.Stat(filepath.Join(oldRoot, filepath.FromSlash(js))); err != nil {
+		t.Fatalf("sidecar not in oldRoot %s: %v", js, err)
+	}
+	if _, err := os.Stat(filepath.Join(newRoot, filepath.FromSlash(ep))); !os.IsNotExist(err) {
+		t.Fatalf("episode incorrectly landed in newRoot: %s", ep)
+	}
+}
+
+func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
+	oldRoot := initRuntimeProjectRepo(t)
+	newRoot := initRuntimeProjectRepo(t)
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.API.Enabled = true
+	cfg.API.Port = freeTCPPort(t)
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: oldRoot},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+
+	uiServer := ui.NewServer(0)
+	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
+	t.Cleanup(func() { rt.Stop() })
+
+	_, _, _, release := rt.AcquireRequestGeneration()
+
+	// Reload to newRoot while holding the lease.
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: newRoot},
+	}}
+	store := &runtimeConfigStore{cfg: &loaded, saved: true}
+	rt.cfgStore = store
+	if !rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil).LiveApplied {
+		release()
+		t.Fatal("reload failed")
+	}
+
+	// oldRoot should be pinned by the lease. On Windows removing a
+	// directory with open handles must fail.
+	if err := os.RemoveAll(oldRoot); err == nil {
+		if runtime.GOOS == "windows" {
+			release()
+			t.Fatal("old root was removable despite held lease on Windows")
+		}
+		// Unix: inode-based handles allow removal even while open.
+	} else {
+		t.Logf("old root blocked by lease: %v", err)
+	}
+
+	release()
+	rt.Stop()
+	// After release + Stop, oldRoot must be removable even on Windows.
+	if err := os.RemoveAll(oldRoot); err != nil {
+		t.Fatalf("old root not removable after release and Stop: %v", err)
+	}
+}
+
+func TestStopWithInFlightLease(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "agents", "coder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agents", "coder", "persona.md"), []byte("coder persona"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "known.txt"), []byte("leased"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.Agent.Active = "coder"
+
+	rt := New(cfg, nil, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+	rt.started = true
+
+	uiServer := ui.NewServer(0)
+	if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg) {
+		t.Fatal("initial start failed")
+	}
+
+	asm, _, _, release := rt.AcquireRequestGeneration()
+
+	// Stop while the lease is held.
+	rt.Stop()
+
+	// The lease protects the captured generation. Assemble must
+	// still work — the generation's readers are pinned.
+	_, err := asm.Assemble(context.Background(), "coder", []inference.Message{{Role: "user", Content: "read known"}})
+	if err != nil {
+		release()
+		t.Fatalf("assemble after Stop with held lease: %v", err)
+	}
+
+	// The root must still be pinned on Windows.
+	if err := os.RemoveAll(root); err == nil {
+		if runtime.GOOS == "windows" {
+			release()
+			t.Fatal("root was removable despite held lease after Stop")
+		}
+	}
+
+	// Release drops the last lease. The old readers close.
+	release()
+
+	// Second Stop is a no-op.
+	rt.Stop()
 }

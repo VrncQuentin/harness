@@ -116,6 +116,7 @@ func newTestManager(t *testing.T, fi *fakeInference) (*Manager, *memory.DirReade
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = reader.Close() })
 	metricsRec := &fakeMetrics{}
 	mgr, err := NewManager(ManagerDeps{
 		Repo:               repo,
