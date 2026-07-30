@@ -315,7 +315,7 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 	}}
 	rt.reqQueue = queue.New(cfg.Queue.MaxDepth, rt.newInferenceClient())
 	uiServer := ui.NewServer(0)
-	if ok := rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg, false); !ok {
+	if ok := rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg); !ok {
 		t.Fatal("initial memory service setup failed")
 	}
 	if rt.apiServer != nil {
@@ -472,7 +472,7 @@ func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rt.startMemoryAndAPI(ctx, ui.NewServer(0), nil, &rt.cfg, false)
+	rt.startMemoryAndAPI(ctx, ui.NewServer(0), nil, &rt.cfg)
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {

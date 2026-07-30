@@ -85,11 +85,8 @@ func closeReaders(readers ...memory.Repo) {
 	}
 }
 
-func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config, apiConfigChanged bool) bool {
-	oldAPI := rt.apiServer
-	buildAPI := apiConfigChanged || (candidateCfg.API.Enabled && oldAPI == nil)
-
-	candidate := rt.buildCandidate(uiServer, metricsStore, candidateCfg, buildAPI)
+func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config) bool {
+	candidate := rt.buildCandidate(uiServer, metricsStore, candidateCfg)
 	if candidate == nil {
 		return false
 	}
@@ -97,6 +94,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	oldGlobal := rt.globalMem
 	oldActive := rt.activeMem
 	oldSession := rt.sessionMem
+	oldAPI := rt.apiServer
 
 	rt.globalMem = candidate.globalMem
 	rt.activeMem = candidate.activeMem
@@ -109,36 +107,26 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 	uiServer.SetServiceDeps(candidate.serviceDeps)
 
+	if oldAPI != nil {
+		oldAPI.Stop()
+	}
 	if candidate.apiServer != nil {
-		if oldAPI != nil {
-			oldAPI.Stop()
-			oldAPI = nil
-		}
 		if err := candidate.apiServer.Start(ctx); err != nil {
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
 		} else {
 			rt.apiServer = candidate.apiServer
 			slog.Info("api server listening", "port", candidateCfg.API.Port)
 		}
-	}
-
-	if oldAPI != nil {
-		oldAPI.Stop()
-	}
-
-	// Close old readers. When the API was not rebuilt and the old server
-	// is still running, keep oldSession — the old API's session adapter
-	// references the old session manager which reads through it.
-	if candidate.apiServer == nil && oldAPI != nil {
-		closeReaders(oldGlobal, oldActive)
 	} else {
-		closeReaders(oldGlobal, oldActive, oldSession)
+		rt.apiServer = nil
 	}
+
+	closeReaders(oldGlobal, oldActive, oldSession)
 
 	return true
 }
 
-func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, buildAPI bool) *memoryCandidate {
+func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config) *memoryCandidate {
 	roots, err := rt.resolveProjectRepoRootsForSlug(cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("project memory repos: %w", err))
@@ -279,7 +267,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	}
 
 	var apiSrv *api.Server
-	if cfg.API.Enabled && rt.reqQueue != nil && buildAPI {
+	if cfg.API.Enabled && rt.reqQueue != nil {
 		apiSrv = api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, &apiSessionAdapter{mgr: sessionMgr})
 	}
 
