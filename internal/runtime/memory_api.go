@@ -193,7 +193,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	doClose := func() {
 		closeReaders(globalMem, activeMem)
 	}
-	var handles []io.Closer
+	var handles = make([]io.Closer, 0, 1)
 	closeHandles := func() {
 		for _, h := range handles {
 			_ = h.Close()

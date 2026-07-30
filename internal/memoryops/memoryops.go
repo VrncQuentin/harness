@@ -151,12 +151,12 @@ type EpisodeRebuilder struct {
 }
 
 func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
-	if rb.EI != nil {
-		if err := rb.EI.verify(); err != nil {
-			return err
-		}
-	}
 	if rb.Index == nil {
+		if rb.EI != nil {
+			if _, err := rb.EI.verified(); err != nil {
+				return err
+			}
+		}
 		idx, err := index.Open(rb.IndexDir)
 		if err == nil {
 			rb.Index = idx
@@ -237,6 +237,11 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		}
 	}
 	if rb.Index == nil {
+		if rb.EI != nil {
+			if _, err := rb.EI.verified(); err != nil {
+				return err
+			}
+		}
 		idx, err := index.Create(rb.IndexDir, dim)
 		if err != nil {
 			return fmt.Errorf("index rebuild: create index %s: %w", rb.IndexDir, err)
@@ -255,6 +260,12 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		}
 		epVecs := vectors[offset : offset+n]
 		offset += n
+		if rb.EI != nil {
+			if _, verr := rb.EI.verified(); verr != nil {
+				slog.Warn("index rebuild: verify", "err", verr)
+				continue
+			}
+		}
 		if err := rb.Index.Upsert(retrieval.EpisodeID(w.path), w.hash, epVecs); err != nil {
 			slog.Warn("index rebuild: add episode", "path", w.path, "err", err)
 		}

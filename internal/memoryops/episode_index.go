@@ -29,8 +29,8 @@ func EpisodeIndexCommitPaths() []string {
 }
 
 // EpisodeIndex owns the synchronized index handle for one project. The
-// index directory is opened through a rootfs Anchor derived from the
-// repository's pinned handle, so containment and identity are guaranteed.
+// index directory is pinned through a rootfs Anchor so repointing is
+// detected and operations are identity-verified.
 type EpisodeIndex struct {
 	mu     sync.Mutex
 	dir    string
@@ -58,9 +58,6 @@ func NewEpisodeIndex(anchor *rootfs.Anchor, dir string) (*EpisodeIndex, error) {
 func sameDir(anchor *rootfs.Anchor, dir string) error {
 	r, err := rootfs.Open(dir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
 		return fmt.Errorf("episode index: open dir %s: %w", dir, err)
 	}
 	defer func() { _ = r.Close() }()
@@ -83,9 +80,11 @@ func (e *EpisodeIndex) Search(query []float32, k int) ([]index.Result, error) {
 	if idx == nil {
 		return nil, nil
 	}
-	if err := e.verify(); err != nil {
+	r, err := e.verified()
+	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = r.Close() }()
 	return idx.Search(query, k)
 }
 
@@ -97,9 +96,11 @@ func (e *EpisodeIndex) Contains(source string) bool {
 	if idx == nil {
 		return false
 	}
-	if err := e.verify(); err != nil {
+	r, err := e.verified()
+	if err != nil {
 		return false
 	}
+	defer func() { _ = r.Close() }()
 	return idx.Contains(source)
 }
 
@@ -117,9 +118,11 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if err := e.verify(); err != nil {
+	r, err := e.verified()
+	if err != nil {
 		return err
 	}
+	defer func() { _ = r.Close() }()
 	if e.idx == nil {
 		idx, err := index.Create(e.dir, dim)
 		if err != nil {
@@ -133,14 +136,14 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 	return e.idx.Upsert(source, contentHash, vectors)
 }
 
-// verify confirms the pinned directory has not been replaced or repointed.
-func (e *EpisodeIndex) verify() error {
+// verified opens the pinned directory and confirms it has not been replaced.
+// The caller must close the returned Root.
+func (e *EpisodeIndex) verified() (*rootfs.Root, error) {
 	r, err := e.anchor.Open()
 	if err != nil {
-		return fmt.Errorf("episode index: verify %s: %w", e.dir, err)
+		return nil, fmt.Errorf("episode index: verify %s: %w", e.dir, err)
 	}
-	_ = r.Close()
-	return nil
+	return r, nil
 }
 
 // Current returns the shared concrete handle for migration and test helpers.
