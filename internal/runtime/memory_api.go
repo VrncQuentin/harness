@@ -85,12 +85,15 @@ func closeReaders(readers ...memory.Repo) {
 	}
 }
 
-func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config, apiConfigChanged bool) bool {
-	buildAPI := candidateCfg.API.Enabled && (apiConfigChanged || rt.apiServer == nil)
-
-	candidate := rt.buildCandidate(uiServer, metricsStore, candidateCfg, buildAPI)
+func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config) bool {
+	candidate := rt.buildCandidate(uiServer, metricsStore, candidateCfg, candidateCfg.API.Enabled)
 	if candidate == nil {
 		return false
+	}
+
+	oldAPI := rt.apiServer
+	if oldAPI != nil {
+		oldAPI.Stop()
 	}
 
 	if candidate.apiServer != nil {
@@ -104,7 +107,6 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	oldGlobal := rt.globalMem
 	oldActive := rt.activeMem
 	oldSession := rt.sessionMem
-	oldAPI := rt.apiServer
 
 	rt.globalMem = candidate.globalMem
 	rt.activeMem = candidate.activeMem
@@ -114,35 +116,11 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.gitRepo = candidate.gitRepo
 	rt.setSessionManager(candidate.sessionMgr)
 	rt.taskRunner = candidate.taskRunner
-	if candidate.apiServer != nil {
-		rt.apiServer = candidate.apiServer
-		slog.Info("api server listening", "port", candidateCfg.API.Port)
-	}
+	rt.apiServer = candidate.apiServer
 
 	uiServer.SetServiceDeps(candidate.serviceDeps)
 
-	if candidate.apiServer != nil && oldAPI != nil {
-		// Replaced the API — stop the old listener on the old port.
-		oldAPI.Stop()
-	}
-
-	// When the API was not rebuilt and the old server is still running,
-	// keep oldSession alive: the old API's session adapter still references
-	// the old session manager which reads through it.
-	if candidate.apiServer == nil && oldAPI != nil {
-		closeReaders(oldGlobal, oldActive)
-		// Track the reader the carried API owns.  On a second carry the
-		// API still references the first tracked reader, not oldSession,
-		// so keep the existing apiSessionReader and close oldSession.
-		if rt.apiSessionReader == nil {
-			rt.apiSessionReader = oldSession
-		} else {
-			closeReaders(oldSession)
-		}
-	} else {
-		closeReaders(oldGlobal, oldActive, oldSession, rt.apiSessionReader)
-		rt.apiSessionReader = nil
-	}
+	closeReaders(oldGlobal, oldActive, oldSession)
 
 	return true
 }
