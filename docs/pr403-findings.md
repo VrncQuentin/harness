@@ -24,11 +24,11 @@ until the sequence below is merged and the final audit (PR 12) passes.
 |---|---------|------|
 | 2.8a | `SameAnchor` compares pinned handles, not pathname re-resolution | `TestAnchor_SameAnchor_*` (5 tests) |
 
-### PR 2c — Opened-object identity integration
+### PR 2c — DirReader identity, lifetime, and transactional reload
 
 | # | Finding | Test |
 |---|---------|------|
-| 2.8b | Git and memory readers compare identities from later `pathid` resolutions, not from the objects each component actually opened | `TestIdentity_ComparedFromOpenedObjects` |
+| 2.8b | (Deferred) Git and memory readers compare identities from later `pathid` resolutions, not from the objects each component actually opened | Follow-up PR after `gitw.Repo` exposes its opened directory identity; `SameDirReader` is exercised by unit tests but has no production caller. |
 
 ### PR 3a — Atomic publication and governor B3
 

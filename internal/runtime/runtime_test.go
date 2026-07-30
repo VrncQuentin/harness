@@ -1537,13 +1537,14 @@ func TestReloadReleasesPreviousHandles(t *testing.T) {
 func TestCandidateFailureReleasesAllCandidateHandles(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 
-	// Place a file at index/ so NewEpisodeIndex fails after DirReaders
-	// are already open. This exercises handle cleanup on the candidate path.
-	indexPath := filepath.Join(root, "index")
-	if err := os.RemoveAll(indexPath); err != nil {
+	// Place a corrupt manifest inside index/_episodes so NewEpisodeIndex
+	// fails after DirReaders are open. This exercises handle cleanup on
+	// the candidate path.
+	manifestDir := filepath.Join(root, "index", "_episodes")
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(indexPath, []byte("block"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(manifestDir, "manifest.json"), []byte("{not json}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

@@ -77,7 +77,7 @@ func (rt *Runtime) ApplyConfig(
 			result.LiveApplied = true
 		}
 		if modelEndpointChanged && rt.reqQueue != nil {
-			client := rt.newInferenceClient()
+			client := rt.newInferenceClientFor(loaded)
 			rt.inferClient = client
 			rt.reqQueue.SetClient(client)
 		}

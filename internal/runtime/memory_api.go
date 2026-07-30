@@ -86,14 +86,18 @@ func closeReaders(readers ...memory.Repo) {
 }
 
 func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config, apiConfigChanged bool) bool {
-	candidate := rt.buildCandidate(ctx, uiServer, metricsStore, candidateCfg)
+	candidate := rt.buildCandidate(ctx, uiServer, metricsStore, candidateCfg, apiConfigChanged)
 	if candidate == nil {
 		return false
 	}
 
 	oldAPI := rt.apiServer
 
+	// Carry the old API server forward when the API config has not changed
+	// and the candidate did not build one. Swap its session recorder so
+	// it resolves to the new session manager dynamically.
 	if candidate.apiServer == nil && oldAPI != nil && !apiConfigChanged {
+		oldAPI.SetSessionRecorder(&apiSessionAdapter{rt: rt})
 		candidate.apiServer = oldAPI
 		oldAPI = nil
 	}
@@ -122,7 +126,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	return true
 }
 
-func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config) *memoryCandidate {
+func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, apiConfigChanged bool) *memoryCandidate {
 	roots, err := rt.resolveProjectRepoRootsForSlug(cfg.Project.ActiveProjectSlug)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("project memory repos: %w", err))
@@ -168,10 +172,17 @@ func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metr
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 		return nil
 	}
-	embedClient := rt.newEmbedderClient()
+	embedClient := rt.newEmbedderClientFor(cfg)
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 
 	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, rt.ensureInferenceClient(), embedClient, episodeIndex, cfg.Project.ActiveProjectSlug)
+	if sessionMgr == nil {
+		doClose()
+		if sessionStore != nil {
+			_ = sessionStore.Close()
+		}
+		return nil
+	}
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
 
@@ -256,12 +267,17 @@ func (rt *Runtime) buildCandidate(ctx context.Context, uiServer *ui.Server, metr
 
 	var apiSrv *api.Server
 	if cfg.API.Enabled && rt.reqQueue != nil {
-		var apiRec api.SessionRecorder
-		if sessionMgr != nil {
-			apiRec = &apiSessionAdapter{mgr: sessionMgr}
-		}
+		apiRec := &apiSessionAdapter{rt: rt}
 		srv := api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, apiRec)
 		if err := srv.Start(ctx); err != nil {
+			if apiConfigChanged {
+				doClose()
+				if sessionStore != nil {
+					_ = sessionStore.Close()
+				}
+				uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
+				return nil
+			}
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
 		} else {
 			apiSrv = srv

@@ -14,11 +14,17 @@ import (
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
+// Reader provides read-only access to the memory repo. Every path is
+// resolved relative to the pinned root; absolute paths and ".." escapes
+// are rejected.
 type Reader interface {
 	Read(relPath string) ([]byte, error)
 	Glob(pattern string) ([]string, error)
 }
 
+// FileWriter writes through the pinned root using atomic rename. The
+// write lands in a temp file and is renamed over the destination, so a
+// crash never leaves a half-written file behind.
 type FileWriter interface {
 	WriteFile(relPath string, data []byte) error
 }
@@ -30,6 +36,8 @@ type Walker interface {
 	Walk(relPath string) ([]Entry, error)
 }
 
+// Repo combines reading, writing, walking, and directory management
+// through a single pinned root.
 type Repo interface {
 	Reader
 	FileWriter
@@ -39,6 +47,7 @@ type Repo interface {
 	RemoveAll(relPath string) error
 }
 
+// Entry describes a single filesystem entry within a Walk result.
 type Entry struct {
 	Path string
 	Dir  bool
@@ -63,6 +72,9 @@ var (
 	_ Walker     = (*DirReader)(nil)
 )
 
+// NewDirReader opens root, pins its identity via an Anchor, and returns a
+// DirReader that resolves every operation through that pinned handle. The
+// caller must close the reader when done.
 func NewDirReader(root string) (*DirReader, error) {
 	a, err := rootfs.NewAnchor(root)
 	if err != nil {

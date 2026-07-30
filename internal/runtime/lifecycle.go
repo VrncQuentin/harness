@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/embedder"
 	"github.com/VrncQuentin/harness/internal/httpclient"
 	"github.com/VrncQuentin/harness/internal/inference"
@@ -57,6 +58,14 @@ func (rt *Runtime) newInferenceClient() inference.Client {
 	)
 }
 
+func (rt *Runtime) newInferenceClientFor(cfg *config.Config) inference.Client {
+	model := rt.effectiveModelFor(cfg)
+	return inference.NewClient(
+		fmt.Sprintf("http://127.0.0.1:%d", model.Port),
+		httpclient.NewStreaming(),
+	)
+}
+
 func (rt *Runtime) ensureInferenceClient() inference.Client {
 	if rt.inferClient == nil {
 		rt.inferClient = rt.newInferenceClient()
@@ -67,6 +76,13 @@ func (rt *Runtime) ensureInferenceClient() inference.Client {
 func (rt *Runtime) newEmbedderClient() embedder.Client {
 	return embedder.NewClient(
 		fmt.Sprintf("http://127.0.0.1:%d", rt.cfg.Embedder.Port),
+		httpclient.NewStreaming(),
+	)
+}
+
+func (rt *Runtime) newEmbedderClientFor(cfg *config.Config) embedder.Client {
+	return embedder.NewClient(
+		fmt.Sprintf("http://127.0.0.1:%d", cfg.Embedder.Port),
 		httpclient.NewStreaming(),
 	)
 }
