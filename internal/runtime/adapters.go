@@ -391,40 +391,44 @@ func (ad *uiSessionStoreAdapter) Resume(id string) error {
 	return nil
 }
 
-// apiSessionAdapter implements api.SessionRecorder so the API server can
-// mint a fresh session per /v1/chat/completions request and append the
-// user-side messages plus the assistant turn. API requests are recorded
-// independently from any client-side conversation lifecycle.
+// apiSessionAdapter implements api.SessionRecorder by resolving the
+// session manager from Runtime at call time. This allows the API server
+// to survive same-port reloads — the listener stays up and its adapters
+// pick up the new generation after publication without ever stopping.
 type apiSessionAdapter struct {
-	mgr *session.Manager
+	rt *Runtime
 }
 
 func (a *apiSessionAdapter) Start(agentName string) api.Session {
-	if a.mgr == nil {
+	mgr := a.rt.SessionManager()
+	if mgr == nil {
 		return api.Session{}
 	}
-	s := a.mgr.Start(agentName)
+	s := mgr.Start(agentName)
 	return api.Session{ID: s.ID, Agent: s.Agent}
 }
 
 func (a *apiSessionAdapter) Append(id, role, content string) error {
-	if a.mgr == nil {
+	mgr := a.rt.SessionManager()
+	if mgr == nil {
 		return errors.New("session: api adapter has no manager")
 	}
-	return a.mgr.Append(id, inference.Message{Role: role, Content: content})
+	return mgr.Append(id, inference.Message{Role: role, Content: content})
 }
 
 func (a *apiSessionAdapter) Save(ctx context.Context, id string) error {
-	if a.mgr == nil {
+	mgr := a.rt.SessionManager()
+	if mgr == nil {
 		return errors.New("session: api adapter has no manager")
 	}
-	_, err := a.mgr.Save(ctx, id)
+	_, err := mgr.Save(ctx, id)
 	return err
 }
 
 func (a *apiSessionAdapter) End(id string) {
-	if a.mgr != nil {
-		a.mgr.End(id)
+	mgr := a.rt.SessionManager()
+	if mgr != nil {
+		mgr.End(id)
 	}
 }
 

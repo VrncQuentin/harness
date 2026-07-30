@@ -86,22 +86,32 @@ func closeReaders(readers ...memory.Repo) {
 }
 
 func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, candidateCfg *config.Config) bool {
-	candidate := rt.buildCandidate(uiServer, metricsStore, candidateCfg, candidateCfg.API.Enabled)
+	// Only rebuild the API listener when the port or enabled state changes.
+	// On same-port reloads the existing listener stays up and its dynamically
+	// resolved adapters pick up the new generation after publication.
+	wasRunning := rt.apiServer != nil
+	wantRunning := candidateCfg.API.Enabled
+	apiPortChanged := wasRunning != wantRunning ||
+		(wasRunning && wantRunning && rt.cfg.API.Port != candidateCfg.API.Port)
+	buildAPI := candidateCfg.API.Enabled && apiPortChanged
+
+	candidate := rt.buildCandidate(uiServer, metricsStore, candidateCfg, buildAPI)
 	if candidate == nil {
 		return false
 	}
 
-	oldAPI := rt.apiServer
-	if oldAPI != nil {
-		oldAPI.Stop()
-	}
-
 	if candidate.apiServer != nil {
+		if rt.apiServer != nil {
+			rt.apiServer.Stop()
+		}
 		if err := candidate.apiServer.Start(ctx); err != nil {
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
 			candidate.close()
 			return false
 		}
+	} else if apiPortChanged {
+		rt.apiServer.Stop()
+		rt.apiServer = nil
 	}
 
 	oldGlobal := rt.globalMem
@@ -116,7 +126,9 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.gitRepo = candidate.gitRepo
 	rt.setSessionManager(candidate.sessionMgr)
 	rt.taskRunner = candidate.taskRunner
-	rt.apiServer = candidate.apiServer
+	if candidate.apiServer != nil {
+		rt.apiServer = candidate.apiServer
+	}
 
 	uiServer.SetServiceDeps(candidate.serviceDeps)
 
@@ -271,7 +283,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 
 	var apiSrv *api.Server
 	if buildAPI {
-		apiSrv = api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, &apiSessionAdapter{mgr: sessionMgr})
+		apiSrv = api.NewServer(cfg.API.Port, asmAdapter, rt.reqQueue, &apiSessionAdapter{rt: rt})
 	}
 
 	svcDeps := ui.ServiceDeps{MemoryRepoPath: roots.activeRoot}
