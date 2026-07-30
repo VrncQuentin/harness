@@ -28,7 +28,7 @@ func (rt *Runtime) Start(
 	defer rt.mu.Unlock()
 	rt.refreshProjectDirectoryWarnings(uiServer)
 	rt.startServices(ctx, uiServer, events, metricsStore)
-	rt.startMemoryAndAPI(ctx, uiServer, metricsStore, &rt.cfg)
+	rt.startMemoryAndAPI(ctx, uiServer, metricsStore, &rt.cfg, false)
 }
 
 // Managers returns the process managers currently owned by the runtime.
