@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -68,8 +69,9 @@ type memoryCandidate struct {
 	assembler    *prompt.DiskAssembler
 	sessionMgr   *session.Manager
 	taskRunner   *taskRunnerAdapter
-	apiServer    *api.Server // created but not yet started
+	apiServer    *api.Server
 	serviceDeps  ui.ServiceDeps
+	handles      []io.Closer
 }
 
 func closeReaders(readers ...memory.Repo) {
@@ -142,6 +144,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.gen = &generation{
 		assembler:  candidate.assembler,
 		sessionMgr: candidate.sessionMgr,
+		handles:    candidate.handles,
 	}
 	rt.gen.acquire()
 
@@ -198,6 +201,8 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 		return nil
 	}
+	var handles []io.Closer
+	handles = append(handles, episodeIndex)
 	embedClient := rt.newEmbedderClientFor(cfg)
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 
@@ -344,6 +349,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		taskRunner:   taskAdapter,
 		apiServer:    apiSrv,
 		serviceDeps:  svcDeps,
+		handles:      handles,
 	}
 }
 

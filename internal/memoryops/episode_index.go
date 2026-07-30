@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"path/filepath"
 	"sync"
 
 	"github.com/VrncQuentin/harness/internal/index"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 const (
@@ -29,22 +31,38 @@ func EpisodeIndexCommitPaths() []string {
 
 // EpisodeIndex owns the synchronized index handle for one project. Every
 // retrieval and mutation path shares this handle, so newly saved episodes are
-// visible immediately without a runtime restart.
+// visible immediately without a runtime restart. The index directory is pinned
+// through a rootfs Anchor so repointing or escaping is detected.
 type EpisodeIndex struct {
-	mu  sync.Mutex
-	dir string
-	idx *index.Index
+	mu     sync.Mutex
+	dir    string
+	anchor *rootfs.Anchor
+	idx    *index.Index
 }
 
-// NewEpisodeIndex opens an existing index. A missing index is created lazily
-// after the first successful embedding; malformed indexes are returned to the
-// caller instead of being mistaken for a missing one.
+// NewEpisodeIndex pins the index directory at dir through a rootfs Anchor
+// and opens an existing index. If the directory does not exist it is created
+// before pinning. A missing index after creation means no episodes have been
+// embedded yet; the caller creates the index lazily on first Upsert.
 func NewEpisodeIndex(dir string) (*EpisodeIndex, error) {
+	a, err := rootfs.NewAnchor(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			if mkerr := os.MkdirAll(dir, 0o755); mkerr != nil {
+				return nil, fmt.Errorf("episode index: mkdir %s: %w", dir, mkerr)
+			}
+			a, err = rootfs.NewAnchor(dir)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("episode index: pin %s: %w", dir, err)
+		}
+	}
 	idx, err := index.Open(dir)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		_ = a.Close()
 		return nil, err
 	}
-	return &EpisodeIndex{dir: dir, idx: idx}, nil
+	return &EpisodeIndex{dir: dir, anchor: a, idx: idx}, nil
 }
 
 // Search implements index.Searcher. A missing index produces no semantic
@@ -82,6 +100,9 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.idx == nil {
+		if err := e.verify(); err != nil {
+			return err
+		}
 		idx, err := index.Create(e.dir, dim)
 		if err != nil {
 			return fmt.Errorf("episode index: create %s: %w", e.dir, err)
@@ -92,6 +113,16 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 		return fmt.Errorf("episode index: dimension mismatch: index has %d, got %d", e.idx.Dim(), dim)
 	}
 	return e.idx.Upsert(source, contentHash, vectors)
+}
+
+// verify confirms the pinned directory has not been replaced or repointed.
+func (e *EpisodeIndex) verify() error {
+	r, err := e.anchor.Open()
+	if err != nil {
+		return fmt.Errorf("episode index: verify %s: %w", e.dir, err)
+	}
+	_ = r.Close()
+	return nil
 }
 
 // Current returns the shared concrete handle for migration and test helpers.
@@ -106,4 +137,9 @@ func (e *EpisodeIndex) Replace(idx *index.Index) {
 	e.mu.Lock()
 	e.idx = idx
 	e.mu.Unlock()
+}
+
+// Close releases the pinned directory handle.
+func (e *EpisodeIndex) Close() error {
+	return e.anchor.Close()
 }

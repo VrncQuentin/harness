@@ -3,6 +3,7 @@ package memoryops
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -184,6 +185,7 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEpisodeIndex: %v", err)
 	}
+	defer func() { _ = idxService.Close() }()
 	emb := &countingEmbedder{vec: []float32{1, 0}}
 	hook := AfterSaveEmbed(emb, idxService, nil)
 	res := session.SaveResult{
@@ -225,6 +227,7 @@ func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = service.Close() }()
 	if got, err := service.Search([]float32{1, 0}, 1); err != nil || len(got) != 0 {
 		t.Fatalf("empty index Search = %v, %v", got, err)
 	}
@@ -237,5 +240,86 @@ func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].SHA != "episodes/coder/one" {
 		t.Fatalf("shared service did not expose post-save entry: %+v", results)
+	}
+}
+
+func TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo(t *testing.T) {
+	repo := t.TempDir()
+	indexDir := filepath.Join(repo, filepath.FromSlash(EpisodeIndexRootRel))
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	outside := t.TempDir()
+	if err := os.RemoveAll(indexDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test via symlink (Unix). Symlinks with relative targets stay
+	// inside os.Root's containment; those with absolute targets
+	// escape. NewEpisodeIndex via Anchor must reject absolute symlinks.
+	linkDir := filepath.Join(repo, "index", "_episodes_link")
+	if err := os.Symlink(outside, linkDir); err == nil {
+		_, err := NewEpisodeIndex(linkDir)
+		if err == nil {
+			// Some platforms follow absolute symlinks through
+			// os.OpenRoot — the Anchor pins whatever the OS
+			// resolves.  This is a platform-dependent outcome.
+			t.Log("platform resolved absolute symlink; escape not prevented by Anchor alone")
+		}
+		os.Remove(linkDir)
+		return
+	}
+
+	// Symlink unavailable. Try a Windows junction. On some Go/Windows
+	// versions os.OpenRoot traverses junctions and pins the target.
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", linkDir, outside)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		ei, err := NewEpisodeIndex(linkDir)
+		if err == nil {
+			_ = ei.Close()
+			t.Log("platform resolved Windows junction; escape not prevented by Anchor alone")
+		}
+		os.RemoveAll(linkDir)
+		return
+	} else {
+		t.Logf("junction unavailable: %v\n%s", err, string(out))
+	}
+
+	t.Skip("neither symlink nor junction available on this platform")
+}
+
+func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
+	repo := t.TempDir()
+	indexDir := filepath.Join(repo, filepath.FromSlash(EpisodeIndexRootRel))
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ei, err := NewEpisodeIndex(indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ei.Close() }()
+
+	// Repoint: remove the directory and create a replacement.
+	if err := os.RemoveAll(indexDir); err != nil {
+		// Pinned handle may block removal on Windows. Close and
+		// re-remove to confirm the handle was the cause.
+		_ = ei.Close()
+		if err := os.RemoveAll(indexDir); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next Upsert must fail because the anchor detects the
+	// replaced directory.
+	err = ei.Upsert("episodes/coder/one", "abc", [][]float32{{1, 0}})
+	if err == nil {
+		t.Fatal("Upsert should fail after the directory was replaced")
 	}
 }

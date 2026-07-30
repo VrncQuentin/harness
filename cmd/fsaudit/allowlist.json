@@ -313,6 +313,13 @@
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: retry rename",
       "fn": "os.Rename"
+    },
+    {
+      "line": 51,
+      "file": "internal/memoryops/episode_index.go",
+      "pr": "PR 5b2",
+      "notes": "NewEpisodeIndex: create missing index directory before pinning via Anchor",
+      "fn": "os.MkdirAll"
     }
   ]
 }
