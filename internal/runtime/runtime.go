@@ -68,13 +68,13 @@ type Runtime struct {
 	reqQueue *queue.Queue
 	started  bool
 
-	globalMem    memory.Repo
-	activeMem    memory.Repo
-	sessionMem   memory.Repo // session store DirReader, closed on Stop
-	agentReg     *agent.DiskRegistry
-	assembler    *prompt.DiskAssembler
-	apiServer    *api.Server
-	gitRepo      *gitw.Repo
+	globalMem  memory.Repo
+	activeMem  memory.Repo
+	sessionMem memory.Repo // session store DirReader, closed on Stop
+	agentReg   *agent.DiskRegistry
+	assembler  *prompt.DiskAssembler
+	apiServer  *api.Server
+	gitRepo    *gitw.Repo
 	sessionMu  sync.RWMutex
 	sessionMg  *session.Manager
 	taskRunner *taskRunnerAdapter
