@@ -39,7 +39,7 @@
     },
     {
       "file": "internal/rootfs/anchor.go",
-      "line": 81,
+      "line": 104,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: anchor reopen identity check"
     },
@@ -105,7 +105,7 @@
     },
     {
       "file": "cmd/eval-retrieval/main.go",
-      "line": 56,
+      "line": 57,
       "fn": "os.Open",
       "justification": "eval harness reads operator-named query file; not part of the production binary"
     }
@@ -246,7 +246,7 @@
     },
     {
       "file": "cmd/eval-retrieval/main.go",
-      "line": 97,
+      "line": 106,
       "fn": "filepath.Glob",
       "pr": "PR 3",
       "notes": "eval-retrieval: enumerate episode files through pinned repo instead of filepath.Glob+filepath.Rel"
@@ -313,13 +313,6 @@
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: retry rename",
       "fn": "os.Rename"
-    },
-    {
-      "line": 54,
-      "file": "internal/memoryops/episode_index.go",
-      "pr": "PR 5b2",
-      "notes": "NewEpisodeIndex: create missing index directory before pinning via Anchor",
-      "fn": "os.MkdirAll"
     }
   ]
 }

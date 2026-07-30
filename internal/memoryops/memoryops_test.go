@@ -12,6 +12,25 @@ import (
 	"github.com/VrncQuentin/harness/internal/session"
 )
 
+func newTestEpisodeIndex(t *testing.T, projectRoot string) *EpisodeIndex {
+	t.Helper()
+	dr, err := memory.NewDirReader(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dr.Close() })
+	a, err := dr.SubAnchor("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ei, err := NewEpisodeIndex(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ei.Close() })
+	return ei
+}
+
 func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	root := t.TempDir()
 	episodePath := filepath.Join(root, "episodes", "coder", "ep1.md")
@@ -181,11 +200,7 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
 
-	idxService, err := NewEpisodeIndex(EpisodeIndexDir(root), root)
-	if err != nil {
-		t.Fatalf("NewEpisodeIndex: %v", err)
-	}
-	defer func() { _ = idxService.Close() }()
+	idxService := newTestEpisodeIndex(t, root)
 	emb := &countingEmbedder{vec: []float32{1, 0}}
 	hook := AfterSaveEmbed(emb, idxService, nil)
 	res := session.SaveResult{
@@ -224,11 +239,7 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 
 func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
 	root := t.TempDir()
-	service, err := NewEpisodeIndex(EpisodeIndexDir(root), root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = service.Close() }()
+	service := newTestEpisodeIndex(t, root)
 	if got, err := service.Search([]float32{1, 0}, 1); err != nil || len(got) != 0 {
 		t.Fatalf("empty index Search = %v, %v", got, err)
 	}
@@ -260,7 +271,16 @@ func TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo(t *testing.T) {
 	// Try symlink first. pathid.Resolve on the symlink resolves to the
 	// physical target (outside), which pathid.Contains rejects.
 	if err := os.Symlink(outside, indexDir); err == nil {
-		ei, err := NewEpisodeIndex(indexDir, repo)
+		dr, drErr := memory.NewDirReader(repo)
+		if drErr != nil {
+			t.Fatal(drErr)
+		}
+		defer func() { _ = dr.Close() }()
+		a, aErr := dr.SubAnchor("")
+		if aErr != nil {
+			t.Fatal(aErr)
+		}
+		ei, err := NewEpisodeIndex(a)
 		_ = os.Remove(indexDir)
 		if err == nil {
 			_ = ei.Close()
@@ -274,7 +294,16 @@ func TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo(t *testing.T) {
 	// target, so containment check rejects it.
 	cmd := exec.Command("cmd", "/c", "mklink", "/J", indexDir, outside)
 	if out, err := cmd.CombinedOutput(); err == nil {
-		ei, err := NewEpisodeIndex(indexDir, repo)
+		dr, drErr := memory.NewDirReader(repo)
+		if drErr != nil {
+			t.Fatal(drErr)
+		}
+		defer func() { _ = dr.Close() }()
+		a, aErr := dr.SubAnchor("")
+		if aErr != nil {
+			t.Fatal(aErr)
+		}
+		ei, err := NewEpisodeIndex(a)
 		_ = os.RemoveAll(indexDir)
 		if err == nil {
 			_ = ei.Close()
@@ -296,7 +325,16 @@ func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ei, err := NewEpisodeIndex(indexDir, repo)
+	dr, err := memory.NewDirReader(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dr.Close() }()
+	a, aErr := dr.SubAnchor("")
+	if aErr != nil {
+		t.Fatal(aErr)
+	}
+	ei, err := NewEpisodeIndex(a)
 	if err != nil {
 		t.Fatal(err)
 	}

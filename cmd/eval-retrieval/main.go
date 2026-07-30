@@ -26,6 +26,7 @@ import (
 
 	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/embedder"
+	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/memoryops"
 )
 
@@ -79,8 +80,16 @@ func run() error {
 		return fmt.Errorf("no queries found in %s", *queriesFile)
 	}
 
-	indexDir := memoryops.EpisodeIndexDir(*repoPath)
-	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir, *repoPath)
+	repoDirReader, err := memory.NewDirReader(*repoPath)
+	if err != nil {
+		return fmt.Errorf("open repo: %w", err)
+	}
+	defer func() { _ = repoDirReader.Close() }()
+	repoAnchor, err := repoDirReader.SubAnchor("")
+	if err != nil {
+		return fmt.Errorf("repo anchor: %w", err)
+	}
+	episodeIndex, err := memoryops.NewEpisodeIndex(repoAnchor)
 	if err != nil {
 		return fmt.Errorf("open episode index: %w", err)
 	}
