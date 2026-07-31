@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/VrncQuentin/harness/internal/index"
@@ -408,6 +409,9 @@ func TestNewEpisodeIndex_NilAnchorRejected(t *testing.T) {
 func TestNewEpisodeIndex_MismatchedDirectoryRejected(t *testing.T) {
 	dir1 := t.TempDir()
 	dir2 := t.TempDir()
+	if err := os.MkdirAll(EpisodeIndexDir(dir2), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	dr, err := memory.NewDirReader(dir1)
 	if err != nil {
@@ -426,6 +430,9 @@ func TestNewEpisodeIndex_MismatchedDirectoryRejected(t *testing.T) {
 	if err == nil {
 		_ = a.Close()
 		t.Fatal("expected error for mismatched dir")
+	}
+	if !strings.Contains(err.Error(), "identify different directories") {
+		t.Errorf("expected different-directory error, got %v", err)
 	}
 	_ = a.Close()
 }
