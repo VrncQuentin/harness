@@ -186,9 +186,15 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create index: %v", err)
 	}
-	if err := idx.Upsert("episodes/coder/ep1", contentHash("episode body"), [][]float32{{1, 0}}); err != nil {
+	r2, err := rootfs.Open(indexDir)
+	if err != nil {
+		t.Fatalf("Open index dir to seed: %v", err)
+	}
+	if err := idx.UpsertRooted(r2, "episodes/coder/ep1", contentHash("episode body"), [][]float32{{1, 0}}); err != nil {
+		_ = r2.Close()
 		t.Fatalf("seed index: %v", err)
 	}
+	_ = r2.Close()
 
 	emb := &countingEmbedder{vec: []float32{1, 0}}
 	dr, err := memory.NewDirReader(root)

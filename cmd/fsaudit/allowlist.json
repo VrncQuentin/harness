@@ -250,42 +250,6 @@
       "fn": "filepath.Glob",
       "pr": "PR 3",
       "notes": "eval-retrieval: enumerate episode files through pinned repo instead of filepath.Glob+filepath.Rel"
-    },
-
-    {
-      "line": 376,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b2",
-      "notes": "writeFileAtomic: temp file",
-      "fn": "os.CreateTemp"
-    },
-    {
-      "line": 381,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b2",
-      "notes": "writeFileAtomic: cleanup temp",
-      "fn": "os.Remove"
-    },
-    {
-      "line": 397,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b2",
-      "notes": "writeFileAtomic: publish",
-      "fn": "os.Rename"
-    },
-    {
-      "line": 398,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b2",
-      "notes": "writeFileAtomic: cleanup old",
-      "fn": "os.Remove"
-    },
-    {
-      "line": 401,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b2",
-      "notes": "writeFileAtomic: retry rename",
-      "fn": "os.Rename"
     }
   ]
 }

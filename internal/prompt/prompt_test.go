@@ -31,6 +31,22 @@ func (s *stubEmbedder) Embed(_ context.Context, _ []string) ([][]float32, error)
 
 var _ embedder.Client = (*stubEmbedder)(nil)
 
+type indexSearcherAdapter struct {
+	idx *index.Index
+	dir string
+}
+
+func (s *indexSearcherAdapter) Search(query []float32, k int) ([]index.Result, error) {
+	r, err := rootfs.Open(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = r.Close() }()
+	return s.idx.SearchRooted(r, query, k)
+}
+
+var _ index.Searcher = (*indexSearcherAdapter)(nil)
+
 // writeRepo builds a memory repo under t.TempDir() from a map of
 // forward-slash relative paths to contents, returning a DirReader.
 func writeRepo(t *testing.T, files map[string]string) *memory.DirReader {
@@ -874,24 +890,24 @@ func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
 	// 03 [1, 0.8]  -> cos=1.0  (highest)
 	// 04 [-1, 0]   -> cos=-0.8 (lowest)
 	// 05 [0.8, 0]  -> cos=0.8
-	if err := idx.Add("01", [][]float32{{1, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "01", "01", [][]float32{{1, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("02", [][]float32{{0.5, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "02", "02", [][]float32{{0.5, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("03", [][]float32{{1, 0.8}}); err != nil {
+	if err := idx.UpsertRooted(r, "03", "03", [][]float32{{1, 0.8}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("04", [][]float32{{-1, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "04", "04", [][]float32{{-1, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("05", [][]float32{{0.8, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "05", "05", [][]float32{{0.8, 0}}); err != nil {
 		t.Fatal(err)
 	}
 
 	stub := &stubEmbedder{vectors: [][]float32{{0.8, 0.6}}}
-	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(idx, stub)
+	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(&indexSearcherAdapter{idx: idx, dir: idxDir}, stub)
 
 	msgs, _, err := asm.Assemble(context.Background(), "coder",
 		[]inference.Message{{Role: "user", Content: "test query"}})
@@ -944,15 +960,15 @@ func TestAssemble_BlendedRetrievalTrimDropsLowestScore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("01", [][]float32{{1, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "01", "01", [][]float32{{1, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("02", [][]float32{{-1, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "02", "02", [][]float32{{-1, 0}}); err != nil {
 		t.Fatal(err)
 	}
 
 	stub := &stubEmbedder{vectors: [][]float32{{1, 0}}}
-	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(idx, stub)
+	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(&indexSearcherAdapter{idx: idx, dir: idxDir}, stub)
 
 	msgs, stats, err := asm.Assemble(context.Background(), "coder",
 		[]inference.Message{{Role: "user", Content: "test query"}})
@@ -994,15 +1010,15 @@ func TestAssemble_BlendedRetrievalUsesBestChunkScore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("01", [][]float32{{1, 0}, {-1, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "01", "01", [][]float32{{1, 0}, {-1, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("02", [][]float32{{0.5, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "02", "02", [][]float32{{0.5, 0}}); err != nil {
 		t.Fatal(err)
 	}
 
 	stub := &stubEmbedder{vectors: [][]float32{{1, 0}}}
-	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(idx, stub)
+	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(&indexSearcherAdapter{idx: idx, dir: idxDir}, stub)
 
 	msgs, _, err := asm.Assemble(context.Background(), "coder",
 		[]inference.Message{{Role: "user", Content: "test query"}})
@@ -1046,18 +1062,18 @@ func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("01", [][]float32{{1, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "01", "01", [][]float32{{1, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("02", [][]float32{{0.8, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "02", "02", [][]float32{{0.8, 0}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := idx.Add("03", [][]float32{{0.5, 0}}); err != nil {
+	if err := idx.UpsertRooted(r, "03", "03", [][]float32{{0.5, 0}}); err != nil {
 		t.Fatal(err)
 	}
 
 	stub := &stubEmbedder{vectors: [][]float32{{1, 0}}}
-	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(idx, stub)
+	asm := newAssembler(t, mem, cfg).WithBlendedRetrieval(&indexSearcherAdapter{idx: idx, dir: idxDir}, stub)
 
 	msgs, _, err := asm.Assemble(context.Background(), "coder",
 		[]inference.Message{{Role: "user", Content: "test query"}})

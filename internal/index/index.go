@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 
@@ -58,7 +56,6 @@ type Searcher interface {
 // concurrent use.
 type Index struct {
 	mu       sync.Mutex
-	dir      string
 	dim      int
 	manifest Manifest
 }
@@ -74,7 +71,6 @@ func OpenRooted(root *rootfs.Root, dir string) (*Index, error) {
 		return nil, fmt.Errorf("index: read manifest %s: %w", dir, err)
 	}
 	var idx Index
-	idx.dir = dir
 	if err := json.Unmarshal(mf, &idx.manifest); err != nil {
 		return nil, fmt.Errorf("index: parse manifest %s: %w", dir, err)
 	}
@@ -94,7 +90,6 @@ func CreateRooted(root *rootfs.Root, dir string, dim int) (*Index, error) {
 		return nil, fmt.Errorf("index: mkdir %s: %w", dir, err)
 	}
 	idx := &Index{
-		dir: dir,
 		dim: dim,
 		manifest: Manifest{
 			Dim:    dim,
@@ -319,91 +314,6 @@ func entryRange(offset int64, length, dim int, fileSize int64) (end int64, err e
 
 // Dim returns the vector dimension for this index.
 func (idx *Index) Dim() int { return idx.dim }
-
-// Add appends vectors for the given SHA. Existing SHAs are idempotent no-ops.
-func (idx *Index) Add(sha string, vectors [][]float32) error {
-	return idx.Upsert(sha, sha, vectors)
-}
-
-// Upsert stores vectors for source. Published through rootfs.Open(idx.dir).
-func (idx *Index) Upsert(source, contentHash string, vectors [][]float32) error {
-	return idx.upsert(source, contentHash, vectors, nil)
-}
-
-func (idx *Index) upsert(source, contentHash string, vectors [][]float32, writeManifest func(root *rootfs.Root, data []byte) error) error {
-	root, err := rootfs.Open(idx.dir)
-	if err != nil {
-		return fmt.Errorf("index: open root: %w", err)
-	}
-	defer func() { _ = root.Close() }()
-	return idx.upsertRooted(root, source, contentHash, vectors, writeManifest)
-}
-
-// Search performs a flat cosine-similarity scan across all vectors.
-func (idx *Index) Search(query []float32, k int) ([]Result, error) {
-	root, err := rootfs.Open(idx.dir)
-	if err != nil {
-		return nil, fmt.Errorf("index: open root: %w", err)
-	}
-	defer func() { _ = root.Close() }()
-	return idx.SearchRooted(root, query, k)
-}
-
-func (idx *Index) writeManifest() error {
-	data, err := json.MarshalIndent(idx.manifest, "", "  ")
-	if err != nil {
-		return fmt.Errorf("index: marshal manifest: %w", err)
-	}
-	root, err := rootfs.Open(idx.dir)
-	if err != nil {
-		return fmt.Errorf("index: open root: %w", err)
-	}
-	defer func() { _ = root.Close() }()
-	return root.WriteStreamAtomic(manifestFile, bytes.NewReader(data), 0o644)
-}
-
-func validateManifest(dir string, manifest Manifest) error {
-	root, err := rootfs.Open(dir)
-	if err != nil {
-		return fmt.Errorf("index: open %s: %w", dir, err)
-	}
-	defer func() { _ = root.Close() }()
-	return validateManifestRooted(root, dir, manifest)
-}
-
-func writeFileAtomic(path string, data []byte, perm fs.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
-			return err
-		}
-		if retryErr := os.Rename(tmpName, path); retryErr != nil {
-			return retryErr
-		}
-	}
-	return nil
-}
 
 // Contains reports whether sha is present in the index manifest.
 func (idx *Index) Contains(sha string) bool {
