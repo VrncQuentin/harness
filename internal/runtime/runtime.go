@@ -4,6 +4,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"sync/atomic"
 
@@ -23,11 +24,12 @@ import (
 // generation owns the concrete resources of one reload cycle: readers,
 // assembler, and session manager. Operations acquire a lease before using
 // any generation resource and release it after. When the lease count
-// reaches zero, the generation's readers are closed.
+// reaches zero, the generation's readers and owned handles are closed.
 type generation struct {
 	readers    []memory.Repo
 	assembler  *prompt.DiskAssembler
 	sessionMgr *session.Manager
+	handles    []io.Closer
 	leases     atomic.Int64
 }
 
@@ -36,6 +38,9 @@ func (g *generation) acquire() { g.leases.Add(1) }
 func (g *generation) release() {
 	if g.leases.Add(-1) == 0 {
 		closeReaders(g.readers...)
+		for _, h := range g.handles {
+			_ = h.Close()
+		}
 	}
 }
 

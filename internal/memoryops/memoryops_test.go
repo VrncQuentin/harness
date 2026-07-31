@@ -3,13 +3,39 @@ package memoryops
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/VrncQuentin/harness/internal/index"
 	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/session"
 )
+
+func newTestEpisodeIndex(t *testing.T, projectRoot string) *EpisodeIndex {
+	t.Helper()
+	dr, err := memory.NewDirReader(projectRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dr.Close() })
+	indexDir := EpisodeIndexDir(projectRoot)
+	if err := dr.MkdirAll("index/_episodes"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := dr.SubAnchor("index/_episodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ei, err := NewEpisodeIndex(a, indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ei.Close() })
+	return ei
+}
 
 func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	root := t.TempDir()
@@ -27,10 +53,12 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = dr.Close() })
 	called := false
+	ei := newTestEpisodeIndex(t, root)
 	rb := &EpisodeRebuilder{
 		Mem:      dr,
 		Embedder: stubEmbedder{vec: []float32{1, 0}},
 		IndexDir: indexDir,
+		EI:       ei,
 		OnRebuilt: func(idx *index.Index) {
 			called = true
 			if !idx.Contains("episodes/coder/ep1") {
@@ -48,7 +76,12 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if !called {
 		t.Fatal("onRebuilt callback was not called")
 	}
-	opened, err := index.Open(indexDir)
+	r, err := rootfs.Open(indexDir)
+	if err != nil {
+		t.Fatalf("Open index dir: %v", err)
+	}
+	opened, err := index.OpenRooted(r, indexDir)
+	_ = r.Close()
 	if err != nil {
 		t.Fatalf("Open rebuilt index: %v", err)
 	}
@@ -70,20 +103,25 @@ func TestEpisodeRebuilderRejectsCorruptIndex(t *testing.T) {
 	if err := os.MkdirAll(indexDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll index dir: %v", err)
 	}
-	manifestPath := filepath.Join(indexDir, "manifest.json")
-	if err := os.WriteFile(manifestPath, []byte(`{"dim":2,`), 0o644); err != nil {
-		t.Fatalf("WriteFile corrupt manifest: %v", err)
-	}
 
 	dr, err := memory.NewDirReader(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = dr.Close() })
+	ei := newTestEpisodeIndex(t, root)
+
+	// Corrupt the manifest after the EpisodeIndex is created.
+	manifestPath := filepath.Join(indexDir, "manifest.json")
+	if err := os.WriteFile(manifestPath, []byte(`{"dim":2,`), 0o644); err != nil {
+		t.Fatalf("WriteFile corrupt manifest: %v", err)
+	}
+
 	rb := &EpisodeRebuilder{
 		Mem:      dr,
 		Embedder: stubEmbedder{vec: []float32{1, 0}},
 		IndexDir: indexDir,
+		EI:       ei,
 	}
 
 	if err := rb.Rebuild(context.Background()); err == nil {
@@ -137,13 +175,27 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
 	indexDir := EpisodeIndexDir(root)
-	idx, err := index.Create(indexDir, 2)
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll index dir: %v", err)
+	}
+	r, err := rootfs.Open(indexDir)
+	if err != nil {
+		t.Fatalf("Open index dir: %v", err)
+	}
+	idx, err := index.CreateRooted(r, indexDir, 2)
+	_ = r.Close()
 	if err != nil {
 		t.Fatalf("Create index: %v", err)
 	}
-	if err := idx.Upsert("episodes/coder/ep1", contentHash("episode body"), [][]float32{{1, 0}}); err != nil {
+	r2, err := rootfs.Open(indexDir)
+	if err != nil {
+		t.Fatalf("Open index dir to seed: %v", err)
+	}
+	if err := idx.UpsertRooted(r2, "episodes/coder/ep1", contentHash("episode body"), [][]float32{{1, 0}}); err != nil {
+		_ = r2.Close()
 		t.Fatalf("seed index: %v", err)
 	}
+	_ = r2.Close()
 
 	emb := &countingEmbedder{vec: []float32{1, 0}}
 	dr, err := memory.NewDirReader(root)
@@ -156,6 +208,7 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 		Embedder: emb,
 		Index:    idx,
 		IndexDir: indexDir,
+		EI:       newTestEpisodeIndex(t, root),
 	}
 	if err := rb.Rebuild(context.Background()); err != nil {
 		t.Fatalf("Rebuild: %v", err)
@@ -180,10 +233,7 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
 
-	idxService, err := NewEpisodeIndex(EpisodeIndexDir(root))
-	if err != nil {
-		t.Fatalf("NewEpisodeIndex: %v", err)
-	}
+	idxService := newTestEpisodeIndex(t, root)
 	emb := &countingEmbedder{vec: []float32{1, 0}}
 	hook := AfterSaveEmbed(emb, idxService, nil)
 	res := session.SaveResult{
@@ -211,6 +261,7 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 		Embedder: emb,
 		Index:    idxService.Current(),
 		IndexDir: EpisodeIndexDir(root),
+		EI:       idxService,
 	}
 	if err := rb.Rebuild(context.Background()); err != nil {
 		t.Fatalf("Rebuild: %v", err)
@@ -221,10 +272,8 @@ func TestAfterSaveEmbedIndexesRenderedBodySoRebuildSkips(t *testing.T) {
 }
 
 func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
-	service, err := NewEpisodeIndex(EpisodeIndexDir(t.TempDir()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := t.TempDir()
+	service := newTestEpisodeIndex(t, root)
 	if got, err := service.Search([]float32{1, 0}, 1); err != nil || len(got) != 0 {
 		t.Fatalf("empty index Search = %v, %v", got, err)
 	}
@@ -238,4 +287,200 @@ func TestEpisodeIndexSharesNewlyCreatedHandleWithRetrieval(t *testing.T) {
 	if len(results) != 1 || results[0].SHA != "episodes/coder/one" {
 		t.Fatalf("shared service did not expose post-save entry: %+v", results)
 	}
+}
+
+func TestEpisodeIndex_LinkedIndexDirectoryCannotEscapeTheRepo(t *testing.T) {
+	repo := t.TempDir()
+	indexDir := filepath.Join(repo, filepath.FromSlash(EpisodeIndexRootRel))
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Place a stable alias at the real index path pointing outside the repo.
+	outside := t.TempDir()
+	if err := os.RemoveAll(indexDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Try symlink first. SubAnchor navigates through OpenChild which
+	// rejects links, so the Anchor construction itself fails.
+	if err := os.Symlink(outside, indexDir); err == nil {
+		dr, drErr := memory.NewDirReader(repo)
+		if drErr != nil {
+			t.Fatal(drErr)
+		}
+		defer func() { _ = dr.Close() }()
+		_, err := dr.SubAnchor("index/_episodes")
+		_ = os.Remove(indexDir)
+		if err == nil {
+			t.Fatal("SubAnchor accepted symlink at index/_episodes")
+		}
+		t.Logf("SubAnchor rejected symlink: %v", err)
+		return
+	}
+
+	// Try Windows junction. SubAnchor traverses through OpenChild which
+	// rejects links.
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", indexDir, outside)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		dr, drErr := memory.NewDirReader(repo)
+		if drErr != nil {
+			t.Fatal(drErr)
+		}
+		defer func() { _ = dr.Close() }()
+		_, err := dr.SubAnchor("index/_episodes")
+		_ = os.RemoveAll(indexDir)
+		if err == nil {
+			t.Fatal("SubAnchor accepted junction at index/_episodes")
+		}
+		t.Logf("SubAnchor rejected junction: %v", err)
+		return
+	} else {
+		t.Logf("junction unavailable: %v\n%s", err, string(out))
+	}
+
+	t.Skip("neither symlink nor junction available on this platform")
+}
+
+func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
+	repo := t.TempDir()
+	indexDir := filepath.Join(repo, filepath.FromSlash(EpisodeIndexRootRel))
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dr, err := memory.NewDirReader(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dr.Close() }()
+	if err := dr.MkdirAll("index/_episodes"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := dr.SubAnchor("index/_episodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ei, err := NewEpisodeIndex(a, indexDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ei.Close() }()
+
+	// Create the index so we can test both missing and existing branches.
+	err = ei.Upsert("ep1", "abc", [][]float32{{1, 0}})
+	if err != nil {
+		t.Fatalf("first Upsert: %v", err)
+	}
+
+	// Try to remove the directory while the Anchor holds it.
+	if err := os.RemoveAll(indexDir); err != nil {
+		_ = ei.Close()
+		if err := os.RemoveAll(indexDir); err != nil {
+			t.Fatal("removal should succeed after Anchor closed:", err)
+		}
+		return
+	}
+
+	// Non-Windows: removal succeeded despite open handle. Replace
+	// the directory and verify operations fail closed.
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err = ei.Upsert("ep2", "def", [][]float32{{0, 1}})
+	if err == nil {
+		t.Fatal("Upsert should fail after directory replacement")
+	}
+
+	_, err = ei.Search([]float32{1, 0}, 1)
+	if err == nil {
+		t.Fatal("Search should fail after directory replacement")
+	}
+}
+
+func TestNewEpisodeIndex_NilAnchorRejected(t *testing.T) {
+	_, err := NewEpisodeIndex(nil, "/some/path")
+	if err == nil {
+		t.Fatal("expected error for nil anchor")
+	}
+}
+
+func TestNewEpisodeIndex_MismatchedDirectoryRejected(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	if err := os.MkdirAll(EpisodeIndexDir(dir2), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dr, err := memory.NewDirReader(dir1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dr.Close() }()
+	if err := dr.MkdirAll("index/_episodes"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := dr.SubAnchor("index/_episodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewEpisodeIndex(a, EpisodeIndexDir(dir2))
+	if err == nil {
+		_ = a.Close()
+		t.Fatal("expected error for mismatched dir")
+	}
+	if !strings.Contains(err.Error(), "identify different directories") {
+		t.Errorf("expected different-directory error, got %v", err)
+	}
+	_ = a.Close()
+}
+
+func TestNewEpisodeIndex_StableAliasAccepted(t *testing.T) {
+	repo := t.TempDir()
+	indexDir := filepath.Join(repo, filepath.FromSlash(EpisodeIndexRootRel))
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	dr, err := memory.NewDirReader(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dr.Close() }()
+	// Pin the physical index/_episodes through the DirReader.
+	a, err := dr.SubAnchor("index/_episodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try symlink alias first. Pass the symlink pathname to
+	// NewEpisodeIndex; sameDir opens it and compares with the Anchor.
+	linkDir := filepath.Join(repo, "index", "_episodes_link")
+	if err := os.Symlink(indexDir, linkDir); err == nil {
+		defer func() { _ = os.Remove(linkDir) }()
+		ei, err := NewEpisodeIndex(a, linkDir)
+		if err != nil {
+			_ = a.Close()
+			t.Fatalf("NewEpisodeIndex via symlink alias: %v", err)
+		}
+		_ = ei.Close()
+		return
+	}
+
+	// Try Windows junction as alias pathname.
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", linkDir, indexDir)
+	if _, jerr := cmd.CombinedOutput(); jerr == nil {
+		ei, err := NewEpisodeIndex(a, linkDir)
+		if err != nil {
+			_ = a.Close()
+			t.Fatalf("NewEpisodeIndex via junction alias: %v", err)
+		}
+		_ = ei.Close()
+		return
+	}
+
+	_ = a.Close()
+	t.Skip("neither symlink nor junction available")
 }

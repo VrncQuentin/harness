@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 )
 
 // Anchor is an identity-bound directory reference.  It retains an open
@@ -45,11 +46,36 @@ func (a *Anchor) SameAnchor(other *Anchor) (bool, error) {
 	return a.root.SameDir(other.root)
 }
 
+// SameRoot reports whether the pinned directory is the same filesystem
+// object as r.
+func (a *Anchor) SameRoot(r *Root) (bool, error) {
+	return a.root.SameDir(r)
+}
+
 // Open opens the stored pathname, verifies that the new handle refers to
 // the same filesystem object as the pinned handle, and returns the
 // verified handle.  The caller closes the returned Root.
 func (a *Anchor) Open() (*Root, error) {
 	return a.open(nil)
+}
+
+// OpenChild opens name as a child of the pinned directory, verifies it is
+// not a link, and returns a new Anchor pinned to that child. The caller
+// closes the returned Anchor.  The child pathname is derived from the
+// parent's stored path so new child Anchors are always contained within
+// the parent's directory.
+func (a *Anchor) OpenChild(name string) (*Anchor, error) {
+	r, err := a.Open()
+	if err != nil {
+		return nil, err
+	}
+	child, _, err := r.OpenChildNoFollow(name)
+	_ = r.Close()
+	if err != nil {
+		return nil, err
+	}
+	childPath := a.path + string(filepath.Separator) + name
+	return &Anchor{root: child, path: childPath}, nil
 }
 
 // statFn is the signature of Root.Stat or a test replacement.

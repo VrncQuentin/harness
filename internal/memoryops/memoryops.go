@@ -147,15 +147,24 @@ type EpisodeRebuilder struct {
 	IndexDir  string
 	Repo      *gitw.Repo
 	OnRebuilt func(*index.Index)
+	EI        *EpisodeIndex
 }
 
 func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
+	if rb.EI == nil {
+		return errors.New("index rebuild: EpisodeIndex is required")
+	}
 	if rb.Index == nil {
-		idx, err := index.Open(rb.IndexDir)
-		if err == nil {
+		r, err := rb.EI.verified()
+		if err != nil {
+			return err
+		}
+		idx, idxErr := index.OpenRooted(r, rb.IndexDir)
+		_ = r.Close()
+		if idxErr == nil {
 			rb.Index = idx
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("index rebuild: open index %s: %w", rb.IndexDir, err)
+		} else if !errors.Is(idxErr, fs.ErrNotExist) {
+			return fmt.Errorf("index rebuild: open index %s: %w", rb.IndexDir, idxErr)
 		}
 	}
 
@@ -231,9 +240,14 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		}
 	}
 	if rb.Index == nil {
-		idx, err := index.Create(rb.IndexDir, dim)
+		r, err := rb.EI.verified()
 		if err != nil {
-			return fmt.Errorf("index rebuild: create index %s: %w", rb.IndexDir, err)
+			return err
+		}
+		idx, cerr := index.CreateRooted(r, rb.IndexDir, dim)
+		_ = r.Close()
+		if cerr != nil {
+			return fmt.Errorf("index rebuild: create index %s: %w", rb.IndexDir, cerr)
 		}
 		rb.Index = idx
 	}
@@ -249,8 +263,14 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		}
 		epVecs := vectors[offset : offset+n]
 		offset += n
-		if err := rb.Index.Upsert(retrieval.EpisodeID(w.path), w.hash, epVecs); err != nil {
-			slog.Warn("index rebuild: add episode", "path", w.path, "err", err)
+		r, err := rb.EI.verified()
+		if err != nil {
+			return err
+		}
+		uerr := rb.Index.UpsertRooted(r, retrieval.EpisodeID(w.path), w.hash, epVecs)
+		_ = r.Close()
+		if uerr != nil {
+			slog.Warn("index rebuild: add episode", "path", w.path, "err", uerr)
 		}
 	}
 

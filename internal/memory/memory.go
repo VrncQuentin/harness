@@ -97,6 +97,31 @@ func (r *DirReader) SameDirReader(other *DirReader) (bool, error) {
 	return r.anchor.SameAnchor(other.anchor)
 }
 
+// SubAnchor opens a child directory through the DirReader's pinned handle
+// and returns a new Anchor pinned to it. The caller must close it.
+func (r *DirReader) SubAnchor(rel string) (*rootfs.Anchor, error) {
+	comps := strings.Split(filepath.FromSlash(rel), string(filepath.Separator))
+	var cur *rootfs.Anchor
+	for i, comp := range comps {
+		parent := r.anchor
+		if i > 0 {
+			parent = cur
+		}
+		child, err := parent.OpenChild(comp)
+		if err != nil {
+			if cur != nil {
+				_ = cur.Close()
+			}
+			return nil, fmt.Errorf("memory: sub anchor %s: %w", rel, err)
+		}
+		if cur != nil {
+			_ = cur.Close()
+		}
+		cur = child
+	}
+	return cur, nil
+}
+
 func (r *DirReader) openRoot() (*rootfs.Root, error) { return r.anchor.Open() }
 
 func (r *DirReader) Read(relPath string) ([]byte, error) {

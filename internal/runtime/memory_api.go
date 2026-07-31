@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"path/filepath"
 	"strings"
@@ -68,8 +69,9 @@ type memoryCandidate struct {
 	assembler    *prompt.DiskAssembler
 	sessionMgr   *session.Manager
 	taskRunner   *taskRunnerAdapter
-	apiServer    *api.Server // created but not yet started
+	apiServer    *api.Server
 	serviceDeps  ui.ServiceDeps
+	handles      []io.Closer
 }
 
 func closeReaders(readers ...memory.Repo) {
@@ -142,6 +144,7 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.gen = &generation{
 		assembler:  candidate.assembler,
 		sessionMgr: candidate.sessionMgr,
+		handles:    candidate.handles,
 	}
 	rt.gen.acquire()
 
@@ -150,6 +153,9 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 func (c *memoryCandidate) close() {
 	closeReaders(c.globalMem, c.activeMem, c.sessionStore)
+	for _, h := range c.handles {
+		_ = h.Close()
+	}
 }
 
 func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, buildAPI bool) *memoryCandidate {
@@ -187,17 +193,36 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	doClose := func() {
 		closeReaders(globalMem, activeMem)
 	}
+	var handles = make([]io.Closer, 0, 1)
+	closeHandles := func() {
+		for _, h := range handles {
+			_ = h.Close()
+		}
+	}
 
 	agentReg := agent.NewDiskRegistry(globalMem, rt.getActiveAgent, rt.setActiveAgent)
 	assembler := prompt.NewProjectDiskAssembler(globalMem, activeMem, agentReg, rt.effectivePromptFor(cfg)).WithProjectSlug(cfg.Project.ActiveProjectSlug)
 
 	indexDir := memoryops.EpisodeIndexDir(roots.activeRoot)
-	episodeIndex, err := memoryops.NewEpisodeIndex(indexDir)
+	if err := activeMem.MkdirAll("index/_episodes"); err != nil {
+		doClose()
+		uiServer.AddStartupError(fmt.Errorf("episode index: mkdir: %w", err))
+		return nil
+	}
+	indexAnchor, err := activeMem.SubAnchor("index/_episodes")
 	if err != nil {
 		doClose()
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 		return nil
 	}
+	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir)
+	if err != nil {
+		_ = indexAnchor.Close()
+		doClose()
+		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
+		return nil
+	}
+	handles = append(handles, episodeIndex)
 	embedClient := rt.newEmbedderClientFor(cfg)
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 
@@ -205,6 +230,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, infClient, embedClient, episodeIndex, cfg.Project.ActiveProjectSlug)
 	if sessionMgr == nil {
 		doClose()
+		closeHandles()
 		if sessionStore != nil {
 			_ = sessionStore.Close()
 		}
@@ -269,6 +295,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	registry := tools.NewRegistry()
 	if err := tools.RegisterBuiltins(registry); err != nil {
 		doClose()
+		closeHandles()
 		if sessionStore != nil {
 			_ = sessionStore.Close()
 		}
@@ -324,6 +351,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		IndexDir:  indexDir,
 		Repo:      gitRepo,
 		OnRebuilt: episodeIndex.Replace,
+		EI:        episodeIndex,
 	}
 	if rt.reqQueue != nil {
 		svcDeps.ChatRunner = &chatRunnerAdapter{
@@ -344,6 +372,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		taskRunner:   taskAdapter,
 		apiServer:    apiSrv,
 		serviceDeps:  svcDeps,
+		handles:      handles,
 	}
 }
 
