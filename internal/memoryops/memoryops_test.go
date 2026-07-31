@@ -374,21 +374,10 @@ func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
 
 	// Try to remove the directory while the Anchor holds it.
 	if err := os.RemoveAll(indexDir); err != nil {
-		// Windows: pinned handle blocked removal. Close to free it,
-		// then stage a junction repoint.
 		_ = ei.Close()
 		if err := os.RemoveAll(indexDir); err != nil {
 			t.Fatal("removal should succeed after Anchor closed:", err)
 		}
-		// Stage a junction to a temp dir, then repoint it.
-		replacement := t.TempDir()
-		cmd := exec.Command("cmd", "/c", "mklink", "/J", indexDir, replacement)
-		if _, jerr := cmd.CombinedOutput(); jerr != nil {
-			t.Skipf("junction unavailable: %v", jerr)
-		}
-		// Unpin the original Anchor is already closed. The test
-		// confirms that handle-blocking plus close-then-remove
-		// proves Anchor ownership of the directory.
 		return
 	}
 
