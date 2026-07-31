@@ -879,7 +879,7 @@ func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	idx, err := index.CreateRooted(r, idxDir, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -955,7 +955,7 @@ func TestAssemble_BlendedRetrievalTrimDropsLowestScore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	idx, err := index.CreateRooted(r, idxDir, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -1005,7 +1005,7 @@ func TestAssemble_BlendedRetrievalUsesBestChunkScore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	idx, err := index.CreateRooted(r, idxDir, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -1057,7 +1057,7 @@ func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 	idx, err := index.CreateRooted(r, idxDir, 2)
 	if err != nil {
 		t.Fatal(err)
