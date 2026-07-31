@@ -18,6 +18,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/inference"
 	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 type stubEmbedder struct {
@@ -858,7 +859,12 @@ func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
 	cfg.RecencyWeight = 0.5
 
 	idxDir := t.TempDir()
-	idx, err := index.Create(idxDir, 2)
+	r, err := rootfs.Open(idxDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := index.CreateRooted(r, idxDir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -929,7 +935,12 @@ func TestAssemble_BlendedRetrievalTrimDropsLowestScore(t *testing.T) {
 	cfg.RecencyWeight = 0.0
 
 	idxDir := t.TempDir()
-	idx, err := index.Create(idxDir, 2)
+	r, err := rootfs.Open(idxDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := index.CreateRooted(r, idxDir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -974,7 +985,12 @@ func TestAssemble_BlendedRetrievalUsesBestChunkScore(t *testing.T) {
 	cfg.RecencyWeight = 0.0
 
 	idxDir := t.TempDir()
-	idx, err := index.Create(idxDir, 2)
+	r, err := rootfs.Open(idxDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := index.CreateRooted(r, idxDir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1021,7 +1037,12 @@ func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
 	cfg.RecencyWeight = 1.0
 
 	idxDir := t.TempDir()
-	idx, err := index.Create(idxDir, 2)
+	r, err := rootfs.Open(idxDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := index.CreateRooted(r, idxDir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}

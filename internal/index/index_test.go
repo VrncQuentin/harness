@@ -12,10 +12,15 @@ import (
 
 func TestIndex_CreatePersistsEmptyIndex(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Create(dir, 2); err != nil {
+	r, err := rootfs.Open(dir)
+	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := Open(dir)
+	defer r.Close()
+	if _, err := CreateRooted(r, dir, 2); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := OpenRooted(r, dir)
 	if err != nil {
 		t.Fatalf("Open newly created index: %v", err)
 	}
@@ -33,7 +38,12 @@ func TestIndex_OpenRejectsManifestWithoutVectors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, manifestFile), []byte(`{"dim":2,"count":1,"chunks":[{"sha":"sha","offset":0,"length":1}]}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Open(dir)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	_, err = OpenRooted(r, dir)
 	if err == nil {
 		t.Fatal("expected missing vectors to be rejected")
 	}
@@ -44,7 +54,12 @@ func TestIndex_OpenRejectsManifestWithoutVectors(t *testing.T) {
 
 func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,14 +69,19 @@ func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 	if err := os.Truncate(filepath.Join(dir, vectorsFile), 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(dir); err == nil {
+	if _, err := OpenRooted(r, dir); err == nil {
 		t.Fatal("expected manifest entry extending past vectors file to be rejected")
 	}
 }
 
 func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +106,12 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 	if vecSizeAfter <= vecSizeBefore {
 		t.Error("vectors.bin should have grown")
 	}
-	idx2, err := Open(dir)
+	r, err = rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx2, err := OpenRooted(r, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +129,12 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 
 func TestIndex_UpsertReplacesViaRename(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +170,12 @@ func TestIndex_UpsertReplacesViaRename(t *testing.T) {
 
 func TestIndex_UpsertReplacesMiddleEntry(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +205,12 @@ func TestIndex_UpsertReplacesMiddleEntry(t *testing.T) {
 
 func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +248,12 @@ func fileSize(t *testing.T, path string) int64 {
 
 func TestIndex_AddSearchRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 4)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +292,12 @@ func TestIndex_AddSearchRoundTrip(t *testing.T) {
 
 func TestIndex_AddDimensionMismatch(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 3)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +309,12 @@ func TestIndex_AddDimensionMismatch(t *testing.T) {
 
 func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +341,12 @@ func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
 		t.Fatalf("second Add: %v", err)
 	}
 
-	opened, err := Open(dir)
+	r, err = rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	opened, err := OpenRooted(r, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +359,12 @@ func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
 }
 func TestIndex_SearchDimensionMismatch(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 4)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +376,12 @@ func TestIndex_SearchDimensionMismatch(t *testing.T) {
 
 func TestIndex_OpenAndSearch(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +390,12 @@ func TestIndex_OpenAndSearch(t *testing.T) {
 	}
 
 	// Re-open and verify.
-	idx2, err := Open(dir)
+	r, err = rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx2, err := OpenRooted(r, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +409,7 @@ func TestIndex_OpenAndSearch(t *testing.T) {
 }
 
 func TestIndex_OpenMissing(t *testing.T) {
-	_, err := Open("/nonexistent/index/path")
+	_, err := rootfs.Open("/nonexistent/index/path")
 	if err == nil {
 		t.Fatal("expected error for missing index")
 	}
@@ -342,7 +417,12 @@ func TestIndex_OpenMissing(t *testing.T) {
 
 func TestIndex_Contains(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 3)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +436,12 @@ func TestIndex_Contains(t *testing.T) {
 		t.Error("expected sha-xyz to not be found")
 	}
 	// Re-open and check persistence.
-	idx2, err := Open(dir)
+	r, err = rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx2, err := OpenRooted(r, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -367,7 +452,12 @@ func TestIndex_Contains(t *testing.T) {
 
 func TestIndex_ContainsCurrentMatchesSourceAndContentHash(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +480,12 @@ func TestIndex_ContainsCurrentMatchesSourceAndContentHash(t *testing.T) {
 
 func TestIndex_UpsertReplacesSourceAndKeepsAgentPathsDistinct(t *testing.T) {
 	dir := t.TempDir()
-	idx, err := Create(dir, 2)
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	idx, err := CreateRooted(r, dir, 2)
 	if err != nil {
 		t.Fatal(err)
 	}

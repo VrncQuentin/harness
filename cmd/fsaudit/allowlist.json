@@ -251,50 +251,37 @@
       "pr": "PR 3",
       "notes": "eval-retrieval: enumerate episode files through pinned repo instead of filepath.Glob+filepath.Rel"
     },
+
     {
-      "line": 70,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b2",
-      "notes": "Open: read manifest.json (legacy pathname wrapper)",
-      "fn": "os.ReadFile"
-    },
-    {
-      "line": 92,
-      "file": "internal/index/index.go",
-      "pr": "PR 5b2",
-      "notes": "Create: create index directory (legacy pathname wrapper)",
-      "fn": "os.MkdirAll"
-    },
-    {
-      "line": 412,
+      "line": 376,
       "file": "internal/index/index.go",
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: temp file",
       "fn": "os.CreateTemp"
     },
     {
-      "line": 417,
+      "line": 381,
       "file": "internal/index/index.go",
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: cleanup temp",
       "fn": "os.Remove"
     },
     {
-      "line": 433,
+      "line": 397,
       "file": "internal/index/index.go",
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: publish",
       "fn": "os.Rename"
     },
     {
-      "line": 434,
+      "line": 398,
       "file": "internal/index/index.go",
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: cleanup old",
       "fn": "os.Remove"
     },
     {
-      "line": 437,
+      "line": 401,
       "file": "internal/index/index.go",
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: retry rename",

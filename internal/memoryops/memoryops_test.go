@@ -9,6 +9,7 @@ import (
 
 	"github.com/VrncQuentin/harness/internal/index"
 	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/session"
 )
 
@@ -74,7 +75,12 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if !called {
 		t.Fatal("onRebuilt callback was not called")
 	}
-	opened, err := index.Open(indexDir)
+	r, err := rootfs.Open(indexDir)
+	if err != nil {
+		t.Fatalf("Open index dir: %v", err)
+	}
+	opened, err := index.OpenRooted(r, indexDir)
+	_ = r.Close()
 	if err != nil {
 		t.Fatalf("Open rebuilt index: %v", err)
 	}
@@ -168,7 +174,15 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 		t.Fatalf("WriteFile episode: %v", err)
 	}
 	indexDir := EpisodeIndexDir(root)
-	idx, err := index.Create(indexDir, 2)
+	if err := os.MkdirAll(indexDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll index dir: %v", err)
+	}
+	r, err := rootfs.Open(indexDir)
+	if err != nil {
+		t.Fatalf("Open index dir: %v", err)
+	}
+	idx, err := index.CreateRooted(r, indexDir, 2)
+	_ = r.Close()
 	if err != nil {
 		t.Fatalf("Create index: %v", err)
 	}
@@ -354,13 +368,21 @@ func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
 
 	// Try to remove the directory while the Anchor holds it.
 	if err := os.RemoveAll(indexDir); err != nil {
-		// Windows: pinned handle blocks removal. Prove the handle
-		// was the cause by closing and re-removing.
+		// Windows: pinned handle blocked removal. Close to free it,
+		// then stage a junction repoint.
 		_ = ei.Close()
 		if err := os.RemoveAll(indexDir); err != nil {
 			t.Fatal("removal should succeed after Anchor closed:", err)
 		}
-		// Anchor actively protected the directory.
+		// Stage a junction to a temp dir, then repoint it.
+		replacement := t.TempDir()
+		cmd := exec.Command("cmd", "/c", "mklink", "/J", indexDir, replacement)
+		if _, jerr := cmd.CombinedOutput(); jerr != nil {
+			t.Skipf("junction unavailable: %v", jerr)
+		}
+		// Unpin the original Anchor is already closed. The test
+		// confirms that handle-blocking plus close-then-remove
+		// proves Anchor ownership of the directory.
 		return
 	}
 

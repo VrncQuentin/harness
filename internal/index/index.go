@@ -63,52 +63,6 @@ type Index struct {
 	manifest Manifest
 }
 
-// Open reads an existing index at dir, or returns a zero-vector
-// ErrNotExist when the directory or files are missing.
-func Open(dir string) (*Index, error) {
-	idx := &Index{dir: dir}
-	mf, err := os.ReadFile(filepath.Join(dir, manifestFile))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("index: open %s: %w", dir, fs.ErrNotExist)
-		}
-		return nil, fmt.Errorf("index: read manifest %s: %w", dir, err)
-	}
-	if err := json.Unmarshal(mf, &idx.manifest); err != nil {
-		return nil, fmt.Errorf("index: parse manifest %s: %w", dir, err)
-	}
-	if err := validateManifest(dir, idx.manifest); err != nil {
-		return nil, err
-	}
-	idx.dim = idx.manifest.Dim
-	return idx, nil
-}
-
-// Create initializes a new index at dir. Existing indices are overwritten.
-func Create(dir string, dim int) (*Index, error) {
-	if dim <= 0 {
-		return nil, fmt.Errorf("index: invalid dimension %d", dim)
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("index: mkdir %s: %w", dir, err)
-	}
-	idx := &Index{
-		dir: dir,
-		dim: dim,
-		manifest: Manifest{
-			Dim:    dim,
-			Chunks: nil,
-		},
-	}
-	if err := writeFileAtomic(filepath.Join(dir, vectorsFile), nil, 0o644); err != nil {
-		return nil, fmt.Errorf("index: write vectors %s: %w", dir, err)
-	}
-	if err := idx.writeManifest(); err != nil {
-		return nil, err
-	}
-	return idx, nil
-}
-
 // OpenRooted reads an index through a pinned Root handle instead of by
 // pathname.  The caller owns the Root; OpenRooted does not close it.
 func OpenRooted(root *rootfs.Root, dir string) (*Index, error) {
@@ -186,7 +140,7 @@ func (idx *Index) SearchRooted(root *rootfs.Root, query []float32, k int) ([]Res
 	var results []scored
 
 	for _, entry := range idx.manifest.Chunks {
-		_, entryEnd, err := entryRange(entry.Offset, entry.Length, idx.dim, int64(len(data)))
+		entryEnd, err := entryRange(entry.Offset, entry.Length, idx.dim, int64(len(data)))
 		if err != nil {
 			return nil, err
 		}
@@ -308,12 +262,22 @@ func validateManifestRooted(root *rootfs.Root, dir string, manifest Manifest) er
 		return fmt.Errorf("index: vectors path is a directory in %s", dir)
 	}
 	fileSize := info.Size()
+	stride := int64(manifest.Dim) * 4
+	if stride/4 != int64(manifest.Dim) {
+		return fmt.Errorf("index: stride overflow for dim %d in %s", manifest.Dim, dir)
+	}
+	if fileSize%stride != 0 {
+		return fmt.Errorf("index: vector file size %d is not aligned to dimension %d in %s", fileSize, manifest.Dim, dir)
+	}
 	count := 0
 	for i, entry := range manifest.Chunks {
 		if entry.SHA == "" {
 			return fmt.Errorf("index: manifest entry %d has empty sha in %s", i, dir)
 		}
-		_, _, err := entryRange(entry.Offset, entry.Length, manifest.Dim, fileSize)
+		if entry.Offset%stride != 0 {
+			return fmt.Errorf("index: manifest entry %d offset %d is not vector-aligned in %s", i, entry.Offset, dir)
+		}
+		_, err := entryRange(entry.Offset, entry.Length, manifest.Dim, fileSize)
 		if err != nil {
 			return fmt.Errorf("index: %w in %s", err, dir)
 		}
@@ -325,32 +289,32 @@ func validateManifestRooted(root *rootfs.Root, dir string, manifest Manifest) er
 	return nil
 }
 
-func entryRange(offset int64, length, dim int, fileSize int64) (byteLen, end int64, err error) {
+func entryRange(offset int64, length, dim int, fileSize int64) (end int64, err error) {
 	if length < 0 {
-		return 0, 0, fmt.Errorf("manifest entry has negative length %d", length)
+		return 0, fmt.Errorf("manifest entry has negative length %d", length)
 	}
 	if dim <= 0 {
-		return 0, 0, fmt.Errorf("manifest entry has non-positive dim %d", dim)
+		return 0, fmt.Errorf("manifest entry has non-positive dim %d", dim)
 	}
 	stride := int64(dim) * 4
 	if stride/4 != int64(dim) {
-		return 0, 0, fmt.Errorf("manifest entry stride overflow for dim %d", dim)
+		return 0, fmt.Errorf("manifest entry stride overflow for dim %d", dim)
 	}
-	byteLen = int64(length) * stride
+	byteLen := int64(length) * stride
 	if byteLen/stride != int64(length) {
-		return 0, 0, fmt.Errorf("manifest entry byte length overflow for length %d, dim %d", length, dim)
+		return 0, fmt.Errorf("manifest entry byte length overflow for length %d, dim %d", length, dim)
 	}
 	if offset < 0 {
-		return 0, 0, fmt.Errorf("manifest entry has negative offset %d", offset)
+		return 0, fmt.Errorf("manifest entry has negative offset %d", offset)
 	}
-	end = int64(offset) + byteLen
-	if end < int64(offset) {
-		return 0, 0, fmt.Errorf("manifest entry end overflow for offset %d, byteLen %d", offset, byteLen)
+	end = offset + byteLen
+	if end < offset {
+		return 0, fmt.Errorf("manifest entry end overflow for offset %d, byteLen %d", offset, byteLen)
 	}
 	if end > fileSize {
-		return 0, 0, fmt.Errorf("manifest entry range [%d:%d] exceeds file size %d", offset, end, fileSize)
+		return 0, fmt.Errorf("manifest entry range [%d:%d] exceeds file size %d", offset, end, fileSize)
 	}
-	return byteLen, end, nil
+	return end, nil
 }
 
 // Dim returns the vector dimension for this index.
