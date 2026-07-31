@@ -526,27 +526,71 @@ func TestIndex_UpsertReplacesSourceAndKeepsAgentPathsDistinct(t *testing.T) {
 
 func TestEntryRange_Overflow(t *testing.T) {
 	tests := []struct {
-		name   string
-		offset int64
-		length int
-		dim    int
-		size   int64
+		name    string
+		offset  int64
+		length  int
+		dim     int
+		size    int64
+		wantErr string
 	}{
-		{"negative length", 0, -1, 2, 100},
-		{"zero dim", 0, 1, 0, 100},
-		{"negative dim", 0, 1, -1, 100},
-		{"stride overflow", 0, 1, 1 << 30, 100},
-		{"negative offset", -1, 1, 2, 100},
-		{"end overflow", math.MaxInt64, 1, 2, math.MaxInt64},
-		{"exceeds file size", 0, 100, 4, 8},
+		{"negative length", 0, -1, 2, 100, "negative length"},
+		{"zero dim", 0, 1, 0, 100, "non-positive dim"},
+		{"negative dim", 0, 1, -1, 100, "non-positive dim"},
+		{"negative offset", -1, 1, 2, 100, "negative offset"},
+		{"end overflow", math.MaxInt64, 1, 2, math.MaxInt64, "end overflow"},
+		{"exceeds file size", 0, 100, 4, 8, "exceeds file size"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := entryRange(tc.offset, tc.length, tc.dim, tc.size)
 			if err == nil {
 				t.Error("expected error, got nil")
+			} else if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateManifestRooted_Alignment(t *testing.T) {
+	dir := t.TempDir()
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+
+	// Create a valid manifest + vectors pair.
+	if _, err := CreateRooted(r, dir, 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen to get the manifest we just wrote.
+	r2, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r2.Close() }()
+	idx, err := OpenRooted(r2, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt the manifest with a misaligned offset.
+	bad := Manifest{Dim: idx.manifest.Dim, Count: idx.manifest.Count}
+	bad.Chunks = []Entry{{SHA: "x", Offset: 1, Length: 1}}
+	err = validateManifestRooted(r2, dir, bad)
+	if err == nil {
+		t.Error("expected error for misaligned offset")
+	}
+
+	// Truncate vectors to make file size unaligned.
+	if err := r2.WriteStreamAtomic("vectors.bin", strings.NewReader("abc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = validateManifestRooted(r2, dir, idx.manifest)
+	if err == nil {
+		t.Error("expected error for unaligned file size")
 	}
 }
 
