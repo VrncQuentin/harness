@@ -186,19 +186,12 @@ func (idx *Index) SearchRooted(root *rootfs.Root, query []float32, k int) ([]Res
 	var results []scored
 
 	for _, entry := range idx.manifest.Chunks {
-		entryLen := int64(entry.Length)
-		dim := int64(idx.dim)
-		stride := dim * 4
-		byteLen := entryLen * stride
-		if entryLen < 0 || dim <= 0 || byteLen/stride != entryLen {
-			return nil, fmt.Errorf("index: manifest entry %s has invalid length %d or dim %d", entry.SHA, entry.Length, idx.dim)
+		_, entryEnd, err := entryRange(entry.Offset, entry.Length, idx.dim, int64(len(data)))
+		if err != nil {
+			return nil, err
 		}
-		end := entry.Offset + byteLen
-		if entry.Offset < 0 || end > int64(len(data)) {
-			return nil, fmt.Errorf("index: manifest entry %s range [%d:%d] exceeds vectors len %d", entry.SHA, entry.Offset, end, len(data))
-		}
-		vecs := make([]float32, entryLen*dim)
-		r := bytes.NewReader(data[entry.Offset:end])
+		vecs := make([]float32, int64(entry.Length)*int64(idx.dim))
+		r := bytes.NewReader(data[entry.Offset:entryEnd])
 		if err := binary.Read(r, binary.LittleEndian, &vecs); err != nil {
 			return nil, fmt.Errorf("index: read vectors at %d: %w", entry.Offset, err)
 		}
@@ -314,24 +307,15 @@ func validateManifestRooted(root *rootfs.Root, dir string, manifest Manifest) er
 	if info.IsDir() {
 		return fmt.Errorf("index: vectors path is a directory in %s", dir)
 	}
-	stride := int64(manifest.Dim) * 4
-	if stride <= 0 || info.Size()%stride != 0 {
-		return fmt.Errorf("index: vector file size %d is not aligned to dimension %d in %s", info.Size(), manifest.Dim, dir)
-	}
+	fileSize := info.Size()
 	count := 0
 	for i, entry := range manifest.Chunks {
 		if entry.SHA == "" {
 			return fmt.Errorf("index: manifest entry %d has empty sha in %s", i, dir)
 		}
-		if entry.Offset < 0 || entry.Length < 0 {
-			return fmt.Errorf("index: manifest entry %d has invalid offset/length in %s", i, dir)
-		}
-		if entry.Offset%stride != 0 {
-			return fmt.Errorf("index: manifest entry %d offset %d is not vector-aligned in %s", i, entry.Offset, dir)
-		}
-		bytes := int64(entry.Length) * stride
-		if entry.Offset+bytes > info.Size() {
-			return fmt.Errorf("index: manifest entry %d extends past vectors file in %s", i, dir)
+		_, _, err := entryRange(entry.Offset, entry.Length, manifest.Dim, fileSize)
+		if err != nil {
+			return fmt.Errorf("index: %w in %s", err, dir)
 		}
 		count += entry.Length
 	}
@@ -339,6 +323,34 @@ func validateManifestRooted(root *rootfs.Root, dir string, manifest Manifest) er
 		return fmt.Errorf("index: manifest count %d does not match chunk lengths %d in %s", manifest.Count, count, dir)
 	}
 	return nil
+}
+
+func entryRange(offset int64, length, dim int, fileSize int64) (byteLen, end int64, err error) {
+	if length < 0 {
+		return 0, 0, fmt.Errorf("manifest entry has negative length %d", length)
+	}
+	if dim <= 0 {
+		return 0, 0, fmt.Errorf("manifest entry has non-positive dim %d", dim)
+	}
+	stride := int64(dim) * 4
+	if stride/4 != int64(dim) {
+		return 0, 0, fmt.Errorf("manifest entry stride overflow for dim %d", dim)
+	}
+	byteLen = int64(length) * stride
+	if byteLen/stride != int64(length) {
+		return 0, 0, fmt.Errorf("manifest entry byte length overflow for length %d, dim %d", length, dim)
+	}
+	if offset < 0 {
+		return 0, 0, fmt.Errorf("manifest entry has negative offset %d", offset)
+	}
+	end = int64(offset) + byteLen
+	if end < int64(offset) {
+		return 0, 0, fmt.Errorf("manifest entry end overflow for offset %d, byteLen %d", offset, byteLen)
+	}
+	if end > fileSize {
+		return 0, 0, fmt.Errorf("manifest entry range [%d:%d] exceeds file size %d", offset, end, fileSize)
+	}
+	return byteLen, end, nil
 }
 
 // Dim returns the vector dimension for this index.

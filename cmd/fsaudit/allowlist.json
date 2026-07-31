@@ -266,35 +266,35 @@
       "fn": "os.MkdirAll"
     },
     {
-      "line": 400,
+      "line": 412,
       "file": "internal/index/index.go",
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: temp file",
       "fn": "os.CreateTemp"
     },
     {
-      "line": 405,
+      "line": 417,
       "file": "internal/index/index.go",
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: cleanup temp",
       "fn": "os.Remove"
     },
     {
-      "line": 421,
+      "line": 433,
       "file": "internal/index/index.go",
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: publish",
       "fn": "os.Rename"
     },
     {
-      "line": 422,
+      "line": 434,
       "file": "internal/index/index.go",
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: cleanup old",
       "fn": "os.Remove"
     },
     {
-      "line": 425,
+      "line": 437,
       "file": "internal/index/index.go",
       "pr": "PR 5b2",
       "notes": "writeFileAtomic: retry rename",
