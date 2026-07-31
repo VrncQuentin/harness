@@ -559,13 +559,9 @@ func TestValidateManifestRooted_Alignment(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-
-	// Create a valid manifest + vectors pair.
 	if _, err := CreateRooted(r, dir, 2); err != nil {
 		t.Fatal(err)
 	}
-
-	// Reopen to get the manifest we just wrote.
 	r2, err := rootfs.Open(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -575,22 +571,34 @@ func TestValidateManifestRooted_Alignment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := idx.UpsertRooted(r2, "a", "h1", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	// Reopen so the Root sees the published vectors.
+	r3, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r3.Close() }()
 
-	// Corrupt the manifest with a misaligned offset.
-	bad := Manifest{Dim: idx.manifest.Dim, Count: idx.manifest.Count}
-	bad.Chunks = []Entry{{SHA: "x", Offset: 1, Length: 1}}
-	err = validateManifestRooted(r2, dir, bad)
-	if err == nil {
-		t.Error("expected error for misaligned offset")
+	// Misaligned offset: vectors.bin is 8 bytes (one 2-dim float32).
+	// Offset 1 is inside a float and should be rejected.
+	bad := Manifest{Dim: 2, Count: 1}
+	bad.Chunks = []Entry{{SHA: "a", Offset: 1, Length: 1}}
+	err = validateManifestRooted(r3, dir, bad)
+	if err == nil || !strings.Contains(err.Error(), "not vector-aligned") {
+		t.Errorf("expected not-vector-aligned error, got %v", err)
 	}
 
 	// Truncate vectors to make file size unaligned.
-	if err := r2.WriteStreamAtomic("vectors.bin", strings.NewReader("abc"), 0o644); err != nil {
+	if err := r3.WriteStreamAtomic("vectors.bin", strings.NewReader("abc"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	err = validateManifestRooted(r2, dir, idx.manifest)
-	if err == nil {
-		t.Error("expected error for unaligned file size")
+	// Reset manifest to match the truncated data.
+	good := Manifest{Dim: 2, Count: 0}
+	err = validateManifestRooted(r3, dir, good)
+	if err == nil || !strings.Contains(err.Error(), "is not aligned") {
+		t.Errorf("expected unaligned-file-size error, got %v", err)
 	}
 }
 
