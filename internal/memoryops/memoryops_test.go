@@ -422,11 +422,12 @@ func TestNewEpisodeIndex_MismatchedDirectoryRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Pass anchor for dir1 but pathname for dir2.
 	_, err = NewEpisodeIndex(a, EpisodeIndexDir(dir2))
 	if err == nil {
+		_ = a.Close()
 		t.Fatal("expected error for mismatched dir")
 	}
+	_ = a.Close()
 }
 
 func TestNewEpisodeIndex_StableAliasAccepted(t *testing.T) {
@@ -436,43 +437,43 @@ func TestNewEpisodeIndex_StableAliasAccepted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Try symlink first.
+	dr, err := memory.NewDirReader(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = dr.Close() }()
+	// Pin the physical index/_episodes through the DirReader.
+	a, err := dr.SubAnchor("index/_episodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try symlink alias first. Pass the symlink pathname to
+	// NewEpisodeIndex; sameDir opens it and compares with the Anchor.
 	linkDir := filepath.Join(repo, "index", "_episodes_link")
 	if err := os.Symlink(indexDir, linkDir); err == nil {
 		defer func() { _ = os.Remove(linkDir) }()
-		dr, err := memory.NewDirReader(repo)
+		ei, err := NewEpisodeIndex(a, linkDir)
 		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = dr.Close() }()
-		a, err := dr.SubAnchor("index/_episodes_link")
-		if err != nil {
-			t.Fatal(err)
-		}
-		ei, err := NewEpisodeIndex(a, indexDir)
-		if err != nil {
-			t.Fatal(err)
+			_ = a.Close()
+			t.Fatalf("NewEpisodeIndex via symlink alias: %v", err)
 		}
 		_ = ei.Close()
 		return
 	}
 
-	// Try Windows junction. OpenChildNoFollow intentionally refuses
-	// to enter junctions, so SubAnchor rejects them — the test
-	// verifies the rejection is by identity, not by pathname.
+	// Try Windows junction as alias pathname.
 	cmd := exec.Command("cmd", "/c", "mklink", "/J", linkDir, indexDir)
 	if _, jerr := cmd.CombinedOutput(); jerr == nil {
-		dr, err := memory.NewDirReader(repo)
+		ei, err := NewEpisodeIndex(a, linkDir)
 		if err != nil {
-			t.Fatal(err)
+			_ = a.Close()
+			t.Fatalf("NewEpisodeIndex via junction alias: %v", err)
 		}
-		defer func() { _ = dr.Close() }()
-		_, err = dr.SubAnchor("index/_episodes_link")
-		if err == nil {
-			t.Fatal("SubAnchor should reject junction at index/_episodes")
-		}
+		_ = ei.Close()
 		return
 	}
 
+	_ = a.Close()
 	t.Skip("neither symlink nor junction available")
 }
