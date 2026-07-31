@@ -3,8 +3,10 @@ package index
 import (
 	"errors"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/VrncQuentin/harness/internal/rootfs"
@@ -519,5 +521,81 @@ func TestIndex_UpsertReplacesSourceAndKeepsAgentPathsDistinct(t *testing.T) {
 	}
 	if !idx.Contains(coder) || !idx.Contains(reviewer) {
 		t.Fatal("source-path identities were not retained")
+	}
+}
+
+func TestEntryRange_Overflow(t *testing.T) {
+	tests := []struct {
+		name   string
+		offset int64
+		length int
+		dim    int
+		size   int64
+	}{
+		{"negative length", 0, -1, 2, 100},
+		{"zero dim", 0, 1, 0, 100},
+		{"negative dim", 0, 1, -1, 100},
+		{"stride overflow", 0, 1, 1 << 30, 100},
+		{"negative offset", -1, 1, 2, 100},
+		{"end overflow", math.MaxInt64, 1, 2, math.MaxInt64},
+		{"exceeds file size", 0, 100, 4, 8},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := entryRange(tc.offset, tc.length, tc.dim, tc.size)
+			if err == nil {
+				t.Error("expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestEntryRange_ValidReturnsEnd(t *testing.T) {
+	end, err := entryRange(0, 2, 3, 2*3*4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if end != 24 {
+		t.Fatalf("end = %d, want 24", end)
+	}
+}
+
+func TestSearchRooted_TruncatedVectorsReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	idx, err := CreateRooted(r, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.UpsertRooted(r, "a", "h1", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.UpsertRooted(r, "b", "h2", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen to get the updated manifest.
+	r2, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r2.Close() }()
+	idx2, err := OpenRooted(r2, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Truncate vectors.bin to corrupt offset ranges.
+	if err := r2.WriteStreamAtomic("vectors.bin", strings.NewReader("short"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = idx2.SearchRooted(r2, []float32{1, 0}, 5)
+	if err == nil {
+		t.Fatal("expected error for truncated vectors, got nil")
 	}
 }
