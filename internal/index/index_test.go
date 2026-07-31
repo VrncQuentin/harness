@@ -651,3 +651,183 @@ func TestSearchRooted_TruncatedVectorsReturnsError(t *testing.T) {
 		t.Fatal("expected error for truncated vectors, got nil")
 	}
 }
+
+// TestIndex_WriteManifestDoesNotRemoveStranger verifies finding 5.4:
+// Post-rename os.Remove + retry fallback would delete a stranger's
+// replacement.  Manifest publication uses WriteStreamAtomic, which
+// publishes by rename — the old inode survives through a hard link.
+func TestIndex_WriteManifestDoesNotRemoveStranger(t *testing.T) {
+	dir := t.TempDir()
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	idx, err := CreateRooted(r, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.UpsertRooted(r, "first", "first", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestPath := filepath.Join(dir, manifestFile)
+	sentinelPath := filepath.Join(dir, "sentinel-manifest.json")
+	if err := os.Link(manifestPath, sentinelPath); err != nil {
+		t.Fatal(err)
+	}
+	sentOld, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Upsert a new entry — rewrites manifest via WriteStreamAtomic rename.
+	if err := idx.UpsertRooted(r, "second", "second", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sentinel must contain the old manifest: WriteStreamAtomic replaces
+	// the directory entry, not the inode, so rename preserves the hard
+	// link.  An os.Remove + create would have broken it.
+	sentNew, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(sentOld) != string(sentNew) {
+		t.Error("hard-link sentinel of manifest.json was modified — manifest was written in-place or deleted+recreated, not renamed")
+	}
+
+	// Manifest.json must contain the new entry.
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifestData), `"second"`) {
+		t.Error("manifest.json should contain the new entry after upsert")
+	}
+}
+
+// TestIndex_WriteManifestFsyncsBeforeRename verifies finding 5.6:
+// Manifest publication must be fsynced before the rename so a crash
+// never leaves a half-written manifest at the destination path.
+func TestIndex_WriteManifestFsyncsBeforeRename(t *testing.T) {
+	dir := t.TempDir()
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	idx, err := CreateRooted(r, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.UpsertRooted(r, "old", "old", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldManifest, err := os.ReadFile(filepath.Join(dir, manifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	syncFailed := errors.New("sync before rename failed")
+	err = idx.upsertRooted(r, "new", "new", [][]float32{{0, 1}},
+		func(root *rootfs.Root, data []byte) error {
+			return syncFailed
+		})
+	if !errors.Is(err, syncFailed) {
+		t.Fatalf("expected sync-failed error, got %v", err)
+	}
+
+	// On-disk manifest must be unmodified.
+	newManifest, err := os.ReadFile(filepath.Join(dir, manifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(oldManifest) != string(newManifest) {
+		t.Error("manifest.json was modified despite failed write (publication before fsync)")
+	}
+
+	// In-memory manifest must not include the new entry.
+	if idx.Contains("new") {
+		t.Error("new entry leaked into in-memory manifest after failed write")
+	}
+	if !idx.Contains("old") {
+		t.Error("old entry was lost from in-memory manifest after failed write")
+	}
+}
+
+// TestIndex_WriteManifestCleansUpOwnTemp verifies finding 5.7:
+// Temp file cleanup deletes by name after a rename may have consumed
+// the temp entry.  WriteStreamAtomic never deletes temp files — on
+// failure they survive, on success the rename consumes the name.
+func TestIndex_WriteManifestCleansUpOwnTemp(t *testing.T) {
+	dir := t.TempDir()
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	idx, err := CreateRooted(r, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.UpsertRooted(r, "first", "first", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	entriesBefore, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Successful upsert rewrites the manifest through WriteStreamAtomic,
+	// which publishes by rename.  No files should be deleted from the
+	// directory — the old manifest entry is replaced, not removed.
+	if err := idx.UpsertRooted(r, "second", "second", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	entriesAfter, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namesAfter := map[string]bool{}
+	for _, e := range entriesAfter {
+		namesAfter[e.Name()] = true
+		if strings.HasPrefix(e.Name(), ".harness-write-") {
+			t.Errorf("orphan temp file %q after successful write", e.Name())
+		}
+	}
+	for _, before := range entriesBefore {
+		if !namesAfter[before.Name()] {
+			t.Errorf("file %q was removed during successful manifest write — cleanup-by-name is unsafe", before.Name())
+		}
+	}
+
+	// Now test that a failed manifest write does not clean up any files.
+	entriesBeforeFail, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sentinelErr := errors.New("injected manifest write failure")
+	_ = idx.upsertRooted(r, "third", "third", [][]float32{{1, 1}},
+		func(root *rootfs.Root, data []byte) error {
+			return sentinelErr
+		})
+
+	entriesAfterFail, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namesFailAfter := map[string]bool{}
+	for _, e := range entriesAfterFail {
+		namesFailAfter[e.Name()] = true
+	}
+	for _, before := range entriesBeforeFail {
+		if !namesFailAfter[before.Name()] {
+			t.Errorf("file %q was removed during failed manifest write", before.Name())
+		}
+	}
+}
