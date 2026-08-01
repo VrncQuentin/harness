@@ -1050,7 +1050,7 @@ func TestMoveProjectRepo_SourceAndDestinationPinned(t *testing.T) {
 		dst := filepath.Join(base, "dst")
 
 		swapped := false
-		err := moveProjectRepoHooked(alias, dst, false, func() {
+		err := moveProjectRepoHooked(alias, dst, false, nil, func() {
 			if swapped {
 				return
 			}
@@ -1099,28 +1099,27 @@ func TestMoveProjectRepo_SourceAndDestinationPinned(t *testing.T) {
 		dstAlias := filepath.Join(base, "dst-alias")
 		mustLinkDir(t, realDst, dstAlias)
 
+		// Both trees are pinned before the alias is re-pointed. The copy must
+		// write through the pinned destination handle, wherever the alias now
+		// resolves.
 		dstRoot, dstID, err := rootfs.OpenIdentified(dstAlias)
 		if err != nil {
 			t.Fatalf("OpenIdentified(dstAlias): %v", err)
 		}
 		defer dstRoot.Close() //nolint:errcheck // test cleanup
-
-		swapped := false
-		err = copyTreeToPinnedRootHooked(src, dstRoot, dstID, dstAlias, func() {
-			if swapped {
-				return
-			}
-			swapped = true
-			if rmErr := os.Remove(dstAlias); rmErr != nil {
-				t.Fatalf("Remove dstAlias: %v", rmErr)
-			}
-			mustLinkDir(t, impostor, dstAlias)
-		})
-		if !swapped {
-			t.Fatal("the hook never ran; the window was not exercised")
-		}
+		srcRoot, srcID, err := rootfs.OpenIdentified(src)
 		if err != nil {
-			t.Fatalf("copyTreeToPinnedRoot: %v", err)
+			t.Fatalf("OpenIdentified(src): %v", err)
+		}
+		defer srcRoot.Close() //nolint:errcheck // test cleanup
+
+		if rmErr := os.Remove(dstAlias); rmErr != nil {
+			t.Fatalf("Remove dstAlias: %v", rmErr)
+		}
+		mustLinkDir(t, impostor, dstAlias)
+
+		if err := copyTreeBetweenRoots(srcRoot, srcID, dstRoot, dstID, src, dstAlias); err != nil {
+			t.Fatalf("copyTreeBetweenRoots: %v", err)
 		}
 		// The copy must have written to the pinned destination, wherever the
 		// alias went.
@@ -1192,6 +1191,124 @@ func TestEnsureProjectRepo_BoundaryMismatchFailsClosed(t *testing.T) {
 	}
 	if !origID.Equal(replacedID) {
 		t.Fatal("same-name replacement must reuse the pathid key, or this test no longer discriminates")
+	}
+}
+
+// The MoveProjectRepo boundary comparison must fail when the destination is
+// re-pointed between the pinned destination handle and git opening the
+// destination: the pinned handle refers to one physical repository while the
+// git boundary and its coordinator refer to another. The copy and scaffold
+// must never run.
+//
+// The staging re-points an intermediate component (the junction alias) so it
+// works on every platform, and the same-name-replacement precondition is not
+// needed because the two destinations never shared a pathname.
+func TestMoveProjectRepo_BoundaryMismatchFailsClosed(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo(src): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	parentA := filepath.Join(base, "parent-a")
+	if err := os.MkdirAll(parentA, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	parentB := filepath.Join(base, "parent-b")
+	if err := os.MkdirAll(parentB, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, parentA, alias)
+	dst := filepath.Join(alias, "repo")
+
+	swapped := false
+	err := moveProjectRepoHooked(src, dst, false, nil, func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		if rmErr := os.RemoveAll(alias); rmErr != nil {
+			t.Fatalf("Remove alias: %v", rmErr)
+		}
+		mustLinkDir(t, parentB, alias)
+	})
+	if !swapped {
+		t.Fatal("the hook never ran; the window was not exercised")
+	}
+	if err == nil {
+		t.Fatal("MoveProjectRepo moved into a destination different from the git boundary")
+	}
+	// Neither the repointed destination nor the pinned one may have received
+	// the copy or scaffold.
+	if _, statErr := os.Stat(filepath.Join(parentB, "repo", "notes.md")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the repointed destination received the copy: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(parentA, "repo", "notes.md")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the pinned destination received the copy: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(parentB, "repo", "rules.md")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the repointed destination received the scaffold: %v", statErr)
+	}
+}
+
+// A destination re-pointed into the source after the name-based containment
+// check must be refused by the handle-bound check before the destination is
+// initialized as a git repository: no .git metadata and no copied files may
+// appear inside the source. This is the race the pinning ordering exists to
+// survive.
+func TestMoveProjectRepo_RefusedRepointLeavesNoGitInSource(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo(src): %v", err)
+	}
+	const body = "keep me"
+	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, outside, alias)
+	dst := filepath.Join(alias, "nested", "dst")
+
+	swapped := false
+	err := moveProjectRepoHooked(src, dst, false, func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		if rmErr := os.RemoveAll(alias); rmErr != nil {
+			t.Fatalf("Remove alias: %v", rmErr)
+		}
+		mustLinkDir(t, src, alias)
+	}, nil)
+	if !swapped {
+		t.Fatal("the hook never ran; the window was not exercised")
+	}
+	if err == nil {
+		t.Fatal("MoveProjectRepo copied into a destination re-pointed inside the source")
+	}
+	// The refused move must not have initialized a repository inside the
+	// source, and must not have copied anything there.
+	if _, statErr := os.Stat(filepath.Join(src, "nested", "dst", ".git")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf(".git was created inside the source at the re-pointed destination: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(src, "nested", "dst", "notes.md")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("copied files were left at the re-pointed destination inside the source: %v", statErr)
+	}
+	// The source's own tree is intact.
+	got, readErr := os.ReadFile(filepath.Join(src, "notes.md"))
+	if readErr != nil {
+		t.Fatalf("read source notes: %v", readErr)
+	}
+	if string(got) != body {
+		t.Errorf("source notes = %q, want %q", string(got), body)
 	}
 }
 

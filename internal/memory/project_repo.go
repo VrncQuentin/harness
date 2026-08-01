@@ -96,21 +96,28 @@ func ensureProjectRepoHooked(root string, global bool, afterOpen func()) error {
 // names one repository — and then the copy proceeds to rewrite the repository
 // with itself.
 //
-// The destination is opened or initialized first, and the copy, scaffolding,
-// file enumeration, and migration commit all run inside one repository-wide
-// mutation transaction on the destination. Nothing else can interleave with
-// the copy or between the writes and the commit, and the commit uses the
-// transaction session's commit path, which does not reacquire the gate.
+// The destination is created and pinned before any git initialization, the
+// source is pinned, the two trees are refused if they overlap by handle-bound
+// identity, and only then is the destination opened or initialized as a git
+// repository. Its retained boundary is compared against the pinned destination
+// before the copy, scaffolding, enumeration, and migration commit all run
+// inside one repository-wide mutation transaction using the transaction
+// session's commit path, which does not reacquire the gate.
 func MoveProjectRepo(src, dst string, global bool) error {
-	return moveProjectRepoHooked(src, dst, global, nil)
+	return moveProjectRepoHooked(src, dst, global, nil, nil)
 }
 
-// moveProjectRepoHooked is MoveProjectRepo with a hook that runs after the
-// source and destination roots are both pinned and before the copy reads or
-// writes anything, so a test can re-point an alias in exactly that window and
-// prove the copy stays bound to the pinned objects. Nil on every production
-// path.
-func moveProjectRepoHooked(src, dst string, global bool, afterPinned func()) error {
+// moveProjectRepoHooked is MoveProjectRepo with two per-instance test hooks,
+// both nil on every production path:
+//
+//   - afterRefuse runs after the name-based containment check and before the
+//     destination is created, so a test can re-point the destination into the
+//     source in exactly the window the rooted checks exist to survive.
+//   - afterPinned runs after both trees are pinned and proven disjoint and
+//     before the destination is initialized as a git repository, so a test can
+//     re-point an alias and prove the copy and the git boundary stay bound to
+//     the pinned objects.
+func moveProjectRepoHooked(src, dst string, global bool, afterRefuse, afterPinned func()) error {
 	dst = filepath.Clean(dst)
 	same, err := SameProjectRepoPath(src, dst)
 	if err != nil {
@@ -120,24 +127,56 @@ func moveProjectRepoHooked(src, dst string, global bool, afterPinned func()) err
 		return EnsureProjectRepo(dst, global)
 	}
 	// Name-based containment before anything is created: a destination inside
-	// the source must be refused before the destination is opened, or the
-	// open would initialize a repository inside the tree about to be copied.
-	// The pinned containment check inside the transaction remains the
-	// authoritative one for re-points after this point.
+	// the source must be refused before the destination exists. On its own it
+	// proves nothing, because it is a fact about names; the handle-bound check
+	// below is the one that counts.
 	if err := refuseByName(src, dst); err != nil {
 		return err
 	}
+	if afterRefuse != nil {
+		afterRefuse()
+	}
+
+	// Create and pin the destination before any git initialization. A
+	// destination re-pointed into the source after the name check is refused
+	// by the handle-bound containment below before git metadata can be written
+	// inside the source.
+	if err := createDestinationDir(dst); err != nil {
+		return err
+	}
+	dstRoot, dstID, err := rootfs.OpenIdentified(dst)
+	if err != nil {
+		return fmt.Errorf("memory: pin destination repo %s: %w", dst, err)
+	}
+	defer func() { _ = dstRoot.Close() }()
+	srcRoot, srcID, err := rootfs.OpenIdentified(src)
+	if err != nil {
+		return fmt.Errorf("memory: open source repo %s: %w", src, err)
+	}
+	defer srcRoot.Close() //nolint:errcheck // read-only handle
+
+	if err := refuseContainment(srcID, dstID, src, dst); err != nil {
+		return err
+	}
+	sameDir, err := srcRoot.SameDir(dstRoot)
+	if err != nil {
+		return fmt.Errorf("memory: compare source and destination repo: %w", err)
+	}
+	if sameDir {
+		return fmt.Errorf("memory: refusing to copy project memory repo %s onto itself, reached as %s", src, dst)
+	}
+	if afterPinned != nil {
+		afterPinned()
+	}
+
 	repo, err := gitw.Init(dst)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = repo.Close() }()
+	// Copy, scaffolding, enumeration, and the migration commit all run under
+	// one destination transaction.
 	return repo.WithMutation(func(m *gitw.Mutation) error {
-		dstRoot, dstID, err := rootfs.OpenIdentified(dst)
-		if err != nil {
-			return fmt.Errorf("memory: pin destination repo %s: %w", dst, err)
-		}
-		defer func() { _ = dstRoot.Close() }()
 		// The transaction gate belongs to the directory git opened. The copy
 		// destination handle is bound to that same physical boundary before
 		// anything is written, so a name re-pointed between the two opens
@@ -150,7 +189,7 @@ func moveProjectRepoHooked(src, dst string, global bool, afterPinned func()) err
 		if !sameBoundary {
 			return fmt.Errorf("memory: destination repo %s changed since it was opened — refusing to move", dst)
 		}
-		if err := copyTreeToPinnedRootHooked(src, dstRoot, dstID, dst, afterPinned); err != nil {
+		if err := copyTreeBetweenRoots(srcRoot, srcID, dstRoot, dstID, src, dst); err != nil {
 			return err
 		}
 		if err := createMissingRooted(dstRoot, ExpectedProjectRepoLayout(global)); err != nil {
@@ -232,30 +271,6 @@ func copyTreeWithoutGitHooked(src, dst string, afterCheck func()) error {
 	// where it is. Removing it means removing a name, and the name may no longer
 	// be the empty directory that was just created — the same reason
 	// CreateExclusive leaves its partial file behind.
-	return copyTreeBetweenRoots(srcRoot, srcID, dstRoot, dstID, src, dst)
-}
-
-// copyTreeToPinnedRoot copies src into a destination that is already pinned
-// and verified. The caller holds the pinned destination (and, when the
-// destination is a git repository, its coordinator) and passes its verified
-// identity, so the copy does not open the destination name a second time.
-func copyTreeToPinnedRoot(src string, dstRoot *rootfs.Root, dstID pathid.ID, dst string) error {
-	return copyTreeToPinnedRootHooked(src, dstRoot, dstID, dst, nil)
-}
-
-// copyTreeToPinnedRootHooked is copyTreeToPinnedRoot with a hook that runs
-// after both the source and destination roots are pinned, so a test can
-// re-point an alias in exactly that window and prove the copy stays bound to
-// the pinned objects. Nil on every production path.
-func copyTreeToPinnedRootHooked(src string, dstRoot *rootfs.Root, dstID pathid.ID, dst string, afterPinned func()) error {
-	srcRoot, srcID, err := rootfs.OpenIdentified(src)
-	if err != nil {
-		return fmt.Errorf("memory: open source repo %s: %w", src, err)
-	}
-	defer srcRoot.Close() //nolint:errcheck // read-only handle
-	if afterPinned != nil {
-		afterPinned()
-	}
 	return copyTreeBetweenRoots(srcRoot, srcID, dstRoot, dstID, src, dst)
 }
 
