@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/VrncQuentin/harness/internal/inference"
@@ -179,10 +180,48 @@ func TestSessionLog_AppendDoesNotFollowLinkOutOfRoot(t *testing.T) {
 	}
 }
 
+// sidecarEscapingWriter wraps a rooted FileWriter and, immediately after the
+// first WriteFile lands (the episode .md), replaces the episode directory with
+// a link out of the root. The second WriteFile — the .json sidecar — is then
+// the write that must fail closed. Staging between the two writes matters:
+// a link installed before Save would make the first episode write fail and the
+// sidecar call would never run, so a pathname regression confined to sidecar
+// publication would pass untouched.
+type sidecarEscapingWriter struct {
+	real    FileWriter
+	root    string
+	outside string
+	t       *testing.T
+	calls   int
+	staged  bool
+}
+
+func (w *sidecarEscapingWriter) WriteFile(relPath string, data []byte) error {
+	w.calls++
+	if err := w.real.WriteFile(relPath, data); err != nil {
+		return err
+	}
+	if w.staged {
+		return nil
+	}
+	// The first write (episode .md) landed inside the root. Drop the episode
+	// directory and pin a link out of it in its place, so the very next write
+	// — the sidecar — is the one that has to refuse.
+	episodeDir := filepath.Join(w.root, filepath.Dir(filepath.FromSlash(relPath)))
+	if err := os.RemoveAll(episodeDir); err != nil {
+		w.t.Fatalf("remove episode dir to stage the link: %v", err)
+	}
+	sessionLinkDir(w.t, w.outside, episodeDir)
+	w.staged = true
+	return nil
+}
+
 // TestSessionLog_SidecarPublishedThroughPinnedRoot is the finding 7.4
-// discriminator: episode and sidecar publication goes through the pinned
-// memory writer (m.deps.Writer.WriteFile), so a Save whose episode directory
-// links out of the repo must fail closed and write nothing outside.
+// discriminator: sidecar publication goes through the pinned memory writer
+// (m.deps.Writer.WriteFile), so when the sidecar's episode directory becomes a
+// link out of the repo the sidecar write itself must fail closed and write
+// nothing outside. The link is staged between the episode and sidecar writes so
+// the sidecar call is the one that hits it.
 func TestSessionLog_SidecarPublishedThroughPinnedRoot(t *testing.T) {
 	fi := newFakeInference(summaryTokens("sidecar summary"))
 	root, repo := scaffoldMemoryRepo(t, "coder")
@@ -191,9 +230,13 @@ func TestSessionLog_SidecarPublishedThroughPinnedRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = reader.Close() })
+
+	outside := t.TempDir()
+	writer := &sidecarEscapingWriter{real: reader, root: root, outside: outside, t: t}
+
 	mgr, err := NewManager(ManagerDeps{
 		Repo:             repo,
-		Writer:           reader,
+		Writer:           writer,
 		Reader:           reader,
 		Appender:         reader,
 		Inference:        fi,
@@ -208,18 +251,19 @@ func TestSessionLog_SidecarPublishedThroughPinnedRoot(t *testing.T) {
 		t.Fatalf("Append: %v", err)
 	}
 
-	// Stage an escaping link at the agent's episodes directory. The episode
-	// .md and the .json sidecar both live there and both go through the rooted
-	// Writer, so neither may escape the repo.
-	outside := filepath.Join(filepath.Dir(root), "outside")
-	if err := os.MkdirAll(outside, 0o755); err != nil {
-		t.Fatal(err)
+	_, err = mgr.Save(context.Background(), s.ID)
+	if err == nil {
+		t.Fatal("Save published a sidecar through an escaping link")
 	}
-	sessionLinkDir(t, outside, filepath.Join(root, "episodes", "coder"))
-
-	if _, err := mgr.Save(context.Background(), s.ID); err == nil {
-		t.Fatal("Save published an episode through an escaping link")
+	// The failure must come from the sidecar publication, not the episode
+	// write that runs before it — otherwise the sidecar call was never made.
+	if !strings.Contains(err.Error(), s.ID+episodeSidecarSuffix) {
+		t.Fatalf("error should come from sidecar publication, got %v", err)
 	}
+	if writer.calls != 2 {
+		t.Fatalf("sidecar publication was not reached: %d WriteFile calls, want 2", writer.calls)
+	}
+	// Nothing may have landed outside: no episode, no sidecar.
 	entries, err := os.ReadDir(outside)
 	if err != nil {
 		t.Fatal(err)
