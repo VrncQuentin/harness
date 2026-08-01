@@ -293,9 +293,9 @@ guarantees below.
 | Same-name directory replacement | `OpenIdentified` verifies the pinned handle against the physical identity with `os.SameFile`; a replacement fails the comparison | implemented |
 | Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name | implemented |
 | Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere | implemented |
-| In-process concurrent writers | Index-directory mutation coordinator keyed by physical identity, bound to the pinned root and shared across all handles to one index (PR 5b3); a repository-wide coordinator shared with git commits remains planned | partial |
+| In-process concurrent writers | Index-directory mutation coordinator keyed by physical identity, bound to the pinned root and shared across all handles to one index (PR 5b3); a repository-wide coordinator shared with git commits is assigned to PR 5b4 | partial |
 | Check/use races on intermediate directories | `OpenChildNoFollow` opens the child, Lstats the entry through the parent, rejects links, and compares the entry with the opened handle via `os.SameFile` — what is opened and what is checked are the same object | implemented |
-| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); stable cross-operation identity via PR 2c; index rooted identity via PR 5b2; index-directory serialization via PR 5b3 | implemented; repository-wide coordinator spanning git commits planned |
+| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); DirReader identity via PR 2c (git/memory opened-object identity deferred per finding 2.8b); index rooted identity via PR 5b2; index-directory serialization via PR 5b3 | implemented; repository-wide coordinator spanning git commits assigned to PR 5b4 |
 
 #### Out of scope
 
