@@ -73,7 +73,7 @@ func TestAppendSync_WriteErrorPropagates(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	injected := errors.New("injected write failure")
-	err = root.AppendSyncWithHooks("log.txt", []byte("new"), 0o644, AppendHooks{
+	err = root.appendSync("log.txt", []byte("new"), 0o644, appendHooks{
 		Write: func(f *os.File, data []byte) error { return injected },
 	})
 	if !errors.Is(err, injected) {
@@ -98,7 +98,7 @@ func TestAppendSync_SyncErrorPropagates(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	injected := errors.New("injected sync failure")
-	err = root.AppendSyncWithHooks("log.txt", []byte("data"), 0o644, AppendHooks{
+	err = root.appendSync("log.txt", []byte("data"), 0o644, appendHooks{
 		Sync: func(f *os.File) error { return injected },
 	})
 	if !errors.Is(err, injected) {
@@ -121,7 +121,7 @@ func TestAppendSync_FailedAppendDoesNotCleanUpByName(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	injected := errors.New("injected write failure")
-	if err := root.AppendSyncWithHooks("log.txt", []byte("new"), 0o644, AppendHooks{
+	if err := root.appendSync("log.txt", []byte("new"), 0o644, appendHooks{
 		Write: func(f *os.File, data []byte) error { return injected },
 	}); !errors.Is(err, injected) {
 		t.Fatalf("write failure must propagate, got %v", err)

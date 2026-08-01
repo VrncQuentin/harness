@@ -15,25 +15,25 @@
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 388,
+      "line": 387,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: directory identity comparison"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 475,
+      "line": 474,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: OpenChildNoFollow identity check"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 622,
+      "line": 621,
       "fn": "os.Stat",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 626,
+      "line": 625,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: identity verification via matches()"
     },

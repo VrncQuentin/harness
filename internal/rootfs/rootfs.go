@@ -285,17 +285,19 @@ func (r *Root) CreateExclusive(rel string, data []byte, perm fs.FileMode) error 
 	return nil
 }
 
-// AppendHooks are the seams threaded into AppendSyncWithHooks. The fields run
-// at the lifecycle points they name:
+// appendHooks are the seams threaded into appendSync. The fields run at the
+// lifecycle points they name:
 //
 //   - Write, if non-nil, replaces the single f.Write(data) that appends the
 //     record.
 //   - Sync, if non-nil, replaces f.Sync().
 //
-// Production callers use AppendSync, which passes no hooks; the hooks exist so
-// regression tests can stage write and sync failures at the real lifecycle
-// points instead of replacing the appender.
-type AppendHooks struct {
+// The hooks are unexported on purpose: they receive the live append target as
+// an *os.File, which can truncate, seek, or rewrite — exactly what the
+// append-only contract forbids. Keeping them package-private means only this
+// package's own tests can reach that handle; every production caller is left
+// with AppendSync, whose open is fixed to O_WRONLY|O_CREATE|O_APPEND.
+type appendHooks struct {
 	Write func(f *os.File, data []byte) error
 	Sync  func(f *os.File) error
 }
@@ -328,17 +330,14 @@ type AppendHooks struct {
 // around with a read-modify-rename; doing that would replace the audit log's
 // append-only identity with a rewrite on every save.
 func (r *Root) AppendSync(rel string, data []byte, perm fs.FileMode) error {
-	return r.appendSync(rel, data, perm, AppendHooks{})
+	return r.appendSync(rel, data, perm, appendHooks{})
 }
 
-// AppendSyncWithHooks is AppendSync with the AppendHooks seams enabled. It is
-// exported so regression tests can inject failures at the real write and sync
-// points; production code uses AppendSync.
-func (r *Root) AppendSyncWithHooks(rel string, data []byte, perm fs.FileMode, hooks AppendHooks) error {
-	return r.appendSync(rel, data, perm, hooks)
-}
-
-func (r *Root) appendSync(rel string, data []byte, perm fs.FileMode, hooks AppendHooks) error {
+// appendSync is AppendSync with the appendHooks seams enabled. It is
+// unexported because the only callers are this package's tests; the production
+// surface is AppendSync alone, so no caller outside rootfs can turn the live
+// append target into a truncate, seek, or rewrite.
+func (r *Root) appendSync(rel string, data []byte, perm fs.FileMode, hooks appendHooks) error {
 	f, err := r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_APPEND, perm)
 	if err != nil {
 		return err
