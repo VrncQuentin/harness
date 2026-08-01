@@ -14,7 +14,9 @@ import (
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing/object"
 
+	"github.com/VrncQuentin/harness/internal/coord"
 	"github.com/VrncQuentin/harness/internal/pathid"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 // defaultAuthorName and defaultAuthorEmail are used when the repo's git
@@ -29,76 +31,106 @@ const (
 // Repo is a thin handle over an opened go-git repository. Callers obtain
 // it via Open; tests construct one by initialising a fresh repo on a
 // temporary directory and opening it.
+//
+// Identity: the wrapper pins and verifies its repository boundary when the
+// handle is opened, and retains the verified physical identity. go-git
+// itself opens and reads storage by pathname — it is not handle-relative —
+// so the retained identity is the boundary that was pinned at open time, and
+// a pathname that is repointed after the open is a documented go-git
+// limitation, not something this wrapper claims to defend against.
 type Repo struct {
 	repo *gogit.Repository
 	path string
-	// lockKey is the repository's physical identity, resolved once when the
-	// handle is opened. It selects the shared mutation lock, so two handles on
-	// the same repository must produce the same key however each was spelled.
-	lockKey string
-	mu      sync.Mutex
+	// identity is the repository's physical identity, resolved once when the
+	// handle is opened and verified against a pinned boundary. It selects the
+	// repository-wide mutation coordinator, so two handles on the same
+	// repository must produce the same identity however each was spelled.
+	identity pathid.ID
+	// gate is the repository-wide mutation coordinator shared with index
+	// publication. It is the same gate index handles on this repository
+	// acquire, so git mutations and index publications serialize on one object.
+	gate *coord.Gate
+	mu   sync.Mutex
 }
 
-// repoMutationLocks serializes local mutations per repository.
-//
-// r.mu cannot do this job: a handle is opened per tool call, so two concurrent
-// calls against the same repository hold two different mutexes and exclude
-// nothing. The index, the refs, and the worktree are shared filesystem state,
-// so the lock has to be keyed by the repository rather than by the handle.
-//
-// This guards harness-internal concurrency only. A user running git in the same
-// repository at the same moment is outside its reach.
-var repoMutationLocks sync.Map // lock key -> *sync.Mutex
-
 // newRepo wraps an opened go-git repository, resolving its physical identity
-// once so every handle on the same repository shares one mutation lock.
+// once so every handle on the same repository shares one mutation
+// coordinator.
 //
 // Identity comes from internal/pathid rather than filepath.EvalSymlinks, which
 // leaves a Windows junction unresolved: a junction alias and its target would
-// hash to different keys, hand out two different mutexes, and leave concurrent
-// writes to one repository completely unserialized.
-func newRepo(repo *gogit.Repository, path string) (*Repo, error) {
-	key, err := pathid.LockKey(path)
+// hash to different keys, hand out two different coordinators, and leave
+// concurrent writes to one repository completely unserialized.
+//
+// The boundary is pinned and verified with rootfs.OpenIdentifiedHooked before
+// the identity is accepted, so a pathname that moved between the go-git open
+// and the identity resolution fails closed rather than silently identifying
+// the replacement. The pinned handle is only evidence; it is closed before
+// returning because go-git operates by pathname and the handle would not
+// constrain it.
+func newRepo(repo *gogit.Repository, path string, afterPin func()) (*Repo, error) {
+	pinned, id, err := rootfs.OpenIdentifiedHooked(path, afterPin)
 	if err != nil {
 		return nil, fmt.Errorf("git: identify repository %s: %w", path, err)
 	}
-	return &Repo{repo: repo, path: path, lockKey: key}, nil
+	_ = pinned.Close()
+	return &Repo{repo: repo, path: path, identity: id, gate: coord.Default().GateFor(id.Key())}, nil
 }
 
-// lockRepo takes the repository-wide mutation lock and this handle's mutex, and
-// returns the function that releases both in the right order.
+// Identity returns the verified physical identity of the repository directory
+// this handle opened. It is retained from open time and bound to the pinned
+// boundary, so two handles on one physical repository — reached through any
+// spelling — compare Equal, and a repointed spelling never silently
+// identifies the replacement.
+func (r *Repo) Identity() pathid.ID { return r.identity }
+
+// WithMutation runs fn under the repository-wide mutation coordinator,
+// holding it for the whole call. Index publication and the following git
+// commit for one repository must happen inside one WithMutation call so they
+// are one in-process mutation transaction: no other git mutation or index
+// publication on the repository can interleave between them.
 //
-// Every local mutation takes it — commit, branch creation, checkout — because
-// they contend for the same state. Serializing commits against each other but
-// not against a checkout would still let HEAD, the index, and the worktree move
-// underneath a commit that is midway through.
-//
-// Read paths deliberately do not take it: go-git reads from disk each time, and
-// blocking every status or log behind a write would serialize the whole tool
-// surface for no correctness gain.
-func (r *Repo) lockRepo() func() {
-	actual, _ := repoMutationLocks.LoadOrStore(r.lockKey, &sync.Mutex{})
-	lock, ok := actual.(*sync.Mutex)
-	if !ok {
-		// Unreachable: only *sync.Mutex is ever stored.
-		lock = &sync.Mutex{}
-	}
-	lock.Lock()
+// fn receives a *Mutation whose commit methods operate without reacquiring
+// the coordinator. Calling the *Repo* methods inside fn would deadlock; use
+// the Mutation methods instead. Index publication joins the transaction
+// through Index.UpsertRootedUnder with m.Gate(), which asserts the gate this
+// transaction holds is the index's own.
+func (r *Repo) WithMutation(fn func(*Mutation) error) error {
+	r.gate.Lock()
+	defer r.gate.Unlock()
 	r.mu.Lock()
-	return func() {
-		r.mu.Unlock()
-		lock.Unlock()
-	}
+	defer r.mu.Unlock()
+	return fn(&Mutation{r: r})
 }
+
+// Mutation is a repository mutation session. The coordinator is already held
+// by the WithMutation call that produced it; every method on it operates
+// without reacquiring it.
+type Mutation struct {
+	r *Repo
+}
+
+// Gate returns the coordinator this session holds. Components that share the
+// repository (index publication) use it to join the transaction without
+// acquiring a second gate.
+func (m *Mutation) Gate() *coord.Gate { return m.r.gate }
 
 // Open opens an existing git repository at path. It returns a wrapped
 // error if the path does not exist or is not a git repository.
 func Open(path string) (*Repo, error) {
+	return open(path, nil)
+}
+
+// open is Open with a hook that runs after go-git opens the repository and
+// after the repository boundary is pinned, in the window before its identity
+// is resolved. The hook is a parameter rather than package state so parallel
+// tests cannot see each other's; it is nil on every production path.
+func open(path string, afterPin func()) (*Repo, error) {
 	r, err := gogit.PlainOpen(path)
 	if err != nil {
 		return nil, fmt.Errorf("git: open %s: %w", path, err)
 	}
-	return newRepo(r, path)
+	return newRepo(r, path, afterPin)
 }
 
 // Init opens an existing plain git repository at path, or initializes a new
@@ -109,7 +141,7 @@ func Init(path string) (*Repo, error) {
 	}
 	r, err := gogit.PlainOpen(path)
 	if err == nil {
-		return newRepo(r, path)
+		return newRepo(r, path, nil)
 	}
 	if !errors.Is(err, gogit.ErrRepositoryNotExists) {
 		return nil, fmt.Errorf("git: open %s: %w", path, err)
@@ -118,7 +150,7 @@ func Init(path string) (*Repo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("git: init %s: %w", path, err)
 	}
-	return newRepo(r, path)
+	return newRepo(r, path, nil)
 }
 
 // Commit stages each file in files (paths relative to the repo root,
@@ -133,8 +165,21 @@ func Init(path string) (*Repo, error) {
 //
 // The returned sha is the new commit's hex SHA.
 func (r *Repo) Commit(msg string, files []string) (string, error) {
-	unlock := r.lockRepo()
-	defer unlock()
+	var sha string
+	err := r.WithMutation(func(m *Mutation) error {
+		var err error
+		sha, err = m.Commit(msg, files)
+		return err
+	})
+	return sha, err
+}
+
+// Commit stages and commits within a held repository mutation session.
+func (m *Mutation) Commit(msg string, files []string) (string, error) {
+	return m.r.commitLocked(msg, files)
+}
+
+func (r *Repo) commitLocked(msg string, files []string) (string, error) {
 	wt, err := r.repo.Worktree()
 	if err != nil {
 		return "", fmt.Errorf("git: worktree %s: %w", r.path, err)

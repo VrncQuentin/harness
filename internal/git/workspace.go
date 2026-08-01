@@ -98,8 +98,18 @@ func (r *Repo) CurrentBranch() (string, error) {
 // operation is done and must not be reported as failed, but the caller should
 // pass the warning on so the missing ergonomic undo is visible.
 func (r *Repo) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preOpSHA string, warn error, err error) {
-	unlock := r.lockRepo()
-	defer unlock()
+	err = r.WithMutation(func(m *Mutation) error {
+		newSHA, preOpSHA, warn, err = m.WorkspaceStageAndCommit(files, msg)
+		return err
+	})
+	return newSHA, preOpSHA, warn, err
+}
+
+// WorkspaceStageAndCommit stages files and creates a commit within a held
+// repository mutation session. See Repo.WorkspaceStageAndCommit for the
+// contract.
+func (m *Mutation) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preOpSHA string, warn error, err error) {
+	r := m.r
 
 	if head, herr := r.repo.Head(); herr == nil {
 		preOpSHA = head.Hash().String()
@@ -264,8 +274,17 @@ var ErrBranchExists = errors.New("git: branch already exists")
 // only — a branch creation does not move HEAD, so git writes nothing to
 // logs/HEAD for it.
 func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, warn error, err error) {
-	unlock := r.lockRepo()
-	defer unlock()
+	err = r.WithMutation(func(m *Mutation) error {
+		sha, preOpSHA, warn, err = m.CreateBranch(name, startPoint)
+		return err
+	})
+	return sha, preOpSHA, warn, err
+}
+
+// CreateBranch creates a branch within a held repository mutation session.
+// See Repo.CreateBranch for the contract.
+func (m *Mutation) CreateBranch(name, startPoint string) (sha, preOpSHA string, warn error, err error) {
+	r := m.r
 
 	refName := plumbing.NewBranchReferenceName(name)
 	if vErr := refName.Validate(); vErr != nil {
@@ -329,8 +348,17 @@ func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, warn
 // The movement is recorded in the HEAD reflog, matching git: a checkout moves
 // HEAD, not the branch, and the branch tips on either side are untouched.
 func (r *Repo) Checkout(name string) (preOpBranch, preOpSHA string, warn error, err error) {
-	unlock := r.lockRepo()
-	defer unlock()
+	err = r.WithMutation(func(m *Mutation) error {
+		preOpBranch, preOpSHA, warn, err = m.Checkout(name)
+		return err
+	})
+	return preOpBranch, preOpSHA, warn, err
+}
+
+// Checkout switches branches within a held repository mutation session. See
+// Repo.Checkout for the contract.
+func (m *Mutation) Checkout(name string) (preOpBranch, preOpSHA string, warn error, err error) {
+	r := m.r
 
 	// Snapshot pre-op state.
 	if head, herr := r.repo.Head(); herr == nil {
