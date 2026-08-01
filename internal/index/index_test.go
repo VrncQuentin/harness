@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
@@ -658,7 +659,9 @@ func TestSearchRooted_TruncatedVectorsReturnsError(t *testing.T) {
 // TestIndex_WriteManifestDoesNotRemoveStranger verifies finding 5.4:
 // a post-rename os.Remove + retry fallback would delete a stranger's
 // replacement that took over the destination name in the failure window.
-// Manifest publication must leave that replacement untouched.
+// The failure is injected at the actual rename operation, so any error
+// handling the implementation has around a failed rename runs against the
+// staged stranger and must leave it untouched.
 func TestIndex_WriteManifestDoesNotRemoveStranger(t *testing.T) {
 	dir := t.TempDir()
 	r, err := rootfs.Open(dir)
@@ -678,12 +681,11 @@ func TestIndex_WriteManifestDoesNotRemoveStranger(t *testing.T) {
 	stranger := []byte("a stranger's replacement")
 	renameFailed := errors.New("rename failed")
 
-	// The publication is driven through the real WriteStreamAtomic lifecycle.
-	// BeforeRename stages the exact state a fallback removal would face: the
-	// rename is about to fail and a stranger already holds the destination
-	// name.  The publication must abort without removing that stranger.
+	// The Rename hook is the rename operation.  It fails exactly the way a
+	// rename can fail while a stranger already holds the destination name; the
+	// caller's post-rename handling (if any) runs from here.
 	err = idx.upsertRooted(r, "second", "second", [][]float32{{0, 1}}, rootfs.WriteHooks{
-		BeforeRename: func() error {
+		Rename: func(tmpRel, base string) error {
 			if rmErr := os.Rename(manifestPath, manifestPath+".aside"); rmErr != nil {
 				return rmErr
 			}
@@ -764,8 +766,8 @@ func TestIndex_WriteManifestFsyncsBeforeRename(t *testing.T) {
 // TestIndex_WriteManifestCleansUpOwnTemp verifies finding 5.7:
 // temp-file cleanup deletes by name after a rename may have consumed the
 // temp entry.  The real lifecycle must never remove an entry it did not
-// create: a failed write leaves its own partial temp behind, and a stranger
-// holding a temp-style name survives a successful publication.
+// create: a stranger that claims the exact consumed temp name survives, and
+// a failed write leaves its own partial temp behind.
 func TestIndex_WriteManifestCleansUpOwnTemp(t *testing.T) {
 	dir := t.TempDir()
 	r, err := rootfs.Open(dir)
@@ -781,27 +783,36 @@ func TestIndex_WriteManifestCleansUpOwnTemp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A stranger holds a temp-style name.  A cleanup that removed temp-named
-	// entries would delete it; the real lifecycle must not.
-	strangerPath := filepath.Join(dir, ".harness-write-stranger")
-	if err := os.WriteFile(strangerPath, []byte("stranger"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Successful publication runs the full temp lifecycle.
-	if err := idx.UpsertRooted(r, "second", "second", [][]float32{{0, 1}}); err != nil {
-		t.Fatal(err)
-	}
-	strangerData, err := os.ReadFile(strangerPath)
+	// The AfterRename hook learns the real temp name the writer used.  After
+	// the rename consumes that name it is free, so the hook installs a stranger
+	// at that exact name — the name a cleanup-by-name would remove.
+	consumed := ""
+	claimed := []byte("stranger claiming the consumed temp name")
+	err = idx.upsertRooted(r, "second", "second", [][]float32{{0, 1}}, rootfs.WriteHooks{
+		AfterRename: func(tmpRel string) {
+			consumed = tmpRel
+			if werr := os.WriteFile(filepath.Join(dir, tmpRel), claimed, 0o644); werr != nil {
+				t.Errorf("install stranger at consumed temp name: %v", werr)
+			}
+		},
+	})
 	if err != nil {
-		t.Fatalf("stranger temp entry was cleaned up: %v", err)
+		t.Fatal(err)
 	}
-	if string(strangerData) != "stranger" {
-		t.Errorf("stranger temp entry was modified: got %q", strangerData)
+	if consumed == "" {
+		t.Fatal("AfterRename hook never ran; the temp name was not captured")
+	}
+	strangerData, err := os.ReadFile(filepath.Join(dir, consumed))
+	if err != nil {
+		t.Fatalf("stranger at the consumed temp name %s was cleaned up: %v", consumed, err)
+	}
+	if string(strangerData) != string(claimed) {
+		t.Errorf("stranger at consumed temp name was modified: got %q", strangerData)
 	}
 
 	// A failed publication must propagate its error, leave its own partial
-	// temp entry behind (never deleting it), and not reach manifest.json.
+	// temp entry behind (never deleting it), not reach manifest.json, and not
+	// disturb the stranger.
 	syncFailed := errors.New("sync failed")
 	err = idx.upsertRooted(r, "third", "third", [][]float32{{1, 1}},
 		rootfs.WriteHooks{Sync: func(*os.File) error { return syncFailed }})
@@ -823,19 +834,17 @@ func TestIndex_WriteManifestCleansUpOwnTemp(t *testing.T) {
 	}
 	ownTemp := false
 	for _, e := range entries {
-		switch e.Name() {
-		case ".harness-write-stranger":
-			// The stranger must still be here after the failed write too.
-			data, readErr := os.ReadFile(strangerPath)
+		if e.Name() == consumed {
+			data, readErr := os.ReadFile(filepath.Join(dir, consumed))
 			if readErr != nil {
-				t.Errorf("stranger temp entry disappeared after failed write: %v", readErr)
-			} else if string(data) != "stranger" {
-				t.Errorf("stranger temp entry modified after failed write: %q", data)
+				t.Errorf("stranger disappeared after failed write: %v", readErr)
+			} else if string(data) != string(claimed) {
+				t.Errorf("stranger modified after failed write: %q", data)
 			}
-		default:
-			if strings.HasPrefix(e.Name(), ".harness-write-") {
-				ownTemp = true
-			}
+			continue
+		}
+		if strings.HasPrefix(e.Name(), ".harness-write-") {
+			ownTemp = true
 		}
 	}
 	if !ownTemp {
@@ -846,9 +855,9 @@ func TestIndex_WriteManifestCleansUpOwnTemp(t *testing.T) {
 // TestIndex_TwoHandlesShareCoordinator verifies findings 5.8 and 5.9:
 // mutations on one physical index directory must be serialized by a single
 // coordinator shared across handles, and each write must start from the
-// committed on-disk state.  Two handles writing concurrently must both be
-// reflected in the published index — no entry may be lost to a stale
-// in-memory manifest or to two unlocked writers overwriting each other.
+// committed on-disk state.  The test forces the two writers' transactions to
+// overlap: the first blocks inside its critical section and the second must
+// not reach its own hook until the first is released.
 func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 	dir := t.TempDir()
 	r1, err := rootfs.Open(dir)
@@ -874,6 +883,91 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	firstEntered := make(chan struct{})
+	firstRelease := make(chan struct{})
+	secondEntered := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(firstRelease) }) }
+	defer release()
+
+	// Writer 1 blocks inside its critical section (at the manifest AfterOpen
+	// hook, which only runs after the coordinator lock is held).
+	var wg sync.WaitGroup
+	var err1, err2 error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err1 = idx1.upsertRooted(r1, "a", "a", [][]float32{{1, 0}}, rootfs.WriteHooks{
+			AfterOpen: func(*os.File, string) {
+				close(firstEntered)
+				<-firstRelease
+			},
+		})
+	}()
+	<-firstEntered
+
+	// Writer 2 starts only after writer 1 is provably inside its transaction.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err2 = idx2.upsertRooted(r2, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
+			AfterOpen: func(*os.File, string) { close(secondEntered) },
+		})
+	}()
+
+	// The second writer must not reach its hook until the first releases the
+	// coordinator: both hooks sit inside the same per-directory critical
+	// section.
+	select {
+	case <-secondEntered:
+		release()
+		t.Fatal("second writer entered the critical section while the first held the coordinator")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case <-secondEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second writer never entered after the first released the coordinator")
+	}
+	wg.Wait()
+	if err1 != nil {
+		t.Fatalf("first writer: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("second writer: %v", err2)
+	}
+
+	// Both writes must have survived, in commit order.
+	r3, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r3.Close() }()
+	idx3, err := OpenRooted(r3, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idx3.Contains("a") || !idx3.Contains("b") {
+		t.Fatalf("concurrent writes lost an entry: a=%v b=%v", idx3.Contains("a"), idx3.Contains("b"))
+	}
+	results, err := idx3.SearchRooted(r3, []float32{1, 0}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("index has %d entries, want 2 — a write was rolled back", len(results))
+	}
+}
+
+// TestIndex_ColdStartTwoHandles verifies that creation participates in the
+// same coordinator as mutation.  Two first-use handles can both decide the
+// index is absent and call CreateRooted; without serialization one create can
+// reset the files another handle has already published into.  Both cold
+// writers must come out with their entries present.
+func TestIndex_ColdStartTwoHandles(t *testing.T) {
+	dir := t.TempDir()
 	const workers = 2
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
@@ -882,14 +976,21 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			<-start
-			handle, root := idx1, r1
-			if n%2 == 1 {
-				handle, root = idx2, r2
-			}
-			src := fmt.Sprintf("src-%d", n)
-			if err := handle.UpsertRooted(root, src, src, [][]float32{{float32(n), float32(1 - n)}}); err != nil {
+			r, err := rootfs.Open(dir)
+			if err != nil {
 				errs <- err
+				return
+			}
+			defer func() { _ = r.Close() }()
+			<-start
+			idx, cerr := CreateRooted(r, dir, 2)
+			if cerr != nil {
+				errs <- cerr
+				return
+			}
+			src := fmt.Sprintf("cold-%d", n)
+			if uerr := idx.UpsertRooted(r, src, src, [][]float32{{float32(n), float32(1 - n)}}); uerr != nil {
+				errs <- uerr
 			}
 		}(i)
 	}
@@ -909,14 +1010,7 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !idx3.Contains("src-0") || !idx3.Contains("src-1") {
-		t.Fatalf("concurrent writes lost an entry: src-0=%v src-1=%v", idx3.Contains("src-0"), idx3.Contains("src-1"))
-	}
-	results, err := idx3.SearchRooted(r3, []float32{1, 0}, workers)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != workers {
-		t.Fatalf("index has %d entries, want %d — a write was rolled back", len(results), workers)
+	if !idx3.Contains("cold-0") || !idx3.Contains("cold-1") {
+		t.Fatalf("cold-start create/upsert interleaving lost an entry: cold-0=%v cold-1=%v", idx3.Contains("cold-0"), idx3.Contains("cold-1"))
 	}
 }
