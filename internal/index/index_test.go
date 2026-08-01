@@ -7,7 +7,9 @@ import (
 	"io/fs"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +17,21 @@ import (
 
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
+
+// linkDir creates a directory link at link pointing at target, preferring a
+// symlink and falling back to a Windows junction.
+func linkDir(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err == nil {
+		return
+	} else if runtime.GOOS != "windows" {
+		t.Skipf("symlinks unavailable in this environment: %v", err)
+	}
+	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		t.Skipf("cannot create directory link: %v: %s", err, out)
+	}
+}
 
 func TestIndex_CreatePersistsEmptyIndex(t *testing.T) {
 	dir := t.TempDir()
@@ -1012,5 +1029,182 @@ func TestIndex_ColdStartTwoHandles(t *testing.T) {
 	}
 	if !idx3.Contains("cold-0") || !idx3.Contains("cold-1") {
 		t.Fatalf("cold-start create/upsert interleaving lost an entry: cold-0=%v cold-1=%v", idx3.Contains("cold-0"), idx3.Contains("cold-1"))
+	}
+}
+
+// TestIndex_ColdStartAdoptsExisting is the deterministic cold-start
+// discriminator: handle A fully creates and publishes, then handle B cold-
+// creates on the same directory.  B's CreateRooted must adopt A's committed
+// manifest rather than reset the files — the schedule the concurrent test
+// cannot force.  Without the adoption, A's publication is erased.
+func TestIndex_ColdStartAdoptsExisting(t *testing.T) {
+	dir := t.TempDir()
+
+	r1, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r1.Close() }()
+	idxA, err := CreateRooted(r1, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idxA.UpsertRooted(r1, "a", "a", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r2, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r2.Close() }()
+	idxB, err := CreateRooted(r2, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idxB.Contains("a") {
+		t.Error("second CreateRooted did not adopt the committed manifest")
+	}
+	if err := idxB.UpsertRooted(r2, "b", "b", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r3, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r3.Close() }()
+	idx3, err := OpenRooted(r3, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idx3.Contains("a") || !idx3.Contains("b") {
+		t.Fatalf("second CreateRooted reset the first handle's publication: a=%v b=%v", idx3.Contains("a"), idx3.Contains("b"))
+	}
+}
+
+// TestIndex_SpellingsShareCoordinator verifies that a stable alias and its
+// target produce the same coordinator key, so two handles that reach one
+// index directory through different spellings serialize on one lock, and both
+// concurrent writes survive.
+func TestIndex_SpellingsShareCoordinator(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	linkDir(t, real, alias)
+
+	r1, err := rootfs.Open(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r1.Close() }()
+	idx1, err := CreateRooted(r1, real, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r2, err := rootfs.Open(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r2.Close() }()
+	idx2, err := OpenRooted(r2, alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if idx1.lockKey != idx2.lockKey {
+		t.Fatalf("alias spelling produced a different coordinator key: real=%q alias=%q", idx1.lockKey, idx2.lockKey)
+	}
+
+	// Concurrent writes through the two spellings must both survive.
+	const workers = 2
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	start := make(chan struct{})
+	for i := range workers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			<-start
+			handle, root := idx1, r1
+			if n%2 == 1 {
+				handle, root = idx2, r2
+			}
+			src := fmt.Sprintf("spelling-%d", n)
+			if err := handle.UpsertRooted(root, src, src, [][]float32{{float32(n), float32(1 - n)}}); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	r3, err := rootfs.Open(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r3.Close() }()
+	idx3, err := OpenRooted(r3, real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idx3.Contains("spelling-0") || !idx3.Contains("spelling-1") {
+		t.Fatalf("cross-spelling concurrent writes lost an entry: 0=%v 1=%v", idx3.Contains("spelling-0"), idx3.Contains("spelling-1"))
+	}
+}
+
+// TestIndex_RepointedAliasRefused verifies the coordinator key is bound to the
+// pinned root.  The root is pinned through an alias; the alias is then
+// repointed at another directory.  Re-resolving the alias independently would
+// hand out the replacement's key while I/O still goes to the pinned directory,
+// so the open must fail closed.
+func TestIndex_RepointedAliasRefused(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	evil := filepath.Join(base, "evil")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	linkDir(t, real, alias)
+
+	// Establish a real index so that, absent the identity check, the open
+	// would succeed by reading real's manifest.
+	r0, err := rootfs.Open(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateRooted(r0, real, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := r0.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pin the root through the alias, then repoint the alias at evil.
+	r1, err := rootfs.Open(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r1.Close() }()
+
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	linkDir(t, evil, alias)
+
+	if _, err := OpenRooted(r1, alias); err == nil {
+		t.Fatal("OpenRooted accepted a repointed alias identity that does not match the pinned root")
 	}
 }
