@@ -1,12 +1,15 @@
 package index
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/VrncQuentin/harness/internal/rootfs"
@@ -94,7 +97,7 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 
 	sentinel := errors.New("injected manifest failure")
 	err = idx.upsertRooted(r, "new", "new-content", [][]float32{{0, 1}},
-		func(root *rootfs.Root, data []byte) error { return sentinel })
+		rootfs.WriteHooks{Sync: func(*os.File) error { return sentinel }})
 	if err == nil || !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}
@@ -224,7 +227,7 @@ func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
 	}
 	sentinel := errors.New("injected manifest failure")
 	err = idx.upsertRooted(r, "b", "new-b", [][]float32{{2, 2}},
-		func(root *rootfs.Root, data []byte) error { return sentinel })
+		rootfs.WriteHooks{Sync: func(*os.File) error { return sentinel }})
 	if err == nil || !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}
@@ -653,9 +656,9 @@ func TestSearchRooted_TruncatedVectorsReturnsError(t *testing.T) {
 }
 
 // TestIndex_WriteManifestDoesNotRemoveStranger verifies finding 5.4:
-// Post-rename os.Remove + retry fallback would delete a stranger's
-// replacement.  Manifest publication uses WriteStreamAtomic, which
-// publishes by rename — the old inode survives through a hard link.
+// a post-rename os.Remove + retry fallback would delete a stranger's
+// replacement that took over the destination name in the failure window.
+// Manifest publication must leave that replacement untouched.
 func TestIndex_WriteManifestDoesNotRemoveStranger(t *testing.T) {
 	dir := t.TempDir()
 	r, err := rootfs.Open(dir)
@@ -672,44 +675,47 @@ func TestIndex_WriteManifestDoesNotRemoveStranger(t *testing.T) {
 	}
 
 	manifestPath := filepath.Join(dir, manifestFile)
-	sentinelPath := filepath.Join(dir, "sentinel-manifest.json")
-	if err := os.Link(manifestPath, sentinelPath); err != nil {
-		t.Fatal(err)
-	}
-	sentOld, err := os.ReadFile(sentinelPath)
-	if err != nil {
-		t.Fatal(err)
+	stranger := []byte("a stranger's replacement")
+	renameFailed := errors.New("rename failed")
+
+	// The publication is driven through the real WriteStreamAtomic lifecycle.
+	// BeforeRename stages the exact state a fallback removal would face: the
+	// rename is about to fail and a stranger already holds the destination
+	// name.  The publication must abort without removing that stranger.
+	err = idx.upsertRooted(r, "second", "second", [][]float32{{0, 1}}, rootfs.WriteHooks{
+		BeforeRename: func() error {
+			if rmErr := os.Rename(manifestPath, manifestPath+".aside"); rmErr != nil {
+				return rmErr
+			}
+			if wErr := os.WriteFile(manifestPath, stranger, 0o644); wErr != nil {
+				return wErr
+			}
+			return renameFailed
+		},
+	})
+	if !errors.Is(err, renameFailed) {
+		t.Fatalf("expected rename failure, got %v", err)
 	}
 
-	// Upsert a new entry — rewrites manifest via WriteStreamAtomic rename.
-	if err := idx.UpsertRooted(r, "second", "second", [][]float32{{0, 1}}); err != nil {
-		t.Fatal(err)
+	got, rErr := os.ReadFile(manifestPath)
+	if rErr != nil {
+		t.Fatalf("stranger replacement was removed: %v", rErr)
 	}
-
-	// Sentinel must contain the old manifest: WriteStreamAtomic replaces
-	// the directory entry, not the inode, so rename preserves the hard
-	// link.  An os.Remove + create would have broken it.
-	sentNew, err := os.ReadFile(sentinelPath)
-	if err != nil {
-		t.Fatal(err)
+	if !bytes.Equal(got, stranger) {
+		t.Errorf("stranger replacement was modified: got %q, want %q", got, stranger)
 	}
-	if string(sentOld) != string(sentNew) {
-		t.Error("hard-link sentinel of manifest.json was modified — manifest was written in-place or deleted+recreated, not renamed")
-	}
-
-	// Manifest.json must contain the new entry.
-	manifestData, err := os.ReadFile(manifestPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(manifestData), `"second"`) {
-		t.Error("manifest.json should contain the new entry after upsert")
+	// The real manifest was moved aside and must not have been deleted.
+	if _, err := os.Stat(manifestPath + ".aside"); err != nil {
+		t.Errorf("real manifest was deleted: %v", err)
 	}
 }
 
 // TestIndex_WriteManifestFsyncsBeforeRename verifies finding 5.6:
-// Manifest publication must be fsynced before the rename so a crash
-// never leaves a half-written manifest at the destination path.
+// manifest publication must fsync before the rename, so a crash never
+// leaves a half-written manifest at the destination path.  The failure is
+// injected at the real Sync operation inside WriteStreamAtomic; if the
+// publication renamed without waiting for that sync, the new entry would
+// appear at manifest.json.
 func TestIndex_WriteManifestFsyncsBeforeRename(t *testing.T) {
 	dir := t.TempDir()
 	r, err := rootfs.Open(dir)
@@ -732,20 +738,18 @@ func TestIndex_WriteManifestFsyncsBeforeRename(t *testing.T) {
 
 	syncFailed := errors.New("sync before rename failed")
 	err = idx.upsertRooted(r, "new", "new", [][]float32{{0, 1}},
-		func(root *rootfs.Root, data []byte) error {
-			return syncFailed
-		})
+		rootfs.WriteHooks{Sync: func(*os.File) error { return syncFailed }})
 	if !errors.Is(err, syncFailed) {
 		t.Fatalf("expected sync-failed error, got %v", err)
 	}
 
-	// On-disk manifest must be unmodified.
+	// The destination must not have been renamed into place.
 	newManifest, err := os.ReadFile(filepath.Join(dir, manifestFile))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(oldManifest) != string(newManifest) {
-		t.Error("manifest.json was modified despite failed write (publication before fsync)")
+		t.Error("manifest.json was published despite a failed fsync — publication must wait for Sync")
 	}
 
 	// In-memory manifest must not include the new entry.
@@ -758,9 +762,10 @@ func TestIndex_WriteManifestFsyncsBeforeRename(t *testing.T) {
 }
 
 // TestIndex_WriteManifestCleansUpOwnTemp verifies finding 5.7:
-// Temp file cleanup deletes by name after a rename may have consumed
-// the temp entry.  WriteStreamAtomic never deletes temp files — on
-// failure they survive, on success the rename consumes the name.
+// temp-file cleanup deletes by name after a rename may have consumed the
+// temp entry.  The real lifecycle must never remove an entry it did not
+// create: a failed write leaves its own partial temp behind, and a stranger
+// holding a temp-style name survives a successful publication.
 func TestIndex_WriteManifestCleansUpOwnTemp(t *testing.T) {
 	dir := t.TempDir()
 	r, err := rootfs.Open(dir)
@@ -776,58 +781,142 @@ func TestIndex_WriteManifestCleansUpOwnTemp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entriesBefore, err := os.ReadDir(dir)
-	if err != nil {
+	// A stranger holds a temp-style name.  A cleanup that removed temp-named
+	// entries would delete it; the real lifecycle must not.
+	strangerPath := filepath.Join(dir, ".harness-write-stranger")
+	if err := os.WriteFile(strangerPath, []byte("stranger"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Successful upsert rewrites the manifest through WriteStreamAtomic,
-	// which publishes by rename.  No files should be deleted from the
-	// directory — the old manifest entry is replaced, not removed.
+	// Successful publication runs the full temp lifecycle.
 	if err := idx.UpsertRooted(r, "second", "second", [][]float32{{0, 1}}); err != nil {
 		t.Fatal(err)
 	}
+	strangerData, err := os.ReadFile(strangerPath)
+	if err != nil {
+		t.Fatalf("stranger temp entry was cleaned up: %v", err)
+	}
+	if string(strangerData) != "stranger" {
+		t.Errorf("stranger temp entry was modified: got %q", strangerData)
+	}
 
-	entriesAfter, err := os.ReadDir(dir)
+	// A failed publication must propagate its error, leave its own partial
+	// temp entry behind (never deleting it), and not reach manifest.json.
+	syncFailed := errors.New("sync failed")
+	err = idx.upsertRooted(r, "third", "third", [][]float32{{1, 1}},
+		rootfs.WriteHooks{Sync: func(*os.File) error { return syncFailed }})
+	if !errors.Is(err, syncFailed) {
+		t.Fatalf("expected sync failure, got %v", err)
+	}
+
+	manifestData, err := os.ReadFile(filepath.Join(dir, manifestFile))
 	if err != nil {
 		t.Fatal(err)
 	}
-	namesAfter := map[string]bool{}
-	for _, e := range entriesAfter {
-		namesAfter[e.Name()] = true
-		if strings.HasPrefix(e.Name(), ".harness-write-") {
-			t.Errorf("orphan temp file %q after successful write", e.Name())
-		}
-	}
-	for _, before := range entriesBefore {
-		if !namesAfter[before.Name()] {
-			t.Errorf("file %q was removed during successful manifest write — cleanup-by-name is unsafe", before.Name())
-		}
+	if strings.Contains(string(manifestData), "third") {
+		t.Error("manifest.json was published despite the failed write")
 	}
 
-	// Now test that a failed manifest write does not clean up any files.
-	entriesBeforeFail, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownTemp := false
+	for _, e := range entries {
+		switch e.Name() {
+		case ".harness-write-stranger":
+			// The stranger must still be here after the failed write too.
+			data, readErr := os.ReadFile(strangerPath)
+			if readErr != nil {
+				t.Errorf("stranger temp entry disappeared after failed write: %v", readErr)
+			} else if string(data) != "stranger" {
+				t.Errorf("stranger temp entry modified after failed write: %q", data)
+			}
+		default:
+			if strings.HasPrefix(e.Name(), ".harness-write-") {
+				ownTemp = true
+			}
+		}
+	}
+	if !ownTemp {
+		t.Error("own partial temp entry should survive a failed write")
+	}
+}
+
+// TestIndex_TwoHandlesShareCoordinator verifies findings 5.8 and 5.9:
+// mutations on one physical index directory must be serialized by a single
+// coordinator shared across handles, and each write must start from the
+// committed on-disk state.  Two handles writing concurrently must both be
+// reflected in the published index — no entry may be lost to a stale
+// in-memory manifest or to two unlocked writers overwriting each other.
+func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
+	dir := t.TempDir()
+	r1, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r1.Close() }()
+	r2, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r2.Close() }()
+
+	idx1, err := CreateRooted(r1, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second handle, opened before any entry is written, holds a stale
+	// in-memory manifest.  Its write must adopt the other handle's committed
+	// state instead of publishing over it.
+	idx2, err := OpenRooted(r2, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	sentinelErr := errors.New("injected manifest write failure")
-	_ = idx.upsertRooted(r, "third", "third", [][]float32{{1, 1}},
-		func(root *rootfs.Root, data []byte) error {
-			return sentinelErr
-		})
+	const workers = 2
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	start := make(chan struct{})
+	for i := range workers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			<-start
+			handle, root := idx1, r1
+			if n%2 == 1 {
+				handle, root = idx2, r2
+			}
+			src := fmt.Sprintf("src-%d", n)
+			if err := handle.UpsertRooted(root, src, src, [][]float32{{float32(n), float32(1 - n)}}); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
 
-	entriesAfterFail, err := os.ReadDir(dir)
+	r3, err := rootfs.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	namesFailAfter := map[string]bool{}
-	for _, e := range entriesAfterFail {
-		namesFailAfter[e.Name()] = true
+	defer func() { _ = r3.Close() }()
+	idx3, err := OpenRooted(r3, dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, before := range entriesBeforeFail {
-		if !namesFailAfter[before.Name()] {
-			t.Errorf("file %q was removed during failed manifest write", before.Name())
-		}
+	if !idx3.Contains("src-0") || !idx3.Contains("src-1") {
+		t.Fatalf("concurrent writes lost an entry: src-0=%v src-1=%v", idx3.Contains("src-0"), idx3.Contains("src-1"))
+	}
+	results, err := idx3.SearchRooted(r3, []float32{1, 0}, workers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != workers {
+		t.Fatalf("index has %d entries, want %d — a write was rolled back", len(results), workers)
 	}
 }
