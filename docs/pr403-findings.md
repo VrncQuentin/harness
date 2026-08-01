@@ -28,7 +28,7 @@ until the sequence below is merged and the final audit (PR 12) passes.
 
 | # | Finding | Test |
 |---|---------|------|
-| 2.8b | (Deferred) Git and memory readers compare identities from later `pathid` resolutions, not from the objects each component actually opened | Follow-up PR after `gitw.Repo` exposes its opened directory identity; `SameDirReader` is exercised by unit tests but has no production caller. |
+| 2.8b | (Deferred) Git and memory readers compare identities from later `pathid` resolutions, not from the objects each component actually opened | PR 5b4, after `gitw.Repo` exposes its opened directory identity; `SameDirReader` is exercised by unit tests but has no production caller. |
 
 ### PR 3a — Atomic publication and governor B3
 
@@ -95,8 +95,8 @@ until the sequence below is merged and the final audit (PR 12) passes.
 | 5.4 | Post-rename `os.Remove` + retry fallback deletes a stranger's replacement | `TestIndex_WriteManifestDoesNotRemoveStranger` |
 | 5.6 | Manifest publication not fsynced before rename | `TestIndex_WriteManifestFsyncsBeforeRename` |
 | 5.7 | Temp file cleanup deletes by name after the rename may have consumed it | `TestIndex_WriteManifestCleansUpOwnTemp` |
-| 5.8 | Scattered lock maps — no unified per-repo coordinator | Eliminated mechanism: replaced by one coordinator keyed by physical identity |
-| 5.9 | Compare-then-rollback against unlocked concurrent writer | Eliminated mechanism: writes participate in transaction |
+| 5.8 | Scattered lock maps — no unified per-repo coordinator | Narrowed: one index-directory coordinator keyed by physical identity and bound to the pinned root (`TestIndex_TwoHandlesShareCoordinator`, `TestIndex_ColdStartTwoHandles`, `TestIndex_ColdStartAdoptsExisting`, `TestIndex_SpellingsShareCoordinator`, `TestIndex_RepointedAliasRefused`). The repository-wide coordinator shared with git commits is assigned to PR 5b4, which requires `gitw.Repo` to expose its opened directory identity. |
+| 5.9 | Compare-then-rollback against unlocked concurrent writer | `TestIndex_TwoHandlesShareCoordinator` (each write re-reads committed state under the coordinator) |
 
 ### PR 6 — Project repository workflow
 
@@ -202,5 +202,4 @@ makes them unnecessary.
 | `stopMemoryAndAPI` — drops references, does not close | Replaced by Anchor ownership in PR 2a: consumers own and close their Anchors; no runtime stop/drop cycle |
 | `ResolveAbsRepoPath` — session manager method | Replaced by rooted capabilities in PR 7: session manager receives a handle, not a pathname factory |
 | Package-global test hooks for identity verification | Replaced by function-parameter hooks in PR 2a: no global state |
-| Post-rename `os.Remove` + retry fallback in index | Replaced by copy-on-write + rename publication in PR 5: no name-based cleanup |
 | `.gitkeep` created by joining layout directory absolute path | Replaced by repo-relative addressing through pinned root in PR 6 |

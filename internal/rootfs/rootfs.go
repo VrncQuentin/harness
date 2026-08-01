@@ -103,6 +103,30 @@ func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel
 // Open opens rel for reading. The caller closes it.
 func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 
+// WriteHooks are the seams threaded into WriteStreamAtomicWithHooks.  The
+// fields run at the lifecycle points they name:
+//
+//   - AfterOpen runs after the temp file is created and before its content is
+//     copied.  It receives the open handle and the temp-relative path.
+//   - Sync, if non-nil, replaces f.Sync().
+//   - Rename, if non-nil, replaces the rename that publishes the temp file.  A
+//     non-nil error aborts the publication leaving the destination untouched —
+//     the same state a failed rename leaves, so any error handling around a
+//     failed rename runs against it.
+//   - AfterRename runs after the rename has consumed the temp name, before the
+//     write returns.  A test can claim the vacated name here and prove that a
+//     cleanup-by-name after the rename would delete a stranger.
+//
+// Production callers use WriteStreamAtomic, which passes no hooks; the hooks
+// exist so regression tests outside this package can stage failures and
+// substitutions at the real lifecycle points instead of replacing the writer.
+type WriteHooks struct {
+	AfterOpen   func(f *os.File, tmpRel string)
+	Sync        func(f *os.File) error
+	Rename      func(tmpRel, base string) error
+	AfterRename func(tmpRel string)
+}
+
 // WriteStreamAtomic writes everything src yields to rel, through a temporary
 // file in the same directory that is then renamed over rel.
 //
@@ -130,13 +154,18 @@ func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 // Go has no unlink-by-handle primitive.  A failed write may leave a partial
 // temporary entry.
 func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) error {
-	return r.writeStreamAtomic(rel, src, perm, nil, nil)
+	return r.writeStreamAtomic(rel, src, perm, WriteHooks{})
 }
 
-// writeStreamAtomic is WriteStreamAtomic with optional hooks for tests.
-// afterOpen runs after the temp file is created and before io.Copy.
-// syncFn, if non-nil, replaces f.Sync().
-func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, afterOpen func(*os.File, string), syncFn func(f *os.File) error) error {
+// WriteStreamAtomicWithHooks is WriteStreamAtomic with the WriteHooks seams
+// enabled.  It is exported so regression tests outside this package can inject
+// failures at the real sync and rename points; production code uses
+// WriteStreamAtomic.
+func (r *Root) WriteStreamAtomicWithHooks(rel string, src io.Reader, perm fs.FileMode, hooks WriteHooks) error {
+	return r.writeStreamAtomic(rel, src, perm, hooks)
+}
+
+func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, hooks WriteHooks) error {
 	parentDir := filepath.Dir(rel)
 	parent, err := r.OpenChild(parentDir)
 	if err != nil {
@@ -150,8 +179,8 @@ func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, af
 		return err
 	}
 
-	if afterOpen != nil {
-		afterOpen(f, tmpRel)
+	if hooks.AfterOpen != nil {
+		hooks.AfterOpen(f, tmpRel)
 	}
 
 	if _, err := io.Copy(f, src); err != nil {
@@ -159,7 +188,7 @@ func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, af
 		return err
 	}
 
-	sf := syncFn
+	sf := hooks.Sync
 	if sf == nil {
 		sf = func(f *os.File) error { return f.Sync() }
 	}
@@ -186,8 +215,15 @@ func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, af
 	if err := f.Close(); err != nil {
 		return err
 	}
-	if err := parent.root.Rename(tmpRel, base); err != nil {
+	if hooks.Rename != nil {
+		if err := hooks.Rename(tmpRel, base); err != nil {
+			return err
+		}
+	} else if err := parent.root.Rename(tmpRel, base); err != nil {
 		return err
+	}
+	if hooks.AfterRename != nil {
+		hooks.AfterRename(tmpRel)
 	}
 	return nil
 }
@@ -239,6 +275,31 @@ func (r *Root) SameDir(other *Root) (bool, error) {
 		return false, err
 	}
 	return os.SameFile(mine, theirs), nil
+}
+
+// Identity returns the physical identity of the directory at dir, verified
+// against this pinned handle.
+//
+// Resolving the name independently of the handle would let a repointed alias
+// hand back a key for a directory this handle does not hold open: a coordinator
+// keyed on that identity would serialize writers on one object while the I/O
+// acted on another.  The identity is therefore accepted only if it resolves to
+// the same filesystem object as this handle — a name that has moved since the
+// pin fails the comparison and the call fails closed.
+func (r *Root) Identity(dir string) (pathid.ID, error) {
+	verified, id, err := OpenIdentified(dir)
+	if err != nil {
+		return pathid.ID{}, err
+	}
+	defer func() { _ = verified.Close() }()
+	same, err := r.SameDir(verified)
+	if err != nil {
+		return pathid.ID{}, err
+	}
+	if !same {
+		return pathid.ID{}, fmt.Errorf("rootfs: %s does not identify the pinned directory", dir)
+	}
+	return id, nil
 }
 
 // OpenChild pins the directory at rel inside r and returns it as a Root in its

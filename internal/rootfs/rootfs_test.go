@@ -733,8 +733,8 @@ func TestWriteStreamAtomic_PinSurvivesIntermediateSwap(t *testing.T) {
 	}
 
 	// Write to sub/orig/file.txt through the root — this pins sub/orig.
-	err = root.writeStreamAtomic("sub/orig/file.txt", bytes.NewReader([]byte("real")), 0o644,
-		func(f *os.File, tmpRel string) {
+	err = root.writeStreamAtomic("sub/orig/file.txt", bytes.NewReader([]byte("real")), 0o644, WriteHooks{
+		AfterOpen: func(f *os.File, tmpRel string) {
 			sub := filepath.Join(dir, "sub")
 			if err := os.Rename(filepath.Join(sub, "orig"), filepath.Join(sub, "swapped")); err != nil {
 				t.Fatal(err)
@@ -742,7 +742,8 @@ func TestWriteStreamAtomic_PinSurvivesIntermediateSwap(t *testing.T) {
 			if err := os.Rename(filepath.Join(sub, "evil"), filepath.Join(sub, "orig")); err != nil {
 				t.Fatal(err)
 			}
-		}, nil)
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,8 +798,8 @@ func TestWriteStreamAtomic_DetectsSubstitutedTemp(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	var tmpPath string
-	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644,
-		func(f *os.File, tmpRel string) {
+	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, WriteHooks{
+		AfterOpen: func(f *os.File, tmpRel string) {
 			tmpPath = filepath.Join(dir, tmpRel)
 			if err := os.WriteFile(tmpPath+".new", []byte("impostor"), 0o644); err != nil {
 				t.Fatal(err)
@@ -806,7 +807,8 @@ func TestWriteStreamAtomic_DetectsSubstitutedTemp(t *testing.T) {
 			if err := os.Rename(tmpPath+".new", tmpPath); err != nil {
 				t.Fatal(err)
 			}
-		}, nil)
+		},
+	})
 	if err == nil {
 		t.Fatal("expected error for substituted temp entry")
 	}
@@ -835,7 +837,7 @@ func TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure(t *testing.T) {
 	}
 	defer func() { _ = root.Close() }()
 
-	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, nil, nil)
+	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, WriteHooks{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -892,8 +894,9 @@ func TestWriteStreamAtomic_SyncBeforeRename(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	syncSentinel := errors.New("sync failed")
-	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, nil,
-		func(f *os.File) error { return syncSentinel })
+	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, WriteHooks{
+		Sync: func(f *os.File) error { return syncSentinel },
+	})
 	if err == nil || !errors.Is(err, syncSentinel) {
 		t.Errorf("sync hook error should propagate, got %v", err)
 	}
@@ -1011,5 +1014,79 @@ func TestOpenChildNoFollow_DetectsSubstitution(t *testing.T) {
 	}
 	if err == nil {
 		t.Error("OpenChildNoFollow should detect substitution")
+	}
+}
+
+// TestRoot_IdentityStableAlias verifies that a stable alias resolves to the
+// same physical identity as its target, so two handles reaching one directory
+// through different spellings produce one coordinator key.
+func TestRoot_IdentityStableAlias(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, real, alias)
+
+	rootReal, err := Open(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rootReal.Close() }()
+	rootAlias, err := Open(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rootAlias.Close() }()
+
+	idReal, err := rootReal.Identity(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idAlias, err := rootAlias.Identity(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idReal.Key() != idAlias.Key() {
+		t.Errorf("stable alias produced a different identity key: real=%q alias=%q", idReal.Key(), idAlias.Key())
+	}
+}
+
+// TestRoot_IdentityRefusesRepointedAlias verifies the identity is bound to the
+// pinned handle.  The handle is pinned through an alias; repointing the alias
+// at another directory must fail the identity check rather than hand back the
+// replacement's key — the exact handle/key mismatch Identity exists to close.
+func TestRoot_IdentityRefusesRepointedAlias(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	evil := filepath.Join(base, "evil")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, real, alias)
+
+	// The handle is pinned to real through the alias.
+	root, err := Open(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	// Repoint the alias at another directory.
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	mustLinkDir(t, evil, alias)
+
+	// The alias no longer identifies the pinned directory, so Identity must
+	// fail closed rather than return evil's key.
+	_, err = root.Identity(alias)
+	if err == nil {
+		t.Fatal("Identity accepted a repointed alias that no longer identifies the pinned directory")
 	}
 }

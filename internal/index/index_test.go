@@ -1,16 +1,37 @@
 package index
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
+
+// linkDir creates a directory link at link pointing at target, preferring a
+// symlink and falling back to a Windows junction.
+func linkDir(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err == nil {
+		return
+	} else if runtime.GOOS != "windows" {
+		t.Skipf("symlinks unavailable in this environment: %v", err)
+	}
+	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		t.Skipf("cannot create directory link: %v: %s", err, out)
+	}
+}
 
 func TestIndex_CreatePersistsEmptyIndex(t *testing.T) {
 	dir := t.TempDir()
@@ -94,7 +115,7 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 
 	sentinel := errors.New("injected manifest failure")
 	err = idx.upsertRooted(r, "new", "new-content", [][]float32{{0, 1}},
-		func(root *rootfs.Root, data []byte) error { return sentinel })
+		rootfs.WriteHooks{Sync: func(*os.File) error { return sentinel }})
 	if err == nil || !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}
@@ -224,7 +245,7 @@ func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
 	}
 	sentinel := errors.New("injected manifest failure")
 	err = idx.upsertRooted(r, "b", "new-b", [][]float32{{2, 2}},
-		func(root *rootfs.Root, data []byte) error { return sentinel })
+		rootfs.WriteHooks{Sync: func(*os.File) error { return sentinel }})
 	if err == nil || !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}
@@ -649,5 +670,541 @@ func TestSearchRooted_TruncatedVectorsReturnsError(t *testing.T) {
 	_, err = idx2.SearchRooted(r2, []float32{1, 0}, 5)
 	if err == nil {
 		t.Fatal("expected error for truncated vectors, got nil")
+	}
+}
+
+// TestIndex_WriteManifestDoesNotRemoveStranger verifies finding 5.4:
+// a post-rename os.Remove + retry fallback would delete a stranger's
+// replacement that took over the destination name in the failure window.
+// The failure is injected at the actual rename operation, so any error
+// handling the implementation has around a failed rename runs against the
+// staged stranger and must leave it untouched.
+func TestIndex_WriteManifestDoesNotRemoveStranger(t *testing.T) {
+	dir := t.TempDir()
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	idx, err := CreateRooted(r, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.UpsertRooted(r, "first", "first", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	manifestPath := filepath.Join(dir, manifestFile)
+	stranger := []byte("a stranger's replacement")
+	renameFailed := errors.New("rename failed")
+
+	// The Rename hook is the rename operation.  It fails exactly the way a
+	// rename can fail while a stranger already holds the destination name; the
+	// caller's post-rename handling (if any) runs from here.
+	err = idx.upsertRooted(r, "second", "second", [][]float32{{0, 1}}, rootfs.WriteHooks{
+		Rename: func(tmpRel, base string) error {
+			if rmErr := os.Rename(manifestPath, manifestPath+".aside"); rmErr != nil {
+				return rmErr
+			}
+			if wErr := os.WriteFile(manifestPath, stranger, 0o644); wErr != nil {
+				return wErr
+			}
+			return renameFailed
+		},
+	})
+	if !errors.Is(err, renameFailed) {
+		t.Fatalf("expected rename failure, got %v", err)
+	}
+
+	got, rErr := os.ReadFile(manifestPath)
+	if rErr != nil {
+		t.Fatalf("stranger replacement was removed: %v", rErr)
+	}
+	if !bytes.Equal(got, stranger) {
+		t.Errorf("stranger replacement was modified: got %q, want %q", got, stranger)
+	}
+	// The real manifest was moved aside and must not have been deleted.
+	if _, err := os.Stat(manifestPath + ".aside"); err != nil {
+		t.Errorf("real manifest was deleted: %v", err)
+	}
+}
+
+// TestIndex_WriteManifestFsyncsBeforeRename verifies finding 5.6:
+// manifest publication must fsync before the rename, so a crash never
+// leaves a half-written manifest at the destination path.  The failure is
+// injected at the real Sync operation inside WriteStreamAtomic; if the
+// publication renamed without waiting for that sync, the new entry would
+// appear at manifest.json.
+func TestIndex_WriteManifestFsyncsBeforeRename(t *testing.T) {
+	dir := t.TempDir()
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	idx, err := CreateRooted(r, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.UpsertRooted(r, "old", "old", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldManifest, err := os.ReadFile(filepath.Join(dir, manifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	syncFailed := errors.New("sync before rename failed")
+	err = idx.upsertRooted(r, "new", "new", [][]float32{{0, 1}},
+		rootfs.WriteHooks{Sync: func(*os.File) error { return syncFailed }})
+	if !errors.Is(err, syncFailed) {
+		t.Fatalf("expected sync-failed error, got %v", err)
+	}
+
+	// The destination must not have been renamed into place.
+	newManifest, err := os.ReadFile(filepath.Join(dir, manifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(oldManifest) != string(newManifest) {
+		t.Error("manifest.json was published despite a failed fsync — publication must wait for Sync")
+	}
+
+	// In-memory manifest must not include the new entry.
+	if idx.Contains("new") {
+		t.Error("new entry leaked into in-memory manifest after failed write")
+	}
+	if !idx.Contains("old") {
+		t.Error("old entry was lost from in-memory manifest after failed write")
+	}
+}
+
+// TestIndex_WriteManifestCleansUpOwnTemp verifies finding 5.7:
+// temp-file cleanup deletes by name after a rename may have consumed the
+// temp entry.  The real lifecycle must never remove an entry it did not
+// create: a stranger that claims the exact consumed temp name survives, and
+// a failed write leaves its own partial temp behind.
+func TestIndex_WriteManifestCleansUpOwnTemp(t *testing.T) {
+	dir := t.TempDir()
+	r, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	idx, err := CreateRooted(r, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.UpsertRooted(r, "first", "first", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The AfterRename hook learns the real temp name the writer used.  After
+	// the rename consumes that name it is free, so the hook installs a stranger
+	// at that exact name — the name a cleanup-by-name would remove.
+	consumed := ""
+	claimed := []byte("stranger claiming the consumed temp name")
+	err = idx.upsertRooted(r, "second", "second", [][]float32{{0, 1}}, rootfs.WriteHooks{
+		AfterRename: func(tmpRel string) {
+			consumed = tmpRel
+			if werr := os.WriteFile(filepath.Join(dir, tmpRel), claimed, 0o644); werr != nil {
+				t.Errorf("install stranger at consumed temp name: %v", werr)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumed == "" {
+		t.Fatal("AfterRename hook never ran; the temp name was not captured")
+	}
+	strangerData, err := os.ReadFile(filepath.Join(dir, consumed))
+	if err != nil {
+		t.Fatalf("stranger at the consumed temp name %s was cleaned up: %v", consumed, err)
+	}
+	if string(strangerData) != string(claimed) {
+		t.Errorf("stranger at consumed temp name was modified: got %q", strangerData)
+	}
+
+	// A failed publication must propagate its error, leave its own partial
+	// temp entry behind (never deleting it), not reach manifest.json, and not
+	// disturb the stranger.
+	syncFailed := errors.New("sync failed")
+	err = idx.upsertRooted(r, "third", "third", [][]float32{{1, 1}},
+		rootfs.WriteHooks{Sync: func(*os.File) error { return syncFailed }})
+	if !errors.Is(err, syncFailed) {
+		t.Fatalf("expected sync failure, got %v", err)
+	}
+
+	manifestData, err := os.ReadFile(filepath.Join(dir, manifestFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(manifestData), "third") {
+		t.Error("manifest.json was published despite the failed write")
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownTemp := false
+	for _, e := range entries {
+		if e.Name() == consumed {
+			data, readErr := os.ReadFile(filepath.Join(dir, consumed))
+			if readErr != nil {
+				t.Errorf("stranger disappeared after failed write: %v", readErr)
+			} else if string(data) != string(claimed) {
+				t.Errorf("stranger modified after failed write: %q", data)
+			}
+			continue
+		}
+		if strings.HasPrefix(e.Name(), ".harness-write-") {
+			ownTemp = true
+		}
+	}
+	if !ownTemp {
+		t.Error("own partial temp entry should survive a failed write")
+	}
+}
+
+// TestIndex_TwoHandlesShareCoordinator verifies findings 5.8 and 5.9:
+// mutations on one physical index directory must be serialized by a single
+// coordinator shared across handles, and each write must start from the
+// committed on-disk state.  The test forces the two writers' transactions to
+// overlap: the first blocks inside its critical section and the second must
+// not reach its own hook until the first is released.
+func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
+	dir := t.TempDir()
+	r1, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r1.Close() }()
+	r2, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r2.Close() }()
+
+	idx1, err := CreateRooted(r1, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second handle, opened before any entry is written, holds a stale
+	// in-memory manifest.  Its write must adopt the other handle's committed
+	// state instead of publishing over it.
+	idx2, err := OpenRooted(r2, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstEntered := make(chan struct{})
+	firstRelease := make(chan struct{})
+	secondEntered := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(firstRelease) }) }
+	defer release()
+
+	// Writer 1 blocks inside its critical section (at the manifest AfterOpen
+	// hook, which only runs after the coordinator lock is held).
+	var wg sync.WaitGroup
+	var err1, err2 error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err1 = idx1.upsertRooted(r1, "a", "a", [][]float32{{1, 0}}, rootfs.WriteHooks{
+			AfterOpen: func(*os.File, string) {
+				close(firstEntered)
+				<-firstRelease
+			},
+		})
+	}()
+	<-firstEntered
+
+	// Writer 2 starts only after writer 1 is provably inside its transaction.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		err2 = idx2.upsertRooted(r2, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
+			AfterOpen: func(*os.File, string) { close(secondEntered) },
+		})
+	}()
+
+	// The second writer must not reach its hook until the first releases the
+	// coordinator: both hooks sit inside the same per-directory critical
+	// section.
+	select {
+	case <-secondEntered:
+		release()
+		t.Fatal("second writer entered the critical section while the first held the coordinator")
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case <-secondEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second writer never entered after the first released the coordinator")
+	}
+	wg.Wait()
+	if err1 != nil {
+		t.Fatalf("first writer: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("second writer: %v", err2)
+	}
+
+	// Both writes must have survived, in commit order.
+	r3, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r3.Close() }()
+	idx3, err := OpenRooted(r3, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idx3.Contains("a") || !idx3.Contains("b") {
+		t.Fatalf("concurrent writes lost an entry: a=%v b=%v", idx3.Contains("a"), idx3.Contains("b"))
+	}
+	results, err := idx3.SearchRooted(r3, []float32{1, 0}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("index has %d entries, want 2 — a write was rolled back", len(results))
+	}
+}
+
+// TestIndex_ColdStartTwoHandles verifies that creation participates in the
+// same coordinator as mutation.  Two first-use handles can both decide the
+// index is absent and call CreateRooted; without serialization one create can
+// reset the files another handle has already published into.  Both cold
+// writers must come out with their entries present.
+func TestIndex_ColdStartTwoHandles(t *testing.T) {
+	dir := t.TempDir()
+	const workers = 2
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	start := make(chan struct{})
+	for i := range workers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			r, err := rootfs.Open(dir)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer func() { _ = r.Close() }()
+			<-start
+			idx, cerr := CreateRooted(r, dir, 2)
+			if cerr != nil {
+				errs <- cerr
+				return
+			}
+			src := fmt.Sprintf("cold-%d", n)
+			if uerr := idx.UpsertRooted(r, src, src, [][]float32{{float32(n), float32(1 - n)}}); uerr != nil {
+				errs <- uerr
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	r3, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r3.Close() }()
+	idx3, err := OpenRooted(r3, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idx3.Contains("cold-0") || !idx3.Contains("cold-1") {
+		t.Fatalf("cold-start create/upsert interleaving lost an entry: cold-0=%v cold-1=%v", idx3.Contains("cold-0"), idx3.Contains("cold-1"))
+	}
+}
+
+// TestIndex_ColdStartAdoptsExisting is the deterministic cold-start
+// discriminator: handle A fully creates and publishes, then handle B cold-
+// creates on the same directory.  B's CreateRooted must adopt A's committed
+// manifest rather than reset the files — the schedule the concurrent test
+// cannot force.  Without the adoption, A's publication is erased.
+func TestIndex_ColdStartAdoptsExisting(t *testing.T) {
+	dir := t.TempDir()
+
+	r1, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r1.Close() }()
+	idxA, err := CreateRooted(r1, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := idxA.UpsertRooted(r1, "a", "a", [][]float32{{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r2, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r2.Close() }()
+	idxB, err := CreateRooted(r2, dir, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idxB.Contains("a") {
+		t.Error("second CreateRooted did not adopt the committed manifest")
+	}
+	if err := idxB.UpsertRooted(r2, "b", "b", [][]float32{{0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	r3, err := rootfs.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r3.Close() }()
+	idx3, err := OpenRooted(r3, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idx3.Contains("a") || !idx3.Contains("b") {
+		t.Fatalf("second CreateRooted reset the first handle's publication: a=%v b=%v", idx3.Contains("a"), idx3.Contains("b"))
+	}
+}
+
+// TestIndex_SpellingsShareCoordinator verifies that a stable alias and its
+// target produce the same coordinator key, so two handles that reach one
+// index directory through different spellings serialize on one lock, and both
+// concurrent writes survive.
+func TestIndex_SpellingsShareCoordinator(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	linkDir(t, real, alias)
+
+	r1, err := rootfs.Open(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r1.Close() }()
+	idx1, err := CreateRooted(r1, real, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r2, err := rootfs.Open(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r2.Close() }()
+	idx2, err := OpenRooted(r2, alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if idx1.lockKey != idx2.lockKey {
+		t.Fatalf("alias spelling produced a different coordinator key: real=%q alias=%q", idx1.lockKey, idx2.lockKey)
+	}
+
+	// Concurrent writes through the two spellings must both survive.
+	const workers = 2
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	start := make(chan struct{})
+	for i := range workers {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			<-start
+			handle, root := idx1, r1
+			if n%2 == 1 {
+				handle, root = idx2, r2
+			}
+			src := fmt.Sprintf("spelling-%d", n)
+			if err := handle.UpsertRooted(root, src, src, [][]float32{{float32(n), float32(1 - n)}}); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	r3, err := rootfs.Open(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r3.Close() }()
+	idx3, err := OpenRooted(r3, real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !idx3.Contains("spelling-0") || !idx3.Contains("spelling-1") {
+		t.Fatalf("cross-spelling concurrent writes lost an entry: 0=%v 1=%v", idx3.Contains("spelling-0"), idx3.Contains("spelling-1"))
+	}
+}
+
+// TestIndex_RepointedAliasRefused verifies the coordinator key is bound to the
+// pinned root.  The root is pinned through an alias; the alias is then
+// repointed at another directory.  Re-resolving the alias independently would
+// hand out the replacement's key while I/O still goes to the pinned directory,
+// so the open must fail closed.
+func TestIndex_RepointedAliasRefused(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	evil := filepath.Join(base, "evil")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	linkDir(t, real, alias)
+
+	// Establish a real index so that, absent the identity check, the open
+	// would succeed by reading real's manifest.
+	r0, err := rootfs.Open(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CreateRooted(r0, real, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := r0.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pin the root through the alias, then repoint the alias at evil.
+	r1, err := rootfs.Open(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r1.Close() }()
+
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	linkDir(t, evil, alias)
+
+	if _, err := OpenRooted(r1, alias); err == nil {
+		t.Fatal("OpenRooted accepted a repointed alias identity that does not match the pinned root")
 	}
 }
