@@ -95,7 +95,7 @@ until the sequence below is merged and the final audit (PR 12) passes.
 | 5.4 | Post-rename `os.Remove` + retry fallback deletes a stranger's replacement | `TestIndex_WriteManifestDoesNotRemoveStranger` |
 | 5.6 | Manifest publication not fsynced before rename | `TestIndex_WriteManifestFsyncsBeforeRename` |
 | 5.7 | Temp file cleanup deletes by name after the rename may have consumed it | `TestIndex_WriteManifestCleansUpOwnTemp` |
-| 5.8 | Scattered lock maps — no unified per-repo coordinator | `TestIndex_TwoHandlesShareCoordinator` (one coordinator keyed by physical identity) |
+| 5.8 | Scattered lock maps — no unified per-repo coordinator | Narrowed: one index-directory coordinator keyed by physical identity and bound to the pinned root (`TestIndex_TwoHandlesShareCoordinator`, `TestIndex_ColdStartTwoHandles`). A repository-wide coordinator shared with git commits remains planned. |
 | 5.9 | Compare-then-rollback against unlocked concurrent writer | `TestIndex_TwoHandlesShareCoordinator` (each write re-reads committed state under the coordinator) |
 
 ### PR 6 — Project repository workflow
