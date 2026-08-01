@@ -126,9 +126,11 @@ func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 	wg2.Add(1)
 	go func() {
 		defer wg2.Done()
-		idx.upsertRooted(root, "a", "a", [][]float32{{1, 0}}, rootfs.WriteHooks{
+		if err := idx.upsertRooted(root, "a", "a", [][]float32{{1, 0}}, rootfs.WriteHooks{
 			AfterOpen: func(*os.File, string) { close(indexEntered) },
-		})
+		}); err != nil {
+			t.Error(err)
+		}
 	}()
 	select {
 	case <-indexEntered:
@@ -157,12 +159,14 @@ func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 	wg3.Add(1)
 	go func() {
 		defer wg3.Done()
-		idx.upsertRooted(root, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
+		if err := idx.upsertRooted(root, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
 			AfterOpen: func(*os.File, string) {
 				close(indexEntered2)
 				<-indexRelease
 			},
-		})
+		}); err != nil {
+			t.Error(err)
+		}
 	}()
 	<-indexEntered2
 

@@ -54,7 +54,7 @@ func TestRepo_AliasAndTargetShareCoordinator(t *testing.T) {
 		real + string(filepath.Separator),
 		filepath.Join(real, "..", filepath.Base(real)),
 	}
-	var handles []*Repo
+	handles := make([]*Repo, 0, len(spellings))
 	for _, spelling := range spellings {
 		h, err := Open(spelling)
 		if err != nil {

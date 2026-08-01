@@ -63,10 +63,12 @@ func TestGate_MutuallyExcludes(t *testing.T) {
 }
 
 func TestDefault_IsSingleton(t *testing.T) {
-	if Default() == nil {
+	a := Default()
+	if a == nil {
 		t.Fatal("Default registry is nil")
 	}
-	if Default() != Default() {
+	b := Default()
+	if a != b {
 		t.Fatal("Default must return the same registry every call")
 	}
 }
