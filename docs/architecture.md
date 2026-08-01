@@ -452,11 +452,13 @@ opened handle is first bound to the retained git boundary with `os.SameFile`
 (`Repo.SameRoot`), so a name re-pointed between the git open and the handle
 open fails closed instead of writing one repository under another's
 coordinator. `EnsureProjectRepo` scaffolds and commits inside one git
-transaction; `MoveProjectRepo` opens or initializes the destination first and
-runs the copy, scaffolding, enumeration, and migration commit inside one
-destination transaction using the transaction session's commit path. The
-project-repo copy pins both trees and descends through pinned child handles
-(see Rooted Filesystem Access).
+transaction. `MoveProjectRepo` creates and pins the destination, pins the
+source, refuses overlap by handle-bound identity, and only then initializes
+git, so a destination re-pointed into the source is refused before git metadata
+can be written inside it; the copy, scaffolding, enumeration, and migration
+commit then run inside one destination transaction using the transaction
+session's commit path. The project-repo copy pins both trees and descends
+through pinned child handles (see Rooted Filesystem Access).
 
 **Planned M12 semantic-write gate:** after M11 and MR0 closure, session summaries,
 promoted facts, notes, and `memory_propose` use a project-local append-only event log and
