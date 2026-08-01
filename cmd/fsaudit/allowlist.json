@@ -15,25 +15,25 @@
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 308,
+      "line": 388,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: directory identity comparison"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 395,
+      "line": 475,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: OpenChildNoFollow identity check"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 542,
+      "line": 622,
       "fn": "os.Stat",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 546,
+      "line": 626,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
@@ -117,27 +117,6 @@
       "fn": "os.OpenRoot",
       "pr": "PR 3",
       "notes": "toolout spill: route through rootfs.Open rather than direct os.OpenRoot"
-    },
-    {
-      "file": "internal/session/log.go",
-      "line": 46,
-      "fn": "os.Open",
-      "pr": "PR 7",
-      "notes": "ReadAll: open sessions.jsonl for reading"
-    },
-    {
-      "file": "internal/session/log.go",
-      "line": 104,
-      "fn": "os.MkdirAll",
-      "pr": "PR 7",
-      "notes": "AppendRecord: ensure parent directory exists"
-    },
-    {
-      "file": "internal/session/log.go",
-      "line": 114,
-      "fn": "os.OpenFile",
-      "pr": "PR 7",
-      "notes": "AppendRecord: append-only write to sessions.jsonl"
     },
     {
       "file": "internal/retrieval/trace.go",
