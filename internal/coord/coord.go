@@ -2,18 +2,18 @@
 //
 // One gate exists per physical repository identity. Every component that
 // mutates a repository — a git commit, an index publication, and the combined
-// publish-then-commit transaction — acquires the gate for that repository from
-// this single registry, so all of them serialize on the same object. Two
-// components that resolve the same physical repository to the same identity
-// key are handed the same gate; alias, junction, and case spellings therefore
-// cannot split one repository across two coordinators.
-//
-// The registry is deliberately tiny. It holds nothing but the gates; the
-// identity keys that select them come from the components themselves, each
-// verified against the object the component actually pinned or opened.
+// publish-then-commit transaction — acquires the gate for that repository
+// from For, so all of them serialize on the same object. The identity is
+// carried by a pathid.ID, not a string, so the coordinator key can only be
+// chosen by physical identity; there is no pathname key a caller could spell
+// two ways.
 package coord
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/VrncQuentin/harness/internal/pathid"
+)
 
 // Gate is one repository's mutation coordinator. It is a non-reentrant
 // mutex: a caller that holds it must use the transaction session
@@ -30,37 +30,26 @@ func (g *Gate) Lock() { g.mu.Lock() }
 // Unlock releases the gate.
 func (g *Gate) Unlock() { g.mu.Unlock() }
 
-// Registry maps repository identity keys to their gates.
-type Registry struct {
-	mu    sync.Mutex
-	gates map[string]*Gate
-}
+// gates is the process-wide coordinator registry. It is deliberately the
+// single registry: a component that kept its own would hand out a second,
+// separate gate for the same repository and the two writers would exclude
+// nothing.
+var gates = struct {
+	sync.Mutex
+	m map[string]*Gate
+}{m: make(map[string]*Gate)}
 
-func newRegistry() *Registry {
-	return &Registry{gates: make(map[string]*Gate)}
-}
-
-// GateFor returns the gate for key, creating it on first use. The same key
-// always yields the same gate, so two components on one physical repository
-// must derive the key the same way (identity.Key, never a pathname) or they
-// will receive separate gates and serialize against nothing.
-func (r *Registry) GateFor(key string) *Gate {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if g := r.gates[key]; g != nil {
+// For returns the repository-wide mutation coordinator for the physical
+// repository id identifies. The same identity always yields the same gate, so
+// two components on one physical repository serialize on one object.
+func For(id pathid.ID) *Gate {
+	key := id.Key()
+	gates.Lock()
+	defer gates.Unlock()
+	if g := gates.m[key]; g != nil {
 		return g
 	}
 	g := &Gate{}
-	r.gates[key] = g
+	gates.m[key] = g
 	return g
 }
-
-// defaultRegistry is the process-wide coordinator registry. Every component
-// that mutates a repository acquires its gate from here, so git mutations and
-// index publications on one repository land on one gate. It is the single
-// registry: a component that kept its own would hand out a second, separate
-// gate for the same repository and the two writers would exclude nothing.
-var defaultRegistry = newRegistry()
-
-// Default returns the process-wide coordinator registry.
-func Default() *Registry { return defaultRegistry }

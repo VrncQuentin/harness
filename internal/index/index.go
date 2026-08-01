@@ -97,13 +97,13 @@ func OpenRooted(root *rootfs.Root, dir string, repoID pathid.ID) (*Index, error)
 	if err != nil {
 		return nil, err
 	}
-	return &Index{gate: coord.Default().GateFor(repoID.Key()), dir: dir, dim: manifest.Dim, manifest: manifest}, nil
+	return &Index{gate: coord.For(repoID), dir: dir, dim: manifest.Dim, manifest: manifest}, nil
 }
 
 // CreateRooted initializes a new index through a pinned Root handle. repoID
 // is the verified physical identity of the owning repository; see OpenRooted.
 func CreateRooted(root *rootfs.Root, dir string, dim int, repoID pathid.ID) (*Index, error) {
-	g := coord.Default().GateFor(repoID.Key())
+	g := coord.For(repoID)
 	g.Lock()
 	defer g.Unlock()
 	return createRootedUnder(g, root, dir, dim)

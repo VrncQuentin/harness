@@ -99,16 +99,16 @@ func (r *Repo) CurrentBranch() (string, error) {
 // pass the warning on so the missing ergonomic undo is visible.
 func (r *Repo) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preOpSHA string, warn error, err error) {
 	err = r.WithMutation(func(m *Mutation) error {
-		newSHA, preOpSHA, warn, err = m.WorkspaceStageAndCommit(files, msg)
+		newSHA, preOpSHA, warn, err = m.workspaceStageAndCommit(files, msg)
 		return err
 	})
 	return newSHA, preOpSHA, warn, err
 }
 
-// WorkspaceStageAndCommit stages files and creates a commit within a held
+// workspaceStageAndCommit stages files and creates a commit within a held
 // repository mutation session. See Repo.WorkspaceStageAndCommit for the
 // contract.
-func (m *Mutation) WorkspaceStageAndCommit(files []string, msg string) (newSHA, preOpSHA string, warn error, err error) {
+func (m *Mutation) workspaceStageAndCommit(files []string, msg string) (newSHA, preOpSHA string, warn error, err error) {
 	r := m.r
 
 	if head, herr := r.repo.Head(); herr == nil {
@@ -275,15 +275,15 @@ var ErrBranchExists = errors.New("git: branch already exists")
 // logs/HEAD for it.
 func (r *Repo) CreateBranch(name, startPoint string) (sha, preOpSHA string, warn error, err error) {
 	err = r.WithMutation(func(m *Mutation) error {
-		sha, preOpSHA, warn, err = m.CreateBranch(name, startPoint)
+		sha, preOpSHA, warn, err = m.createBranch(name, startPoint)
 		return err
 	})
 	return sha, preOpSHA, warn, err
 }
 
-// CreateBranch creates a branch within a held repository mutation session.
+// createBranch creates a branch within a held repository mutation session.
 // See Repo.CreateBranch for the contract.
-func (m *Mutation) CreateBranch(name, startPoint string) (sha, preOpSHA string, warn error, err error) {
+func (m *Mutation) createBranch(name, startPoint string) (sha, preOpSHA string, warn error, err error) {
 	r := m.r
 
 	refName := plumbing.NewBranchReferenceName(name)
@@ -349,15 +349,15 @@ func (m *Mutation) CreateBranch(name, startPoint string) (sha, preOpSHA string, 
 // HEAD, not the branch, and the branch tips on either side are untouched.
 func (r *Repo) Checkout(name string) (preOpBranch, preOpSHA string, warn error, err error) {
 	err = r.WithMutation(func(m *Mutation) error {
-		preOpBranch, preOpSHA, warn, err = m.Checkout(name)
+		preOpBranch, preOpSHA, warn, err = m.checkout(name)
 		return err
 	})
 	return preOpBranch, preOpSHA, warn, err
 }
 
-// Checkout switches branches within a held repository mutation session. See
+// checkout switches branches within a held repository mutation session. See
 // Repo.Checkout for the contract.
-func (m *Mutation) Checkout(name string) (preOpBranch, preOpSHA string, warn error, err error) {
+func (m *Mutation) checkout(name string) (preOpBranch, preOpSHA string, warn error, err error) {
 	r := m.r
 
 	// Snapshot pre-op state.

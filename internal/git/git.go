@@ -84,7 +84,7 @@ func newRepo(repo *gogit.Repository, path string, afterPin func()) (*Repo, error
 		path:     path,
 		boundary: rootfs.NewAnchorFromRoot(pinned, path),
 		identity: id,
-		gate:     coord.Default().GateFor(id.Key()),
+		gate:     coord.For(id),
 	}, nil
 }
 
@@ -108,13 +108,6 @@ func (r *Repo) SameAnchor(other *rootfs.Anchor) (bool, error) {
 	return r.boundary.SameAnchor(other)
 }
 
-// Identity returns the verified physical pathid of the repository directory
-// this handle opened. It is retained from open time and bound to the pinned
-// boundary. The pathid alone does not preserve opened-object identity — a
-// same-name replacement at the pathname reuses the same key — so compare
-// opened boundaries with SameAnchor, not with this value.
-func (r *Repo) Identity() pathid.ID { return r.identity }
-
 // WithMutation runs fn under the repository-wide mutation coordinator,
 // holding it for the whole call. Index publication and the following git
 // commit for one repository must happen inside one WithMutation call so they
@@ -128,14 +121,6 @@ func (r *Repo) Identity() pathid.ID { return r.identity }
 // transaction holds is the index's own.
 func (r *Repo) WithMutation(fn func(*Mutation) error) error {
 	return r.withMutation(fn, nil)
-}
-
-// WithMutationHooked is WithMutation with a hook that runs immediately before
-// the repository gate is acquired. It is exported so regression tests in other
-// packages can stage the interleaving at the real acquisition boundary;
-// production callers use WithMutation, which passes no hook.
-func (r *Repo) WithMutationHooked(fn func(*Mutation) error, beforeGate func()) error {
-	return r.withMutation(fn, beforeGate)
 }
 
 // withMutation is WithMutation with a hook that runs immediately before the

@@ -4,29 +4,43 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/VrncQuentin/harness/internal/pathid"
 )
 
-func TestRegistry_SameKeyYieldsSameGate(t *testing.T) {
-	reg := newRegistry()
-	g1 := reg.GateFor("repo-A")
-	g2 := reg.GateFor("repo-A")
+func TestFor_SameIdentityYieldsSameGate(t *testing.T) {
+	id, err := pathid.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g1 := For(id)
+	g2 := For(id)
 	if g1 != g2 {
-		t.Fatal("same key must yield the same gate")
+		t.Fatal("same identity must yield the same gate")
 	}
 }
 
-func TestRegistry_DifferentKeysYieldDifferentGates(t *testing.T) {
-	reg := newRegistry()
-	g1 := reg.GateFor("repo-A")
-	g2 := reg.GateFor("repo-B")
-	if g1 == g2 {
-		t.Fatal("different keys must yield different gates")
+func TestFor_DifferentIdentitiesYieldDifferentGates(t *testing.T) {
+	a, err := pathid.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := pathid.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ga, gb := For(a), For(b)
+	if ga == gb {
+		t.Fatal("different identities must yield different gates")
 	}
 }
 
 func TestGate_MutuallyExcludes(t *testing.T) {
-	reg := newRegistry()
-	g := reg.GateFor("repo")
+	id, err := pathid.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := For(id)
 
 	// The gate is not reentrant: a second acquisition from another goroutine
 	// must block until the first releases. The contender signals immediately
@@ -64,20 +78,9 @@ func TestGate_MutuallyExcludes(t *testing.T) {
 	case <-acquired:
 		unlock()
 		t.Fatal("second holder acquired while the gate was held")
-	case <-time.After(5 * time.Second):
+	case <-time.After(250 * time.Millisecond):
 	}
 	unlock()
 	<-done
 	<-acquired
-}
-
-func TestDefault_IsSingleton(t *testing.T) {
-	a := Default()
-	if a == nil {
-		t.Fatal("Default registry is nil")
-	}
-	b := Default()
-	if a != b {
-		t.Fatal("Default must return the same registry every call")
-	}
 }
