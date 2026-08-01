@@ -62,16 +62,48 @@ func (a *uiRetrievalScorerAdapter) ScoreEpisodes(ctx context.Context, query stri
 }
 
 type memoryCandidate struct {
-	globalMem    *memory.DirReader
-	activeMem    *memory.DirReader
-	sessionStore *memory.DirReader
-	agentReg     *agent.DiskRegistry
-	assembler    *prompt.DiskAssembler
-	sessionMgr   *session.Manager
-	taskRunner   *taskRunnerAdapter
-	apiServer    *api.Server
-	serviceDeps  ui.ServiceDeps
-	handles      []io.Closer
+	globalMem   *memory.DirReader
+	activeMem   *memory.DirReader
+	agentReg    *agent.DiskRegistry
+	assembler   *prompt.DiskAssembler
+	sessionMgr  *session.Manager
+	taskRunner  *taskRunnerAdapter
+	apiServer   *api.Server
+	serviceDeps ui.ServiceDeps
+	// readers and handles are the candidate's owned resources. The session
+	// manager is wired to activeMem directly — there is no separately opened
+	// session reader — so every reader in one generation is owned once and
+	// closed once.
+	readers []*memory.DirReader
+	handles []io.Closer
+}
+
+// addReader registers an owned memory reader on the candidate.
+func (c *memoryCandidate) addReader(r *memory.DirReader) {
+	if r != nil {
+		c.readers = append(c.readers, r)
+	}
+}
+
+// addHandle registers an owned closer (episode index, git repository) on the
+// candidate.
+func (c *memoryCandidate) addHandle(h io.Closer) {
+	if h != nil {
+		c.handles = append(c.handles, h)
+	}
+}
+
+func (c *memoryCandidate) close() {
+	closed := map[*memory.DirReader]bool{}
+	for _, r := range c.readers {
+		if !closed[r] {
+			closed[r] = true
+			_ = r.Close()
+		}
+	}
+	for _, h := range c.handles {
+		_ = h.Close()
+	}
 }
 
 func closeReaders(readers ...memory.Repo) {
@@ -115,11 +147,9 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 	oldGlobal := rt.globalMem
 	oldActive := rt.activeMem
-	oldSession := rt.sessionMem
 
 	rt.globalMem = candidate.globalMem
 	rt.activeMem = candidate.activeMem
-	rt.sessionMem = candidate.sessionStore
 	rt.agentReg = candidate.agentReg
 	rt.assembler = candidate.assembler
 	rt.setSessionManager(candidate.sessionMgr)
@@ -134,12 +164,10 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	// the publisher lease. When the last in-flight operation releases
 	// its lease, the generation's readers are closed.
 	if rt.gen != nil {
-		if oldGlobal != nil || oldActive != nil || oldSession != nil {
-			rt.gen.readers = []memory.Repo{oldGlobal, oldActive, oldSession}
-		}
+		rt.gen.readers = []memory.Repo{oldGlobal, oldActive}
 		rt.gen.release()
-	} else if oldGlobal != nil || oldActive != nil || oldSession != nil {
-		closeReaders(oldGlobal, oldActive, oldSession)
+	} else {
+		closeReaders(oldGlobal, oldActive)
 	}
 	rt.gen = &generation{
 		assembler:  candidate.assembler,
@@ -149,13 +177,6 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	rt.gen.acquire()
 
 	return true
-}
-
-func (c *memoryCandidate) close() {
-	closeReaders(c.globalMem, c.activeMem, c.sessionStore)
-	for _, h := range c.handles {
-		_ = h.Close()
-	}
 }
 
 func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, buildAPI bool) *memoryCandidate {
@@ -179,44 +200,44 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		}
 	}
 
+	cand := &memoryCandidate{}
+	fail := func(err error) *memoryCandidate {
+		cand.close()
+		uiServer.AddStartupError(err)
+		return nil
+	}
+
 	globalMem, err := memory.NewDirReader(roots.globalRoot)
 	if err != nil {
-		uiServer.AddStartupError(fmt.Errorf("open global memory: %w", err))
-		return nil
+		return fail(fmt.Errorf("open global memory: %w", err))
 	}
-	if rt.beforeActiveMemOpen != nil {
-		rt.beforeActiveMemOpen()
-	}
-	activeMem, err := memory.NewDirReader(roots.activeRoot)
-	if err != nil {
-		_ = globalMem.Close()
-		uiServer.AddStartupError(fmt.Errorf("open active memory: %w", err))
-		return nil
-	}
-	doClose := func() {
-		closeReaders(globalMem, activeMem)
-	}
-	var handles = make([]io.Closer, 0, 1)
-	closeHandles := func() {
-		for _, h := range handles {
-			_ = h.Close()
+	cand.addReader(globalMem)
+	cand.globalMem = globalMem
+
+	// The active reader is the global reader whenever both are configured to
+	// the same repository. One generation then owns a single handle for the
+	// shared repo — the session manager is wired to this same reader — so
+	// there is no second independently opened reader to race or compare.
+	activeMem := globalMem
+	if roots.activeRoot != roots.globalRoot {
+		activeMem, err = memory.NewDirReader(roots.activeRoot)
+		if err != nil {
+			return fail(fmt.Errorf("open active memory: %w", err))
 		}
+		cand.addReader(activeMem)
 	}
+	cand.activeMem = activeMem
 
 	agentReg := agent.NewDiskRegistry(globalMem, rt.getActiveAgent, rt.setActiveAgent)
 	assembler := prompt.NewProjectDiskAssembler(globalMem, activeMem, agentReg, rt.effectivePromptFor(cfg)).WithProjectSlug(cfg.Project.ActiveProjectSlug)
 
 	indexDir := memoryops.EpisodeIndexDir(roots.activeRoot)
 	if err := activeMem.MkdirAll("index/_episodes"); err != nil {
-		doClose()
-		uiServer.AddStartupError(fmt.Errorf("episode index: mkdir: %w", err))
-		return nil
+		return fail(fmt.Errorf("episode index: mkdir: %w", err))
 	}
 	indexAnchor, err := activeMem.SubAnchor("index/_episodes")
 	if err != nil {
-		doClose()
-		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
-		return nil
+		return fail(fmt.Errorf("episode index: %w", err))
 	}
 	// The episode index serializes on the repository-wide mutation coordinator,
 	// so its identity is the repository's verified identity, not the index
@@ -224,63 +245,27 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir, activeMem.Identity())
 	if err != nil {
 		_ = indexAnchor.Close()
-		doClose()
-		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
-		return nil
+		return fail(fmt.Errorf("episode index: %w", err))
 	}
-	handles = append(handles, episodeIndex)
+	cand.addHandle(episodeIndex)
 	embedClient := rt.newEmbedderClientFor(cfg)
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 
 	infClient := rt.newInferenceClientFor(cfg)
-	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, infClient, embedClient, episodeIndex, cfg.Project.ActiveProjectSlug)
-	if gitRepo != nil {
-		// The retained boundary handle joins the candidate's owned handles so
-		// every failure path below and generation retirement releases it.
-		handles = append(handles, gitRepo)
-	}
-	if sessionMgr == nil {
-		doClose()
-		closeHandles()
-		if sessionStore != nil {
-			_ = sessionStore.Close()
-		}
-		return nil
+	gitRepo, sessionMgr, sessionAdapter, err := rt.buildSessionManagerWithClients(metricsStore, roots, infClient, embedClient, episodeIndex, activeMem, cfg.Project.ActiveProjectSlug)
+	cand.addHandle(gitRepo)
+	if err != nil {
+		return fail(err)
 	}
 
-	// Every independently opened handle on the active repository — the
-	// memory/project reader, the git repository, and the session store — must
-	// be one physical repository. They are compared by their retained pinned
-	// boundaries (os.SameFile), never by pathid identity, so a directory
-	// replaced at the same pathname between any two opens fails closed rather
-	// than combining readers rooted in different repositories. The global
-	// reader is compared against the active one when the two are configured to
-	// the same path (the active project is the global project).
-	failMismatch := func(err error) {
-		doClose()
-		closeHandles()
-		if sessionStore != nil {
-			_ = sessionStore.Close()
-		}
-		uiServer.AddStartupError(fmt.Errorf("session manager: memory readers and git repository identify different directories: %w", err))
-	}
+	// The active memory reader — which serves prompt, session, and index I/O —
+	// and the git repository must be one physical repository. They are
+	// compared by their retained pinned boundaries (os.SameFile), never by
+	// pathid identity, so a directory replaced at the same pathname between
+	// the two opens fails closed rather than combining a reader and a git
+	// handle rooted in different repositories.
 	if same, err := activeMem.SameRepo(gitRepo); err != nil || !same {
-		failMismatch(fmt.Errorf("active memory reader and git repository: %v", err))
-		return nil
-	}
-	if same, err := sessionStore.SameDirReader(activeMem); err != nil || !same {
-		failMismatch(fmt.Errorf("session store and active memory reader: %v", err))
-		return nil
-	}
-	if same, err := sessionStore.SameRepo(gitRepo); err != nil || !same {
-		failMismatch(fmt.Errorf("session store and git repository: %v", err))
-		return nil
-	}
-	if roots.globalRoot == roots.activeRoot {
-		if same, err := globalMem.SameDirReader(activeMem); err != nil || !same {
-			failMismatch(fmt.Errorf("global and active memory readers: %v", err))
-			return nil
-		}
+		return fail(fmt.Errorf("session manager: memory reader and git repository identify different directories: %v", err))
 	}
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
@@ -340,13 +325,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 
 	registry := tools.NewRegistry()
 	if err := tools.RegisterBuiltins(registry); err != nil {
-		doClose()
-		closeHandles()
-		if sessionStore != nil {
-			_ = sessionStore.Close()
-		}
-		uiServer.AddStartupError(fmt.Errorf("task tools: %w", err))
-		return nil
+		return fail(fmt.Errorf("task tools: %w", err))
 	}
 
 	var loopMetrics agentloop.MetricsRecorder
@@ -408,18 +387,13 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	}
 	svcDeps.TaskRunner = taskAdapter
 
-	return &memoryCandidate{
-		globalMem:    globalMem,
-		activeMem:    activeMem,
-		sessionStore: sessionStore,
-		agentReg:     agentReg,
-		assembler:    assembler,
-		sessionMgr:   sessionMgr,
-		taskRunner:   taskAdapter,
-		apiServer:    apiSrv,
-		serviceDeps:  svcDeps,
-		handles:      handles,
-	}
+	cand.agentReg = agentReg
+	cand.assembler = assembler
+	cand.sessionMgr = sessionMgr
+	cand.taskRunner = taskAdapter
+	cand.apiServer = apiSrv
+	cand.serviceDeps = svcDeps
+	return cand
 }
 
 type projectRepoRoots struct {
@@ -460,15 +434,14 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 	}, nil
 }
 
-func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex, projectSlug string) (*gitw.Repo, *memory.DirReader, *session.Manager, *uiSessionStoreAdapter) {
+func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex, sessionReader *memory.DirReader, projectSlug string) (*gitw.Repo, *session.Manager, *uiSessionStoreAdapter, error) {
 	repoPath := roots.activeRoot
 	if rt.beforeGitOpen != nil {
 		rt.beforeGitOpen()
 	}
 	repo, err := gitw.Open(repoPath)
 	if err != nil {
-		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
-		return nil, nil, nil, nil
+		return nil, nil, nil, fmt.Errorf("session manager: %w", err)
 	}
 
 	var rec session.MetricsRecorder
@@ -476,18 +449,13 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		rec = metrics.NewRecorder(metricsStore)
 	}
 
-	if rt.beforeSessionStoreOpen != nil {
-		rt.beforeSessionStoreOpen()
-	}
-	sessionStore, err := memory.NewDirReader(repoPath)
-	if err != nil {
-		uiServer.AddStartupError(fmt.Errorf("open session store %s: %w", repoPath, err))
-		return repo, nil, nil, nil
-	}
+	// The session manager reads and writes the same generation-owned reader
+	// the active memory and episode index use, so there is no separately
+	// opened session handle to race against the git boundary.
 	mgr, err := session.NewManager(session.ManagerDeps{
 		Repo:               repo,
-		Writer:             sessionStore,
-		Reader:             sessionStore,
+		Writer:             sessionReader,
+		Reader:             sessionReader,
 		Inference:          infClient,
 		Metrics:            rec,
 		SummarizerPrompt:   rt.summarizerPromptFn(),
@@ -495,11 +463,10 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		AfterSave:          memoryops.AfterSaveEmbed(embedClient, episodeIndex, repo),
 	}, projectSlug)
 	if err != nil {
-		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
-		return repo, sessionStore, nil, nil
+		return repo, nil, nil, fmt.Errorf("session manager: %w", err)
 	}
 	adapter := &uiSessionStoreAdapter{mgr: mgr, getActive: rt.getActiveAgent}
-	return repo, sessionStore, mgr, adapter
+	return repo, mgr, adapter, nil
 }
 
 // summarizerPromptFn returns a getter that reads the live config
