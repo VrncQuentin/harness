@@ -516,7 +516,7 @@ func TestSnapshotAndRestoreIndex(t *testing.T) {
 func TestWorkspaceStageAndCommitSerializesAcrossHandles(t *testing.T) {
 	dir := t.TempDir()
 	seed, err := Init(dir)
-	defer seed.Close()
+	defer func() { _ = seed.Close() }()
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestWorkspaceStageAndCommitSerializesAcrossHandles(t *testing.T) {
 			defer wg.Done()
 			// A separate handle per goroutine, exactly as each tool call gets.
 			handle, oerr := Open(dir)
-			defer handle.Close()
+			defer func() { _ = handle.Close() }()
 			if oerr != nil {
 				errs <- oerr
 				return
@@ -602,7 +602,7 @@ func TestMutationLockIdentityAcrossSpellings(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	seed, err := Init(repoPath)
-	defer seed.Close()
+	defer func() { _ = seed.Close() }()
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -631,7 +631,7 @@ func TestMutationLockIdentityAcrossSpellings(t *testing.T) {
 	for name, spelling := range spellings {
 		t.Run(name, func(t *testing.T) {
 			handle, oerr := Open(spelling)
-			defer handle.Close()
+			defer func() { _ = handle.Close() }()
 			if oerr != nil {
 				t.Fatalf("Open(%s): %v", spelling, oerr)
 			}
@@ -666,7 +666,7 @@ func TestMutationLockIdentityAcrossSpellings(t *testing.T) {
 			defer wg.Done()
 			// Writers arrive through different spellings of the same repository.
 			handle, oerr := Open(alternates[n%len(alternates)])
-			defer handle.Close()
+			defer func() { _ = handle.Close() }()
 			if oerr != nil {
 				errs <- oerr
 				return
@@ -725,7 +725,7 @@ func TestOpenThroughDirectoryLinkIsRefused(t *testing.T) {
 func TestCheckoutSerializesAgainstStageAndCommit(t *testing.T) {
 	dir := t.TempDir()
 	seed, err := Init(dir)
-	defer seed.Close()
+	defer func() { _ = seed.Close() }()
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -752,7 +752,7 @@ func TestCheckoutSerializesAgainstStageAndCommit(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		handle, oerr := Open(dir)
-		defer handle.Close()
+		defer func() { _ = handle.Close() }()
 		if oerr != nil {
 			errs <- oerr
 			return
@@ -771,7 +771,7 @@ func TestCheckoutSerializesAgainstStageAndCommit(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		handle, oerr := Open(dir)
-		defer handle.Close()
+		defer func() { _ = handle.Close() }()
 		if oerr != nil {
 			errs <- oerr
 			return
@@ -891,7 +891,7 @@ func TestCreateBranchFromStartPoint(t *testing.T) {
 func TestCreateBranchConcurrentSameNameDifferentStartPoints(t *testing.T) {
 	dir := t.TempDir()
 	seed, err := Init(dir)
-	defer seed.Close()
+	defer func() { _ = seed.Close() }()
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -925,7 +925,7 @@ func TestCreateBranchConcurrentSameNameDifferentStartPoints(t *testing.T) {
 			defer wg.Done()
 			// A separate handle each, as every tool call gets.
 			handle, oerr := Open(dir)
-			defer handle.Close()
+			defer func() { _ = handle.Close() }()
 			if oerr != nil {
 				results <- outcome{err: oerr}
 				return

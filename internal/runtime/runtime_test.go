@@ -448,7 +448,7 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
 	}, client, nil, nil, project.GlobalSlug)
-	defer gitRepo.Close()
+	defer func() { _ = gitRepo.Close() }()
 	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 	rt.taskRunner = &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: rt.reqQueue}
@@ -815,7 +815,7 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 		activeRoot: root,
 		activeSlug: "global",
 	}, rt.ensureInferenceClient(), nil, nil, "global")
-	defer gitRepo.Close()
+	defer func() { _ = gitRepo.Close() }()
 	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
@@ -865,7 +865,7 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 		activeRoot: root,
 		activeSlug: "global",
 	}, rt.ensureInferenceClient(), nil, nil, "global")
-	defer gitRepo.Close()
+	defer func() { _ = gitRepo.Close() }()
 	rt.sessionMem = sessionStore
 	if mgr == nil {
 		t.Fatal("buildSessionManager returned nil")
@@ -931,7 +931,7 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 		activeRoot: root,
 		activeSlug: "global",
 	}, rt.ensureInferenceClient(), nil, nil, "global")
-	defer gitRepo.Close()
+	defer func() { _ = gitRepo.Close() }()
 	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
@@ -1198,7 +1198,7 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 		activeRoot: root,
 		activeSlug: "global",
 	}, rt.ensureInferenceClient(), nil, nil, "global")
-	defer gitRepo.Close()
+	defer func() { _ = gitRepo.Close() }()
 	rt.sessionMem = sessionStore
 	if mgr == nil || adapter == nil {
 		t.Fatal("buildSessionManager returned nil manager")
@@ -1748,7 +1748,7 @@ func TestSessionStoreOwnershipRetiredOnStop(t *testing.T) {
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
 	}, rt.ensureInferenceClient(), nil, nil, project.GlobalSlug)
-	defer gitRepo.Close()
+	defer func() { _ = gitRepo.Close() }()
 	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
@@ -1778,7 +1778,7 @@ func TestStopIsIdempotent(t *testing.T) {
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
 	}, rt.ensureInferenceClient(), nil, nil, project.GlobalSlug)
-	defer gitRepo.Close()
+	defer func() { _ = gitRepo.Close() }()
 	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
