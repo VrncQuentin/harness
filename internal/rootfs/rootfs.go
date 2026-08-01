@@ -94,6 +94,11 @@ func (r *Root) ReadFile(rel string) ([]byte, error) { return r.root.ReadFile(rel
 // Lstat describes rel without following it when it is itself a link.
 func (r *Root) Lstat(rel string) (fs.FileInfo, error) { return r.root.Lstat(rel) }
 
+// Stat describes rel, following a final symlink whose target stays inside the
+// root. A link that cannot stay inside the root is refused, which is what makes
+// Stat safe to use for existence checks on entries the root must keep confined.
+func (r *Root) Stat(rel string) (fs.FileInfo, error) { return r.root.Stat(rel) }
+
 // Readlink returns the target rel points at, without resolving it. A link
 // whose target lies outside the root is still readable — reading a link is not
 // following one, and callers that represent a link by its target (git stores
@@ -253,6 +258,32 @@ func (r *Root) ReadDir(rel string) ([]os.DirEntry, error) {
 
 // RemoveAll removes rel and any children it contains.
 func (r *Root) RemoveAll(rel string) error { return r.root.RemoveAll(rel) }
+
+// CreateExclusive creates rel, failing with fs.ErrExist if anything already
+// holds the name. Creation and the claim on the name are one O_EXCL step, so
+// an entry that appears concurrently is never overwritten. It is the Root
+// counterpart of Target.CreateExclusive; see there for why a failed exclusive
+// create leaves its partial file behind rather than removing it by name.
+func (r *Root) CreateExclusive(rel string, data []byte, perm fs.FileMode) error {
+	f, err := r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	// The mode is applied to the open handle because a umask can reduce the
+	// permission requested at create time.
+	if err := f.Chmod(perm); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return nil
+}
 
 // SameDir reports whether r and other are handles on one directory.
 //
