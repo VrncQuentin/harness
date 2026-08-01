@@ -155,7 +155,7 @@ func TestRepo_TwoHandlesThroughDifferentSpellingsShareCoordinator(t *testing.T) 
 			t.Error(oerr)
 			return
 		}
-		if err := h.WithMutation(func(m *Mutation) error {
+		if err := h.WithMutation(func(*Mutation) error {
 			close(firstEntered)
 			<-firstRelease
 			return nil
@@ -178,7 +178,7 @@ func TestRepo_TwoHandlesThroughDifferentSpellingsShareCoordinator(t *testing.T) 
 		// The mutation body is the "hook" that sits inside the critical
 		// section: reaching it proves the second spelling entered the same
 		// coordinator the first spelling already held.
-		if err := h.WithMutation(func(m *Mutation) error {
+		if err := h.WithMutation(func(*Mutation) error {
 			close(secondEntered)
 			return nil
 		}); err != nil {
@@ -254,7 +254,7 @@ func TestRepoTransaction_FailedMutationReleasesCoordinator(t *testing.T) {
 
 	boom := errors.New("injected mutation failure")
 	go func() {
-		err := repo.WithMutation(func(m *Mutation) error {
+		err := repo.WithMutation(func(*Mutation) error {
 			close(entered)
 			<-release
 			return boom
@@ -272,7 +272,7 @@ func TestRepoTransaction_FailedMutationReleasesCoordinator(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := repo.WithMutation(func(m *Mutation) error {
+		if err := repo.WithMutation(func(*Mutation) error {
 			close(secondEntered)
 			return nil
 		}); err != nil {

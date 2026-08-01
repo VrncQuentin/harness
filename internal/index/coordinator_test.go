@@ -111,7 +111,7 @@ func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := repo.WithMutation(func(m *gitw.Mutation) error {
+		if err := repo.WithMutation(func(*gitw.Mutation) error {
 			close(gitEntered)
 			<-gitRelease
 			return nil
@@ -171,7 +171,7 @@ func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 	wg4.Add(1)
 	go func() {
 		defer wg4.Done()
-		if err := repo.WithMutation(func(m *gitw.Mutation) error {
+		if err := repo.WithMutation(func(*gitw.Mutation) error {
 			close(gitEntered2)
 			return nil
 		}); err != nil {
