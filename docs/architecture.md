@@ -302,9 +302,9 @@ below.
 | Same-name directory replacement | `OpenIdentified` verifies the pinned handle against the physical identity with `os.SameFile`; a replacement fails the comparison | implemented |
 | Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name | implemented |
 | Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere | implemented |
-| In-process concurrent writers | One repository-wide mutation coordinator per physical repository identity (`internal/coord`), shared by git mutations, index publication, and project-repo scaffolding; index publication and the following git commit run inside one repository transaction held across both (PR 5b4), and project-repo scaffold writes and their commit run inside one transaction held across both (PR 6) | implemented |
+| In-process concurrent writers | One repository-wide mutation coordinator per physical repository identity (`internal/coord`), shared by git mutations, index publication, and project-repo scaffolding and moves; index publication and the following git commit run inside one repository transaction held across both (PR 5b4), and project-repo scaffold writes and their commit, and a project-repo move's copy and its commit, each run inside one transaction held across both (PR 6) | implemented |
 | Check/use races on intermediate directories | `OpenChildNoFollow` opens the child, Lstats the entry through the parent, rejects links, and compares the entry with the opened handle via `os.SameFile` — what is opened and what is checked are the same object | implemented |
-| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); DirReader identity via PR 2c, compared against the git repository's retained identity at runtime construction (PR 5b4); index rooted identity via PR 5b2; repository-wide mutation coordinator spanning git commits and index publication via PR 5b4; project-repo scaffolding, validation, destination creation, and file enumeration route through pinned roots, with scaffold writes inside the repository transaction (PR 6) | implemented |
+| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); DirReader identity via PR 2c, compared against the git repository's retained identity at runtime construction (PR 5b4); index rooted identity via PR 5b2; repository-wide mutation coordinator spanning git commits and index publication via PR 5b4; project-repo scaffolding, validation, destination creation, and file enumeration route through pinned roots, scaffold/move writes are bound to the retained git boundary with `os.SameFile` and run inside the repository transaction (PR 6) | implemented |
 
 #### Out of scope
 
@@ -446,12 +446,17 @@ Mediates all reads and writes to git-backed project memory repos.
 **Project repo workflow:** scaffolding, layout validation, `.gitkeep` creation,
 destination creation, and file enumeration route through pinned `os.Root`
 handles, and layout entries are addressed by validated repo-relative paths
-through those handles. Scaffolding an existing repository holds the
-repository-wide mutation coordinator, and `EnsureProjectRepo` scaffolds and
-commits inside one git transaction so the write and its commit cannot
-interleave with another writer on the same physical repository. The project-repo
-copy pins both trees and descends through pinned child handles (see Rooted
-Filesystem Access).
+through those handles. Scaffolding and moving an existing repository hold the
+repository-wide mutation coordinator, and every write through an independently
+opened handle is first bound to the retained git boundary with `os.SameFile`
+(`Repo.SameRoot`), so a name re-pointed between the git open and the handle
+open fails closed instead of writing one repository under another's
+coordinator. `EnsureProjectRepo` scaffolds and commits inside one git
+transaction; `MoveProjectRepo` opens or initializes the destination first and
+runs the copy, scaffolding, enumeration, and migration commit inside one
+destination transaction using the transaction session's commit path. The
+project-repo copy pins both trees and descends through pinned child handles
+(see Rooted Filesystem Access).
 
 **Planned M12 semantic-write gate:** after M11 and MR0 closure, session summaries,
 promoted facts, notes, and `memory_propose` use a project-local append-only event log and

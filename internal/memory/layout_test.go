@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
@@ -976,48 +977,301 @@ func TestMoveProjectRepoFailsClosedOnUnresolvablePath(t *testing.T) {
 
 // The whole working tree is copied through the two pinned ends of the move,
 // including nested content, while the source .git stays behind. A complete
-// copy is the discriminator: any point where one end is not pinned would either
-// fail the containment checks or silently drop a subtree.
+// copy is part of the discriminator; the rest proves the two ends are pinned:
+// an alias repointed after both roots are pinned must not redirect the copy.
+// The former pathname-based implementation re-resolved each file by name, so
+// it would read the repointed source and write the repointed destination.
 func TestMoveProjectRepo_SourceAndDestinationPinned(t *testing.T) {
-	tmp := t.TempDir()
-	src := filepath.Join(tmp, "src")
+	t.Run("complete copy", func(t *testing.T) {
+		tmp := t.TempDir()
+		src := filepath.Join(tmp, "src")
+		if err := EnsureProjectRepo(src, false); err != nil {
+			t.Fatalf("EnsureProjectRepo(src): %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+			t.Fatalf("write notes: %v", err)
+		}
+		nested := filepath.Join(src, "episodes", "coder")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(nested, "2026-01-01.md"), []byte("episode"), 0o644); err != nil {
+			t.Fatalf("write nested episode: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(src, ".git", "source-only"), []byte("do not copy"), 0o644); err != nil {
+			t.Fatalf("write git marker: %v", err)
+		}
+
+		dst := filepath.Join(tmp, "dst")
+		if err := MoveProjectRepo(src, dst, false); err != nil {
+			t.Fatalf("MoveProjectRepo: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dst, "notes.md"))
+		if err != nil {
+			t.Fatalf("read copied notes: %v", err)
+		}
+		if string(got) != "keep me" {
+			t.Fatalf("copied notes = %q", string(got))
+		}
+		if got, err := os.ReadFile(filepath.Join(dst, "episodes", "coder", "2026-01-01.md")); err != nil {
+			t.Fatalf("read nested copy: %v", err)
+		} else if string(got) != "episode" {
+			t.Fatalf("nested file = %q, want %q", string(got), "episode")
+		}
+		if _, err := os.Stat(filepath.Join(dst, ".git", "source-only")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("source .git marker copied, err=%v", err)
+		}
+		if err := ValidateProjectRepo(dst, false); err != nil {
+			t.Fatalf("ValidateProjectRepo(dst): %v", err)
+		}
+	})
+
+	t.Run("source alias repointed mid-copy", func(t *testing.T) {
+		base := t.TempDir()
+		realSrc := filepath.Join(base, "real-src")
+		if err := EnsureProjectRepo(realSrc, false); err != nil {
+			t.Fatalf("EnsureProjectRepo(realSrc): %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(realSrc, "notes.md"), []byte("from the pinned source"), 0o644); err != nil {
+			t.Fatalf("write real source notes: %v", err)
+		}
+		impostor := filepath.Join(base, "impostor")
+		if err := EnsureProjectRepo(impostor, false); err != nil {
+			t.Fatalf("EnsureProjectRepo(impostor): %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(impostor, "notes.md"), []byte("from the impostor"), 0o644); err != nil {
+			t.Fatalf("write impostor notes: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(impostor, "marker.txt"), []byte("do not copy"), 0o644); err != nil {
+			t.Fatalf("write impostor marker: %v", err)
+		}
+		alias := filepath.Join(base, "src-alias")
+		mustLinkDir(t, realSrc, alias)
+		dst := filepath.Join(base, "dst")
+
+		swapped := false
+		err := moveProjectRepoHooked(alias, dst, false, func() {
+			if swapped {
+				return
+			}
+			swapped = true
+			if rmErr := os.Remove(alias); rmErr != nil {
+				t.Fatalf("Remove alias: %v", rmErr)
+			}
+			mustLinkDir(t, impostor, alias)
+		})
+		if !swapped {
+			t.Fatal("the hook never ran; the window was not exercised")
+		}
+		if err != nil {
+			t.Fatalf("MoveProjectRepo: %v", err)
+		}
+		// The copy must have read the pinned source, wherever the alias went.
+		got, readErr := os.ReadFile(filepath.Join(dst, "notes.md"))
+		if readErr != nil {
+			t.Fatalf("read copied notes: %v", readErr)
+		}
+		if string(got) != "from the pinned source" {
+			t.Errorf("copied notes = %q, want the pinned source's content — the copy followed the repointed alias", string(got))
+		}
+		if _, statErr := os.Stat(filepath.Join(dst, "marker.txt")); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("the impostor was copied: %v", statErr)
+		}
+	})
+
+	t.Run("destination alias repointed mid-copy", func(t *testing.T) {
+		base := t.TempDir()
+		src := filepath.Join(base, "src")
+		if err := EnsureProjectRepo(src, false); err != nil {
+			t.Fatalf("EnsureProjectRepo(src): %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+			t.Fatalf("write notes: %v", err)
+		}
+		realDst := filepath.Join(base, "real-dst")
+		if err := os.MkdirAll(realDst, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		impostor := filepath.Join(base, "impostor-dst")
+		if err := os.MkdirAll(impostor, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		dstAlias := filepath.Join(base, "dst-alias")
+		mustLinkDir(t, realDst, dstAlias)
+
+		dstRoot, dstID, err := rootfs.OpenIdentified(dstAlias)
+		if err != nil {
+			t.Fatalf("OpenIdentified(dstAlias): %v", err)
+		}
+		defer dstRoot.Close() //nolint:errcheck // test cleanup
+
+		swapped := false
+		err = copyTreeToPinnedRootHooked(src, dstRoot, dstID, dstAlias, func() {
+			if swapped {
+				return
+			}
+			swapped = true
+			if rmErr := os.Remove(dstAlias); rmErr != nil {
+				t.Fatalf("Remove dstAlias: %v", rmErr)
+			}
+			mustLinkDir(t, impostor, dstAlias)
+		})
+		if !swapped {
+			t.Fatal("the hook never ran; the window was not exercised")
+		}
+		if err != nil {
+			t.Fatalf("copyTreeToPinnedRoot: %v", err)
+		}
+		// The copy must have written to the pinned destination, wherever the
+		// alias went.
+		got, readErr := os.ReadFile(filepath.Join(realDst, "notes.md"))
+		if readErr != nil {
+			t.Fatalf("read copied notes: %v", readErr)
+		}
+		if string(got) != "keep me" {
+			t.Errorf("copied notes = %q, want %q", string(got), "keep me")
+		}
+		if _, statErr := os.Stat(filepath.Join(impostor, "notes.md")); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("the copy followed the repointed destination alias: %v", statErr)
+		}
+	})
+}
+
+// The transaction gate in EnsureProjectRepo belongs to the directory git
+// opened. A directory replaced at the same pathname between that open and the
+// scaffold open canonicalizes to the same pathid key — an identity comparison
+// would accept it — while the retained-boundary comparison must reject it.
+// This is the exact-boundary discriminator, analogous to the runtime's
+// active-reader↔git check.
+func TestEnsureProjectRepo_BoundaryMismatchFailsClosed(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	if err := EnsureProjectRepo(root, false); err != nil {
+		t.Fatalf("seed repo: %v", err)
+	}
+	origID, err := pathid.Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the directory at the same pathname between the git open and the
+	// scaffold pin.
+	swapped := false
+	swapFailed := ""
+	err = ensureProjectRepoHooked(root, false, func() {
+		if swapped || swapFailed != "" {
+			return
+		}
+		if rnErr := os.Rename(root, root+".aside"); rnErr != nil {
+			swapFailed = rnErr.Error()
+			return
+		}
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			swapFailed = err.Error()
+			return
+		}
+		swapped = true
+	})
+	if !swapped {
+		if swapFailed != "" {
+			t.Skipf("Windows: the retained boundary handle blocks replacing the directory at the same pathname; the handle-block is the fail-closed outcome: %s", swapFailed)
+		}
+		t.Fatal("the hook never ran; the window was not exercised")
+	}
+	if err == nil {
+		t.Fatal("EnsureProjectRepo scaffolded under a boundary different from the git repository")
+	}
+	// The replacement must not have received the scaffold.
+	if _, statErr := os.Stat(filepath.Join(root, "rules.md")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the replacement received the scaffold: %v", statErr)
+	}
+	// Precondition: the same-name replacement reuses the pathid key, so the
+	// rejection cannot be explained by a pathid-based comparison.
+	replacedID, err := pathid.Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !origID.Equal(replacedID) {
+		t.Fatal("same-name replacement must reuse the pathid key, or this test no longer discriminates")
+	}
+}
+
+// The destination may name any number of missing ancestor components; they are
+// created through the pinned deepest existing ancestor rather than by name.
+func TestCopyTreeWithoutGit_CreatesMissingAncestors(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
 	if err := EnsureProjectRepo(src, false); err != nil {
-		t.Fatalf("EnsureProjectRepo(src): %v", err)
+		t.Fatalf("EnsureProjectRepo: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
 		t.Fatalf("write notes: %v", err)
 	}
-	nested := filepath.Join(src, "episodes", "coder")
-	if err := os.MkdirAll(nested, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
+
+	dst := filepath.Join(base, "missing", "nested", "dst")
+	if err := copyTreeWithoutGit(src, dst); err != nil {
+		t.Fatalf("copyTreeWithoutGit: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(nested, "2026-01-01.md"), []byte("episode"), 0o644); err != nil {
-		t.Fatalf("write nested episode: %v", err)
+	got, readErr := os.ReadFile(filepath.Join(base, "missing", "nested", "dst", "notes.md"))
+	if readErr != nil {
+		t.Fatalf("read copied notes: %v", readErr)
 	}
-	if err := os.WriteFile(filepath.Join(src, ".git", "source-only"), []byte("do not copy"), 0o644); err != nil {
-		t.Fatalf("write git marker: %v", err)
+	if string(got) != "keep me" {
+		t.Errorf("copied notes = %q, want %q", string(got), "keep me")
+	}
+}
+
+// A trailing separator must not turn the destination into a nested
+// dst/dst directory: it is cleaned and the files land in dst itself.
+func TestCopyTreeWithoutGit_TrailingSeparatorDestination(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
 	}
 
-	dst := filepath.Join(tmp, "dst")
+	dst := filepath.Join(base, "dst") + string(filepath.Separator)
+	if err := copyTreeWithoutGit(src, dst); err != nil {
+		t.Fatalf("copyTreeWithoutGit: %v", err)
+	}
+	got, readErr := os.ReadFile(filepath.Join(base, "dst", "notes.md"))
+	if readErr != nil {
+		t.Fatalf("read copied notes: %v", readErr)
+	}
+	if string(got) != "keep me" {
+		t.Errorf("copied notes = %q, want %q", string(got), "keep me")
+	}
+	if _, statErr := os.Stat(filepath.Join(base, "dst", "dst")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("trailing separator created a nested destination: %v", statErr)
+	}
+}
+
+// MoveProjectRepo cleans its destination, so a trailing separator and missing
+// ancestor components are accepted the same way they were by os.MkdirAll.
+func TestMoveProjectRepo_TrailingSeparatorDestination(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+
+	dst := filepath.Join(base, "missing", "dst") + string(filepath.Separator)
 	if err := MoveProjectRepo(src, dst, false); err != nil {
 		t.Fatalf("MoveProjectRepo: %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(dst, "notes.md"))
-	if err != nil {
-		t.Fatalf("read copied notes: %v", err)
+	got, readErr := os.ReadFile(filepath.Join(base, "missing", "dst", "notes.md"))
+	if readErr != nil {
+		t.Fatalf("read copied notes: %v", readErr)
 	}
 	if string(got) != "keep me" {
-		t.Fatalf("copied notes = %q", string(got))
+		t.Errorf("copied notes = %q, want %q", string(got), "keep me")
 	}
-	if got, err := os.ReadFile(filepath.Join(dst, "episodes", "coder", "2026-01-01.md")); err != nil {
-		t.Fatalf("read nested copy: %v", err)
-	} else if string(got) != "episode" {
-		t.Fatalf("nested file = %q, want %q", string(got), "episode")
-	}
-	if _, err := os.Stat(filepath.Join(dst, ".git", "source-only")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("source .git marker copied, err=%v", err)
-	}
-	if err := ValidateProjectRepo(dst, false); err != nil {
-		t.Fatalf("ValidateProjectRepo(dst): %v", err)
+	if _, statErr := os.Stat(filepath.Join(base, "missing", "dst", "dst")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("trailing separator created a nested destination: %v", statErr)
 	}
 }
