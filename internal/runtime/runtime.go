@@ -93,6 +93,21 @@ type Runtime struct {
 	// window so the git and memory identities differ and candidate
 	// construction must fail closed. Nil on every production path.
 	beforeGitOpen func()
+
+	// beforeActiveMemOpen runs after the global memory reader is pinned and
+	// immediately before the active memory reader opens, at the
+	// global-to-active identity boundary. A test stages a repoint in this
+	// window so the two readers differ and candidate construction must fail
+	// closed. Nil on every production path.
+	beforeActiveMemOpen func()
+
+	// beforeSessionStoreOpen runs after the git repository opens and
+	// immediately before the session store opens, at the git-to-session
+	// identity boundary. A test stages a repoint in this window so the
+	// session store pins a different physical repository than the memory
+	// reader and git handle, and candidate construction must fail closed.
+	// Nil on every production path.
+	beforeSessionStoreOpen func()
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

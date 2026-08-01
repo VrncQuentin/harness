@@ -184,6 +184,9 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		uiServer.AddStartupError(fmt.Errorf("open global memory: %w", err))
 		return nil
 	}
+	if rt.beforeActiveMemOpen != nil {
+		rt.beforeActiveMemOpen()
+	}
 	activeMem, err := memory.NewDirReader(roots.activeRoot)
 	if err != nil {
 		_ = globalMem.Close()
@@ -473,6 +476,9 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		rec = metrics.NewRecorder(metricsStore)
 	}
 
+	if rt.beforeSessionStoreOpen != nil {
+		rt.beforeSessionStoreOpen()
+	}
 	sessionStore, err := memory.NewDirReader(repoPath)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("open session store %s: %w", repoPath, err))
