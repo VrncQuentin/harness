@@ -48,17 +48,16 @@ func linkDir(t *testing.T, target, link string) {
 }
 
 // newSessionManagerForTest opens the active reader the way one runtime
-// generation does and builds a session manager wired to it, closing the
-// reader on test cleanup. The manager's reader is the same generation-owned
-// reader the runtime uses, so tests mirror the reader reuse and there is no
-// separately opened session handle.
+// generation does and builds a session manager wired to it. Ownership of the
+// reader transfers to Runtime via rt.globalMem/rt.activeMem; Runtime.Stop
+// closes it, so the test must not register its own cleanup (cleanup runs LIFO
+// after Stop's flush would have already used the reader).
 func newSessionManagerForTest(t *testing.T, rt *Runtime, root string, infClient inference.Client) (*gitw.Repo, *session.Manager, *uiSessionStoreAdapter) {
 	t.Helper()
 	reader, err := memory.NewDirReader(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = reader.Close() })
 	rt.globalMem = reader
 	rt.activeMem = reader
 	repo, mgr, adapter, err := rt.buildSessionManagerWithClients(nil, projectRepoRoots{

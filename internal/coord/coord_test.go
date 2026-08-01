@@ -1,9 +1,7 @@
 package coord
 
 import (
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/VrncQuentin/harness/internal/pathid"
 )
@@ -42,45 +40,19 @@ func TestGate_MutuallyExcludes(t *testing.T) {
 	}
 	g := For(id)
 
-	// The gate is not reentrant: a second acquisition from another goroutine
-	// must block until the first releases. The contender signals immediately
-	// before its acquisition, so the test provably knows it reached the lock
-	// before asserting it is blocked on it.
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	done := make(chan struct{})
-	var once sync.Once
-	unlock := func() { once.Do(func() { close(release) }) }
-	defer unlock()
-
-	go func() {
-		g.Lock()
-		defer g.Unlock()
-		close(entered)
-		<-release
-		close(done)
-	}()
-	<-entered
-
-	atLock := make(chan struct{})
-	acquired := make(chan struct{})
-	go func() {
-		close(atLock)
-		g.Lock()
-		close(acquired)
+	// TryLock on the private mutex is the deterministic exclusion assertion:
+	// while this goroutine holds the gate it must report the gate held, and
+	// after release it must report the gate free. No goroutine scheduling is
+	// involved.
+	g.Lock()
+	if g.mu.TryLock() {
 		g.Unlock()
-	}()
-	<-atLock
-
-	// The contender is provably blocked on the gate: it signalled immediately
-	// before acquisition and the first holder has not released.
-	select {
-	case <-acquired:
-		unlock()
-		t.Fatal("second holder acquired while the gate was held")
-	case <-time.After(250 * time.Millisecond):
+		t.Fatal("TryLock succeeded while the gate was held")
 	}
-	unlock()
-	<-done
-	<-acquired
+	g.Unlock()
+
+	if !g.mu.TryLock() {
+		t.Fatal("TryLock failed after the gate was released")
+	}
+	g.Unlock()
 }

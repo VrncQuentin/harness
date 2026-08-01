@@ -208,9 +208,9 @@ Responsibilities:
   an identity resolved separately from a pin describes a name, so any later
   reasoning about the handle — is it inside that other directory, is it the same
   as this one — is reasoning about something that need not be what is held open.
-  `Anchor.Identity` exposes the same pairing for a retained anchor. `internal/git`
-  opens its repository boundary through `OpenIdentified` and retains it
-  (`NewAnchorFromRoot`), `memory.DirReader` retains its anchor, and runtime
+  `internal/git` opens its repository boundary through `OpenIdentified` and
+  retains it (`NewAnchorFromRoot`), `memory.DirReader` opens and identifies in
+  the same step (`OpenIdentified` + `NewAnchorFromRoot`), and runtime
   construction compares the retained boundaries with `os.SameFile` before
   publishing a candidate, so git commits, session writes, and index
   publication are bound to the same physical repository or the candidate

@@ -37,9 +37,9 @@ func NewAnchor(path string) (*Anchor, error) {
 // Anchor: the caller closes the Anchor, never root.
 //
 // path is the spelling the handle was pinned through. It is retained for
-// Anchor.Open and Anchor.Identity, which re-open and verify the same
-// spelling; a caller that only ever compares the retained handle (SameAnchor,
-// SameRoot) never touches it.
+// Anchor.Open, which re-opens and verifies the same spelling; a caller that
+// only ever compares the retained handle (SameAnchor, SameRoot) never touches
+// it.
 func NewAnchorFromRoot(root *Root, path string) *Anchor {
 	return &Anchor{root: root, path: path}
 }

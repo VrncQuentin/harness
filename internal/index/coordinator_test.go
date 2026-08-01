@@ -1,9 +1,9 @@
 package index
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
@@ -33,7 +33,17 @@ func TestIndex_UpsertRootedUnder_RightGate(t *testing.T) {
 
 	g := coord.For(id)
 	g.Lock()
-	err = idx.UpsertRootedUnder(g, r, "a", "a", [][]float32{{1, 0}})
+	// Bounded watchdog: if UpsertRootedUnder regresses to reacquiring the
+	// held gate it would self-deadlock; report a failure instead of hanging
+	// the package until Go's global test timeout.
+	errCh := make(chan error, 1)
+	go func() { errCh <- idx.UpsertRootedUnder(g, r, "a", "a", [][]float32{{1, 0}}) }()
+	select {
+	case err = <-errCh:
+	case <-time.After(5 * time.Second):
+		g.Unlock()
+		t.Fatal("upsert under a held gate deadlocked on the coordinator")
+	}
 	g.Unlock()
 	if err != nil {
 		t.Fatalf("upsert under the shared coordinator: %v", err)
@@ -77,12 +87,12 @@ func TestIndex_UpsertRootedUnder_WrongGateFailsClosed(t *testing.T) {
 }
 
 // TestRepoAndIndex_ShareRepositoryTransaction verifies index publication and
-// git mutation enter the same repository transaction. Git holds the
-// coordinator inside WithMutation; the index publication signals immediately
-// before its gate acquisition (proving it reached the lock) and must not
-// reach its write hook until git releases. Mutex exclusion is symmetric, so a
-// single direction discriminates: if git and index used separate mutexes with
-// the same-looking key, the index would publish while git held "its" gate.
+// git mutation enter the same repository transaction. It runs the exact
+// production shape — index publication inside the git WithMutation — and the
+// deterministic shared-coordinator discriminator is the gate identity: the
+// gate git holds must be the index's own coordinator, or UpsertRootedUnder
+// fails closed. The call runs under a bounded watchdog so a reacquisition
+// regression fails instead of hanging the package.
 func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := gitw.Init(dir)
@@ -108,58 +118,25 @@ func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Git holds the coordinator inside WithMutation; the index publication
-	// must not reach its write hook until git releases.
-	gitEntered := make(chan struct{})
-	gitRelease := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(gitRelease) }) }
-	defer release()
-
-	var wg sync.WaitGroup
-	wg.Add(1)
+	errCh := make(chan error, 1)
 	go func() {
-		defer wg.Done()
-		if err := repo.WithMutation(func(*gitw.Mutation) error {
-			close(gitEntered)
-			<-gitRelease
-			return nil
-		}); err != nil {
-			t.Error(err)
-		}
+		errCh <- repo.WithMutation(func(m *gitw.Mutation) error {
+			if m.Gate() != idx.gate {
+				return errors.New("index and git do not share a coordinator")
+			}
+			return idx.UpsertRootedUnder(m.Gate(), root, "a", "a", [][]float32{{1, 0}})
+		})
 	}()
-	<-gitEntered
-
-	indexAtLock := make(chan struct{})
-	indexEntered := make(chan struct{})
-	var wg2 sync.WaitGroup
-	wg2.Add(1)
-	go func() {
-		defer wg2.Done()
-		if err := idx.upsertRootedBeforeLock(root, "a", "a", [][]float32{{1, 0}}, rootfs.WriteHooks{
-			AfterOpen: func(*os.File, string) { close(indexEntered) },
-		}, func() { close(indexAtLock) }); err != nil {
-			t.Error(err)
-		}
-	}()
-	<-indexAtLock
 	select {
-	case <-indexEntered:
-		release()
-		t.Fatal("index publication entered its write hook while git held the repository transaction")
-	case <-time.After(250 * time.Millisecond):
+	case err = <-errCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("index publication inside the git transaction deadlocked on the coordinator")
 	}
-	release()
-	select {
-	case <-indexEntered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("index publication never entered after git released the repository transaction")
+	if err != nil {
+		t.Fatal(err)
 	}
-	wg.Wait()
-	wg2.Wait()
 
-	// The publication must have landed, proving the transaction serialized
-	// rather than dropping the index write.
+	// The publication must have landed.
 	r2, err := rootfs.Open(dir)
 	if err != nil {
 		t.Fatal(err)

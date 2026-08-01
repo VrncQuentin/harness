@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	gogit "github.com/go-git/go-git/v6"
 
@@ -239,15 +240,32 @@ func TestRepoTransaction_FailedMutationReleasesCoordinator(t *testing.T) {
 	}
 
 	boom := errors.New("injected mutation failure")
-	err = repo.WithMutation(func(*Mutation) error { return boom })
+	withErr := make(chan error, 1)
+	go func() { withErr <- repo.WithMutation(func(*Mutation) error { return boom }) }()
+	select {
+	case err = <-withErr:
+	case <-time.After(5 * time.Second):
+		t.Fatal("failed mutation deadlocked on the coordinator")
+	}
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected injected failure, got %v", err)
 	}
 
 	// The coordinator was released: a fresh commit completes rather than
-	// deadlocking on the leaked gate.
+	// deadlocking on the leaked gate. Bounded so a leaked gate produces a
+	// failure instead of a hang.
 	writeRepoFile(t, repo, "b.txt", "two\n")
-	if _, err := repo.Commit("second", []string{"b.txt"}); err != nil {
-		t.Fatalf("commit after failed mutation: %v", err)
+	commitDone := make(chan error, 1)
+	go func() {
+		_, cerr := repo.Commit("second", []string{"b.txt"})
+		commitDone <- cerr
+	}()
+	select {
+	case cerr := <-commitDone:
+		if cerr != nil {
+			t.Fatalf("commit after failed mutation: %v", cerr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("commit after failed mutation deadlocked on a leaked gate")
 	}
 }
