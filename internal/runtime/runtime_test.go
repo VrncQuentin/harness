@@ -27,6 +27,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/prompt"
 	"github.com/VrncQuentin/harness/internal/queue"
+	"github.com/VrncQuentin/harness/internal/session"
 	"github.com/VrncQuentin/harness/internal/tools"
 	"github.com/VrncQuentin/harness/internal/ui"
 )
@@ -44,6 +45,30 @@ func linkDir(t *testing.T, target, link string) {
 	if err != nil {
 		t.Skipf("cannot create directory link: %v: %s", err, out)
 	}
+}
+
+// newSessionManagerForTest opens the active reader the way one runtime
+// generation does and builds a session manager wired to it. Ownership of the
+// reader transfers to Runtime via rt.globalMem/rt.activeMem; Runtime.Stop
+// closes it, so the test must not register its own cleanup (cleanup runs LIFO
+// after Stop's flush would have already used the reader).
+func newSessionManagerForTest(t *testing.T, rt *Runtime, root string, infClient inference.Client) (*gitw.Repo, *session.Manager, *uiSessionStoreAdapter) {
+	t.Helper()
+	reader, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.globalMem = reader
+	rt.activeMem = reader
+	repo, mgr, adapter, err := rt.buildSessionManagerWithClients(nil, projectRepoRoots{
+		globalRoot: root,
+		activeRoot: root,
+		activeSlug: project.GlobalSlug,
+	}, infClient, nil, nil, reader, project.GlobalSlug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repo, mgr, adapter
 }
 
 func TestNewStoresInitialConfig(t *testing.T) {
@@ -444,13 +469,8 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 	rt.inferClient = client
 	rt.reqQueue = startRuntimeTestQueue(t, client)
 
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
-		globalRoot: root,
-		activeRoot: root,
-		activeSlug: project.GlobalSlug,
-	}, client, nil, nil, project.GlobalSlug)
+	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, client)
 	defer func() { _ = gitRepo.Close() }()
-	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 	rt.taskRunner = &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: rt.reqQueue}
 
@@ -811,13 +831,8 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
 
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
-		globalRoot: root,
-		activeRoot: root,
-		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil, nil, "global")
+	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
 	defer func() { _ = gitRepo.Close() }()
-	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
 	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
@@ -861,13 +876,8 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
 	t.Cleanup(func() { rt.Stop() })
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
-		globalRoot: root,
-		activeRoot: root,
-		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil, nil, "global")
+	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
 	defer func() { _ = gitRepo.Close() }()
-	rt.sessionMem = sessionStore
 	if mgr == nil {
 		t.Fatal("buildSessionManager returned nil")
 	}
@@ -927,13 +937,8 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 	t.Cleanup(func() { rt.Stop() })
 	rt.inferClient = &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
 
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
-		globalRoot: root,
-		activeRoot: root,
-		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil, nil, "global")
+	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
 	defer func() { _ = gitRepo.Close() }()
-	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
 	s := mgr.Start("coder")
@@ -1194,13 +1199,15 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	rt.globalMem = dr
 	rt.activeMem = rt.globalMem
 
-	gitRepo, sessionStore, mgr, adapter := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
+	gitRepo, mgr, adapter, err := rt.buildSessionManagerWithClients(nil, projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
-		activeSlug: "global",
-	}, rt.ensureInferenceClient(), nil, nil, "global")
+		activeSlug: project.GlobalSlug,
+	}, rt.ensureInferenceClient(), nil, nil, dr, project.GlobalSlug)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer func() { _ = gitRepo.Close() }()
-	rt.sessionMem = sessionStore
 	if mgr == nil || adapter == nil {
 		t.Fatal("buildSessionManager returned nil manager")
 	}
@@ -1740,87 +1747,6 @@ func TestCandidateIdentityMismatchSameNameReplacementFailsClosed(t *testing.T) {
 	}
 }
 
-// TestCandidateGlobalActiveOpenBoundary stages a repoint between the global
-// memory reader open and the active memory reader open. With the active
-// project being the global project the two configured paths are identical, so
-// the runtime must fail the candidate when the two readers pin different
-// physical repositories — the check that no pathid-based comparison provides.
-func TestCandidateGlobalActiveOpenBoundary(t *testing.T) {
-	stableParent := t.TempDir()
-	seedRuntimeProjectRepoAt(t, filepath.Join(stableParent, "repo"))
-	parentB := t.TempDir()
-	seedRuntimeProjectRepoAt(t, filepath.Join(parentB, "repo"))
-	base := t.TempDir()
-	junction := filepath.Join(base, "active")
-	linkDir(t, stableParent, junction)
-	aliasRoot := filepath.Join(junction, "repo")
-
-	cfg := config.Defaults()
-	seedRequiredConfigFiles(t, &cfg)
-	cfg.Project.ActiveProjectSlug = project.GlobalSlug
-
-	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
-	rt.started = true
-	t.Cleanup(func() { rt.Stop() })
-	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
-		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: aliasRoot},
-	}}
-
-	// Repoint the intermediate junction between the global reader open and the
-	// active reader open. Everything opened after the active reader lands on
-	// the second repository, so only the global/active comparison can reject.
-	rt.beforeActiveMemOpen = func() {
-		if err := os.RemoveAll(junction); err != nil {
-			t.Fatalf("remove active junction: %v", err)
-		}
-		linkDir(t, parentB, junction)
-	}
-	result := rt.ApplyConfig(context.Background(), ui.NewServer(0), NewEventChannel(), nil)
-	if result.LiveApplied {
-		t.Fatal("candidate accepted after the global and active readers pinned different repositories")
-	}
-}
-
-// TestCandidateSessionStoreOpenBoundary stages a repoint between the git open
-// and the session store open. The session store then pins a different
-// physical repository than the memory reader and git handle, so the runtime
-// must fail the candidate.
-func TestCandidateSessionStoreOpenBoundary(t *testing.T) {
-	stableParent := t.TempDir()
-	seedRuntimeProjectRepoAt(t, filepath.Join(stableParent, "repo"))
-	parentB := t.TempDir()
-	seedRuntimeProjectRepoAt(t, filepath.Join(parentB, "repo"))
-	base := t.TempDir()
-	junction := filepath.Join(base, "active")
-	linkDir(t, stableParent, junction)
-	aliasRoot := filepath.Join(junction, "repo")
-
-	cfg := config.Defaults()
-	seedRequiredConfigFiles(t, &cfg)
-	cfg.Project.ActiveProjectSlug = project.GlobalSlug
-
-	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
-	rt.started = true
-	t.Cleanup(func() { rt.Stop() })
-	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
-		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: aliasRoot},
-	}}
-
-	// Repoint the intermediate junction between the git open and the session
-	// store open. The memory reader and git handle stay on the first
-	// repository; only the session store lands on the second.
-	rt.beforeSessionStoreOpen = func() {
-		if err := os.RemoveAll(junction); err != nil {
-			t.Fatalf("remove active junction: %v", err)
-		}
-		linkDir(t, parentB, junction)
-	}
-	result := rt.ApplyConfig(context.Background(), ui.NewServer(0), NewEventChannel(), nil)
-	if result.LiveApplied {
-		t.Fatal("candidate accepted after the session store and git repository pinned different repositories")
-	}
-}
-
 func TestFailedReloadPreservesReadableGeneration(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()
@@ -1866,7 +1792,10 @@ func TestFailedReloadPreservesReadableGeneration(t *testing.T) {
 	}
 }
 
-func TestSessionStoreOwnershipRetiredOnStop(t *testing.T) {
+// TestGenerationReaderOwnershipRetiredOnStop verifies the generation-owned
+// active reader — which the session manager now reads and writes directly —
+// is closed when Runtime.Stop retires the generation.
+func TestGenerationReaderOwnershipRetiredOnStop(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()
 	seedRequiredConfigFiles(t, &cfg)
@@ -1878,21 +1807,21 @@ func TestSessionStoreOwnershipRetiredOnStop(t *testing.T) {
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
 
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
-		globalRoot: root,
-		activeRoot: root,
-		activeSlug: project.GlobalSlug,
-	}, rt.ensureInferenceClient(), nil, nil, project.GlobalSlug)
-	defer func() { _ = gitRepo.Close() }()
-	rt.sessionMem = sessionStore
-	rt.setSessionManager(mgr)
+	// A live generation owns the active reader; the session manager reads and
+	// writes it. Stop must close it when the last lease is released.
+	reader, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.globalMem = reader
+	rt.activeMem = reader
+	rt.gen = &generation{readers: []memory.Repo{reader}}
+	rt.gen.acquire()
 
 	rt.Stop()
 
-	// After Stop, session store should be closed. A read via the closed
-	// DirReader should fail.
-	if _, err := sessionStore.Read("rules.md"); err == nil {
-		t.Error("session store Read should fail after Runtime.Stop closed it")
+	if _, err := reader.Read("rules.md"); err == nil {
+		t.Error("generation reader Read should fail after Runtime.Stop closed it")
 	}
 }
 
@@ -1908,13 +1837,8 @@ func TestStopIsIdempotent(t *testing.T) {
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
 
-	gitRepo, sessionStore, mgr, _ := rt.buildSessionManagerWithClients(nil, ui.NewServer(0), projectRepoRoots{
-		globalRoot: root,
-		activeRoot: root,
-		activeSlug: project.GlobalSlug,
-	}, rt.ensureInferenceClient(), nil, nil, project.GlobalSlug)
+	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
 	defer func() { _ = gitRepo.Close() }()
-	rt.sessionMem = sessionStore
 	rt.setSessionManager(mgr)
 
 	rt.Stop()

@@ -1,83 +1,58 @@
 package coord
 
 import (
-	"sync"
 	"testing"
-	"time"
+
+	"github.com/VrncQuentin/harness/internal/pathid"
 )
 
-func TestRegistry_SameKeyYieldsSameGate(t *testing.T) {
-	reg := newRegistry()
-	g1 := reg.GateFor("repo-A")
-	g2 := reg.GateFor("repo-A")
+func TestFor_SameIdentityYieldsSameGate(t *testing.T) {
+	id, err := pathid.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g1 := For(id)
+	g2 := For(id)
 	if g1 != g2 {
-		t.Fatal("same key must yield the same gate")
+		t.Fatal("same identity must yield the same gate")
 	}
 }
 
-func TestRegistry_DifferentKeysYieldDifferentGates(t *testing.T) {
-	reg := newRegistry()
-	g1 := reg.GateFor("repo-A")
-	g2 := reg.GateFor("repo-B")
-	if g1 == g2 {
-		t.Fatal("different keys must yield different gates")
+func TestFor_DifferentIdentitiesYieldDifferentGates(t *testing.T) {
+	a, err := pathid.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := pathid.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ga, gb := For(a), For(b)
+	if ga == gb {
+		t.Fatal("different identities must yield different gates")
 	}
 }
 
 func TestGate_MutuallyExcludes(t *testing.T) {
-	reg := newRegistry()
-	g := reg.GateFor("repo")
+	id, err := pathid.Resolve(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := For(id)
 
-	// The gate is not reentrant: a second acquisition from another goroutine
-	// must block until the first releases. The contender signals immediately
-	// before its acquisition, so the test provably knows it reached the lock
-	// before asserting it is blocked on it.
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	done := make(chan struct{})
-	var once sync.Once
-	unlock := func() { once.Do(func() { close(release) }) }
-	defer unlock()
-
-	go func() {
-		g.Lock()
-		defer g.Unlock()
-		close(entered)
-		<-release
-		close(done)
-	}()
-	<-entered
-
-	atLock := make(chan struct{})
-	acquired := make(chan struct{})
-	go func() {
-		close(atLock)
-		g.Lock()
-		close(acquired)
+	// TryLock on the private mutex is the deterministic exclusion assertion:
+	// while this goroutine holds the gate it must report the gate held, and
+	// after release it must report the gate free. No goroutine scheduling is
+	// involved.
+	g.Lock()
+	if g.mu.TryLock() {
 		g.Unlock()
-	}()
-	<-atLock
+		t.Fatal("TryLock succeeded while the gate was held")
+	}
+	g.Unlock()
 
-	// The contender is provably blocked on the gate: it signalled immediately
-	// before acquisition and the first holder has not released.
-	select {
-	case <-acquired:
-		unlock()
-		t.Fatal("second holder acquired while the gate was held")
-	case <-time.After(5 * time.Second):
+	if !g.mu.TryLock() {
+		t.Fatal("TryLock failed after the gate was released")
 	}
-	unlock()
-	<-done
-	<-acquired
-}
-
-func TestDefault_IsSingleton(t *testing.T) {
-	a := Default()
-	if a == nil {
-		t.Fatal("Default registry is nil")
-	}
-	b := Default()
-	if a != b {
-		t.Fatal("Default must return the same registry every call")
-	}
+	g.Unlock()
 }

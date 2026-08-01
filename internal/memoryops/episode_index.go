@@ -210,7 +210,7 @@ func (e *EpisodeIndex) checkVectors(vectors [][]float32) (int, error) {
 // repoGate returns the repository-wide mutation coordinator for this
 // project's repository.
 func (e *EpisodeIndex) repoGate() *coord.Gate {
-	return coord.Default().GateFor(e.repoID.Key())
+	return coord.For(e.repoID)
 }
 
 // verified opens the pinned directory and confirms it has not been replaced.

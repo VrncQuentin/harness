@@ -115,7 +115,6 @@ func (rt *Runtime) Stop() {
 	tasks := rt.taskRunner
 	global := rt.globalMem
 	active := rt.activeMem
-	session := rt.sessionMem
 	g := rt.gen
 	sessionMgr := rt.SessionManager()
 
@@ -124,7 +123,6 @@ func (rt *Runtime) Stop() {
 	rt.taskRunner = nil
 	rt.globalMem = nil
 	rt.activeMem = nil
-	rt.sessionMem = nil
 	rt.gen = nil
 	rt.agentReg = nil
 	rt.assembler = nil
@@ -132,7 +130,7 @@ func (rt *Runtime) Stop() {
 	rt.setSessionManager(nil)
 	rt.mu.Unlock()
 
-	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && session == nil && g == nil {
+	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && g == nil {
 		return
 	}
 
@@ -157,10 +155,10 @@ func (rt *Runtime) Stop() {
 		q.Stop()
 	}
 	if g != nil {
-		g.readers = []memory.Repo{global, active, session}
+		g.readers = []memory.Repo{global, active}
 		g.release()
 	} else {
-		closeReaders(global, active, session)
+		closeReaders(global, active)
 	}
 }
 

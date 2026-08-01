@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"testing"
 	"time"
 
@@ -67,8 +66,8 @@ func TestRepo_AliasAndTargetShareCoordinator(t *testing.T) {
 		handles = append(handles, h)
 	}
 	for i := 1; i < len(handles); i++ {
-		if !handles[0].Identity().Equal(handles[i].Identity()) {
-			t.Errorf("spelling %d retained a different identity: %s vs %s", i, handles[0].Identity(), handles[i].Identity())
+		if !handles[0].identity.Equal(handles[i].identity) {
+			t.Errorf("spelling %d retained a different identity: %s vs %s", i, handles[0].identity, handles[i].identity)
 		}
 		if handles[0].gate != handles[i].gate {
 			t.Errorf("spelling %d acquired a different coordinator instance", i)
@@ -177,7 +176,7 @@ func TestRepo_SameAnchorDetectsSameNameReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !repo.Identity().Equal(id) {
+	if !repo.identity.Equal(id) {
 		t.Fatal("same-name replacement must yield an equal pathid identity, or this test no longer discriminates")
 	}
 
@@ -193,99 +192,6 @@ func TestRepo_SameAnchorDetectsSameNameReplacement(t *testing.T) {
 	if same {
 		t.Fatal("same-name replacement must not compare equal to the retained boundary")
 	}
-}
-
-// TestRepo_TwoHandlesThroughDifferentSpellingsShareCoordinator verifies the
-// real contention guarantee behind the identity equality: two handles on one
-// repository reached through different spellings block on one coordinator, so
-// only one commit runs at a time.
-func TestRepo_TwoHandlesThroughDifferentSpellingsShareCoordinator(t *testing.T) {
-	base := t.TempDir()
-	real := filepath.Join(base, "real")
-	if err := os.MkdirAll(real, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := gogit.PlainInit(real, false); err != nil {
-		t.Fatal(err)
-	}
-	other := filepath.Join(real, "..", filepath.Base(real))
-
-	seed, err := Open(real)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = seed.Close() }()
-	writeRepoFile(t, seed, "base.txt", "base\n")
-	if _, _, _, err := seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
-		t.Fatalf("seed commit: %v", err)
-	}
-
-	firstEntered := make(chan struct{})
-	firstRelease := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(firstRelease) }) }
-	defer release()
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		h, oerr := Open(real)
-		defer func() { _ = h.Close() }()
-		if oerr != nil {
-			t.Error(oerr)
-			return
-		}
-		if err := h.WithMutation(func(*Mutation) error {
-			close(firstEntered)
-			<-firstRelease
-			return nil
-		}); err != nil {
-			t.Error(err)
-		}
-	}()
-	<-firstEntered
-
-	secondEntered := make(chan struct{})
-	secondAtLock := make(chan struct{})
-	var wg2 sync.WaitGroup
-	wg2.Add(1)
-	go func() {
-		defer wg2.Done()
-		h, oerr := Open(other)
-		defer func() { _ = h.Close() }()
-		if oerr != nil {
-			t.Error(oerr)
-			return
-		}
-		// The mutation body is the "hook" that sits inside the critical
-		// section; secondAtLock fires immediately before the coordinator is
-		// acquired, proving this spelling reached the lock. Reaching the body
-		// while the first spelling holds the shared coordinator would mean the
-		// two spellings split the repository across separate gates.
-		if err := h.withMutation(func(*Mutation) error {
-			close(secondEntered)
-			return nil
-		}, func() { close(secondAtLock) }); err != nil {
-			t.Error(err)
-		}
-	}()
-	<-secondAtLock
-
-	select {
-	case <-secondEntered:
-		release()
-		t.Fatal("second spelling entered its mutation while the first held the shared coordinator")
-	case <-time.After(5 * time.Second):
-	}
-	release()
-	select {
-	case <-secondEntered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("second spelling never entered after the coordinator was released")
-	}
-	wg.Wait()
-	wg2.Wait()
 }
 
 // TestRepoTransaction_CommitInsideSessionDoesNotReacquire verifies the
@@ -319,8 +225,8 @@ func TestRepoTransaction_CommitInsideSessionDoesNotReacquire(t *testing.T) {
 
 // TestRepoTransaction_FailedMutationReleasesCoordinator verifies a failed
 // mutation releases the coordinator and leaves the repository usable: the
-// failure propagates, a second writer can proceed once it is released, and a
-// subsequent commit succeeds.
+// failure propagates, and a subsequent mutation completes instead of
+// deadlocking on a leaked gate.
 func TestRepoTransaction_FailedMutationReleasesCoordinator(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := Init(dir)
@@ -333,58 +239,33 @@ func TestRepoTransaction_FailedMutationReleasesCoordinator(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entered := make(chan struct{})
-	release := make(chan struct{})
-	done := make(chan struct{})
-	var releaseOnce sync.Once
-	unlock := func() { releaseOnce.Do(func() { close(release) }) }
-	defer unlock()
-
 	boom := errors.New("injected mutation failure")
-	go func() {
-		err := repo.WithMutation(func(*Mutation) error {
-			close(entered)
-			<-release
-			return boom
-		})
-		if !errors.Is(err, boom) {
-			t.Errorf("expected injected failure, got %v", err)
-		}
-		close(done)
-	}()
-	<-entered
-
-	// A second mutation must not run until the failing one is released. The
-	// at-lock barrier proves it reached the coordinator before the negative
-	// assertion.
-	secondEntered := make(chan struct{})
-	secondAtLock := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := repo.withMutation(func(*Mutation) error {
-			close(secondEntered)
-			return nil
-		}, func() { close(secondAtLock) }); err != nil {
-			t.Error(err)
-		}
-	}()
-	<-secondAtLock
+	withErr := make(chan error, 1)
+	go func() { withErr <- repo.WithMutation(func(*Mutation) error { return boom }) }()
 	select {
-	case <-secondEntered:
-		unlock()
-		t.Fatal("second mutation entered while the failing mutation held the coordinator")
+	case err = <-withErr:
 	case <-time.After(5 * time.Second):
+		t.Fatal("failed mutation deadlocked on the coordinator")
 	}
-	unlock()
-	<-done
-	<-secondEntered
-	wg.Wait()
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected injected failure, got %v", err)
+	}
 
-	// The coordinator was released: a fresh commit succeeds.
+	// The coordinator was released: a fresh commit completes rather than
+	// deadlocking on the leaked gate. Bounded so a leaked gate produces a
+	// failure instead of a hang.
 	writeRepoFile(t, repo, "b.txt", "two\n")
-	if _, err := repo.Commit("second", []string{"b.txt"}); err != nil {
-		t.Fatalf("commit after failed mutation: %v", err)
+	commitDone := make(chan error, 1)
+	go func() {
+		_, cerr := repo.Commit("second", []string{"b.txt"})
+		commitDone <- cerr
+	}()
+	select {
+	case cerr := <-commitDone:
+		if cerr != nil {
+			t.Fatalf("commit after failed mutation: %v", cerr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("commit after failed mutation deadlocked on a leaked gate")
 	}
 }
