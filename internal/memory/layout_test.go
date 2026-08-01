@@ -2,6 +2,7 @@ package memory
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -161,6 +162,99 @@ func TestCreateMissingProjectRepoWritesGitkeep(t *testing.T) {
 	}
 }
 
+// The scaffolder addresses layout entries by validated repo-relative paths
+// through the pinned root, never by joining an absolute layout-directory path
+// and reopening it. The cases here are the ones where identity selection
+// changes: an ordinary directory (different), a root reached through an alias
+// (same physical repository), a layout directory that is itself a link leaving
+// the repo (alias — must not place .gitkeep outside), and a root alias
+// repointed after the pin (repoint — must fail closed).
+func TestCreateMissing_LinkedLayoutDirectoryDoesNotPlaceGitkeepOutside(t *testing.T) {
+	t.Run("ordinary layout directory", func(t *testing.T) {
+		root := t.TempDir()
+		if err := CreateMissing(root, []LayoutItem{{Path: "artifacts", Dir: true}}); err != nil {
+			t.Fatalf("CreateMissing: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "artifacts", ".gitkeep")); err != nil {
+			t.Fatalf(".gitkeep was not created inside the ordinary layout directory: %v", err)
+		}
+	})
+
+	t.Run("root reached through an alias spelling", func(t *testing.T) {
+		base := t.TempDir()
+		real := filepath.Join(base, "real")
+		if err := os.MkdirAll(real, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		alias := filepath.Join(base, "alias")
+		mustLinkDir(t, real, alias)
+		if err := CreateMissing(alias, []LayoutItem{{Path: "artifacts", Dir: true}}); err != nil {
+			t.Fatalf("CreateMissing through an alias spelling: %v", err)
+		}
+		// The scaffold lands in the physical root, not a copy at the alias.
+		if _, err := os.Stat(filepath.Join(real, "artifacts", ".gitkeep")); err != nil {
+			t.Fatalf(".gitkeep missing from the physical root reached through the alias: %v", err)
+		}
+	})
+
+	t.Run("layout directory linked outside", func(t *testing.T) {
+		base := t.TempDir()
+		root := filepath.Join(base, "repo")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		outside := filepath.Join(base, "outside")
+		if err := os.MkdirAll(outside, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		link := filepath.Join(root, "artifacts")
+		mustLinkDir(t, outside, link)
+
+		if err := CreateMissing(root, []LayoutItem{{Path: "artifacts", Dir: true}}); err == nil {
+			t.Error("CreateMissing succeeded with a layout directory linked outside the repo")
+		}
+		if _, statErr := os.Stat(filepath.Join(outside, ".gitkeep")); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf(".gitkeep escaped the repo through the linked layout directory: %v", statErr)
+		}
+	})
+
+	t.Run("root alias repointed after pin", func(t *testing.T) {
+		base := t.TempDir()
+		real := filepath.Join(base, "real")
+		if err := os.MkdirAll(real, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		alias := filepath.Join(base, "alias")
+		mustLinkDir(t, real, alias)
+		replacement := filepath.Join(base, "replacement")
+		if err := os.MkdirAll(replacement, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+
+		swapped := false
+		err := createMissingHooked(alias, []LayoutItem{{Path: "artifacts", Dir: true}}, func() {
+			if swapped {
+				return
+			}
+			swapped = true
+			if rmErr := os.Remove(alias); rmErr != nil {
+				t.Fatalf("Remove alias: %v", rmErr)
+			}
+			mustLinkDir(t, replacement, alias)
+		})
+		if !swapped {
+			t.Fatal("the hook never ran; the window was not exercised")
+		}
+		if err == nil {
+			t.Error("CreateMissing succeeded on a root alias repointed after the pin")
+		}
+		// The replacement must not have received the scaffold.
+		if _, statErr := os.Stat(filepath.Join(replacement, "artifacts")); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("the replacement received the scaffold: %v", statErr)
+		}
+	})
+}
+
 func TestEnsureProjectRepoInitializesAndScaffolds(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "project-repo")
 	if err := EnsureProjectRepo(root, false); err != nil {
@@ -262,7 +356,7 @@ func TestSameProjectRepoPathFailsClosedOnUnresolvablePath(t *testing.T) {
 // Recognising the alias may either collapse the move into an ensure or refuse
 // it outright: go-git declines to open a repository through a reparse point.
 // Both outcomes are correct. What must never happen is the copy.
-func TestMoveProjectRepoDoesNotCopyARepoOntoItself(t *testing.T) {
+func TestMoveProjectRepo_SameRepoAlias(t *testing.T) {
 	const body = "keep me"
 
 	newRepo := func(t *testing.T) (base, src, notes string) {
@@ -319,7 +413,7 @@ func TestMoveProjectRepoDoesNotCopyARepoOntoItself(t *testing.T) {
 // Without the handle comparison the copy opens every destination file with
 // O_TRUNC — the same file it is about to read — so the repository is emptied
 // one file at a time.
-func TestCopyTreeWithoutGitRefusesAnAliasedDestination(t *testing.T) {
+func TestMoveProjectRepo_RecursiveSelfCopy(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	if err := EnsureProjectRepo(src, false); err != nil {
@@ -442,7 +536,7 @@ func TestCopyTreeWithoutGitPreservesACrossLinkedSourceFile(t *testing.T) {
 // rejects it — but creating it adds an entry to the tree about to be walked,
 // and the walk copies it into itself until a path length or recursion limit
 // stops it. The refusal therefore has to come before the destination exists.
-func TestCopyTreeWithoutGitRefusesADestinationInsideTheSource(t *testing.T) {
+func TestMoveProjectRepo_NestedDestination(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	if err := EnsureProjectRepo(src, false); err != nil {
@@ -483,7 +577,7 @@ func TestCopyTreeWithoutGitRefusesADestinationInsideTheSource(t *testing.T) {
 //
 // The hook stages exactly that re-point, so the reproduction does not depend on
 // winning a race.
-func TestCopyTreeWithoutGitRefusesADestinationRepointedIntoTheSource(t *testing.T) {
+func TestMoveProjectRepo_ContainmentCheckByNameIsInsufficient(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	if err := EnsureProjectRepo(src, false); err != nil {
@@ -586,7 +680,7 @@ func TestCopyTreeBetweenRootsRefusesToDescendIntoTheDestination(t *testing.T) {
 // itself, because the property under test is that the walk stays with what it
 // cleared; staging it with the destination would additionally require renaming a
 // directory the walk holds open, which Windows refuses.
-func TestCopyDirStaysWithTheChildItCleared(t *testing.T) {
+func TestMoveProjectRepo_DescendsThroughPinnedChild(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	child := filepath.Join(src, "child")
@@ -722,7 +816,7 @@ func TestAnySameDir(t *testing.T) {
 //
 // Every newly pinned destination directory is therefore checked against every
 // pinned source directory, which is what catches it.
-func TestCopyDirRefusesADestinationThatBecomesASourceAncestor(t *testing.T) {
+func TestMoveProjectRepo_RenamedChildMidCopy(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	parent := filepath.Join(src, "parent")
@@ -795,23 +889,41 @@ func TestCopyDirRefusesADestinationThatBecomesASourceAncestor(t *testing.T) {
 	}
 }
 
-// The two trees must be disjoint. A source below the destination was once
-// waved through on the reasoning that it cannot recurse; it can still lose
-// data, because the walk writes a source subdirectory over the source itself.
-func TestCopyTreeWithoutGitRefusesASourceInsideTheDestination(t *testing.T) {
-	base := t.TempDir()
-	dst := filepath.Join(base, "outer")
-	src := filepath.Join(dst, "inner")
-	if err := EnsureProjectRepo(src, false); err != nil {
-		t.Fatalf("EnsureProjectRepo: %v", err)
+// The two trees must be disjoint in both directions. A source below the
+// destination was once waved through on the reasoning that it cannot recurse;
+// it can still lose data, because the walk writes a source subdirectory over
+// the source itself. The reverse — a destination inside the source — recurses.
+// Either way the move is refused before anything is created.
+func TestMoveProjectRepo_OverlappingTreesRejected(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(base string) (src, dst string)
+		want  string
+	}{
+		{"source inside destination", func(base string) (string, string) {
+			dst := filepath.Join(base, "outer")
+			return filepath.Join(dst, "inner"), dst
+		}, "which contains it"},
+		{"destination inside source", func(base string) (string, string) {
+			src := filepath.Join(base, "src")
+			return src, filepath.Join(src, "nested", "dst")
+		}, "into itself"},
 	}
-
-	err := copyTreeWithoutGit(src, dst)
-	if err == nil {
-		t.Fatal("copied a project memory repo into a directory that contains it")
-	}
-	if !strings.Contains(err.Error(), "which contains it") {
-		t.Errorf("err = %v, want the containing-destination refusal", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			src, dst := tc.setup(base)
+			if err := EnsureProjectRepo(src, false); err != nil {
+				t.Fatalf("EnsureProjectRepo: %v", err)
+			}
+			err := copyTreeWithoutGit(src, dst)
+			if err == nil {
+				t.Fatalf("copied a project memory repo into an overlapping destination %s", dst)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want the %s refusal", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -861,7 +973,12 @@ func TestMoveProjectRepoFailsClosedOnUnresolvablePath(t *testing.T) {
 		t.Error("MoveProjectRepo proceeded with a destination it could not resolve")
 	}
 }
-func TestMoveProjectRepoCopiesWorkingTreeWithoutGitDir(t *testing.T) {
+
+// The whole working tree is copied through the two pinned ends of the move,
+// including nested content, while the source .git stays behind. A complete
+// copy is the discriminator: any point where one end is not pinned would either
+// fail the containment checks or silently drop a subtree.
+func TestMoveProjectRepo_SourceAndDestinationPinned(t *testing.T) {
 	tmp := t.TempDir()
 	src := filepath.Join(tmp, "src")
 	if err := EnsureProjectRepo(src, false); err != nil {
@@ -869,6 +986,13 @@ func TestMoveProjectRepoCopiesWorkingTreeWithoutGitDir(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
 		t.Fatalf("write notes: %v", err)
+	}
+	nested := filepath.Join(src, "episodes", "coder")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "2026-01-01.md"), []byte("episode"), 0o644); err != nil {
+		t.Fatalf("write nested episode: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(src, ".git", "source-only"), []byte("do not copy"), 0o644); err != nil {
 		t.Fatalf("write git marker: %v", err)
@@ -884,6 +1008,11 @@ func TestMoveProjectRepoCopiesWorkingTreeWithoutGitDir(t *testing.T) {
 	}
 	if string(got) != "keep me" {
 		t.Fatalf("copied notes = %q", string(got))
+	}
+	if got, err := os.ReadFile(filepath.Join(dst, "episodes", "coder", "2026-01-01.md")); err != nil {
+		t.Fatalf("read nested copy: %v", err)
+	} else if string(got) != "episode" {
+		t.Fatalf("nested file = %q, want %q", string(got), "episode")
 	}
 	if _, err := os.Stat(filepath.Join(dst, ".git", "source-only")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("source .git marker copied, err=%v", err)
