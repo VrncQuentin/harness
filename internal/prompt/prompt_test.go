@@ -17,9 +17,21 @@ import (
 	"github.com/VrncQuentin/harness/internal/index"
 	"github.com/VrncQuentin/harness/internal/inference"
 	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
+
+// idxRepoID returns the physical identity of dir to key the repository-wide
+// coordinator. Tests treat the index directory as the repository.
+func idxRepoID(t *testing.T, dir string) pathid.ID {
+	t.Helper()
+	id, err := pathid.Resolve(dir)
+	if err != nil {
+		t.Fatalf("resolve repo id %s: %v", dir, err)
+	}
+	return id
+}
 
 type stubEmbedder struct {
 	vectors [][]float32
@@ -880,7 +892,7 @@ func TestAssemble_BlendedRetrievalKeepsTopN(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := index.CreateRooted(r, idxDir, 2)
+	idx, err := index.CreateRooted(r, idxDir, 2, idxRepoID(t, idxDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -956,7 +968,7 @@ func TestAssemble_BlendedRetrievalTrimDropsLowestScore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := index.CreateRooted(r, idxDir, 2)
+	idx, err := index.CreateRooted(r, idxDir, 2, idxRepoID(t, idxDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1006,7 +1018,7 @@ func TestAssemble_BlendedRetrievalUsesBestChunkScore(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := index.CreateRooted(r, idxDir, 2)
+	idx, err := index.CreateRooted(r, idxDir, 2, idxRepoID(t, idxDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1058,7 +1070,7 @@ func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := index.CreateRooted(r, idxDir, 2)
+	idx, err := index.CreateRooted(r, idxDir, 2, idxRepoID(t, idxDir))
 	if err != nil {
 		t.Fatal(err)
 	}

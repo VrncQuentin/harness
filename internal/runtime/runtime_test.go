@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -28,6 +29,21 @@ import (
 	"github.com/VrncQuentin/harness/internal/tools"
 	"github.com/VrncQuentin/harness/internal/ui"
 )
+
+// linkDir creates a directory link at link pointing at target, preferring a
+// symlink and falling back to a Windows junction.
+func linkDir(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err == nil {
+		return
+	} else if runtime.GOOS != "windows" {
+		t.Skipf("symlinks unavailable in this environment: %v", err)
+	}
+	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		t.Skipf("cannot create directory link: %v: %s", err, out)
+	}
+}
 
 func TestNewStoresInitialConfig(t *testing.T) {
 	cfg := config.Defaults()
@@ -1210,6 +1226,15 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 func initRuntimeProjectRepo(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	seedRuntimeProjectRepoAt(t, root)
+	return root
+}
+
+// seedRuntimeProjectRepoAt initializes a project memory repo with its
+// scaffold at an explicit path (used when the repo must live under a
+// particular parent so a junction can select between two of them).
+func seedRuntimeProjectRepoAt(t *testing.T, root string) {
+	t.Helper()
 	repo, err := gitw.Init(root)
 	if err != nil {
 		t.Fatalf("git init: %v", err)
@@ -1220,7 +1245,6 @@ func initRuntimeProjectRepo(t *testing.T) string {
 	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(true)); err != nil {
 		t.Fatalf("commit scaffold: %v", err)
 	}
-	return root
 }
 
 func startFakeModelServer(t *testing.T, summary string) (int, func()) {
@@ -1582,6 +1606,67 @@ func TestCandidateFailureReleasesAllCandidateHandles(t *testing.T) {
 	// The original root should still be accessible after candidate failure.
 	if _, err := os.ReadFile(filepath.Join(root, "rules.md")); err != nil {
 		t.Fatalf("original root files not accessible after failed reload: %v", err)
+	}
+}
+
+// TestCandidateIdentityMismatchFailsClosed verifies that candidate
+// construction fails closed when the git repository and the memory/project
+// reader resolve to different physical repositories, and that the failure
+// releases the candidate's handles and preserves the readable old
+// generation.
+//
+// The active path contains a junction on an intermediate component. The
+// junction is repointed between the memory open and the git open inside
+// buildCandidate, so the candidate's memory reader pins one physical repo
+// while its git handle pins another. If the two identities were not compared,
+// the candidate would run git commits and index publication under two
+// different coordinators.
+func TestCandidateIdentityMismatchFailsClosed(t *testing.T) {
+	parentA := t.TempDir()
+	parentB := t.TempDir()
+	seedRuntimeProjectRepoAt(t, filepath.Join(parentA, "repo"))
+	seedRuntimeProjectRepoAt(t, filepath.Join(parentB, "repo"))
+	base := t.TempDir()
+	junction := filepath.Join(base, "active")
+	linkDir(t, parentA, junction)
+	activeRoot := filepath.Join(junction, "repo")
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
+	rt.started = true
+	t.Cleanup(func() { rt.Stop() })
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: activeRoot},
+	}}
+
+	// First apply succeeds: git and memory both pin parentA/repo.
+	uiServer := ui.NewServer(0)
+	if !rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil).LiveApplied {
+		t.Fatal("first apply with matching git/memory identity did not apply live")
+	}
+
+	// Reload: repoint the intermediate junction between the memory open and
+	// the git open so the candidate's git repository and memory reader
+	// identify different physical repositories.
+	rt.beforeGitOpen = func() {
+		if err := os.RemoveAll(junction); err != nil {
+			t.Fatalf("remove active junction: %v", err)
+		}
+		linkDir(t, parentB, junction)
+	}
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if result.LiveApplied {
+		t.Fatal("reload with mismatched git/memory identity reported live apply")
+	}
+
+	// The old generation's resources must still be readable.
+	if _, err := os.ReadFile(filepath.Join(parentA, "repo", "rules.md")); err != nil {
+		t.Fatalf("old-generation repo files not accessible after failed reload: %v", err)
 	}
 }
 

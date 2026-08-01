@@ -10,9 +10,21 @@ import (
 
 	"github.com/VrncQuentin/harness/internal/index"
 	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/session"
 )
+
+// mustRepoID returns the physical identity of a repository root for the
+// repository-wide coordinator.
+func mustRepoID(t *testing.T, root string) pathid.ID {
+	t.Helper()
+	id, err := pathid.Resolve(root)
+	if err != nil {
+		t.Fatalf("resolve repo id %s: %v", root, err)
+	}
+	return id
+}
 
 func newTestEpisodeIndex(t *testing.T, projectRoot string) *EpisodeIndex {
 	t.Helper()
@@ -29,7 +41,7 @@ func newTestEpisodeIndex(t *testing.T, projectRoot string) *EpisodeIndex {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ei, err := NewEpisodeIndex(a, indexDir)
+	ei, err := NewEpisodeIndex(a, indexDir, dr.Identity())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +92,7 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open index dir: %v", err)
 	}
-	opened, err := index.OpenRooted(r, indexDir)
+	opened, err := index.OpenRooted(r, indexDir, dr.Identity())
 	_ = r.Close()
 	if err != nil {
 		t.Fatalf("Open rebuilt index: %v", err)
@@ -182,7 +194,7 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open index dir: %v", err)
 	}
-	idx, err := index.CreateRooted(r, indexDir, 2)
+	idx, err := index.CreateRooted(r, indexDir, 2, mustRepoID(t, root))
 	_ = r.Close()
 	if err != nil {
 		t.Fatalf("Create index: %v", err)
@@ -361,7 +373,7 @@ func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ei, err := NewEpisodeIndex(a, indexDir)
+	ei, err := NewEpisodeIndex(a, indexDir, dr.Identity())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +412,7 @@ func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
 }
 
 func TestNewEpisodeIndex_NilAnchorRejected(t *testing.T) {
-	_, err := NewEpisodeIndex(nil, "/some/path")
+	_, err := NewEpisodeIndex(nil, "/some/path", pathid.ID{})
 	if err == nil {
 		t.Fatal("expected error for nil anchor")
 	}
@@ -426,7 +438,7 @@ func TestNewEpisodeIndex_MismatchedDirectoryRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = NewEpisodeIndex(a, EpisodeIndexDir(dir2))
+	_, err = NewEpisodeIndex(a, EpisodeIndexDir(dir2), dr.Identity())
 	if err == nil {
 		_ = a.Close()
 		t.Fatal("expected error for mismatched dir")
@@ -460,7 +472,7 @@ func TestNewEpisodeIndex_StableAliasAccepted(t *testing.T) {
 	linkDir := filepath.Join(repo, "index", "_episodes_link")
 	if err := os.Symlink(indexDir, linkDir); err == nil {
 		defer func() { _ = os.Remove(linkDir) }()
-		ei, err := NewEpisodeIndex(a, linkDir)
+		ei, err := NewEpisodeIndex(a, linkDir, dr.Identity())
 		if err != nil {
 			_ = a.Close()
 			t.Fatalf("NewEpisodeIndex via symlink alias: %v", err)
@@ -472,7 +484,7 @@ func TestNewEpisodeIndex_StableAliasAccepted(t *testing.T) {
 	// Try Windows junction as alias pathname.
 	cmd := exec.Command("cmd", "/c", "mklink", "/J", linkDir, indexDir)
 	if _, jerr := cmd.CombinedOutput(); jerr == nil {
-		ei, err := NewEpisodeIndex(a, linkDir)
+		ei, err := NewEpisodeIndex(a, linkDir, dr.Identity())
 		if err != nil {
 			_ = a.Close()
 			t.Fatalf("NewEpisodeIndex via junction alias: %v", err)
