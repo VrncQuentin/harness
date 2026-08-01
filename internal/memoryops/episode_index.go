@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/VrncQuentin/harness/internal/coord"
+	gitw "github.com/VrncQuentin/harness/internal/git"
 	"github.com/VrncQuentin/harness/internal/index"
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
@@ -30,10 +33,13 @@ func EpisodeIndexCommitPaths() []string {
 
 // EpisodeIndex owns the synchronized index handle for one project. The
 // index directory is pinned through a rootfs Anchor so repointing is
-// detected and operations are identity-verified.
+// detected and operations are identity-verified. The index's mutation
+// coordinator is the owning repository's, so publication joins the same
+// transaction git commits on that repository enter.
 type EpisodeIndex struct {
 	mu     sync.Mutex
 	dir    string
+	repoID pathid.ID
 	anchor *rootfs.Anchor
 	idx    *index.Index
 }
@@ -41,7 +47,10 @@ type EpisodeIndex struct {
 // NewEpisodeIndex verifies that anchor and dir refer to the same directory
 // and opens an existing index.  The caller must have established the anchor
 // through the repository's DirReader.SubAnchor, guaranteeing containment.
-func NewEpisodeIndex(anchor *rootfs.Anchor, dir string) (*EpisodeIndex, error) {
+// repoID is the verified physical identity of the owning repository (the
+// memory reader's Identity()); it selects the repository-wide mutation
+// coordinator shared with git commits.
+func NewEpisodeIndex(anchor *rootfs.Anchor, dir string, repoID pathid.ID) (*EpisodeIndex, error) {
 	if anchor == nil {
 		return nil, errors.New("episode index: anchor is nil")
 	}
@@ -52,13 +61,16 @@ func NewEpisodeIndex(anchor *rootfs.Anchor, dir string) (*EpisodeIndex, error) {
 	if rerr != nil {
 		return nil, fmt.Errorf("episode index: open anchor: %w", rerr)
 	}
-	idx, idxErr := index.OpenRooted(r, dir)
+	idx, idxErr := index.OpenRooted(r, dir, repoID)
 	_ = r.Close()
 	if idxErr != nil && !errors.Is(idxErr, fs.ErrNotExist) {
 		return nil, idxErr
 	}
-	return &EpisodeIndex{dir: dir, anchor: anchor, idx: idx}, nil
+	return &EpisodeIndex{dir: dir, repoID: repoID, anchor: anchor, idx: idx}, nil
 }
+
+// RepoID returns the verified physical identity of the owning repository.
+func (e *EpisodeIndex) RepoID() pathid.ID { return e.repoID }
 
 func sameDir(anchor *rootfs.Anchor, dir string) error {
 	r, err := rootfs.Open(dir)
@@ -110,16 +122,12 @@ func (e *EpisodeIndex) Contains(source string) bool {
 }
 
 // Upsert creates the index on first use and replaces obsolete vectors for a
-// changed source document.
+// changed source document. It acquires the repository-wide mutation
+// coordinator for the duration.
 func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) error {
-	if len(vectors) == 0 || len(vectors[0]) == 0 {
-		return nil
-	}
-	dim := len(vectors[0])
-	for i, vector := range vectors {
-		if len(vector) != dim {
-			return fmt.Errorf("episode index: vector %d dimension mismatch: got %d, want %d", i, len(vector), dim)
-		}
+	dim, err := e.checkVectors(vectors)
+	if err != nil || dim == 0 {
+		return err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -129,7 +137,7 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 	}
 	defer func() { _ = r.Close() }()
 	if e.idx == nil {
-		idx, err := index.CreateRooted(r, e.dir, dim)
+		idx, err := index.CreateRooted(r, e.dir, dim, e.repoID)
 		if err != nil {
 			return fmt.Errorf("episode index: create %s: %w", e.dir, err)
 		}
@@ -139,6 +147,60 @@ func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) e
 		return fmt.Errorf("episode index: dimension mismatch: index has %d, got %d", e.idx.Dim(), dim)
 	}
 	return e.idx.UpsertRooted(r, source, contentHash, vectors)
+}
+
+// UpsertUnder publishes vectors inside an already-held repository-wide
+// mutation transaction, without reacquiring the coordinator. m is the git
+// mutation session whose gate this repository's commit is being made under;
+// index publication joins the same transaction. It is the single production
+// path that keeps index publication and the following git commit atomic.
+func (e *EpisodeIndex) UpsertUnder(m *gitw.Mutation, source, contentHash string, vectors [][]float32) error {
+	dim, err := e.checkVectors(vectors)
+	if err != nil || dim == 0 {
+		return err
+	}
+	if m.Gate() != e.repoGate() {
+		return fmt.Errorf("episode index: transaction coordinator is not this repository's")
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	r, err := e.verified()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = r.Close() }()
+	if e.idx == nil {
+		idx, err := index.CreateRootedUnder(m.Gate(), r, e.dir, dim)
+		if err != nil {
+			return fmt.Errorf("episode index: create %s: %w", e.dir, err)
+		}
+		e.idx = idx
+	}
+	if e.idx.Dim() != dim {
+		return fmt.Errorf("episode index: dimension mismatch: index has %d, got %d", e.idx.Dim(), dim)
+	}
+	return e.idx.UpsertRootedUnder(m.Gate(), r, source, contentHash, vectors)
+}
+
+// checkVectors validates the vector shape and returns the shared dimension,
+// or 0 when there is nothing to index.
+func (e *EpisodeIndex) checkVectors(vectors [][]float32) (int, error) {
+	if len(vectors) == 0 || len(vectors[0]) == 0 {
+		return 0, nil
+	}
+	dim := len(vectors[0])
+	for i, vector := range vectors {
+		if len(vector) != dim {
+			return 0, fmt.Errorf("episode index: vector %d dimension mismatch: got %d, want %d", i, len(vector), dim)
+		}
+	}
+	return dim, nil
+}
+
+// repoGate returns the repository-wide mutation coordinator for this
+// project's repository.
+func (e *EpisodeIndex) repoGate() *coord.Gate {
+	return coord.Default().GateFor(e.repoID.Key())
 }
 
 // verified opens the pinned directory and confirms it has not been replaced.

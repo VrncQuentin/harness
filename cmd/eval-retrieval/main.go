@@ -93,7 +93,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("index anchor: %w", err)
 	}
-	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir)
+	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir, repoDirReader.Identity())
 	if err != nil {
 		_ = indexAnchor.Close()
 		return fmt.Errorf("open episode index: %w", err)

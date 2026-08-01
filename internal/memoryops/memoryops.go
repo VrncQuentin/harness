@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/coord"
 	"github.com/VrncQuentin/harness/internal/embedder"
 	gitw "github.com/VrncQuentin/harness/internal/git"
 	"github.com/VrncQuentin/harness/internal/index"
@@ -49,18 +50,29 @@ func AfterSaveEmbed(embedClient embedder.Client, episodeIndex *EpisodeIndex, rep
 		if err != nil {
 			return fmt.Errorf("embed episode %s: %w", result.ID, err)
 		}
-		if err := episodeIndex.Upsert(retrieval.EpisodeID(result.EpisodePath), contentHash(indexed), vectors); err != nil {
-			return fmt.Errorf("index episode %s: %w", result.EpisodePath, err)
-		}
-
+		source := retrieval.EpisodeID(result.EpisodePath)
+		hash := contentHash(indexed)
 		if repo != nil {
 			msg := gitw.BuildMessage(
 				map[string]string{"type": "index", "episode_id": result.ID},
 				"update episode index",
 			)
-			if _, err := repo.Commit(msg, EpisodeIndexCommitPaths()); err != nil {
-				slog.Warn("commit index", "err", err)
+			// Index publication and the following git commit are one
+			// repository-wide mutation transaction: the coordinator is held
+			// across both, so no git mutation or another index publication on
+			// this repository can interleave between them.
+			err := repo.WithMutation(func(m *gitw.Mutation) error {
+				if uerr := episodeIndex.UpsertUnder(m, source, hash, vectors); uerr != nil {
+					return uerr
+				}
+				_, cerr := m.Commit(msg, EpisodeIndexCommitPaths())
+				return cerr
+			})
+			if err != nil {
+				return fmt.Errorf("index episode %s: %w", result.EpisodePath, err)
 			}
+		} else if err := episodeIndex.Upsert(source, hash, vectors); err != nil {
+			return fmt.Errorf("index episode %s: %w", result.EpisodePath, err)
 		}
 		return nil
 	}
@@ -159,7 +171,7 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		idx, idxErr := index.OpenRooted(r, rb.IndexDir)
+		idx, idxErr := index.OpenRooted(r, rb.IndexDir, rb.EI.RepoID())
 		_ = r.Close()
 		if idxErr == nil {
 			rb.Index = idx
@@ -244,7 +256,7 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		idx, cerr := index.CreateRooted(r, rb.IndexDir, dim)
+		idx, cerr := index.CreateRooted(r, rb.IndexDir, dim, rb.EI.RepoID())
 		_ = r.Close()
 		if cerr != nil {
 			return fmt.Errorf("index rebuild: create index %s: %w", rb.IndexDir, cerr)
@@ -255,33 +267,54 @@ func (rb *EpisodeRebuilder) Rebuild(ctx context.Context) error {
 		return fmt.Errorf("index rebuild: dimension mismatch: index has %d, got %d", rb.Index.Dim(), dim)
 	}
 
-	offset := 0
-	for _, w := range work {
-		n := len(w.chunks)
-		if n == 0 {
-			continue
-		}
-		epVecs := vectors[offset : offset+n]
-		offset += n
+	// Index publication and the following git commit are one repository-wide
+	// mutation transaction: the coordinator is held across the upserts and the
+	// commit, so no git mutation or index publication can interleave between
+	// them.
+	upsert := func(g *coord.Gate, src, hash string, vecs [][]float32) error {
 		r, err := rb.EI.verified()
 		if err != nil {
 			return err
 		}
-		uerr := rb.Index.UpsertRooted(r, retrieval.EpisodeID(w.path), w.hash, epVecs)
-		_ = r.Close()
-		if uerr != nil {
-			slog.Warn("index rebuild: add episode", "path", w.path, "err", uerr)
+		defer func() { _ = r.Close() }()
+		if g != nil {
+			return rb.Index.UpsertRootedUnder(g, r, src, hash, vecs)
 		}
+		return rb.Index.UpsertRooted(r, src, hash, vecs)
 	}
-
-	if rb.Repo != nil {
+	runPublish := func(m *gitw.Mutation) error {
+		var g *coord.Gate
+		if m != nil {
+			g = m.Gate()
+		}
+		offset := 0
+		for _, w := range work {
+			n := len(w.chunks)
+			if n == 0 {
+				continue
+			}
+			epVecs := vectors[offset : offset+n]
+			offset += n
+			if uerr := upsert(g, retrieval.EpisodeID(w.path), w.hash, epVecs); uerr != nil {
+				slog.Warn("index rebuild: add episode", "path", w.path, "err", uerr)
+			}
+		}
+		if m == nil {
+			return nil
+		}
 		msg := gitw.BuildMessage(
 			map[string]string{"type": "index-rebuild"},
 			fmt.Sprintf("rebuild episode index: %d new episodes", len(work)),
 		)
-		if _, err := rb.Repo.Commit(msg, EpisodeIndexCommitPaths()); err != nil {
+		_, err := m.Commit(msg, EpisodeIndexCommitPaths())
+		return err
+	}
+	if rb.Repo != nil {
+		if err := rb.Repo.WithMutation(func(m *gitw.Mutation) error { return runPublish(m) }); err != nil {
 			slog.Warn("index rebuild: commit", "err", err)
 		}
+	} else if err := runPublish(nil); err != nil {
+		slog.Warn("index rebuild: publish", "err", err)
 	}
 
 	slog.Info("index rebuild complete", "new_episodes", len(work))
