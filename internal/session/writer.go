@@ -3,7 +3,6 @@ package session
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/VrncQuentin/harness/internal/inference"
@@ -47,13 +46,4 @@ func trimUTF8BOM(body []byte) []byte {
 		return body[3:]
 	}
 	return body
-}
-
-// filepathToSlash converts an OS-native path to forward slashes for
-// path joining inside the memory repo. It is a thin alias for
-// filepath.ToSlash so the internals of session keep using `path`
-// (forward-slash semantics) when stitching repo-relative locations
-// onto an absolute root.
-func filepathToSlash(p string) string {
-	return filepath.ToSlash(p)
 }

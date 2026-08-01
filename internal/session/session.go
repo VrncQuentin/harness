@@ -139,15 +139,15 @@ type AfterSaveFunc func(ctx context.Context, result SaveResult) error
 // ManagerDeps bundles the dependencies a Manager needs. Constructed by
 // the runtime wiring; tests build it inline.
 type ManagerDeps struct {
-	Repo               Committer
-	Writer             FileWriter
-	Reader             FileReader
-	Inference          inference.Client
-	Metrics            MetricsRecorder
-	SummarizerPrompt   SummarizerPromptFunc
-	AfterSave          AfterSaveFunc
-	Now                func() time.Time // optional; defaults to time.Now
-	ResolveAbsRepoPath string           // memory repo root, used for diagnostics only
+	Repo             Committer
+	Writer           FileWriter
+	Reader           FileReader
+	Appender         LogAppender
+	Inference        inference.Client
+	Metrics          MetricsRecorder
+	SummarizerPrompt SummarizerPromptFunc
+	AfterSave        AfterSaveFunc
+	Now              func() time.Time // optional; defaults to time.Now
 }
 
 // Manager owns the live in-memory sessions and orchestrates save/resume
@@ -187,6 +187,9 @@ func NewManager(deps ManagerDeps, projectSlug string) (*Manager, error) {
 	}
 	if deps.Reader == nil {
 		return nil, errors.New("session: ManagerDeps.Reader is required")
+	}
+	if deps.Appender == nil {
+		return nil, errors.New("session: ManagerDeps.Appender is required")
 	}
 	if deps.Inference == nil {
 		return nil, errors.New("session: ManagerDeps.Inference is required")
@@ -400,8 +403,8 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		SaveSeq:     saveSeq,
 		EpisodePath: episodePath,
 	}
-	logPath := m.sessionsLogPath()
-	if err := AppendRecord(logPath, rec); err != nil {
+	logPath := sessionsLogRel
+	if err := AppendRecord(m.deps.Appender, logPath, rec); err != nil {
 		return SaveResult{}, fmt.Errorf("session: append log %s: %w", logPath, err)
 	}
 
@@ -515,7 +518,7 @@ func (m *Manager) SidecarConversation(agent, id string) ([]inference.Message, er
 // allRecords returns every record in the sessions log (oldest-first).
 // Tolerates a missing log (returns an empty slice).
 func (m *Manager) allRecords() ([]Record, error) {
-	return ReadAll(m.sessionsLogPath())
+	return ReadAll(m.deps.Reader, sessionsLogRel)
 }
 
 func (m *Manager) findLatestRecord(id string) (*Record, error) {
@@ -553,17 +556,6 @@ func (m *Manager) countEpisodeFiles() int {
 		count++
 	}
 	return count
-}
-
-// sessionsLogPath returns the absolute path of sessions.jsonl on disk.
-// The memory writer accepts repo-relative paths but ReadAll/AppendRecord
-// take an absolute path so they work without a memory.Reader handle.
-func (m *Manager) sessionsLogPath() string {
-	rel := sessionsLogRel
-	if m.deps.ResolveAbsRepoPath == "" {
-		return rel
-	}
-	return path.Join(filepathToSlash(m.deps.ResolveAbsRepoPath), rel)
 }
 
 // cloneSession returns a defensive copy of s so callers cannot mutate
