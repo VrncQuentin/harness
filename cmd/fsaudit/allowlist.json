@@ -99,7 +99,7 @@
     },
     {
       "file": "internal/git/git.go",
-      "line": 175,
+      "line": 186,
       "fn": "os.MkdirAll",
       "justification": "go-git takes a pathname string; identity and C2 checks remain around the go-git boundary"
     },
