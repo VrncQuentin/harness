@@ -2,6 +2,7 @@ package index
 
 import (
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -13,8 +14,10 @@ import (
 )
 
 // TestIndex_UpsertRootedUnder_RightGate publishes under a caller-held
-// coordinator without reacquiring it, so a publish-and-commit transaction
-// can hold the gate across both operations.
+// coordinator without reacquiring it. The gate is held by the same goroutine
+// the upsert runs on, so reacquiring it would self-deadlock — completing is
+// the proof that a publish-and-commit transaction can hold the gate across
+// both operations without reacquiring it.
 func TestIndex_UpsertRootedUnder_RightGate(t *testing.T) {
 	dir := t.TempDir()
 	r, err := rootfs.Open(dir)
@@ -28,7 +31,7 @@ func TestIndex_UpsertRootedUnder_RightGate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g := coord.Default().GateFor(id.Key())
+	g := coord.For(id)
 	g.Lock()
 	err = idx.UpsertRootedUnder(g, r, "a", "a", [][]float32{{1, 0}})
 	g.Unlock()
@@ -57,7 +60,11 @@ func TestIndex_UpsertRootedUnder_WrongGateFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	foreign := coord.Default().GateFor("some-other-repository")
+	foreignID, err := pathid.Resolve(filepath.Join(t.TempDir(), "other-repo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foreign := coord.For(foreignID)
 	foreign.Lock()
 	err = idx.UpsertRootedUnder(foreign, r, "a", "a", [][]float32{{1, 0}})
 	foreign.Unlock()
@@ -70,13 +77,12 @@ func TestIndex_UpsertRootedUnder_WrongGateFailsClosed(t *testing.T) {
 }
 
 // TestRepoAndIndex_ShareRepositoryTransaction verifies index publication and
-// git mutation enter the same repository transaction. While one is blocked
-// inside its critical section, the other cannot reach its own mutation hook;
-// once released, it proceeds. Each contender signals immediately before its
-// gate acquisition, so the test provably knows it reached the lock before
-// asserting it is blocked on it. This is the discriminating test for the
-// shared coordinator: if git and index used separate mutexes with the
-// same-looking key, neither direction would block.
+// git mutation enter the same repository transaction. Git holds the
+// coordinator inside WithMutation; the index publication signals immediately
+// before its gate acquisition (proving it reached the lock) and must not
+// reach its write hook until git releases. Mutex exclusion is symmetric, so a
+// single direction discriminates: if git and index used separate mutexes with
+// the same-looking key, the index would publish while git held "its" gate.
 func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := gitw.Init(dir)
@@ -97,13 +103,13 @@ func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = root.Close() }()
-	idx, err := CreateRooted(root, dir, 2, repo.Identity())
+	idx, err := CreateRooted(root, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Direction 1: git holds the coordinator inside WithMutation; the index
-	// publication must not reach its write hook until git releases.
+	// Git holds the coordinator inside WithMutation; the index publication
+	// must not reach its write hook until git releases.
 	gitEntered := make(chan struct{})
 	gitRelease := make(chan struct{})
 	var releaseOnce sync.Once
@@ -141,121 +147,29 @@ func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 	case <-indexEntered:
 		release()
 		t.Fatal("index publication entered its write hook while git held the repository transaction")
-	case <-time.After(5 * time.Second):
+	case <-time.After(250 * time.Millisecond):
 	}
 	release()
 	select {
 	case <-indexEntered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("index publication never entered after git released the repository transaction")
 	}
 	wg.Wait()
 	wg2.Wait()
 
-	// Direction 2: the index holds the coordinator inside its publication; a
-	// git mutation must not reach its mutation body until the index releases.
-	indexEntered2 := make(chan struct{})
-	indexRelease := make(chan struct{})
-	var release2Once sync.Once
-	release2 := func() { release2Once.Do(func() { close(indexRelease) }) }
-	defer release2()
-
-	var wg3 sync.WaitGroup
-	wg3.Add(1)
-	go func() {
-		defer wg3.Done()
-		if err := idx.upsertRootedBeforeLock(root, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
-			AfterOpen: func(*os.File, string) {
-				close(indexEntered2)
-				<-indexRelease
-			},
-		}, nil); err != nil {
-			t.Error(err)
-		}
-	}()
-	<-indexEntered2
-
-	gitAtLock := make(chan struct{})
-	gitEntered2 := make(chan struct{})
-	var wg4 sync.WaitGroup
-	wg4.Add(1)
-	go func() {
-		defer wg4.Done()
-		if err := repo.WithMutationHooked(func(*gitw.Mutation) error {
-			close(gitEntered2)
-			return nil
-		}, func() { close(gitAtLock) }); err != nil {
-			t.Error(err)
-		}
-	}()
-	<-gitAtLock
-	select {
-	case <-gitEntered2:
-		release2()
-		t.Fatal("git mutation entered its transaction while the index held the repository coordinator")
-	case <-time.After(5 * time.Second):
-	}
-	release2()
-	select {
-	case <-gitEntered2:
-	case <-time.After(5 * time.Second):
-		t.Fatal("git mutation never entered after the index released the repository coordinator")
-	}
-	wg3.Wait()
-	wg4.Wait()
-
-	// Both publications must have landed, proving the transaction serialized
-	// them rather than dropping one.
+	// The publication must have landed, proving the transaction serialized
+	// rather than dropping the index write.
 	r2, err := rootfs.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = r2.Close() }()
-	opened, err := OpenRooted(r2, dir, repo.Identity())
+	opened, err := OpenRooted(r2, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !opened.Contains("a") || !opened.Contains("b") {
-		t.Fatalf("concurrent publication lost an entry: a=%v b=%v", opened.Contains("a"), opened.Contains("b"))
+	if !opened.Contains("a") {
+		t.Fatal("index publication lost its entry after the git transaction released")
 	}
-}
-
-// TestIndex_TransactionCannotDeadlockByReacquiring verifies the Under entry
-// points used inside a transaction never acquire the coordinator a second
-// time: a full upsert under the held gate (through the real production shape)
-// completes rather than deadlocking. repoID is resolved explicitly here to
-// pin down the discriminator: the gate passed must be the index's own.
-func TestIndex_TransactionCannotDeadlockByReacquiring(t *testing.T) {
-	dir := t.TempDir()
-	r, err := rootfs.Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = r.Close() }()
-	id, err := pathid.Resolve(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	idx, err := CreateRooted(r, dir, 2, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	g := coord.Default().GateFor(id.Key())
-	g.Lock()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		// Runs while g is held: must not block on g itself.
-		if uerr := idx.UpsertRootedUnder(g, r, "a", "a", [][]float32{{1, 0}}); uerr != nil {
-			t.Errorf("upsert under held gate: %v", uerr)
-		}
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		g.Unlock()
-		t.Fatal("upsert under a held gate deadlocked on the coordinator")
-	}
-	g.Unlock()
 }

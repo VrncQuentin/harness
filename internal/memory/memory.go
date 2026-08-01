@@ -81,16 +81,11 @@ var (
 // compare readers against the object they actually opened. The caller must
 // close the reader when done.
 func NewDirReader(root string) (*DirReader, error) {
-	a, err := rootfs.NewAnchor(root)
+	pinned, id, err := rootfs.OpenIdentified(root)
 	if err != nil {
 		return nil, fmt.Errorf("memory: open dir reader %s: %w", root, err)
 	}
-	id, err := a.Identity()
-	if err != nil {
-		_ = a.Close()
-		return nil, fmt.Errorf("memory: identify dir reader %s: %w", root, err)
-	}
-	return &DirReader{anchor: a, identity: id}, nil
+	return &DirReader{anchor: rootfs.NewAnchorFromRoot(pinned, root), identity: id}, nil
 }
 
 func (r *DirReader) Close() error { return r.anchor.Close() }

@@ -635,9 +635,9 @@ func TestMutationLockIdentityAcrossSpellings(t *testing.T) {
 			if oerr != nil {
 				t.Fatalf("Open(%s): %v", spelling, oerr)
 			}
-			if !handle.Identity().Equal(seed.Identity()) {
+			if !handle.identity.Equal(seed.identity) {
 				t.Errorf("identity differs, so these handles do not share a coordinator:\n  seed:  %s\n  %s: %s",
-					seed.Identity(), name, handle.Identity())
+					seed.identity, name, handle.identity)
 			}
 			if handle.gate != seed.gate {
 				t.Errorf("handles acquired different coordinator instances for one repository")

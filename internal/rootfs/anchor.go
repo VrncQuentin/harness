@@ -5,8 +5,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-
-	"github.com/VrncQuentin/harness/internal/pathid"
 )
 
 // Anchor is an identity-bound directory reference.  It retains an open
@@ -64,31 +62,6 @@ func (a *Anchor) SameAnchor(other *Anchor) (bool, error) {
 // object as r.
 func (a *Anchor) SameRoot(r *Root) (bool, error) {
 	return a.root.SameDir(r)
-}
-
-// Identity returns the physical identity of the pinned directory, verified
-// against the pinned handle.
-//
-// The name is resolved with OpenIdentified — pin, resolve, SameFile-check —
-// and the result is accepted only if it resolves to the same filesystem
-// object as this anchor's pinned handle. A name that has moved since the pin
-// fails the comparison and the call fails closed, so the returned identity
-// is bound to the directory this anchor actually holds open rather than to a
-// spelling that may no longer name it.
-func (a *Anchor) Identity() (pathid.ID, error) {
-	verified, id, err := OpenIdentified(a.path)
-	if err != nil {
-		return pathid.ID{}, err
-	}
-	defer func() { _ = verified.Close() }()
-	same, err := a.SameRoot(verified)
-	if err != nil {
-		return pathid.ID{}, err
-	}
-	if !same {
-		return pathid.ID{}, fmt.Errorf("rootfs: %s does not identify the pinned directory", a.path)
-	}
-	return id, nil
 }
 
 // Open opens the stored pathname, verifies that the new handle refers to

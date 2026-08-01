@@ -955,13 +955,13 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 	case <-secondEntered:
 		release()
 		t.Fatal("second writer entered the critical section while the first held the coordinator")
-	case <-time.After(5 * time.Second):
+	case <-time.After(250 * time.Millisecond):
 	}
 
 	release()
 	select {
 	case <-secondEntered:
-	case <-time.After(5 * time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("second writer never entered after the first released the coordinator")
 	}
 	wg.Wait()

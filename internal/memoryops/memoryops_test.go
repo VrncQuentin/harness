@@ -93,7 +93,7 @@ func TestEpisodeIndex_MixedUpsertLockOrder(t *testing.T) {
 	close(goB)
 	select {
 	case <-bDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("deadlock: standalone Upsert held e.mu while blocked on the repository gate")
 	}
 	<-aDone

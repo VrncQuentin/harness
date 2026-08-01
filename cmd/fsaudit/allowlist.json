@@ -39,7 +39,7 @@
     },
     {
       "file": "internal/rootfs/anchor.go",
-      "line": 146,
+      "line": 119,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: anchor reopen identity check"
     },
@@ -99,7 +99,7 @@
     },
     {
       "file": "internal/git/git.go",
-      "line": 190,
+      "line": 175,
       "fn": "os.MkdirAll",
       "justification": "go-git takes a pathname string; identity and C2 checks remain around the go-git boundary"
     },
