@@ -243,6 +243,19 @@ Responsibilities:
   place writes *through* the link, and comparing the pair being copied cannot
   detect it, because the destination entry may link to a different source file
   than the one being read.
+- `Root.AppendSync` is the deliberate in-place exception to rename publication,
+  used for append-only logs like `sessions.jsonl`. It opens with
+  `O_WRONLY|O_CREATE|O_APPEND` and nothing else — no truncate, no seek, no
+  caller-supplied flags — appends the complete record with one write, fsyncs
+  before success, and never cleans up by name after a failed append. Because
+  appending necessarily writes in place, it writes *through* a hard link: a
+  `sessions.jsonl` entry hard-linked to a file outside the repo gains the
+  record on both names. Rooted access prevents pathname, symlink, and junction
+  escapes but cannot distinguish a hard-linked entry from the same underlying
+  file elsewhere. This is an inherent property of append (unlike atomic
+  replacement) and is documented rather than solved; the log is not rewritten
+  with a read-modify-rename because doing so would replace the append-only
+  identity the log exists for.
 - The repo copy layers checks rather than relying on any single one: the two
   trees must be disjoint by name, disjoint again against handle-bound identities
   once both ends are pinned, distinct as directories, and disjoint level by
@@ -287,10 +300,9 @@ resolve the configured directory once, bind the open handle to its physical
 identity, and perform all subsequent operations through that handle.
 
 The threat model describes the target state. Packages not yet migrated
-(`internal/session`, `internal/retrieval`, `internal/governor`) currently
-operate by pathname and are tracked as migration entries in
-`cmd/fsaudit/allowlist.json`. Once migrated they will inherit the guarantees
-below.
+(`internal/retrieval`, `internal/governor`) currently operate by pathname and
+are tracked as migration entries in `cmd/fsaudit/allowlist.json`. Once migrated
+they will inherit the guarantees below.
 
 #### Defended threats
 
@@ -301,10 +313,10 @@ below.
 | Case / 8.3 alias (Windows) | `pathid.Canonical` resolves to a single physical name; containment checked against the canonical form | implemented |
 | Same-name directory replacement | `OpenIdentified` verifies the pinned handle against the physical identity with `os.SameFile`; a replacement fails the comparison | implemented |
 | Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name | implemented |
-| Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere | implemented |
+| Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere. The one deliberate exception is `AppendSync` for append-only logs: appending necessarily writes in place, so a hard-linked `sessions.jsonl` entry is written through. That limitation is inherent to append and documented, not solved by rewriting the log (PR 7) | implemented |
 | In-process concurrent writers | One repository-wide mutation coordinator per physical repository identity (`internal/coord`), shared by git mutations, index publication, and project-repo scaffolding and moves; index publication and the following git commit run inside one repository transaction held across both (PR 5b4), and project-repo scaffold writes and their commit, and a project-repo move's copy and its commit, each run inside one transaction held across both (PR 6) | implemented |
 | Check/use races on intermediate directories | `OpenChildNoFollow` opens the child, Lstats the entry through the parent, rejects links, and compares the entry with the opened handle via `os.SameFile` — what is opened and what is checked are the same object | implemented |
-| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); DirReader identity via PR 2c, compared against the git repository's retained identity at runtime construction (PR 5b4); index rooted identity via PR 5b2; repository-wide mutation coordinator spanning git commits and index publication via PR 5b4; project-repo scaffolding, validation, destination creation, and file enumeration route through pinned roots, scaffold/move writes are bound to the retained git boundary with `os.SameFile` and run inside the repository transaction (PR 6) | implemented |
+| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); DirReader identity via PR 2c, compared against the git repository's retained identity at runtime construction (PR 5b4); index rooted identity via PR 5b2; repository-wide mutation coordinator spanning git commits and index publication via PR 5b4; project-repo scaffolding, validation, destination creation, and file enumeration route through pinned roots, scaffold/move writes are bound to the retained git boundary with `os.SameFile` and run inside the repository transaction (PR 6); the session log is read and appended through the same generation-owned pinned reader, with only `fs.ErrNotExist` meaning "no sessions" and a rooted append primitive that cannot truncate (PR 7) | implemented |
 
 #### Out of scope
 
