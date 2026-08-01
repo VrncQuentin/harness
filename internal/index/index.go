@@ -14,7 +14,6 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/vector"
 )
@@ -101,7 +100,7 @@ func (idx *Index) lockForMutation() func() {
 // OpenRooted reads an index through a pinned Root handle instead of by
 // pathname.  The caller owns the Root; OpenRooted does not close it.
 func OpenRooted(root *rootfs.Root, dir string) (*Index, error) {
-	lockKey, err := pathid.LockKey(dir)
+	id, err := root.Identity(dir)
 	if err != nil {
 		return nil, fmt.Errorf("index: identify %s: %w", dir, err)
 	}
@@ -109,7 +108,7 @@ func OpenRooted(root *rootfs.Root, dir string) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Index{lockKey: lockKey, dir: dir, dim: manifest.Dim, manifest: manifest}, nil
+	return &Index{lockKey: id.Key(), dir: dir, dim: manifest.Dim, manifest: manifest}, nil
 }
 
 // CreateRooted initializes a new index through a pinned Root handle.
@@ -120,12 +119,12 @@ func CreateRooted(root *rootfs.Root, dir string, dim int) (*Index, error) {
 	if err := root.MkdirAll(".", 0o755); err != nil {
 		return nil, fmt.Errorf("index: mkdir %s: %w", dir, err)
 	}
-	lockKey, err := pathid.LockKey(dir)
+	id, err := root.Identity(dir)
 	if err != nil {
 		return nil, fmt.Errorf("index: identify %s: %w", dir, err)
 	}
 	idx := &Index{
-		lockKey: lockKey,
+		lockKey: id.Key(),
 		dir:     dir,
 		dim:     dim,
 		manifest: Manifest{
@@ -133,6 +132,19 @@ func CreateRooted(root *rootfs.Root, dir string, dim int) (*Index, error) {
 			Chunks: nil,
 		},
 	}
+	unlock := idx.lockForMutation()
+	defer unlock()
+
+	// A sibling cold handle may have created the index since this one checked
+	// for it.  Under the coordinator, adopt the committed state instead of
+	// resetting the files: overwriting them here would erase the other handle's
+	// publication.
+	if manifest, rerr := readManifestRooted(root, dir); rerr == nil {
+		return &Index{lockKey: id.Key(), dir: dir, dim: manifest.Dim, manifest: manifest}, nil
+	} else if !errors.Is(rerr, fs.ErrNotExist) {
+		return nil, rerr
+	}
+
 	if err := root.WriteStreamAtomic(vectorsFile, bytes.NewReader(nil), 0o644); err != nil {
 		return nil, fmt.Errorf("index: write vectors %s: %w", dir, err)
 	}
@@ -176,7 +188,7 @@ func (idx *Index) writeManifestRooted(root *rootfs.Root) error {
 // replacing the writer.
 func publishManifestData(root *rootfs.Root, data []byte, hooks rootfs.WriteHooks) error {
 	var werr error
-	if hooks.AfterOpen == nil && hooks.Sync == nil && hooks.BeforeRename == nil {
+	if hooks.AfterOpen == nil && hooks.Sync == nil && hooks.Rename == nil && hooks.AfterRename == nil {
 		werr = root.WriteStreamAtomic(manifestFile, bytes.NewReader(data), 0o644)
 	} else {
 		werr = root.WriteStreamAtomicWithHooks(manifestFile, bytes.NewReader(data), 0o644, hooks)
@@ -253,8 +265,10 @@ func (idx *Index) upsertRooted(root *rootfs.Root, source, contentHash string, ve
 	if err != nil {
 		return err
 	}
+	if committed.Dim != idx.dim {
+		return fmt.Errorf("index: committed dimension %d does not match handle dimension %d", committed.Dim, idx.dim)
+	}
 	idx.manifest = committed
-	idx.dim = committed.Dim
 
 	next := Manifest{Dim: idx.manifest.Dim, Count: idx.manifest.Count}
 	next.Chunks = make([]Entry, len(idx.manifest.Chunks))
