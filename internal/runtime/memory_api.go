@@ -215,7 +215,10 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 		return nil
 	}
-	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir)
+	// The episode index serializes on the repository-wide mutation coordinator,
+	// so its identity is the repository's verified identity, not the index
+	// directory's.
+	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir, activeMem.Identity())
 	if err != nil {
 		_ = indexAnchor.Close()
 		doClose()
@@ -234,6 +237,21 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		if sessionStore != nil {
 			_ = sessionStore.Close()
 		}
+		return nil
+	}
+
+	// The git repository and the memory/project reader must be one physical
+	// repository. Both identities are bound to the object each component
+	// actually pinned at open; a different repository or a repointed spelling
+	// makes them differ and the candidate fails closed rather than running
+	// git commits and index publication under two different coordinators.
+	if !gitRepo.Identity().Equal(activeMem.Identity()) {
+		doClose()
+		closeHandles()
+		if sessionStore != nil {
+			_ = sessionStore.Close()
+		}
+		uiServer.AddStartupError(fmt.Errorf("session manager: git repository and memory reader resolve to different directories (%s vs %s)", gitRepo.Identity(), activeMem.Identity()))
 		return nil
 	}
 
@@ -416,6 +434,9 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 
 func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex, projectSlug string) (*gitw.Repo, *memory.DirReader, *session.Manager, *uiSessionStoreAdapter) {
 	repoPath := roots.activeRoot
+	if rt.beforeGitOpen != nil {
+		rt.beforeGitOpen()
+	}
 	repo, err := gitw.Open(repoPath)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))

@@ -86,6 +86,13 @@ type Runtime struct {
 	sessionMg  *session.Manager
 	taskRunner *taskRunnerAdapter
 	gen        *generation
+
+	// beforeGitOpen runs after the memory readers are pinned and immediately
+	// before the git repository is opened, at the git-to-memory identity
+	// boundary. A test stages a repoint of the active repository path in this
+	// window so the git and memory identities differ and candidate
+	// construction must fail closed. Nil on every production path.
+	beforeGitOpen func()
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.
