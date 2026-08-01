@@ -14,6 +14,8 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/VrncQuentin/harness/internal/coord"
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/vector"
 )
@@ -56,91 +58,98 @@ type Searcher interface {
 // concurrent use.
 type Index struct {
 	mu       sync.Mutex
-	lockKey  string
+	gate     *coord.Gate
 	dir      string
 	dim      int
 	manifest Manifest
 }
 
-// indexMutationLocks serializes index mutations per physical index directory.
-//
-// idx.mu cannot do this job alone: a handle is opened per episode save or per
-// tool call, so two concurrent writers against the same index hold two
-// different per-instance mutexes and exclude nothing.  vectors.bin and
-// manifest.json are shared filesystem state, so the lock has to be keyed by
-// the physical directory rather than by the handle — two handles to one
-// repository, however each was spelled, must land on one lock.
-//
-// The key is the physical identity from internal/pathid, not a pathname.
-// Keying on a pathname would let a junction alias or a differently-cased
-// spelling of the same directory hand out a second, separate mutex, and the
-// two handles would serialize against nothing.
-//
-// This guards harness-internal concurrency only.  A process writing the same
-// index at the same moment is outside its reach.
-var indexMutationLocks sync.Map // lock key -> *sync.Mutex
-
-// lockForMutation takes the per-directory coordinator lock and this handle's
+// lockForMutation takes the repository-wide coordinator and this handle's
 // mutex, and returns the function that releases both in the right order.
+//
+// The coordinator is the repository's, not the index directory's: the same
+// object git commits on this repository acquire, so index publication and
+// git mutation serialize on one coordinator. See WithMutation and
+// UpsertRootedUnder for running publication inside a held repository
+// transaction.
 func (idx *Index) lockForMutation() func() {
-	actual, _ := indexMutationLocks.LoadOrStore(idx.lockKey, &sync.Mutex{})
-	lock, ok := actual.(*sync.Mutex)
-	if !ok {
-		// Unreachable: only *sync.Mutex is ever stored.
-		lock = &sync.Mutex{}
-	}
-	lock.Lock()
+	idx.gate.Lock()
 	idx.mu.Lock()
 	return func() {
 		idx.mu.Unlock()
-		lock.Unlock()
+		idx.gate.Unlock()
 	}
 }
 
 // OpenRooted reads an index through a pinned Root handle instead of by
 // pathname.  The caller owns the Root; OpenRooted does not close it.
-func OpenRooted(root *rootfs.Root, dir string) (*Index, error) {
-	id, err := root.Identity(dir)
-	if err != nil {
+//
+// repoID is the verified physical identity of the repository that owns this
+// index directory. It selects the repository-wide mutation coordinator, so
+// index publication and git commits on the same repository serialize on one
+// gate. dir is still verified against the pinned root — a repointed alias
+// fails closed before any handle is returned.
+func OpenRooted(root *rootfs.Root, dir string, repoID pathid.ID) (*Index, error) {
+	if _, err := root.Identity(dir); err != nil {
 		return nil, fmt.Errorf("index: identify %s: %w", dir, err)
 	}
 	manifest, err := readManifestRooted(root, dir)
 	if err != nil {
 		return nil, err
 	}
-	return &Index{lockKey: id.Key(), dir: dir, dim: manifest.Dim, manifest: manifest}, nil
+	return &Index{gate: coord.Default().GateFor(repoID.Key()), dir: dir, dim: manifest.Dim, manifest: manifest}, nil
 }
 
-// CreateRooted initializes a new index through a pinned Root handle.
-func CreateRooted(root *rootfs.Root, dir string, dim int) (*Index, error) {
+// CreateRooted initializes a new index through a pinned Root handle. repoID
+// is the verified physical identity of the owning repository; see OpenRooted.
+func CreateRooted(root *rootfs.Root, dir string, dim int, repoID pathid.ID) (*Index, error) {
+	g := coord.Default().GateFor(repoID.Key())
+	g.Lock()
+	defer g.Unlock()
+	return createRootedUnder(g, root, dir, dim)
+}
+
+// CreateRootedUnder initializes a new index inside an already-held
+// repository-wide mutation transaction, without reacquiring the coordinator.
+// g is the gate the caller already holds and the new index will use.
+func CreateRootedUnder(g *coord.Gate, root *rootfs.Root, dir string, dim int) (*Index, error) {
+	return createRootedUnder(g, root, dir, dim)
+}
+
+// createRootedUnder is the body shared by CreateRooted and CreateRootedUnder.
+// In the Under case the coordinator is already held by the caller; in the
+// standalone case the caller has just acquired it.
+func createRootedUnder(g *coord.Gate, root *rootfs.Root, dir string, dim int) (*Index, error) {
+	if g == nil {
+		return nil, fmt.Errorf("index: create under a nil coordinator")
+	}
 	if dim <= 0 {
 		return nil, fmt.Errorf("index: invalid dimension %d", dim)
 	}
 	if err := root.MkdirAll(".", 0o755); err != nil {
 		return nil, fmt.Errorf("index: mkdir %s: %w", dir, err)
 	}
-	id, err := root.Identity(dir)
-	if err != nil {
+	if _, err := root.Identity(dir); err != nil {
 		return nil, fmt.Errorf("index: identify %s: %w", dir, err)
 	}
 	idx := &Index{
-		lockKey: id.Key(),
-		dir:     dir,
-		dim:     dim,
+		gate: g,
+		dir:  dir,
+		dim:  dim,
 		manifest: Manifest{
 			Dim:    dim,
 			Chunks: nil,
 		},
 	}
-	unlock := idx.lockForMutation()
-	defer unlock()
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 
 	// A sibling cold handle may have created the index since this one checked
 	// for it.  Under the coordinator, adopt the committed state instead of
 	// resetting the files: overwriting them here would erase the other handle's
 	// publication.
 	if manifest, rerr := readManifestRooted(root, dir); rerr == nil {
-		return &Index{lockKey: id.Key(), dir: dir, dim: manifest.Dim, manifest: manifest}, nil
+		return &Index{gate: g, dir: dir, dim: manifest.Dim, manifest: manifest}, nil
 	} else if !errors.Is(rerr, fs.ErrNotExist) {
 		return nil, rerr
 	}
@@ -249,14 +258,38 @@ func (idx *Index) SearchRooted(root *rootfs.Root, query []float32, k int) ([]Res
 }
 
 // UpsertRooted stores vectors and publishes through a pinned Root handle.
+// It acquires the repository-wide mutation coordinator for the duration.
 func (idx *Index) UpsertRooted(root *rootfs.Root, source, contentHash string, vectors [][]float32) error {
 	return idx.upsertRooted(root, source, contentHash, vectors, rootfs.WriteHooks{})
 }
 
+// upsertRooted is UpsertRooted with a hooks seam for tests; it acquires the
+// coordinator.
 func (idx *Index) upsertRooted(root *rootfs.Root, source, contentHash string, vectors [][]float32, hooks rootfs.WriteHooks) error {
 	unlock := idx.lockForMutation()
 	defer unlock()
+	return idx.upsertBody(root, source, contentHash, vectors, hooks)
+}
 
+// UpsertRootedUnder runs the upsert inside an already-held repository-wide
+// mutation transaction, without reacquiring the coordinator. g is the gate
+// the caller already holds (from gitw.Mutation.Gate). It must be this
+// index's own coordinator, or the call fails closed rather than publishing
+// under a gate that does not serialize this repository's writers.
+func (idx *Index) UpsertRootedUnder(g *coord.Gate, root *rootfs.Root, source, contentHash string, vectors [][]float32) error {
+	return idx.upsertRootedUnder(g, root, source, contentHash, vectors, rootfs.WriteHooks{})
+}
+
+func (idx *Index) upsertRootedUnder(g *coord.Gate, root *rootfs.Root, source, contentHash string, vectors [][]float32, hooks rootfs.WriteHooks) error {
+	if g != idx.gate {
+		return fmt.Errorf("index: upsert under a coordinator this index does not share")
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	return idx.upsertBody(root, source, contentHash, vectors, hooks)
+}
+
+func (idx *Index) upsertBody(root *rootfs.Root, source, contentHash string, vectors [][]float32, hooks rootfs.WriteHooks) error {
 	// Start from the committed on-disk state, not the in-memory copy.  The
 	// in-memory copy can trail the disk when another handle published since
 	// this one was opened; re-reading under the coordinator lock is what
