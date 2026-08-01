@@ -504,7 +504,15 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 	if !conversationContains(snap.Conversation, "assistant", "partial answer") {
 		t.Fatalf("partial assistant text was not recorded before reload flush: %+v", snap.Conversation)
 	}
-	records, err := mgr.Records("coder")
+	// The flushed session must be visible to the runtime's current manager.
+	// The pre-reload manager's generation-owned reader is closed when the
+	// rebuild retires its generation, so records are read through the manager
+	// that owns the live reader.
+	current := rt.SessionManager()
+	if current == nil {
+		t.Fatal("session manager absent after reload")
+	}
+	records, err := current.Records("coder")
 	if err != nil {
 		t.Fatalf("Records: %v", err)
 	}
