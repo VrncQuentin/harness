@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/VrncQuentin/harness/internal/coord"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 // LayoutItem describes one entry the canonical memory layout requires.
@@ -50,14 +52,22 @@ func MissingProjectRepoItems(root string, global bool) ([]LayoutItem, error) {
 	if root == "" {
 		return nil, errors.New("memory: repo path is empty")
 	}
-	if err := validateRootDir(root); err != nil {
-		return nil, err
+	pinned, _, err := rootfs.OpenIdentified(root)
+	if err != nil {
+		return nil, fmt.Errorf("memory: pin repo root %s: %w", root, err)
 	}
+	defer func() { _ = pinned.Close() }()
+	return missingProjectRepoItemsRooted(pinned, global)
+}
+
+// missingProjectRepoItemsRooted inspects a pinned repository tree. The caller
+// holds the pinned root; identity and containment come from the handle, not
+// from a re-resolution of the configured name.
+func missingProjectRepoItemsRooted(pinned *rootfs.Root, global bool) ([]LayoutItem, error) {
 	expected := ExpectedProjectRepoLayout(global)
 	var missing []LayoutItem
 	for _, item := range expected {
-		abs := filepath.Join(root, filepath.FromSlash(item.Path))
-		st, err := os.Stat(abs)
+		st, err := pinned.Stat(filepath.FromSlash(item.Path))
 		if isMissingLayoutPath(err) {
 			missing = append(missing, item)
 			continue
@@ -98,13 +108,15 @@ func ValidateProjectRepo(root string, global bool) error {
 	if root == "" {
 		return errors.New("memory: project memory repo path is required")
 	}
-	if err := validateRootDir(root); err != nil {
+	pinned, _, err := rootfs.OpenIdentified(root)
+	if err != nil {
+		return fmt.Errorf("memory: pin repo root %s: %w", root, err)
+	}
+	defer func() { _ = pinned.Close() }()
+	if err := validateGitDirRooted(pinned, root); err != nil {
 		return err
 	}
-	if err := validateGitDir(root); err != nil {
-		return err
-	}
-	missing, err := MissingProjectRepoItems(root, global)
+	missing, err := missingProjectRepoItemsRooted(pinned, global)
 	if err != nil {
 		return err
 	}
@@ -119,29 +131,57 @@ func ValidateProjectRepo(root string, global bool) error {
 // (including those of the wrong kind) are left untouched - this function
 // will not overwrite or delete anything on disk.
 //
+// The repository tree is pinned and written through the handle, and the
+// write holds the repository-wide mutation coordinator for the physical
+// repository, so scaffolding an existing repository serializes with git
+// commits and index publication on the same object. Callers that already
+// hold the coordinator (EnsureProjectRepo inside a git transaction) must use
+// createMissingRooted instead of reacquiring the non-reentrant gate.
+//
 // All items are validated against the same traversal rules as the
 // reader, so a caller passing a hand-rolled LayoutItem cannot escape
 // root.
 func CreateMissing(root string, items []LayoutItem) error {
+	return createMissingHooked(root, items, nil)
+}
+
+// createMissingHooked is CreateMissing with a hook that runs between the
+// pin of the repository tree and the identity resolution that verifies it,
+// so a test can stage a re-point in exactly that window. Nil on every
+// production path.
+func createMissingHooked(root string, items []LayoutItem, afterPin func()) error {
 	if root == "" {
 		return errors.New("memory: repo path is empty")
 	}
-	if err := validateRootDir(root); err != nil {
-		return err
+	pinned, id, err := rootfs.OpenIdentifiedHooked(root, afterPin)
+	if err != nil {
+		return fmt.Errorf("memory: pin repo root %s: %w", root, err)
 	}
+	defer func() { _ = pinned.Close() }()
+	gate := coord.For(id)
+	gate.Lock()
+	defer gate.Unlock()
+	return createMissingRooted(pinned, items)
+}
 
+// createMissingRooted creates each item through a pinned repository tree.
+// The caller holds the coordinator; this function never acquires it, so it
+// can run inside a git transaction without reacquiring the non-reentrant
+// gate.
+func createMissingRooted(pinned *rootfs.Root, items []LayoutItem) error {
 	for _, item := range items {
 		if err := checkRel(item.Path); err != nil {
 			return fmt.Errorf("memory: scaffold %s: %w", item.Path, err)
 		}
-		abs := filepath.Join(root, filepath.FromSlash(item.Path))
+		rel := filepath.FromSlash(item.Path)
 
 		// Skip anything already present so a wrong-kind conflict on
 		// disk never gets clobbered by the scaffolder. Existing directories
 		// still get a .gitkeep so backups preserve empty layout directories.
-		if st, err := os.Stat(abs); err == nil {
+		st, err := pinned.Stat(rel)
+		if err == nil {
 			if item.Dir && st.IsDir() {
-				if err := createGitkeep(abs, item.Path); err != nil {
+				if err := createGitkeepRooted(pinned, item.Path); err != nil {
 					return err
 				}
 			}
@@ -151,64 +191,54 @@ func CreateMissing(root string, items []LayoutItem) error {
 		}
 
 		if item.Dir {
-			if err := os.MkdirAll(abs, 0o755); err != nil {
+			if err := pinned.MkdirAll(rel, 0o755); err != nil {
 				return fmt.Errorf("memory: create dir %s: %w", item.Path, err)
 			}
-			if err := createGitkeep(abs, item.Path); err != nil {
+			if err := createGitkeepRooted(pinned, item.Path); err != nil {
 				return err
 			}
 			continue
 		}
 
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		if err := pinned.MkdirAll(filepath.Dir(rel), 0o755); err != nil {
 			return fmt.Errorf("memory: create parent of %s: %w", item.Path, err)
 		}
 		// O_EXCL guards against a TOCTOU race where the file appeared
-		// between Stat and OpenFile; we treat that as "already
-		// present, skip" rather than an error.
-		f, err := os.OpenFile(abs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-		if err != nil {
+		// between Stat and CreateExclusive; we treat that as "already
+		// present, skip" rather than an error. The create is exclusive, so
+		// an entry that appears concurrently is never overwritten.
+		if err := pinned.CreateExclusive(rel, nil, 0o644); err != nil {
 			if errors.Is(err, fs.ErrExist) {
 				continue
 			}
 			return fmt.Errorf("memory: create file %s: %w", item.Path, err)
 		}
-		if cerr := f.Close(); cerr != nil {
-			return fmt.Errorf("memory: close %s: %w", item.Path, cerr)
-		}
 	}
 	return nil
 }
 
-func createGitkeep(absDir, relPath string) error {
-	keepPath := filepath.Join(absDir, ".gitkeep")
-	f, err := os.OpenFile(keepPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
+// createGitkeepRooted creates .gitkeep inside the pinned layout directory at
+// relPath, exclusively. relPath is repo-relative and validated by the caller.
+// A failed exclusive create leaves the partial file in place, matching
+// CreateExclusive's contract: removing it would mean removing a name that may
+// already belong to someone else.
+func createGitkeepRooted(pinned *rootfs.Root, relPath string) error {
+	keepRel := filepath.Join(filepath.FromSlash(relPath), ".gitkeep")
+	if err := pinned.CreateExclusive(keepRel, nil, 0o644); err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			return nil
 		}
 		return fmt.Errorf("memory: create gitkeep for %s: %w", relPath, err)
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("memory: close gitkeep for %s: %w", relPath, err)
-	}
 	return nil
 }
 
-func validateRootDir(root string) error {
-	info, err := os.Stat(root)
-	if err != nil {
-		return fmt.Errorf("memory: stat repo root %s: %w", root, err)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("memory: repo path is not a directory: %s", root)
-	}
-	return nil
-}
-
-func validateGitDir(root string) error {
-	gitPath := filepath.Join(root, ".git")
-	info, err := os.Stat(gitPath)
+// validateGitDirRooted verifies, through the pinned repository tree, that
+// root is a plain git repository with a .git directory. The pinned handle
+// confines the check: a .git entry that is a link leaving the root is refused
+// rather than followed.
+func validateGitDirRooted(pinned *rootfs.Root, root string) error {
+	info, err := pinned.Stat(".git")
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("memory: repo path is not a git repo: %s (missing .git)", root)

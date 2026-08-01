@@ -3,9 +3,7 @@ package memory
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
-	"os"
 	"path/filepath"
 
 	gitw "github.com/VrncQuentin/harness/internal/git"
@@ -44,13 +42,26 @@ func EnsureProjectRepo(root string, global bool) error {
 		return err
 	}
 	defer func() { _ = repo.Close() }()
-	if err := CreateMissingProjectRepo(root, global); err != nil {
-		return err
-	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), ProjectRepoScaffoldFiles(global)); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
-		slog.Warn("project memory repo scaffold commit", "repo", root, "err", err)
-	}
-	return nil
+	// Scaffold writes and the follow-up commit run inside one repository-wide
+	// mutation transaction: the coordinator is held across both, so no other
+	// git mutation or index publication on this repository can interleave
+	// between them. The scaffold writes go through a pinned handle and the
+	// commit through the transaction session's commit path, which does not
+	// reacquire the non-reentrant gate.
+	return repo.WithMutation(func(m *gitw.Mutation) error {
+		pinned, _, err := rootfs.OpenIdentified(root)
+		if err != nil {
+			return fmt.Errorf("memory: pin repo root %s: %w", root, err)
+		}
+		defer func() { _ = pinned.Close() }()
+		if err := createMissingRooted(pinned, ExpectedProjectRepoLayout(global)); err != nil {
+			return err
+		}
+		if _, err := m.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), ProjectRepoScaffoldFiles(global)); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
+			slog.Warn("project memory repo scaffold commit", "repo", root, "err", err)
+		}
+		return nil
+	})
 }
 
 // MoveProjectRepo copies one project memory repo to another path, excluding the
@@ -144,8 +155,8 @@ func copyTreeWithoutGitHooked(src, dst string, afterCheck func()) error {
 		return fmt.Errorf("memory: open source repo %s: %w", src, err)
 	}
 	defer srcRoot.Close() //nolint:errcheck // read-only handle
-	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return fmt.Errorf("memory: create destination %s: %w", dst, err)
+	if err := createDestinationDir(dst); err != nil {
+		return err
 	}
 	dstRoot, dstID, err := rootfs.OpenIdentified(dst)
 	if err != nil {
@@ -171,6 +182,23 @@ func copyTreeWithoutGitHooked(src, dst string, afterCheck func()) error {
 		srcStack: []*rootfs.Root{srcRoot},
 		dstStack: []*rootfs.Root{dstRoot},
 	}).copyDir(".")
+}
+
+// createDestinationDir creates dst through a pinned handle on its parent, so
+// the name cannot be re-pointed between the decision to create it and the
+// create itself. The destination's parent must already exist; pinning it is
+// what keeps the MkdirAll addressing the directory that was checked.
+func createDestinationDir(dst string) error {
+	parent := filepath.Dir(dst)
+	parentRoot, err := rootfs.Open(parent)
+	if err != nil {
+		return fmt.Errorf("memory: pin destination parent %s: %w", parent, err)
+	}
+	defer parentRoot.Close() //nolint:errcheck // closed after the create
+	if err := parentRoot.MkdirAll(filepath.Base(dst), 0o755); err != nil {
+		return fmt.Errorf("memory: create destination %s: %w", dst, err)
+	}
+	return nil
 }
 
 // maxCopyDepth bounds the traversal. A project memory repo is a handful of
@@ -387,26 +415,30 @@ func copyFileBetweenRoots(srcDir, dstDir *rootfs.Root, name, rel string) error {
 	return nil
 }
 
+// listRepoFiles returns the repo-relative forward-slash commit paths of every
+// file in the working tree, excluding .git.
+//
+// The walk goes through a pinned reader that descends each directory through
+// the child handle it inspected, so a directory swapped between inspection and
+// entry cannot redirect the traversal outside the tree, and a link leaving the
+// tree is refused rather than followed.
 func listRepoFiles(root string) ([]string, error) {
-	var files []string
-	err := filepath.WalkDir(root, func(abs string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+	reader, err := NewDirReader(root)
+	if err != nil {
+		return nil, fmt.Errorf("memory: open repo %s: %w", root, err)
+	}
+	defer func() { _ = reader.Close() }()
+	entries, err := reader.Walk("")
+	if err != nil {
+		return nil, fmt.Errorf("memory: list repo files %s: %w", root, err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.Dir {
+			files = append(files, entry.Path)
 		}
-		if d.Name() == gitDirName && d.IsDir() {
-			return filepath.SkipDir
-		}
-		if d.IsDir() {
-			return nil
-		}
-		rel, err := filepath.Rel(root, abs)
-		if err != nil {
-			return err
-		}
-		files = append(files, filepath.ToSlash(rel))
-		return nil
-	})
-	return files, err
+	}
+	return files, nil
 }
 
 // SameProjectRepoPath reports whether two project repo paths identify the same

@@ -9,31 +9,31 @@
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 210,
+      "line": 215,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: WriteStreamAtomic temp identity check"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 277,
+      "line": 308,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: directory identity comparison"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 364,
+      "line": 395,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: OpenChildNoFollow identity check"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 511,
+      "line": 542,
       "fn": "os.Stat",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 515,
+      "line": 546,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
@@ -117,76 +117,6 @@
       "fn": "os.OpenRoot",
       "pr": "PR 3",
       "notes": "toolout spill: route through rootfs.Open rather than direct os.OpenRoot"
-    },
-    {
-      "file": "internal/memory/layout.go",
-      "line": 60,
-      "fn": "os.Stat",
-      "pr": "PR 6",
-      "notes": "Scaffolding and validation: pin before inspecting"
-    },
-    {
-      "file": "internal/memory/layout.go",
-      "line": 142,
-      "fn": "os.Stat",
-      "pr": "PR 6",
-      "notes": "Scaffolding: check existing layout"
-    },
-    {
-      "file": "internal/memory/layout.go",
-      "line": 154,
-      "fn": "os.MkdirAll",
-      "pr": "PR 6",
-      "notes": "Scaffolding: create layout directories"
-    },
-    {
-      "file": "internal/memory/layout.go",
-      "line": 163,
-      "fn": "os.MkdirAll",
-      "pr": "PR 6",
-      "notes": "Scaffolding: create parent for .gitkeep"
-    },
-    {
-      "file": "internal/memory/layout.go",
-      "line": 169,
-      "fn": "os.OpenFile",
-      "pr": "PR 6",
-      "notes": "Scaffolding: create .gitkeep with O_EXCL"
-    },
-    {
-      "file": "internal/memory/layout.go",
-      "line": 185,
-      "fn": "os.OpenFile",
-      "pr": "PR 6",
-      "notes": "Scaffolding: create keep file with O_EXCL"
-    },
-    {
-      "file": "internal/memory/layout.go",
-      "line": 199,
-      "fn": "os.Stat",
-      "pr": "PR 6",
-      "notes": "Repository validation: check root directory"
-    },
-    {
-      "file": "internal/memory/layout.go",
-      "line": 211,
-      "fn": "os.Stat",
-      "pr": "PR 6",
-      "notes": "Repository validation: check .git directory"
-    },
-    {
-      "file": "internal/memory/project_repo.go",
-      "line": 147,
-      "fn": "os.MkdirAll",
-      "pr": "PR 6",
-      "notes": "MoveProjectRepo: create destination directory"
-    },
-    {
-      "file": "internal/memory/project_repo.go",
-      "line": 392,
-      "fn": "filepath.WalkDir",
-      "pr": "PR 6",
-      "notes": "listRepoFiles: rooted traversal with pinned child handles"
     },
     {
       "file": "internal/session/log.go",
