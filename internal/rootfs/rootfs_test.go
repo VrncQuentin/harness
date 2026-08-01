@@ -1016,3 +1016,77 @@ func TestOpenChildNoFollow_DetectsSubstitution(t *testing.T) {
 		t.Error("OpenChildNoFollow should detect substitution")
 	}
 }
+
+// TestRoot_IdentityStableAlias verifies that a stable alias resolves to the
+// same physical identity as its target, so two handles reaching one directory
+// through different spellings produce one coordinator key.
+func TestRoot_IdentityStableAlias(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, real, alias)
+
+	rootReal, err := Open(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rootReal.Close() }()
+	rootAlias, err := Open(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rootAlias.Close() }()
+
+	idReal, err := rootReal.Identity(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idAlias, err := rootAlias.Identity(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idReal.Key() != idAlias.Key() {
+		t.Errorf("stable alias produced a different identity key: real=%q alias=%q", idReal.Key(), idAlias.Key())
+	}
+}
+
+// TestRoot_IdentityRefusesRepointedAlias verifies the identity is bound to the
+// pinned handle.  The handle is pinned through an alias; repointing the alias
+// at another directory must fail the identity check rather than hand back the
+// replacement's key — the exact handle/key mismatch Identity exists to close.
+func TestRoot_IdentityRefusesRepointedAlias(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	evil := filepath.Join(base, "evil")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, real, alias)
+
+	// The handle is pinned to real through the alias.
+	root, err := Open(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
+	// Repoint the alias at another directory.
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+	mustLinkDir(t, evil, alias)
+
+	// The alias no longer identifies the pinned directory, so Identity must
+	// fail closed rather than return evil's key.
+	_, err = root.Identity(alias)
+	if err == nil {
+		t.Fatal("Identity accepted a repointed alias that no longer identifies the pinned directory")
+	}
+}
