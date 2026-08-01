@@ -200,9 +200,10 @@ component against that handle.
 
 Responsibilities:
 - `Root` wraps an open directory for relative access (`ReadFile`, `Lstat`,
-  `Readlink`, `Open`, `OpenWrite`, `ReadDir`, `MkdirAll`). `internal/git`'s
-  `DiffWorktree` pins the worktree with it; `internal/memory` pins both ends of
-  a project-repo copy with it.
+  `Stat`, `Readlink`, `Open`, `CreateExclusive`, `ReadDir`, `MkdirAll`).
+  `internal/git`'s `DiffWorktree` pins the worktree with it; `internal/memory`
+  pins both ends of a project-repo copy, its scaffolding, its validation, and
+  its file enumeration with it.
 - `OpenIdentified` pins a directory and returns it **with** the physical
   identity that directory has been confirmed to have. The pairing is the point:
   an identity resolved separately from a pin describes a name, so any later
@@ -286,10 +287,10 @@ resolve the configured directory once, bind the open handle to its physical
 identity, and perform all subsequent operations through that handle.
 
 The threat model describes the target state. Packages not yet migrated
-(`internal/memory`, `internal/session`, `internal/index`, `internal/retrieval`,
-`internal/governor`) currently operate by pathname and are tracked as migration
-entries in `cmd/fsaudit/allowlist.json`. Once migrated they will inherit the
-guarantees below.
+(`internal/session`, `internal/retrieval`, `internal/governor`) currently
+operate by pathname and are tracked as migration entries in
+`cmd/fsaudit/allowlist.json`. Once migrated they will inherit the guarantees
+below.
 
 #### Defended threats
 
@@ -301,9 +302,9 @@ guarantees below.
 | Same-name directory replacement | `OpenIdentified` verifies the pinned handle against the physical identity with `os.SameFile`; a replacement fails the comparison | implemented |
 | Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name | implemented |
 | Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere | implemented |
-| In-process concurrent writers | One repository-wide mutation coordinator per physical repository identity (`internal/coord`), shared by git mutations and index publication; index publication and the following git commit run inside one repository transaction held across both (PR 5b4) | implemented |
+| In-process concurrent writers | One repository-wide mutation coordinator per physical repository identity (`internal/coord`), shared by git mutations, index publication, and project-repo scaffolding; index publication and the following git commit run inside one repository transaction held across both (PR 5b4), and project-repo scaffold writes and their commit run inside one transaction held across both (PR 6) | implemented |
 | Check/use races on intermediate directories | `OpenChildNoFollow` opens the child, Lstats the entry through the parent, rejects links, and compares the entry with the opened handle via `os.SameFile` — what is opened and what is checked are the same object | implemented |
-| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); DirReader identity via PR 2c, compared against the git repository's retained identity at runtime construction (PR 5b4); index rooted identity via PR 5b2; repository-wide mutation coordinator spanning git commits and index publication via PR 5b4 | implemented |
+| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); DirReader identity via PR 2c, compared against the git repository's retained identity at runtime construction (PR 5b4); index rooted identity via PR 5b2; repository-wide mutation coordinator spanning git commits and index publication via PR 5b4; project-repo scaffolding, validation, destination creation, and file enumeration route through pinned roots, with scaffold writes inside the repository transaction (PR 6) | implemented |
 
 #### Out of scope
 
@@ -441,6 +442,16 @@ Mediates all reads and writes to git-backed project memory repos.
 - Both exposed in the UI memory page
 
 **Cross-agent reads:** explicit only. An agent may request episodes from another agent's directory. Not automatic.
+
+**Project repo workflow:** scaffolding, layout validation, `.gitkeep` creation,
+destination creation, and file enumeration route through pinned `os.Root`
+handles, and layout entries are addressed by validated repo-relative paths
+through those handles. Scaffolding an existing repository holds the
+repository-wide mutation coordinator, and `EnsureProjectRepo` scaffolds and
+commits inside one git transaction so the write and its commit cannot
+interleave with another writer on the same physical repository. The project-repo
+copy pins both trees and descends through pinned child handles (see Rooted
+Filesystem Access).
 
 **Planned M12 semantic-write gate:** after M11 and MR0 closure, session summaries,
 promoted facts, notes, and `memory_propose` use a project-local append-only event log and
