@@ -27,19 +27,19 @@
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 502,
+      "line": 511,
       "fn": "os.Stat",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 506,
+      "line": 515,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
     {
       "file": "internal/rootfs/anchor.go",
-      "line": 107,
+      "line": 134,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: anchor reopen identity check"
     },
@@ -99,7 +99,7 @@
     },
     {
       "file": "internal/git/git.go",
-      "line": 107,
+      "line": 139,
       "fn": "os.MkdirAll",
       "justification": "go-git takes a pathname string; identity and C2 checks remain around the go-git boundary"
     },
