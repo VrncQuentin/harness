@@ -37,6 +37,14 @@ func (ProjectRepoManager) SameProjectRepoPath(a, b string) (bool, error) {
 // any missing scaffold entries. Existing git repos are opened as-is; missing
 // or non-git directories are initialized through go-git.
 func EnsureProjectRepo(root string, global bool) error {
+	return ensureProjectRepoHooked(root, global, nil)
+}
+
+// ensureProjectRepoHooked is EnsureProjectRepo with a hook that runs between
+// the git repository being opened (and its boundary pinned) and the scaffold
+// handle being opened, so a test can stage a re-point in exactly that window.
+// Nil on every production path.
+func ensureProjectRepoHooked(root string, global bool, afterOpen func()) error {
 	repo, err := gitw.Init(root)
 	if err != nil {
 		return err
@@ -45,15 +53,29 @@ func EnsureProjectRepo(root string, global bool) error {
 	// Scaffold writes and the follow-up commit run inside one repository-wide
 	// mutation transaction: the coordinator is held across both, so no other
 	// git mutation or index publication on this repository can interleave
-	// between them. The scaffold writes go through a pinned handle and the
-	// commit through the transaction session's commit path, which does not
-	// reacquire the non-reentrant gate.
+	// between them. The commit goes through the transaction session's commit
+	// path, which does not reacquire the non-reentrant gate.
 	return repo.WithMutation(func(m *gitw.Mutation) error {
+		if afterOpen != nil {
+			afterOpen()
+		}
 		pinned, _, err := rootfs.OpenIdentified(root)
 		if err != nil {
 			return fmt.Errorf("memory: pin repo root %s: %w", root, err)
 		}
 		defer func() { _ = pinned.Close() }()
+		// The transaction gate belongs to the directory git opened. The
+		// scaffold handle is bound to that same physical boundary before any
+		// write: if the name was re-pointed between the two opens, writing
+		// through this handle would scaffold one repository while holding
+		// another repository's coordinator.
+		same, err := repo.SameRoot(pinned)
+		if err != nil {
+			return fmt.Errorf("memory: compare repo boundary: %w", err)
+		}
+		if !same {
+			return fmt.Errorf("memory: repo %s changed since it was opened — refusing to scaffold", root)
+		}
 		if err := createMissingRooted(pinned, ExpectedProjectRepoLayout(global)); err != nil {
 			return err
 		}
@@ -73,7 +95,23 @@ func EnsureProjectRepo(root string, global bool) error {
 // where a junction, a symlink, an 8.3 alias, or a different case on Windows
 // names one repository — and then the copy proceeds to rewrite the repository
 // with itself.
+//
+// The destination is opened or initialized first, and the copy, scaffolding,
+// file enumeration, and migration commit all run inside one repository-wide
+// mutation transaction on the destination. Nothing else can interleave with
+// the copy or between the writes and the commit, and the commit uses the
+// transaction session's commit path, which does not reacquire the gate.
 func MoveProjectRepo(src, dst string, global bool) error {
+	return moveProjectRepoHooked(src, dst, global, nil)
+}
+
+// moveProjectRepoHooked is MoveProjectRepo with a hook that runs after the
+// source and destination roots are both pinned and before the copy reads or
+// writes anything, so a test can re-point an alias in exactly that window and
+// prove the copy stays bound to the pinned objects. Nil on every production
+// path.
+func moveProjectRepoHooked(src, dst string, global bool, afterPinned func()) error {
+	dst = filepath.Clean(dst)
 	same, err := SameProjectRepoPath(src, dst)
 	if err != nil {
 		return fmt.Errorf("memory: identify project memory repo: %w", err)
@@ -81,28 +119,54 @@ func MoveProjectRepo(src, dst string, global bool) error {
 	if same {
 		return EnsureProjectRepo(dst, global)
 	}
-	if err := copyTreeWithoutGit(src, dst); err != nil {
+	// Name-based containment before anything is created: a destination inside
+	// the source must be refused before the destination is opened, or the
+	// open would initialize a repository inside the tree about to be copied.
+	// The pinned containment check inside the transaction remains the
+	// authoritative one for re-points after this point.
+	if err := refuseByName(src, dst); err != nil {
 		return err
 	}
-	if err := EnsureProjectRepo(dst, global); err != nil {
-		return err
-	}
-	repo, err := gitw.Open(dst)
+	repo, err := gitw.Init(dst)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = repo.Close() }()
-	files, err := listRepoFiles(dst)
-	if err != nil {
-		return err
-	}
-	if len(files) == 0 {
+	return repo.WithMutation(func(m *gitw.Mutation) error {
+		dstRoot, dstID, err := rootfs.OpenIdentified(dst)
+		if err != nil {
+			return fmt.Errorf("memory: pin destination repo %s: %w", dst, err)
+		}
+		defer func() { _ = dstRoot.Close() }()
+		// The transaction gate belongs to the directory git opened. The copy
+		// destination handle is bound to that same physical boundary before
+		// anything is written, so a name re-pointed between the two opens
+		// fails closed instead of copying into one repository while holding
+		// another repository's coordinator.
+		sameBoundary, err := repo.SameRoot(dstRoot)
+		if err != nil {
+			return fmt.Errorf("memory: compare destination repo boundary: %w", err)
+		}
+		if !sameBoundary {
+			return fmt.Errorf("memory: destination repo %s changed since it was opened — refusing to move", dst)
+		}
+		if err := copyTreeToPinnedRootHooked(src, dstRoot, dstID, dst, afterPinned); err != nil {
+			return err
+		}
+		if err := createMissingRooted(dstRoot, ExpectedProjectRepoLayout(global)); err != nil {
+			return err
+		}
+		files, err := listRepoFilesRooted(dstRoot)
+		if err != nil {
+			return err
+		}
+		if len(files) > 0 {
+			if _, err := m.Commit(gitw.BuildMessage(map[string]string{"type": "migration"}, "move project memory repo"), files); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
+				slog.Warn("project memory repo move commit", "repo", dst, "err", err)
+			}
+		}
 		return nil
-	}
-	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "migration"}, "move project memory repo"), files); err != nil && !errors.Is(err, gogit.ErrEmptyCommit) {
-		slog.Warn("project memory repo move commit", "repo", dst, "err", err)
-	}
-	return nil
+	})
 }
 
 // copyTreeWithoutGit copies the working tree at src into dst, excluding the
@@ -168,6 +232,36 @@ func copyTreeWithoutGitHooked(src, dst string, afterCheck func()) error {
 	// where it is. Removing it means removing a name, and the name may no longer
 	// be the empty directory that was just created — the same reason
 	// CreateExclusive leaves its partial file behind.
+	return copyTreeBetweenRoots(srcRoot, srcID, dstRoot, dstID, src, dst)
+}
+
+// copyTreeToPinnedRoot copies src into a destination that is already pinned
+// and verified. The caller holds the pinned destination (and, when the
+// destination is a git repository, its coordinator) and passes its verified
+// identity, so the copy does not open the destination name a second time.
+func copyTreeToPinnedRoot(src string, dstRoot *rootfs.Root, dstID pathid.ID, dst string) error {
+	return copyTreeToPinnedRootHooked(src, dstRoot, dstID, dst, nil)
+}
+
+// copyTreeToPinnedRootHooked is copyTreeToPinnedRoot with a hook that runs
+// after both the source and destination roots are pinned, so a test can
+// re-point an alias in exactly that window and prove the copy stays bound to
+// the pinned objects. Nil on every production path.
+func copyTreeToPinnedRootHooked(src string, dstRoot *rootfs.Root, dstID pathid.ID, dst string, afterPinned func()) error {
+	srcRoot, srcID, err := rootfs.OpenIdentified(src)
+	if err != nil {
+		return fmt.Errorf("memory: open source repo %s: %w", src, err)
+	}
+	defer srcRoot.Close() //nolint:errcheck // read-only handle
+	if afterPinned != nil {
+		afterPinned()
+	}
+	return copyTreeBetweenRoots(srcRoot, srcID, dstRoot, dstID, src, dst)
+}
+
+// copyTreeBetweenRoots refuses the destination if it is, or sits inside, the
+// source, then walks the working tree from the two pinned roots.
+func copyTreeBetweenRoots(srcRoot *rootfs.Root, srcID pathid.ID, dstRoot *rootfs.Root, dstID pathid.ID, src, dst string) error {
 	if err := refuseContainment(srcID, dstID, src, dst); err != nil {
 		return err
 	}
@@ -184,21 +278,43 @@ func copyTreeWithoutGitHooked(src, dst string, afterCheck func()) error {
 	}).copyDir(".")
 }
 
-// createDestinationDir creates dst through a pinned handle on its parent, so
-// the name cannot be re-pointed between the decision to create it and the
-// create itself. The destination's parent must already exist; pinning it is
-// what keeps the MkdirAll addressing the directory that was checked.
+// createDestinationDir creates dst through a pinned handle on its deepest
+// existing ancestor, so the create itself cannot be re-pointed by a name
+// change between the decision to create it and the MkdirAll. dst may name a
+// path with any number of missing ancestor components or a trailing separator;
+// both are cleaned and the entire missing tail is created through the pinned
+// ancestor.
 func createDestinationDir(dst string) error {
-	parent := filepath.Dir(dst)
-	parentRoot, err := rootfs.Open(parent)
-	if err != nil {
-		return fmt.Errorf("memory: pin destination parent %s: %w", parent, err)
+	clean := filepath.Clean(dst)
+	if clean == "." || clean == string(filepath.Separator) {
+		return nil
 	}
-	defer parentRoot.Close() //nolint:errcheck // closed after the create
-	if err := parentRoot.MkdirAll(filepath.Base(dst), 0o755); err != nil {
-		return fmt.Errorf("memory: create destination %s: %w", dst, err)
+	ancestor := clean
+	for {
+		pinned, err := rootfs.Open(ancestor)
+		if err != nil {
+			parent := filepath.Dir(ancestor)
+			if parent == ancestor {
+				return fmt.Errorf("memory: no existing ancestor of destination %s", clean)
+			}
+			ancestor = parent
+			continue
+		}
+		rel, relErr := filepath.Rel(ancestor, clean)
+		if relErr != nil {
+			_ = pinned.Close()
+			return fmt.Errorf("memory: destination %s relative to %s: %w", clean, ancestor, relErr)
+		}
+		if rel == "." {
+			_ = pinned.Close()
+			return nil
+		}
+		defer pinned.Close() //nolint:errcheck // closed after the create
+		if err := pinned.MkdirAll(rel, 0o755); err != nil {
+			return fmt.Errorf("memory: create destination %s: %w", clean, err)
+		}
+		return nil
 	}
-	return nil
 }
 
 // maxCopyDepth bounds the traversal. A project memory repo is a handful of
@@ -415,22 +531,17 @@ func copyFileBetweenRoots(srcDir, dstDir *rootfs.Root, name, rel string) error {
 	return nil
 }
 
-// listRepoFiles returns the repo-relative forward-slash commit paths of every
-// file in the working tree, excluding .git.
+// listRepoFilesRooted returns the repo-relative forward-slash commit paths of
+// every file in the pinned working tree, excluding .git.
 //
-// The walk goes through a pinned reader that descends each directory through
-// the child handle it inspected, so a directory swapped between inspection and
-// entry cannot redirect the traversal outside the tree, and a link leaving the
-// tree is refused rather than followed.
-func listRepoFiles(root string) ([]string, error) {
-	reader, err := NewDirReader(root)
+// The walk descends each directory through the child handle it inspected, so a
+// directory swapped between inspection and entry cannot redirect the traversal
+// outside the tree, and a link leaving the tree is refused rather than
+// followed.
+func listRepoFilesRooted(pinned *rootfs.Root) ([]string, error) {
+	entries, err := walkEntriesFrom(pinned, "")
 	if err != nil {
-		return nil, fmt.Errorf("memory: open repo %s: %w", root, err)
-	}
-	defer func() { _ = reader.Close() }()
-	entries, err := reader.Walk("")
-	if err != nil {
-		return nil, fmt.Errorf("memory: list repo files %s: %w", root, err)
+		return nil, err
 	}
 	files := make([]string, 0, len(entries))
 	for _, entry := range entries {
