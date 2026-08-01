@@ -103,6 +103,25 @@ func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel
 // Open opens rel for reading. The caller closes it.
 func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 
+// WriteHooks are the seams threaded into WriteStreamAtomicWithHooks.  The
+// fields run at the lifecycle points they name:
+//
+//   - AfterOpen runs after the temp file is created and before its content is
+//     copied.  It receives the open handle and the temp-relative path.
+//   - Sync, if non-nil, replaces f.Sync().
+//   - BeforeRename runs after the temp handle is closed and immediately before
+//     the rename publishes it.  A non-nil error aborts the publication leaving
+//     the destination untouched — the same state a failed rename leaves.
+//
+// Production callers use WriteStreamAtomic, which passes no hooks; the hooks
+// exist so regression tests outside this package can stage failures and
+// substitutions at the real lifecycle points instead of replacing the writer.
+type WriteHooks struct {
+	AfterOpen    func(f *os.File, tmpRel string)
+	Sync         func(f *os.File) error
+	BeforeRename func() error
+}
+
 // WriteStreamAtomic writes everything src yields to rel, through a temporary
 // file in the same directory that is then renamed over rel.
 //
@@ -130,13 +149,18 @@ func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
 // Go has no unlink-by-handle primitive.  A failed write may leave a partial
 // temporary entry.
 func (r *Root) WriteStreamAtomic(rel string, src io.Reader, perm fs.FileMode) error {
-	return r.writeStreamAtomic(rel, src, perm, nil, nil)
+	return r.writeStreamAtomic(rel, src, perm, WriteHooks{})
 }
 
-// writeStreamAtomic is WriteStreamAtomic with optional hooks for tests.
-// afterOpen runs after the temp file is created and before io.Copy.
-// syncFn, if non-nil, replaces f.Sync().
-func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, afterOpen func(*os.File, string), syncFn func(f *os.File) error) error {
+// WriteStreamAtomicWithHooks is WriteStreamAtomic with the WriteHooks seams
+// enabled.  It is exported so regression tests outside this package can inject
+// failures at the real sync and rename points; production code uses
+// WriteStreamAtomic.
+func (r *Root) WriteStreamAtomicWithHooks(rel string, src io.Reader, perm fs.FileMode, hooks WriteHooks) error {
+	return r.writeStreamAtomic(rel, src, perm, hooks)
+}
+
+func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, hooks WriteHooks) error {
 	parentDir := filepath.Dir(rel)
 	parent, err := r.OpenChild(parentDir)
 	if err != nil {
@@ -150,8 +174,8 @@ func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, af
 		return err
 	}
 
-	if afterOpen != nil {
-		afterOpen(f, tmpRel)
+	if hooks.AfterOpen != nil {
+		hooks.AfterOpen(f, tmpRel)
 	}
 
 	if _, err := io.Copy(f, src); err != nil {
@@ -159,7 +183,7 @@ func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, af
 		return err
 	}
 
-	sf := syncFn
+	sf := hooks.Sync
 	if sf == nil {
 		sf = func(f *os.File) error { return f.Sync() }
 	}
@@ -185,6 +209,11 @@ func (r *Root) writeStreamAtomic(rel string, src io.Reader, perm fs.FileMode, af
 
 	if err := f.Close(); err != nil {
 		return err
+	}
+	if hooks.BeforeRename != nil {
+		if err := hooks.BeforeRename(); err != nil {
+			return err
+		}
 	}
 	if err := parent.root.Rename(tmpRel, base); err != nil {
 		return err

@@ -733,8 +733,8 @@ func TestWriteStreamAtomic_PinSurvivesIntermediateSwap(t *testing.T) {
 	}
 
 	// Write to sub/orig/file.txt through the root — this pins sub/orig.
-	err = root.writeStreamAtomic("sub/orig/file.txt", bytes.NewReader([]byte("real")), 0o644,
-		func(f *os.File, tmpRel string) {
+	err = root.writeStreamAtomic("sub/orig/file.txt", bytes.NewReader([]byte("real")), 0o644, WriteHooks{
+		AfterOpen: func(f *os.File, tmpRel string) {
 			sub := filepath.Join(dir, "sub")
 			if err := os.Rename(filepath.Join(sub, "orig"), filepath.Join(sub, "swapped")); err != nil {
 				t.Fatal(err)
@@ -742,7 +742,8 @@ func TestWriteStreamAtomic_PinSurvivesIntermediateSwap(t *testing.T) {
 			if err := os.Rename(filepath.Join(sub, "evil"), filepath.Join(sub, "orig")); err != nil {
 				t.Fatal(err)
 			}
-		}, nil)
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,8 +798,8 @@ func TestWriteStreamAtomic_DetectsSubstitutedTemp(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	var tmpPath string
-	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644,
-		func(f *os.File, tmpRel string) {
+	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, WriteHooks{
+		AfterOpen: func(f *os.File, tmpRel string) {
 			tmpPath = filepath.Join(dir, tmpRel)
 			if err := os.WriteFile(tmpPath+".new", []byte("impostor"), 0o644); err != nil {
 				t.Fatal(err)
@@ -806,7 +807,8 @@ func TestWriteStreamAtomic_DetectsSubstitutedTemp(t *testing.T) {
 			if err := os.Rename(tmpPath+".new", tmpPath); err != nil {
 				t.Fatal(err)
 			}
-		}, nil)
+		},
+	})
 	if err == nil {
 		t.Fatal("expected error for substituted temp entry")
 	}
@@ -835,7 +837,7 @@ func TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure(t *testing.T) {
 	}
 	defer func() { _ = root.Close() }()
 
-	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, nil, nil)
+	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, WriteHooks{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -892,8 +894,9 @@ func TestWriteStreamAtomic_SyncBeforeRename(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	syncSentinel := errors.New("sync failed")
-	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, nil,
-		func(f *os.File) error { return syncSentinel })
+	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, WriteHooks{
+		Sync: func(f *os.File) error { return syncSentinel },
+	})
 	if err == nil || !errors.Is(err, syncSentinel) {
 		t.Errorf("sync hook error should propagate, got %v", err)
 	}
