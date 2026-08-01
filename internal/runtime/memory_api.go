@@ -231,6 +231,11 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 
 	infClient := rt.newInferenceClientFor(cfg)
 	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, infClient, embedClient, episodeIndex, cfg.Project.ActiveProjectSlug)
+	if gitRepo != nil {
+		// The retained boundary handle joins the candidate's owned handles so
+		// every failure path below and generation retirement releases it.
+		handles = append(handles, gitRepo)
+	}
 	if sessionMgr == nil {
 		doClose()
 		closeHandles()
@@ -240,19 +245,39 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		return nil
 	}
 
-	// The git repository and the memory/project reader must be one physical
-	// repository. Both identities are bound to the object each component
-	// actually pinned at open; a different repository or a repointed spelling
-	// makes them differ and the candidate fails closed rather than running
-	// git commits and index publication under two different coordinators.
-	if !gitRepo.Identity().Equal(activeMem.Identity()) {
+	// Every independently opened handle on the active repository — the
+	// memory/project reader, the git repository, and the session store — must
+	// be one physical repository. They are compared by their retained pinned
+	// boundaries (os.SameFile), never by pathid identity, so a directory
+	// replaced at the same pathname between any two opens fails closed rather
+	// than combining readers rooted in different repositories. The global
+	// reader is compared against the active one when the two are configured to
+	// the same path (the active project is the global project).
+	failMismatch := func(err error) {
 		doClose()
 		closeHandles()
 		if sessionStore != nil {
 			_ = sessionStore.Close()
 		}
-		uiServer.AddStartupError(fmt.Errorf("session manager: git repository and memory reader resolve to different directories (%s vs %s)", gitRepo.Identity(), activeMem.Identity()))
+		uiServer.AddStartupError(fmt.Errorf("session manager: memory readers and git repository identify different directories: %w", err))
+	}
+	if same, err := activeMem.SameRepo(gitRepo); err != nil || !same {
+		failMismatch(fmt.Errorf("active memory reader and git repository: %v", err))
 		return nil
+	}
+	if same, err := sessionStore.SameDirReader(activeMem); err != nil || !same {
+		failMismatch(fmt.Errorf("session store and active memory reader: %v", err))
+		return nil
+	}
+	if same, err := sessionStore.SameRepo(gitRepo); err != nil || !same {
+		failMismatch(fmt.Errorf("session store and git repository: %v", err))
+		return nil
+	}
+	if roots.globalRoot == roots.activeRoot {
+		if same, err := globalMem.SameDirReader(activeMem); err != nil || !same {
+			failMismatch(fmt.Errorf("global and active memory readers: %v", err))
+			return nil
+		}
 	}
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}

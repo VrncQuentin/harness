@@ -39,7 +39,7 @@
     },
     {
       "file": "internal/rootfs/anchor.go",
-      "line": 134,
+      "line": 146,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: anchor reopen identity check"
     },
@@ -99,7 +99,7 @@
     },
     {
       "file": "internal/git/git.go",
-      "line": 139,
+      "line": 190,
       "fn": "os.MkdirAll",
       "justification": "go-git takes a pathname string; identity and C2 checks remain around the go-git boundary"
     },
@@ -176,14 +176,14 @@
     },
     {
       "file": "internal/memory/project_repo.go",
-      "line": 145,
+      "line": 147,
       "fn": "os.MkdirAll",
       "pr": "PR 6",
       "notes": "MoveProjectRepo: create destination directory"
     },
     {
       "file": "internal/memory/project_repo.go",
-      "line": 390,
+      "line": 392,
       "fn": "filepath.WalkDir",
       "pr": "PR 6",
       "notes": "listRepoFiles: rooted traversal with pinned child handles"

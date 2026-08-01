@@ -23,6 +23,7 @@ func initRepo(t *testing.T) (string, *Repo) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	return dir, r
 }
 
@@ -63,6 +64,7 @@ func TestOpen(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open: %v", err)
 		}
+		defer func() { _ = r.Close() }()
 		if r == nil {
 			t.Fatal("expected non-nil Repo handle")
 		}
@@ -108,17 +110,21 @@ func TestInit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Init new repo: %v", err)
 	}
+	defer func() { _ = r.Close() }()
 	if r == nil {
 		t.Fatal("Init returned nil repo")
 	}
-	if _, err := Open(dir); err != nil {
+	opened, err := Open(dir)
+	if err != nil {
 		t.Fatalf("Open after Init: %v", err)
 	}
+	defer func() { _ = opened.Close() }()
 
 	again, err := Init(dir)
 	if err != nil {
 		t.Fatalf("Init existing repo: %v", err)
 	}
+	defer func() { _ = again.Close() }()
 	if again == nil {
 		t.Fatal("Init existing returned nil repo")
 	}
@@ -165,6 +171,7 @@ func TestCurrentBranch_LinkedWorktreeLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = repo.Close() }()
 	branch, err := repo.CurrentBranch()
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +194,7 @@ func TestCurrentBranch_DetachedHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = repo.Close() }()
 	_, err = repo.CurrentBranch()
 	if err == nil || !strings.Contains(err.Error(), "detached") {
 		t.Errorf("expected detached HEAD error, got %v", err)
@@ -206,6 +214,7 @@ func TestCurrentBranch_RejectsNonBranchSymbolic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = repo.Close() }()
 	_, err = repo.CurrentBranch()
 	if err == nil || !strings.Contains(err.Error(), "non-branch") {
 		t.Errorf("expected non-branch ref error, got %v", err)

@@ -914,6 +914,7 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 
 	firstEntered := make(chan struct{})
 	firstRelease := make(chan struct{})
+	secondAtLock := make(chan struct{})
 	secondEntered := make(chan struct{})
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(firstRelease) }) }
@@ -936,13 +937,16 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 	<-firstEntered
 
 	// Writer 2 starts only after writer 1 is provably inside its transaction.
+	// It signals immediately before its coordinator acquisition, so the
+	// negative assertion below provably knows it reached the lock.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		err2 = idx2.upsertRooted(r2, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
+		err2 = idx2.upsertRootedBeforeLock(r2, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
 			AfterOpen: func(*os.File, string) { close(secondEntered) },
-		})
+		}, func() { close(secondAtLock) })
 	}()
+	<-secondAtLock
 
 	// The second writer must not reach its hook until the first releases the
 	// coordinator: both hooks sit inside the same per-directory critical
@@ -951,7 +955,7 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 	case <-secondEntered:
 		release()
 		t.Fatal("second writer entered the critical section while the first held the coordinator")
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 	}
 
 	release()

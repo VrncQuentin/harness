@@ -209,11 +209,12 @@ Responsibilities:
   reasoning about the handle — is it inside that other directory, is it the same
   as this one — is reasoning about something that need not be what is held open.
   `Anchor.Identity` exposes the same pairing for a retained anchor. `internal/git`
-  opens its repository boundary through `OpenIdentified`, `memory.DirReader`
-  captures its identity through `Anchor.Identity`, and runtime construction
-  compares the two before publishing a candidate, so git commits and index
-  publication are bound to the same physical repository or the candidate fails
-  closed.
+  opens its repository boundary through `OpenIdentified` and retains it
+  (`NewAnchorFromRoot`), `memory.DirReader` retains its anchor, and runtime
+  construction compares the retained boundaries with `os.SameFile` before
+  publishing a candidate, so git commits, session writes, and index
+  publication are bound to the same physical repository or the candidate
+  fails closed.
 - `Set` is the sandbox-root list. `Set.Open` uses `OpenIdentified` on the
   configured root, then picks the owner by containment and returns a `Target`.
 - `Target` carries the caller's display spelling — locators and tool output stay
@@ -458,9 +459,11 @@ Operations:
 - `WithMutation(fn)` — run index publication and the following git commit as one
   repository-wide mutation transaction
 
-Every `Repo` handle retains the physical identity of its repository directory,
-verified at open against a pinned boundary (`rootfs.OpenIdentifiedHooked`).
-That identity selects the repository-wide mutation coordinator
+Every `Repo` handle retains the pinned repository boundary (`rootfs.NewAnchorFromRoot`)
+and compares it against other components' opened boundaries with `os.SameFile`
+(`SameAnchor`), so a directory replaced at the same pathname between two opens
+is detected rather than accepted on the strength of a shared canonical path.
+That retained boundary selects the repository-wide mutation coordinator
 (`internal/coord`), the same gate index publication on the repository
 acquires, so git mutations and index publication serialize on one object and
 an alias spelling cannot split one repository across two coordinators.
@@ -468,14 +471,16 @@ an alias spelling cannot split one repository across two coordinators.
 `WithMutation` holds the coordinator across both the index publication and the
 git commit; the `Mutation` session's commit methods do not reacquire it.
 Memoryops `AfterSaveEmbed` and the episode-index rebuild publish and commit
-inside one such transaction.
+inside one such transaction. Lock order is fixed as repository gate, then the
+per-handle mutex, in both the standalone and in-transaction paths.
 
 go-git resolves its storage by pathname, not by handle. The wrapper pins and
-verifies its repository boundary at open and retains that verified identity,
-but it does not claim go-git itself is handle-relative: a pathname repointed
-after the open is a documented go-git limitation, and go-git refuses to open
-through a directory link at all (go-billy reports "path escapes from parent"),
-so git handles are only ever opened through non-link spellings.
+verifies its repository boundary at open and retains that boundary for
+identity comparison, but it does not claim go-git itself is handle-relative: a
+pathname repointed after the open is a documented go-git limitation, and
+go-git refuses to open through a directory link at all (go-billy reports "path
+escapes from parent"), so git handles are only ever opened through non-link
+spellings.
 
 Commit message format (machine-parseable):
 ```

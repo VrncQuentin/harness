@@ -43,6 +43,7 @@ func EnsureProjectRepo(root string, global bool) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = repo.Close() }()
 	if err := CreateMissingProjectRepo(root, global); err != nil {
 		return err
 	}
@@ -79,6 +80,7 @@ func MoveProjectRepo(src, dst string, global bool) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = repo.Close() }()
 	files, err := listRepoFiles(dst)
 	if err != nil {
 		return err

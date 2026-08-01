@@ -72,15 +72,18 @@ func TestIndex_UpsertRootedUnder_WrongGateFailsClosed(t *testing.T) {
 // TestRepoAndIndex_ShareRepositoryTransaction verifies index publication and
 // git mutation enter the same repository transaction. While one is blocked
 // inside its critical section, the other cannot reach its own mutation hook;
-// once released, it proceeds. This is the discriminating test for the shared
-// coordinator: if git and index used separate mutexes with the same-looking
-// key, neither direction would block.
+// once released, it proceeds. Each contender signals immediately before its
+// gate acquisition, so the test provably knows it reached the lock before
+// asserting it is blocked on it. This is the discriminating test for the
+// shared coordinator: if git and index used separate mutexes with the
+// same-looking key, neither direction would block.
 func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 	dir := t.TempDir()
 	repo, err := gitw.Init(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = repo.Close() }()
 	// Seed the repo so go-git worktree operations behave normally.
 	if err := os.WriteFile(dir+"/a.txt", []byte("one\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -121,22 +124,24 @@ func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 	}()
 	<-gitEntered
 
+	indexAtLock := make(chan struct{})
 	indexEntered := make(chan struct{})
 	var wg2 sync.WaitGroup
 	wg2.Add(1)
 	go func() {
 		defer wg2.Done()
-		if err := idx.upsertRooted(root, "a", "a", [][]float32{{1, 0}}, rootfs.WriteHooks{
+		if err := idx.upsertRootedBeforeLock(root, "a", "a", [][]float32{{1, 0}}, rootfs.WriteHooks{
 			AfterOpen: func(*os.File, string) { close(indexEntered) },
-		}); err != nil {
+		}, func() { close(indexAtLock) }); err != nil {
 			t.Error(err)
 		}
 	}()
+	<-indexAtLock
 	select {
 	case <-indexEntered:
 		release()
 		t.Fatal("index publication entered its write hook while git held the repository transaction")
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 	}
 	release()
 	select {
@@ -159,34 +164,36 @@ func TestRepoAndIndex_ShareRepositoryTransaction(t *testing.T) {
 	wg3.Add(1)
 	go func() {
 		defer wg3.Done()
-		if err := idx.upsertRooted(root, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
+		if err := idx.upsertRootedBeforeLock(root, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
 			AfterOpen: func(*os.File, string) {
 				close(indexEntered2)
 				<-indexRelease
 			},
-		}); err != nil {
+		}, nil); err != nil {
 			t.Error(err)
 		}
 	}()
 	<-indexEntered2
 
+	gitAtLock := make(chan struct{})
 	gitEntered2 := make(chan struct{})
 	var wg4 sync.WaitGroup
 	wg4.Add(1)
 	go func() {
 		defer wg4.Done()
-		if err := repo.WithMutation(func(*gitw.Mutation) error {
+		if err := repo.WithMutationHooked(func(*gitw.Mutation) error {
 			close(gitEntered2)
 			return nil
-		}); err != nil {
+		}, func() { close(gitAtLock) }); err != nil {
 			t.Error(err)
 		}
 	}()
+	<-gitAtLock
 	select {
 	case <-gitEntered2:
 		release2()
 		t.Fatal("git mutation entered its transaction while the index held the repository coordinator")
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 	}
 	release2()
 	select {

@@ -39,13 +39,16 @@ func workspaceWriteRepo(c CallInfo, args map[string]any) (*gitw.Repo, string, er
 		return nil, "", err
 	}
 	if c.MemoryRepoCheck == nil {
+		_ = repo.Close()
 		return nil, "", fmt.Errorf("C2 scope check unavailable: %w", ErrMemoryScopeUnavailable)
 	}
 	inMemoryRepo, err := c.MemoryRepoCheck(absRoot)
 	if err != nil {
+		_ = repo.Close()
 		return nil, "", fmt.Errorf("C2 scope check failed for %s: %w", absRoot, err)
 	}
 	if inMemoryRepo {
+		_ = repo.Close()
 		return nil, "", fmt.Errorf("C2 scope violation: %s resolves to a project memory repository", absRoot)
 	}
 	return repo, absRoot, nil

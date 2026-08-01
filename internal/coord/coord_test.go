@@ -3,6 +3,7 @@ package coord
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestRegistry_SameKeyYieldsSameGate(t *testing.T) {
@@ -28,7 +29,9 @@ func TestGate_MutuallyExcludes(t *testing.T) {
 	g := reg.GateFor("repo")
 
 	// The gate is not reentrant: a second acquisition from another goroutine
-	// must block until the first releases.
+	// must block until the first releases. The contender signals immediately
+	// before its acquisition, so the test provably knows it reached the lock
+	// before asserting it is blocked on it.
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	done := make(chan struct{})
@@ -45,21 +48,27 @@ func TestGate_MutuallyExcludes(t *testing.T) {
 	}()
 	<-entered
 
-	blocked := make(chan struct{})
+	atLock := make(chan struct{})
+	acquired := make(chan struct{})
 	go func() {
+		close(atLock)
 		g.Lock()
-		close(blocked)
+		close(acquired)
 		g.Unlock()
 	}()
+	<-atLock
+
+	// The contender is provably blocked on the gate: it signalled immediately
+	// before acquisition and the first holder has not released.
 	select {
-	case <-blocked:
+	case <-acquired:
 		unlock()
-		t.Fatal("second holder entered while the gate was held")
-	default:
+		t.Fatal("second holder acquired while the gate was held")
+	case <-time.After(5 * time.Second):
 	}
 	unlock()
 	<-done
-	<-blocked
+	<-acquired
 }
 
 func TestDefault_IsSingleton(t *testing.T) {

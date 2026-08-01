@@ -34,6 +34,18 @@ func NewAnchor(path string) (*Anchor, error) {
 	return &Anchor{root: r, path: path}, nil
 }
 
+// NewAnchorFromRoot wraps an already-open Root as an Anchor without opening
+// the pathname a second time. Ownership of root transfers to the returned
+// Anchor: the caller closes the Anchor, never root.
+//
+// path is the spelling the handle was pinned through. It is retained for
+// Anchor.Open and Anchor.Identity, which re-open and verify the same
+// spelling; a caller that only ever compares the retained handle (SameAnchor,
+// SameRoot) never touches it.
+func NewAnchorFromRoot(root *Root, path string) *Anchor {
+	return &Anchor{root: root, path: path}
+}
+
 // Close releases the pinned handle.
 func (a *Anchor) Close() error { return a.root.Close() }
 

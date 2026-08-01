@@ -41,6 +41,7 @@ func (t *gitLogTool) Execute(ctx context.Context, c CallInfo, args map[string]an
 	if err != nil {
 		return Result{Error: "git_log: " + err.Error()}
 	}
+	defer func() { _ = repo.Close() }()
 	n := intArg(args, "n")
 	if n <= 0 {
 		n = gitLogDefaultN

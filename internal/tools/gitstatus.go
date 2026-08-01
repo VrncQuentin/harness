@@ -32,6 +32,7 @@ func (t *gitStatusTool) Execute(ctx context.Context, c CallInfo, args map[string
 	if err != nil {
 		return Result{Error: "git_status: " + err.Error()}
 	}
+	defer func() { _ = repo.Close() }()
 	entries, err := repo.Status()
 	if err != nil {
 		return Result{Error: fmt.Sprintf("git_status: %v", err)}

@@ -40,6 +40,7 @@ func (t *gitPushTool) Execute(_ context.Context, c CallInfo, args map[string]any
 	if err != nil {
 		return Result{Error: "git_push: " + err.Error()}
 	}
+	defer func() { _ = repo.Close() }()
 
 	remote := "origin"
 	if r, ok := args["remote"].(string); ok && strings.TrimSpace(r) != "" {

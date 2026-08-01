@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	gitw "github.com/VrncQuentin/harness/internal/git"
 	"github.com/VrncQuentin/harness/internal/index"
 	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/pathid"
@@ -24,6 +26,96 @@ func mustRepoID(t *testing.T, root string) pathid.ID {
 		t.Fatalf("resolve repo id %s: %v", root, err)
 	}
 	return id
+}
+
+// TestEpisodeIndex_MixedUpsertLockOrder is the deterministic discriminator
+// for the repository lock order: standalone Upsert must acquire the gate
+// before this handle's mutex, and then publish through the Under operations
+// without reacquiring it. B holds the gate (WithMutation) and then takes
+// e.mu; A runs a standalone Upsert. If A took e.mu before the gate, A would
+// hold e.mu while parked at the gate and B would deadlock waiting for it.
+func TestEpisodeIndex_MixedUpsertLockOrder(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := gitw.Init(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = repo.Close() }()
+	dr, err := memory.NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dr.Close() })
+	if err := dr.MkdirAll("index/_episodes"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := dr.SubAnchor("index/_episodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ei, err := NewEpisodeIndex(a, EpisodeIndexDir(dir), dr.Identity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ei.Close() })
+
+	// B holds the repository gate (WithMutation) and waits before publishing,
+	// so it provably holds the gate without having taken e.mu yet.
+	gateHeld := make(chan struct{})
+	goB := make(chan struct{})
+	bDone := make(chan struct{})
+	var bErr error
+	go func() {
+		defer close(bDone)
+		bErr = repo.WithMutation(func(m *gitw.Mutation) error {
+			close(gateHeld)
+			<-goB
+			return ei.UpsertUnder(m, "b", "b", [][]float32{{0, 1}})
+		})
+	}()
+	<-gateHeld
+
+	// A starts a standalone Upsert and signals immediately before its gate
+	// acquisition. With the documented lock order (gate before e.mu) A is
+	// parked at the gate and has not taken e.mu.
+	aAtGate := make(chan struct{})
+	aDone := make(chan struct{})
+	var aErr error
+	go func() {
+		defer close(aDone)
+		aErr = ei.upsert("a", "a", [][]float32{{1, 0}}, func() { close(aAtGate) })
+	}()
+	<-aAtGate
+
+	// Release B: it publishes under the held gate, taking e.mu. If the
+	// standalone path held e.mu before the gate, A would hold e.mu while
+	// parked at the gate and B would deadlock waiting for it.
+	close(goB)
+	select {
+	case <-bDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: standalone Upsert held e.mu while blocked on the repository gate")
+	}
+	<-aDone
+	if aErr != nil {
+		t.Errorf("standalone upsert: %v", aErr)
+	}
+	if bErr != nil {
+		t.Errorf("upsert under transaction: %v", bErr)
+	}
+
+	r, err := rootfs.Open(EpisodeIndexDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	opened, err := index.OpenRooted(r, EpisodeIndexDir(dir), dr.Identity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opened.Contains("a") || !opened.Contains("b") {
+		t.Fatalf("mixed upserts lost an entry: a=%v b=%v", opened.Contains("a"), opened.Contains("b"))
+	}
 }
 
 func newTestEpisodeIndex(t *testing.T, projectRoot string) *EpisodeIndex {

@@ -30,20 +30,27 @@ const (
 
 // Repo is a thin handle over an opened go-git repository. Callers obtain
 // it via Open; tests construct one by initialising a fresh repo on a
-// temporary directory and opening it.
+// temporary directory and opening it. Callers close the handle with Close
+// when done.
 //
 // Identity: the wrapper pins and verifies its repository boundary when the
-// handle is opened, and retains the verified physical identity. go-git
-// itself opens and reads storage by pathname — it is not handle-relative —
-// so the retained identity is the boundary that was pinned at open time, and
-// a pathname that is repointed after the open is a documented go-git
-// limitation, not something this wrapper claims to defend against.
+// handle is opened and retains the pinned handle. Comparisons against other
+// components' opened boundaries use os.SameFile on the retained handles, so a
+// directory replaced at the same pathname is detected. go-git itself opens
+// and reads storage by pathname — it is not handle-relative — so a pathname
+// repointed after the open is a documented go-git limitation, not something
+// this wrapper claims to defend against.
 type Repo struct {
 	repo *gogit.Repository
 	path string
-	// identity is the repository's physical identity, resolved once when the
-	// handle is opened and verified against a pinned boundary. It selects the
-	// repository-wide mutation coordinator, so two handles on the same
+	// boundary is the repository directory pinned at open time, retained so
+	// identity comparison against another component's opened boundary is a
+	// SameFile comparison on the objects actually pinned rather than a
+	// pathname re-resolution. It is private: callers cannot close it.
+	boundary *rootfs.Anchor
+	// identity is the repository's physical pathid, resolved once when the
+	// handle is opened and verified against the pinned boundary. It selects
+	// the repository-wide mutation coordinator, so two handles on the same
 	// repository must produce the same identity however each was spelled.
 	identity pathid.ID
 	// gate is the repository-wide mutation coordinator shared with index
@@ -65,23 +72,47 @@ type Repo struct {
 // The boundary is pinned and verified with rootfs.OpenIdentifiedHooked before
 // the identity is accepted, so a pathname that moved between the go-git open
 // and the identity resolution fails closed rather than silently identifying
-// the replacement. The pinned handle is only evidence; it is closed before
-// returning because go-git operates by pathname and the handle would not
-// constrain it.
+// the replacement. The pinned handle is retained as the boundary evidence;
+// Close releases it.
 func newRepo(repo *gogit.Repository, path string, afterPin func()) (*Repo, error) {
 	pinned, id, err := rootfs.OpenIdentifiedHooked(path, afterPin)
 	if err != nil {
 		return nil, fmt.Errorf("git: identify repository %s: %w", path, err)
 	}
-	_ = pinned.Close()
-	return &Repo{repo: repo, path: path, identity: id, gate: coord.Default().GateFor(id.Key())}, nil
+	return &Repo{
+		repo:     repo,
+		path:     path,
+		boundary: rootfs.NewAnchorFromRoot(pinned, path),
+		identity: id,
+		gate:     coord.Default().GateFor(id.Key()),
+	}, nil
 }
 
-// Identity returns the verified physical identity of the repository directory
+// Close releases the pinned repository boundary. go-git operations do not use
+// the retained handle and remain usable after Close; only identity comparison
+// (SameAnchor) is unavailable. Closing a nil or already-closed handle is a
+// no-op.
+func (r *Repo) Close() error {
+	if r == nil || r.boundary == nil {
+		return nil
+	}
+	return r.boundary.Close()
+}
+
+// SameAnchor reports whether the repository directory this handle pinned is
+// the same filesystem object as other. The comparison uses os.SameFile on the
+// two retained pinned handles — no pathname re-resolution is involved — so a
+// directory replaced at the same pathname between the two opens is reported
+// as different.
+func (r *Repo) SameAnchor(other *rootfs.Anchor) (bool, error) {
+	return r.boundary.SameAnchor(other)
+}
+
+// Identity returns the verified physical pathid of the repository directory
 // this handle opened. It is retained from open time and bound to the pinned
-// boundary, so two handles on one physical repository — reached through any
-// spelling — compare Equal, and a repointed spelling never silently
-// identifies the replacement.
+// boundary. The pathid alone does not preserve opened-object identity — a
+// same-name replacement at the pathname reuses the same key — so compare
+// opened boundaries with SameAnchor, not with this value.
 func (r *Repo) Identity() pathid.ID { return r.identity }
 
 // WithMutation runs fn under the repository-wide mutation coordinator,
@@ -96,6 +127,26 @@ func (r *Repo) Identity() pathid.ID { return r.identity }
 // through Index.UpsertRootedUnder with m.Gate(), which asserts the gate this
 // transaction holds is the index's own.
 func (r *Repo) WithMutation(fn func(*Mutation) error) error {
+	return r.withMutation(fn, nil)
+}
+
+// WithMutationHooked is WithMutation with a hook that runs immediately before
+// the repository gate is acquired. It is exported so regression tests in other
+// packages can stage the interleaving at the real acquisition boundary;
+// production callers use WithMutation, which passes no hook.
+func (r *Repo) WithMutationHooked(fn func(*Mutation) error, beforeGate func()) error {
+	return r.withMutation(fn, beforeGate)
+}
+
+// withMutation is WithMutation with a hook that runs immediately before the
+// repository gate is acquired. The hook is a parameter rather than package
+// state so parallel tests cannot see each other's; it is nil on every
+// production path. A test uses it to prove a contender reached the
+// acquisition point before asserting it is blocked on the gate.
+func (r *Repo) withMutation(fn func(*Mutation) error, beforeGate func()) error {
+	if beforeGate != nil {
+		beforeGate()
+	}
 	r.gate.Lock()
 	defer r.gate.Unlock()
 	r.mu.Lock()

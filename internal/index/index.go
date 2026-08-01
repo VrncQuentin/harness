@@ -266,6 +266,18 @@ func (idx *Index) UpsertRooted(root *rootfs.Root, source, contentHash string, ve
 // upsertRooted is UpsertRooted with a hooks seam for tests; it acquires the
 // coordinator.
 func (idx *Index) upsertRooted(root *rootfs.Root, source, contentHash string, vectors [][]float32, hooks rootfs.WriteHooks) error {
+	return idx.upsertRootedBeforeLock(root, source, contentHash, vectors, hooks, nil)
+}
+
+// upsertRootedBeforeLock is upsertRooted with a hook that runs immediately
+// before the coordinator is acquired. The hook is a parameter rather than
+// package state so parallel tests cannot see each other's; it is nil on every
+// production path. A test uses it to prove a contender reached the
+// acquisition point before asserting it is blocked on the gate.
+func (idx *Index) upsertRootedBeforeLock(root *rootfs.Root, source, contentHash string, vectors [][]float32, hooks rootfs.WriteHooks, beforeLock func()) error {
+	if beforeLock != nil {
+		beforeLock()
+	}
 	unlock := idx.lockForMutation()
 	defer unlock()
 	return idx.upsertBody(root, source, contentHash, vectors, hooks)
@@ -281,8 +293,18 @@ func (idx *Index) UpsertRootedUnder(g *coord.Gate, root *rootfs.Root, source, co
 }
 
 func (idx *Index) upsertRootedUnder(g *coord.Gate, root *rootfs.Root, source, contentHash string, vectors [][]float32, hooks rootfs.WriteHooks) error {
+	return idx.upsertRootedUnderBeforeLock(g, root, source, contentHash, vectors, hooks, nil)
+}
+
+// upsertRootedUnderBeforeLock is upsertRootedUnder with a hook that runs
+// immediately before this handle's mutex is acquired (the coordinator is
+// already held by the caller). See upsertRootedBeforeLock.
+func (idx *Index) upsertRootedUnderBeforeLock(g *coord.Gate, root *rootfs.Root, source, contentHash string, vectors [][]float32, hooks rootfs.WriteHooks, beforeLock func()) error {
 	if g != idx.gate {
 		return fmt.Errorf("index: upsert under a coordinator this index does not share")
+	}
+	if beforeLock != nil {
+		beforeLock()
 	}
 	idx.mu.Lock()
 	defer idx.mu.Unlock()

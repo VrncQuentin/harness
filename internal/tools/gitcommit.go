@@ -49,6 +49,7 @@ func (t *gitCommitTool) Execute(_ context.Context, c CallInfo, args map[string]a
 	if err != nil {
 		return Result{Error: "git_commit: " + err.Error()}
 	}
+	defer func() { _ = repo.Close() }()
 
 	var files []string
 	if raw, ok := args["files"]; ok {

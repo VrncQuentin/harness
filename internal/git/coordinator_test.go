@@ -11,6 +11,9 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
+
+	"github.com/VrncQuentin/harness/internal/pathid"
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 // linkDir creates a directory link at link pointing at target, preferring a
@@ -60,6 +63,7 @@ func TestRepo_AliasAndTargetShareCoordinator(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Open(%s): %v", spelling, err)
 		}
+		defer func() { _ = h.Close() }()
 		handles = append(handles, h)
 	}
 	for i := 1; i < len(handles); i++ {
@@ -116,6 +120,81 @@ func TestRepo_RePointedAliasDuringOpenFailsClosed(t *testing.T) {
 	}
 }
 
+// TestRepo_SameAnchorDetectsSameNameReplacement is the discriminator for the
+// retained-boundary comparison. A directory replaced at the same pathname
+// yields an identical pathid identity — both objects canonicalize to the same
+// path — so a pathid-based comparison would wrongly accept the replacement.
+// The retained handle comparison must reject it.
+func TestRepo_SameAnchorDetectsSameNameReplacement(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := gogit.PlainInit(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	repo, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+
+	// Sanity: a fresh anchor on the same directory is the same boundary.
+	orig, err := rootfs.NewAnchor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	same, err := repo.SameAnchor(orig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !same {
+		t.Fatal("fresh anchor on the same directory must be the same boundary")
+	}
+	_ = orig.Close()
+
+	// Replace the directory at the same pathname. On Windows the retained
+	// handle blocks the swap; closing it and retrying proves the handle was
+	// the blocker, which is itself the fail-closed outcome. Where the swap
+	// succeeds, the retained boundary must not be confused with the
+	// replacement.
+	moved := filepath.Join(t.TempDir(), "moved-aside")
+	if err := os.Rename(dir, moved); err != nil {
+		_ = repo.Close()
+		if err := os.Rename(dir, moved); err != nil {
+			t.Fatalf("rename should succeed after repo closed: %v", err)
+		}
+		return
+	}
+	replacement := filepath.Join(t.TempDir(), "replacement")
+	if err := os.MkdirAll(replacement, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, dir); err != nil {
+		t.Fatal(err)
+	}
+
+	// The pathid identities are indistinguishable — a pathid-based comparison
+	// would pass. The retained-boundary comparison must fail.
+	id, err := pathid.Resolve(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repo.Identity().Equal(id) {
+		t.Fatal("same-name replacement must yield an equal pathid identity, or this test no longer discriminates")
+	}
+
+	swapped, err := rootfs.NewAnchor(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = swapped.Close() }()
+	same, err = repo.SameAnchor(swapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if same {
+		t.Fatal("same-name replacement must not compare equal to the retained boundary")
+	}
+}
+
 // TestRepo_TwoHandlesThroughDifferentSpellingsShareCoordinator verifies the
 // real contention guarantee behind the identity equality: two handles on one
 // repository reached through different spellings block on one coordinator, so
@@ -135,6 +214,7 @@ func TestRepo_TwoHandlesThroughDifferentSpellingsShareCoordinator(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = seed.Close() }()
 	writeRepoFile(t, seed, "base.txt", "base\n")
 	if _, _, _, err := seed.WorkspaceStageAndCommit([]string{"base.txt"}, "base"); err != nil {
 		t.Fatalf("seed commit: %v", err)
@@ -151,6 +231,7 @@ func TestRepo_TwoHandlesThroughDifferentSpellingsShareCoordinator(t *testing.T) 
 	go func() {
 		defer wg.Done()
 		h, oerr := Open(real)
+		defer func() { _ = h.Close() }()
 		if oerr != nil {
 			t.Error(oerr)
 			return
@@ -166,31 +247,36 @@ func TestRepo_TwoHandlesThroughDifferentSpellingsShareCoordinator(t *testing.T) 
 	<-firstEntered
 
 	secondEntered := make(chan struct{})
+	secondAtLock := make(chan struct{})
 	var wg2 sync.WaitGroup
 	wg2.Add(1)
 	go func() {
 		defer wg2.Done()
 		h, oerr := Open(other)
+		defer func() { _ = h.Close() }()
 		if oerr != nil {
 			t.Error(oerr)
 			return
 		}
 		// The mutation body is the "hook" that sits inside the critical
-		// section: reaching it proves the second spelling entered the same
-		// coordinator the first spelling already held.
-		if err := h.WithMutation(func(*Mutation) error {
+		// section; secondAtLock fires immediately before the coordinator is
+		// acquired, proving this spelling reached the lock. Reaching the body
+		// while the first spelling holds the shared coordinator would mean the
+		// two spellings split the repository across separate gates.
+		if err := h.withMutation(func(*Mutation) error {
 			close(secondEntered)
 			return nil
-		}); err != nil {
+		}, func() { close(secondAtLock) }); err != nil {
 			t.Error(err)
 		}
 	}()
+	<-secondAtLock
 
 	select {
 	case <-secondEntered:
 		release()
 		t.Fatal("second spelling entered its mutation while the first held the shared coordinator")
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 	}
 	release()
 	select {
@@ -212,6 +298,7 @@ func TestRepoTransaction_CommitInsideSessionDoesNotReacquire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = repo.Close() }()
 	writeRepoFile(t, repo, "a.txt", "one\n")
 
 	err = repo.WithMutation(func(m *Mutation) error {
@@ -240,6 +327,7 @@ func TestRepoTransaction_FailedMutationReleasesCoordinator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = repo.Close() }()
 	writeRepoFile(t, repo, "a.txt", "one\n")
 	if _, err := repo.Commit("first", []string{"a.txt"}); err != nil {
 		t.Fatal(err)
@@ -266,24 +354,28 @@ func TestRepoTransaction_FailedMutationReleasesCoordinator(t *testing.T) {
 	}()
 	<-entered
 
-	// A second mutation must not run until the failing one is released.
+	// A second mutation must not run until the failing one is released. The
+	// at-lock barrier proves it reached the coordinator before the negative
+	// assertion.
 	secondEntered := make(chan struct{})
+	secondAtLock := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := repo.WithMutation(func(*Mutation) error {
+		if err := repo.withMutation(func(*Mutation) error {
 			close(secondEntered)
 			return nil
-		}); err != nil {
+		}, func() { close(secondAtLock) }); err != nil {
 			t.Error(err)
 		}
 	}()
+	<-secondAtLock
 	select {
 	case <-secondEntered:
 		unlock()
 		t.Fatal("second mutation entered while the failing mutation held the coordinator")
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 	}
 	unlock()
 	<-done

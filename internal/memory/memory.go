@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	gitw "github.com/VrncQuentin/harness/internal/git"
 	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
@@ -106,12 +107,18 @@ func (r *DirReader) Identity() pathid.ID { return r.identity }
 // pinned handles — no pathname re-resolution is involved.
 //
 // This is the handle-level comparison for two readers. Comparing a reader
-// against another component's pinned object (a git repository handle)
-// uses each side's verified Identity() instead: both identities are bound
-// to the object each component actually pinned, and comparing them is the
-// smaller safe identity comparison.
+// against a git repository handle uses SameRepo, which compares this reader's
+// retained pinned handle with the repository's retained boundary.
 func (r *DirReader) SameDirReader(other *DirReader) (bool, error) {
 	return r.anchor.SameAnchor(other.anchor)
+}
+
+// SameRepo reports whether this reader and the git repository handle are
+// anchored to the same physical directory. Both sides compare their retained
+// pinned handles via os.SameFile, so a directory replaced at the same
+// pathname between the two opens is detected rather than silently accepted.
+func (r *DirReader) SameRepo(repo *gitw.Repo) (bool, error) {
+	return repo.SameAnchor(r.anchor)
 }
 
 // SubAnchor opens a child directory through the DirReader's pinned handle

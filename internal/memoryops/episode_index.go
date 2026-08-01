@@ -123,30 +123,31 @@ func (e *EpisodeIndex) Contains(source string) bool {
 
 // Upsert creates the index on first use and replaces obsolete vectors for a
 // changed source document. It acquires the repository-wide mutation
-// coordinator for the duration.
+// coordinator before this handle's mutex, then publishes through the Under
+// operations so the gate is not reacquired. Lock order: repository gate,
+// then e.mu — the same order UpsertUnder reaches under a held transaction,
+// so the two never deadlock.
 func (e *EpisodeIndex) Upsert(source, contentHash string, vectors [][]float32) error {
+	return e.upsert(source, contentHash, vectors, nil)
+}
+
+// upsert is Upsert with a hook that runs immediately before the repository
+// gate is acquired. The hook is a parameter rather than package state so
+// parallel tests cannot see each other's; it is nil on every production path.
+// A test uses it to prove a contender reached the acquisition point before
+// asserting it is blocked on the gate.
+func (e *EpisodeIndex) upsert(source, contentHash string, vectors [][]float32, beforeGate func()) error {
 	dim, err := e.checkVectors(vectors)
 	if err != nil || dim == 0 {
 		return err
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	r, err := e.verified()
-	if err != nil {
-		return err
+	g := e.repoGate()
+	if beforeGate != nil {
+		beforeGate()
 	}
-	defer func() { _ = r.Close() }()
-	if e.idx == nil {
-		idx, err := index.CreateRooted(r, e.dir, dim, e.repoID)
-		if err != nil {
-			return fmt.Errorf("episode index: create %s: %w", e.dir, err)
-		}
-		e.idx = idx
-	}
-	if e.idx.Dim() != dim {
-		return fmt.Errorf("episode index: dimension mismatch: index has %d, got %d", e.idx.Dim(), dim)
-	}
-	return e.idx.UpsertRooted(r, source, contentHash, vectors)
+	g.Lock()
+	defer g.Unlock()
+	return e.upsertUnderLocked(g, source, contentHash, vectors, dim)
 }
 
 // UpsertUnder publishes vectors inside an already-held repository-wide
@@ -159,9 +160,18 @@ func (e *EpisodeIndex) UpsertUnder(m *gitw.Mutation, source, contentHash string,
 	if err != nil || dim == 0 {
 		return err
 	}
-	if m.Gate() != e.repoGate() {
+	g := m.Gate()
+	if g != e.repoGate() {
 		return fmt.Errorf("episode index: transaction coordinator is not this repository's")
 	}
+	return e.upsertUnderLocked(g, source, contentHash, vectors, dim)
+}
+
+// upsertUnderLocked is the shared publication body. The caller holds (or
+// entered under) the repository gate; this takes only e.mu and publishes
+// through the Under operations without reacquiring the gate. It is the point
+// where the lock order is fixed: gate, then e.mu.
+func (e *EpisodeIndex) upsertUnderLocked(g *coord.Gate, source, contentHash string, vectors [][]float32, dim int) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r, err := e.verified()
@@ -170,7 +180,7 @@ func (e *EpisodeIndex) UpsertUnder(m *gitw.Mutation, source, contentHash string,
 	}
 	defer func() { _ = r.Close() }()
 	if e.idx == nil {
-		idx, err := index.CreateRootedUnder(m.Gate(), r, e.dir, dim)
+		idx, err := index.CreateRootedUnder(g, r, e.dir, dim)
 		if err != nil {
 			return fmt.Errorf("episode index: create %s: %w", e.dir, err)
 		}
@@ -179,7 +189,7 @@ func (e *EpisodeIndex) UpsertUnder(m *gitw.Mutation, source, contentHash string,
 	if e.idx.Dim() != dim {
 		return fmt.Errorf("episode index: dimension mismatch: index has %d, got %d", e.idx.Dim(), dim)
 	}
-	return e.idx.UpsertRootedUnder(m.Gate(), r, source, contentHash, vectors)
+	return e.idx.UpsertRootedUnder(g, r, source, contentHash, vectors)
 }
 
 // checkVectors validates the vector shape and returns the shared dimension,

@@ -44,6 +44,7 @@ func (t *gitCheckoutTool) Execute(_ context.Context, c CallInfo, args map[string
 	if err != nil {
 		return Result{Error: "git_checkout: " + err.Error()}
 	}
+	defer func() { _ = repo.Close() }()
 
 	preOpBranch, preOpSHA, warn, err := repo.Checkout(branch)
 	if err != nil {
