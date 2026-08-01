@@ -14,6 +14,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/vector"
 )
@@ -56,29 +57,59 @@ type Searcher interface {
 // concurrent use.
 type Index struct {
 	mu       sync.Mutex
+	lockKey  string
+	dir      string
 	dim      int
 	manifest Manifest
+}
+
+// indexMutationLocks serializes index mutations per physical index directory.
+//
+// idx.mu cannot do this job alone: a handle is opened per episode save or per
+// tool call, so two concurrent writers against the same index hold two
+// different per-instance mutexes and exclude nothing.  vectors.bin and
+// manifest.json are shared filesystem state, so the lock has to be keyed by
+// the physical directory rather than by the handle — two handles to one
+// repository, however each was spelled, must land on one lock.
+//
+// The key is the physical identity from internal/pathid, not a pathname.
+// Keying on a pathname would let a junction alias or a differently-cased
+// spelling of the same directory hand out a second, separate mutex, and the
+// two handles would serialize against nothing.
+//
+// This guards harness-internal concurrency only.  A process writing the same
+// index at the same moment is outside its reach.
+var indexMutationLocks sync.Map // lock key -> *sync.Mutex
+
+// lockForMutation takes the per-directory coordinator lock and this handle's
+// mutex, and returns the function that releases both in the right order.
+func (idx *Index) lockForMutation() func() {
+	actual, _ := indexMutationLocks.LoadOrStore(idx.lockKey, &sync.Mutex{})
+	lock, ok := actual.(*sync.Mutex)
+	if !ok {
+		// Unreachable: only *sync.Mutex is ever stored.
+		lock = &sync.Mutex{}
+	}
+	lock.Lock()
+	idx.mu.Lock()
+	return func() {
+		idx.mu.Unlock()
+		lock.Unlock()
+	}
 }
 
 // OpenRooted reads an index through a pinned Root handle instead of by
 // pathname.  The caller owns the Root; OpenRooted does not close it.
 func OpenRooted(root *rootfs.Root, dir string) (*Index, error) {
-	mf, err := root.ReadFile(manifestFile)
+	lockKey, err := pathid.LockKey(dir)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, fmt.Errorf("index: open %s: %w", dir, fs.ErrNotExist)
-		}
-		return nil, fmt.Errorf("index: read manifest %s: %w", dir, err)
+		return nil, fmt.Errorf("index: identify %s: %w", dir, err)
 	}
-	var idx Index
-	if err := json.Unmarshal(mf, &idx.manifest); err != nil {
-		return nil, fmt.Errorf("index: parse manifest %s: %w", dir, err)
-	}
-	if err := validateManifestRooted(root, dir, idx.manifest); err != nil {
+	manifest, err := readManifestRooted(root, dir)
+	if err != nil {
 		return nil, err
 	}
-	idx.dim = idx.manifest.Dim
-	return &idx, nil
+	return &Index{lockKey: lockKey, dir: dir, dim: manifest.Dim, manifest: manifest}, nil
 }
 
 // CreateRooted initializes a new index through a pinned Root handle.
@@ -89,8 +120,14 @@ func CreateRooted(root *rootfs.Root, dir string, dim int) (*Index, error) {
 	if err := root.MkdirAll(".", 0o755); err != nil {
 		return nil, fmt.Errorf("index: mkdir %s: %w", dir, err)
 	}
+	lockKey, err := pathid.LockKey(dir)
+	if err != nil {
+		return nil, fmt.Errorf("index: identify %s: %w", dir, err)
+	}
 	idx := &Index{
-		dim: dim,
+		lockKey: lockKey,
+		dir:     dir,
+		dim:     dim,
 		manifest: Manifest{
 			Dim:    dim,
 			Chunks: nil,
@@ -105,13 +142,47 @@ func CreateRooted(root *rootfs.Root, dir string, dim int) (*Index, error) {
 	return idx, nil
 }
 
+// readManifestRooted reads, parses, and validates the manifest through the
+// pinned root.  It is the committed on-disk state a transaction starts from.
+func readManifestRooted(root *rootfs.Root, dir string) (Manifest, error) {
+	mf, err := root.ReadFile(manifestFile)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return Manifest{}, fmt.Errorf("index: open %s: %w", dir, fs.ErrNotExist)
+		}
+		return Manifest{}, fmt.Errorf("index: read manifest %s: %w", dir, err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(mf, &manifest); err != nil {
+		return Manifest{}, fmt.Errorf("index: parse manifest %s: %w", dir, err)
+	}
+	if err := validateManifestRooted(root, dir, manifest); err != nil {
+		return Manifest{}, err
+	}
+	return manifest, nil
+}
+
 func (idx *Index) writeManifestRooted(root *rootfs.Root) error {
 	data, err := json.MarshalIndent(idx.manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("index: marshal manifest: %w", err)
 	}
-	if err := root.WriteStreamAtomic(manifestFile, bytes.NewReader(data), 0o644); err != nil {
-		return fmt.Errorf("index: write manifest: %w", err)
+	return publishManifestData(root, data, rootfs.WriteHooks{})
+}
+
+// publishManifestData publishes serialized manifest data through the pinned
+// root.  Production callers pass no hooks; tests inject them at the real
+// WriteStreamAtomic lifecycle points so a regression can be observed without
+// replacing the writer.
+func publishManifestData(root *rootfs.Root, data []byte, hooks rootfs.WriteHooks) error {
+	var werr error
+	if hooks.AfterOpen == nil && hooks.Sync == nil && hooks.BeforeRename == nil {
+		werr = root.WriteStreamAtomic(manifestFile, bytes.NewReader(data), 0o644)
+	} else {
+		werr = root.WriteStreamAtomicWithHooks(manifestFile, bytes.NewReader(data), 0o644, hooks)
+	}
+	if werr != nil {
+		return fmt.Errorf("index: write manifest: %w", werr)
 	}
 	return nil
 }
@@ -167,12 +238,23 @@ func (idx *Index) SearchRooted(root *rootfs.Root, query []float32, k int) ([]Res
 
 // UpsertRooted stores vectors and publishes through a pinned Root handle.
 func (idx *Index) UpsertRooted(root *rootfs.Root, source, contentHash string, vectors [][]float32) error {
-	return idx.upsertRooted(root, source, contentHash, vectors, nil)
+	return idx.upsertRooted(root, source, contentHash, vectors, rootfs.WriteHooks{})
 }
 
-func (idx *Index) upsertRooted(root *rootfs.Root, source, contentHash string, vectors [][]float32, writeManifest func(root *rootfs.Root, data []byte) error) error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
+func (idx *Index) upsertRooted(root *rootfs.Root, source, contentHash string, vectors [][]float32, hooks rootfs.WriteHooks) error {
+	unlock := idx.lockForMutation()
+	defer unlock()
+
+	// Start from the committed on-disk state, not the in-memory copy.  The
+	// in-memory copy can trail the disk when another handle published since
+	// this one was opened; re-reading under the coordinator lock is what
+	// makes a write a transaction that never rolls a sibling's commit back.
+	committed, err := readManifestRooted(root, idx.dir)
+	if err != nil {
+		return err
+	}
+	idx.manifest = committed
+	idx.dim = committed.Dim
 
 	next := Manifest{Dim: idx.manifest.Dim, Count: idx.manifest.Count}
 	next.Chunks = make([]Entry, len(idx.manifest.Chunks))
@@ -221,19 +303,13 @@ func (idx *Index) upsertRooted(root *rootfs.Root, source, contentHash string, ve
 		Offset: offset, Length: len(vectors),
 	})
 	next.Count += len(vectors)
+
 	data, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
 		return fmt.Errorf("index: marshal manifest: %w", err)
 	}
-
-	wm := writeManifest
-	if wm == nil {
-		wm = func(r *rootfs.Root, d []byte) error {
-			return r.WriteStreamAtomic(manifestFile, bytes.NewReader(d), 0o644)
-		}
-	}
-	if err := wm(root, data); err != nil {
-		return fmt.Errorf("index: publish manifest: %w", err)
+	if err := publishManifestData(root, data, hooks); err != nil {
+		return err
 	}
 	idx.manifest = next
 	return nil
