@@ -51,6 +51,7 @@ func (t *gitBranchTool) Execute(_ context.Context, c CallInfo, args map[string]a
 	if err != nil {
 		return Result{Error: "git_branch: " + err.Error()}
 	}
+	defer func() { _ = repo.Close() }()
 
 	startPoint, _ := args["start_point"].(string)
 

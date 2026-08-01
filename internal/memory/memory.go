@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 
+	gitw "github.com/VrncQuentin/harness/internal/git"
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
@@ -62,7 +64,8 @@ type Entry struct {
 //
 // Close releases the pinned handle. After Close, every operation fails.
 type DirReader struct {
-	anchor *rootfs.Anchor
+	anchor   *rootfs.Anchor
+	identity pathid.ID
 }
 
 var (
@@ -74,27 +77,48 @@ var (
 
 // NewDirReader opens root, pins its identity via an Anchor, and returns a
 // DirReader that resolves every operation through that pinned handle. The
-// caller must close the reader when done.
+// verified physical identity is captured at construction so callers can
+// compare readers against the object they actually opened. The caller must
+// close the reader when done.
 func NewDirReader(root string) (*DirReader, error) {
 	a, err := rootfs.NewAnchor(root)
 	if err != nil {
 		return nil, fmt.Errorf("memory: open dir reader %s: %w", root, err)
 	}
-	return &DirReader{anchor: a}, nil
+	id, err := a.Identity()
+	if err != nil {
+		_ = a.Close()
+		return nil, fmt.Errorf("memory: identify dir reader %s: %w", root, err)
+	}
+	return &DirReader{anchor: a, identity: id}, nil
 }
 
 func (r *DirReader) Close() error { return r.anchor.Close() }
+
+// Identity returns the verified physical identity of the directory this
+// reader pinned and holds open. It is captured at construction and verified
+// against the anchor's retained handle, so two readers on one physical
+// directory — reached through any spelling — compare Equal, and a repointed
+// spelling never silently identifies the replacement.
+func (r *DirReader) Identity() pathid.ID { return r.identity }
 
 // SameDirReader reports whether r and other are anchored to the same
 // filesystem directory. The comparison uses os.SameFile on the two
 // pinned handles — no pathname re-resolution is involved.
 //
-// This surfaces rootfs.Anchor.SameAnchor to DirReader callers so they
-// can compare directory identity without accessing the underlying
-// Anchor. There is currently no production caller; integration with
-// the git repository opened-object comparison is deferred.
+// This is the handle-level comparison for two readers. Comparing a reader
+// against a git repository handle uses SameRepo, which compares this reader's
+// retained pinned handle with the repository's retained boundary.
 func (r *DirReader) SameDirReader(other *DirReader) (bool, error) {
 	return r.anchor.SameAnchor(other.anchor)
+}
+
+// SameRepo reports whether this reader and the git repository handle are
+// anchored to the same physical directory. Both sides compare their retained
+// pinned handles via os.SameFile, so a directory replaced at the same
+// pathname between the two opens is detected rather than silently accepted.
+func (r *DirReader) SameRepo(repo *gitw.Repo) (bool, error) {
+	return repo.SameAnchor(r.anchor)
 }
 
 // SubAnchor opens a child directory through the DirReader's pinned handle

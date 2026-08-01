@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
@@ -33,6 +34,17 @@ func linkDir(t *testing.T, target, link string) {
 	}
 }
 
+// repoID returns the physical identity of dir to key the repository-wide
+// coordinator. Tests treat the index directory as the repository.
+func repoID(t *testing.T, dir string) pathid.ID {
+	t.Helper()
+	id, err := pathid.Resolve(dir)
+	if err != nil {
+		t.Fatalf("resolve repo id %s: %v", dir, err)
+	}
+	return id
+}
+
 func TestIndex_CreatePersistsEmptyIndex(t *testing.T) {
 	dir := t.TempDir()
 	r, err := rootfs.Open(dir)
@@ -40,10 +52,10 @@ func TestIndex_CreatePersistsEmptyIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	if _, err := CreateRooted(r, dir, 2); err != nil {
+	if _, err := CreateRooted(r, dir, 2, repoID(t, dir)); err != nil {
 		t.Fatal(err)
 	}
-	opened, err := OpenRooted(r, dir)
+	opened, err := OpenRooted(r, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatalf("Open newly created index: %v", err)
 	}
@@ -66,7 +78,7 @@ func TestIndex_OpenRejectsManifestWithoutVectors(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	_, err = OpenRooted(r, dir)
+	_, err = OpenRooted(r, dir, repoID(t, dir))
 	if err == nil {
 		t.Fatal("expected missing vectors to be rejected")
 	}
@@ -82,7 +94,7 @@ func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +104,7 @@ func TestIndex_OpenRejectsVectorBoundsMismatch(t *testing.T) {
 	if err := os.Truncate(filepath.Join(dir, vectorsFile), 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenRooted(r, dir); err == nil {
+	if _, err := OpenRooted(r, dir, repoID(t, dir)); err == nil {
 		t.Fatal("expected manifest entry extending past vectors file to be rejected")
 	}
 }
@@ -104,7 +116,7 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +146,7 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r2.Close() }()
-	idx2, err := OpenRooted(r2, dir)
+	idx2, err := OpenRooted(r2, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +169,7 @@ func TestIndex_UpsertReplacesViaRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +210,7 @@ func TestIndex_UpsertReplacesMiddleEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +245,7 @@ func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +288,7 @@ func TestIndex_AddSearchRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 4)
+	idx, err := CreateRooted(r, dir, 4, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +332,7 @@ func TestIndex_AddDimensionMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 3)
+	idx, err := CreateRooted(r, dir, 3, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +349,7 @@ func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +381,7 @@ func TestIndex_AddVectorFailureDoesNotPoisonManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r2.Close() }()
-	opened, err := OpenRooted(r2, dir)
+	opened, err := OpenRooted(r2, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +399,7 @@ func TestIndex_SearchDimensionMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 4)
+	idx, err := CreateRooted(r, dir, 4, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +416,7 @@ func TestIndex_OpenAndSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,7 +430,7 @@ func TestIndex_OpenAndSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r2.Close() }()
-	idx2, err := OpenRooted(r2, dir)
+	idx2, err := OpenRooted(r2, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +450,7 @@ func TestIndex_OpenMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	_, err = OpenRooted(r, dir)
+	_, err = OpenRooted(r, dir, repoID(t, dir))
 	if !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("expected ErrNotExist for missing manifest, got %v", err)
 	}
@@ -451,7 +463,7 @@ func TestIndex_Contains(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 3)
+	idx, err := CreateRooted(r, dir, 3, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -470,7 +482,7 @@ func TestIndex_Contains(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r2.Close() }()
-	idx2, err := OpenRooted(r2, dir)
+	idx2, err := OpenRooted(r2, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +498,7 @@ func TestIndex_ContainsCurrentMatchesSourceAndContentHash(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,7 +526,7 @@ func TestIndex_UpsertReplacesSourceAndKeepsAgentPathsDistinct(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -580,7 +592,7 @@ func TestValidateManifestRooted_Alignment(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	if _, err := CreateRooted(r, dir, 2); err != nil {
+	if _, err := CreateRooted(r, dir, 2, repoID(t, dir)); err != nil {
 		t.Fatal(err)
 	}
 	r2, err := rootfs.Open(dir)
@@ -588,7 +600,7 @@ func TestValidateManifestRooted_Alignment(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r2.Close() }()
-	idx, err := OpenRooted(r2, dir)
+	idx, err := OpenRooted(r2, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -640,7 +652,7 @@ func TestSearchRooted_TruncatedVectorsReturnsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -657,7 +669,7 @@ func TestSearchRooted_TruncatedVectorsReturnsError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r2.Close() }()
-	idx2, err := OpenRooted(r2, dir)
+	idx2, err := OpenRooted(r2, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -686,7 +698,7 @@ func TestIndex_WriteManifestDoesNotRemoveStranger(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -742,7 +754,7 @@ func TestIndex_WriteManifestFsyncsBeforeRename(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -792,7 +804,7 @@ func TestIndex_WriteManifestCleansUpOwnTemp(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r.Close() }()
-	idx, err := CreateRooted(r, dir, 2)
+	idx, err := CreateRooted(r, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -888,20 +900,21 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 	}
 	defer func() { _ = r2.Close() }()
 
-	idx1, err := CreateRooted(r1, dir, 2)
+	idx1, err := CreateRooted(r1, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
 	// A second handle, opened before any entry is written, holds a stale
 	// in-memory manifest.  Its write must adopt the other handle's committed
 	// state instead of publishing over it.
-	idx2, err := OpenRooted(r2, dir)
+	idx2, err := OpenRooted(r2, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	firstEntered := make(chan struct{})
 	firstRelease := make(chan struct{})
+	secondAtLock := make(chan struct{})
 	secondEntered := make(chan struct{})
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(firstRelease) }) }
@@ -924,13 +937,16 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 	<-firstEntered
 
 	// Writer 2 starts only after writer 1 is provably inside its transaction.
+	// It signals immediately before its coordinator acquisition, so the
+	// negative assertion below provably knows it reached the lock.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		err2 = idx2.upsertRooted(r2, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
+		err2 = idx2.upsertRootedBeforeLock(r2, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
 			AfterOpen: func(*os.File, string) { close(secondEntered) },
-		})
+		}, func() { close(secondAtLock) })
 	}()
+	<-secondAtLock
 
 	// The second writer must not reach its hook until the first releases the
 	// coordinator: both hooks sit inside the same per-directory critical
@@ -939,7 +955,7 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 	case <-secondEntered:
 		release()
 		t.Fatal("second writer entered the critical section while the first held the coordinator")
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 	}
 
 	release()
@@ -962,7 +978,7 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r3.Close() }()
-	idx3, err := OpenRooted(r3, dir)
+	idx3, err := OpenRooted(r3, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1000,7 +1016,7 @@ func TestIndex_ColdStartTwoHandles(t *testing.T) {
 			}
 			defer func() { _ = r.Close() }()
 			<-start
-			idx, cerr := CreateRooted(r, dir, 2)
+			idx, cerr := CreateRooted(r, dir, 2, repoID(t, dir))
 			if cerr != nil {
 				errs <- cerr
 				return
@@ -1023,7 +1039,7 @@ func TestIndex_ColdStartTwoHandles(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r3.Close() }()
-	idx3, err := OpenRooted(r3, dir)
+	idx3, err := OpenRooted(r3, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1045,7 +1061,7 @@ func TestIndex_ColdStartAdoptsExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r1.Close() }()
-	idxA, err := CreateRooted(r1, dir, 2)
+	idxA, err := CreateRooted(r1, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1058,7 +1074,7 @@ func TestIndex_ColdStartAdoptsExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r2.Close() }()
-	idxB, err := CreateRooted(r2, dir, 2)
+	idxB, err := CreateRooted(r2, dir, 2, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1074,7 +1090,7 @@ func TestIndex_ColdStartAdoptsExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r3.Close() }()
-	idx3, err := OpenRooted(r3, dir)
+	idx3, err := OpenRooted(r3, dir, repoID(t, dir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1084,9 +1100,11 @@ func TestIndex_ColdStartAdoptsExisting(t *testing.T) {
 }
 
 // TestIndex_SpellingsShareCoordinator verifies that a stable alias and its
-// target produce the same coordinator key, so two handles that reach one
-// index directory through different spellings serialize on one lock, and both
-// concurrent writes survive.
+// target produce the same repository coordinator, so two handles that reach
+// one index directory through different spellings serialize on one gate, and
+// both concurrent writes survive. The gate is keyed by the repository
+// identity, which each handle resolves through its own spelling and which
+// canonicalizes to the same physical directory.
 func TestIndex_SpellingsShareCoordinator(t *testing.T) {
 	base := t.TempDir()
 	real := filepath.Join(base, "real")
@@ -1101,7 +1119,7 @@ func TestIndex_SpellingsShareCoordinator(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r1.Close() }()
-	idx1, err := CreateRooted(r1, real, 2)
+	idx1, err := CreateRooted(r1, real, 2, repoID(t, real))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1111,13 +1129,13 @@ func TestIndex_SpellingsShareCoordinator(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r2.Close() }()
-	idx2, err := OpenRooted(r2, alias)
+	idx2, err := OpenRooted(r2, alias, repoID(t, alias))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if idx1.lockKey != idx2.lockKey {
-		t.Fatalf("alias spelling produced a different coordinator key: real=%q alias=%q", idx1.lockKey, idx2.lockKey)
+	if idx1.gate != idx2.gate {
+		t.Fatal("alias spelling produced a different coordinator gate")
 	}
 
 	// Concurrent writes through the two spellings must both survive.
@@ -1152,7 +1170,7 @@ func TestIndex_SpellingsShareCoordinator(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = r3.Close() }()
-	idx3, err := OpenRooted(r3, real)
+	idx3, err := OpenRooted(r3, real, repoID(t, real))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1185,7 +1203,7 @@ func TestIndex_RepointedAliasRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := CreateRooted(r0, real, 2); err != nil {
+	if _, err := CreateRooted(r0, real, 2, repoID(t, real)); err != nil {
 		t.Fatal(err)
 	}
 	if err := r0.Close(); err != nil {
@@ -1204,7 +1222,7 @@ func TestIndex_RepointedAliasRefused(t *testing.T) {
 	}
 	linkDir(t, evil, alias)
 
-	if _, err := OpenRooted(r1, alias); err == nil {
+	if _, err := OpenRooted(r1, alias, repoID(t, alias)); err == nil {
 		t.Fatal("OpenRooted accepted a repointed alias identity that does not match the pinned root")
 	}
 }

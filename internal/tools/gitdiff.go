@@ -45,6 +45,7 @@ func (t *gitDiffTool) Execute(ctx context.Context, c CallInfo, args map[string]a
 	if err != nil {
 		return Result{Error: "git_diff: " + err.Error()}
 	}
+	defer func() { _ = repo.Close() }()
 	from, _ := args["from"].(string)
 	to, _ := args["to"].(string)
 

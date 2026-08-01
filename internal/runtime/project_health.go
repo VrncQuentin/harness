@@ -51,8 +51,10 @@ func CheckProjectDirectories(store projectDirectoryStore, slug string) ([]ui.Pro
 			continue
 		}
 
-		if _, err := gitw.Open(dir.Path); err != nil {
+		if repo, err := gitw.Open(dir.Path); err != nil {
 			warnings = append(warnings, ui.ProjectDirectoryWarning{Path: dir.Path, Problem: "not a git repository"})
+		} else {
+			_ = repo.Close()
 		}
 	}
 	return warnings, nil

@@ -142,8 +142,10 @@ func TestWorkspaceWriteRepoResolvesScopePerCall(t *testing.T) {
 	}
 	args := map[string]any{"root": dir}
 
-	if _, _, err := workspaceWriteRepo(ci, args); err != nil {
+	if repo, _, err := workspaceWriteRepo(ci, args); err != nil {
 		t.Fatalf("write allowed before the repo became a memory repo, got: %v", err)
+	} else {
+		_ = repo.Close()
 	}
 
 	// The project is now registered as a memory repo, with no new CallInfo.

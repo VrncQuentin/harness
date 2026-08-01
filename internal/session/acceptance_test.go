@@ -56,6 +56,7 @@ func scaffoldMemoryRepo(t *testing.T, agentName string) (string, *git.Repo) {
 	if err != nil {
 		t.Fatalf("git.Open: %v", err)
 	}
+	t.Cleanup(func() { _ = repo.Close() })
 	return root, repo
 }
 

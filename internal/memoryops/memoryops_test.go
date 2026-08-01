@@ -7,12 +7,116 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	gitw "github.com/VrncQuentin/harness/internal/git"
 	"github.com/VrncQuentin/harness/internal/index"
 	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 	"github.com/VrncQuentin/harness/internal/session"
 )
+
+// mustRepoID returns the physical identity of a repository root for the
+// repository-wide coordinator.
+func mustRepoID(t *testing.T, root string) pathid.ID {
+	t.Helper()
+	id, err := pathid.Resolve(root)
+	if err != nil {
+		t.Fatalf("resolve repo id %s: %v", root, err)
+	}
+	return id
+}
+
+// TestEpisodeIndex_MixedUpsertLockOrder is the deterministic discriminator
+// for the repository lock order: standalone Upsert must acquire the gate
+// before this handle's mutex, and then publish through the Under operations
+// without reacquiring it. B holds the gate (WithMutation) and then takes
+// e.mu; A runs a standalone Upsert. If A took e.mu before the gate, A would
+// hold e.mu while parked at the gate and B would deadlock waiting for it.
+func TestEpisodeIndex_MixedUpsertLockOrder(t *testing.T) {
+	dir := t.TempDir()
+	repo, err := gitw.Init(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = repo.Close() }()
+	dr, err := memory.NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dr.Close() })
+	if err := dr.MkdirAll("index/_episodes"); err != nil {
+		t.Fatal(err)
+	}
+	a, err := dr.SubAnchor("index/_episodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ei, err := NewEpisodeIndex(a, EpisodeIndexDir(dir), dr.Identity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ei.Close() })
+
+	// B holds the repository gate (WithMutation) and waits before publishing,
+	// so it provably holds the gate without having taken e.mu yet.
+	gateHeld := make(chan struct{})
+	goB := make(chan struct{})
+	bDone := make(chan struct{})
+	var bErr error
+	go func() {
+		defer close(bDone)
+		bErr = repo.WithMutation(func(m *gitw.Mutation) error {
+			close(gateHeld)
+			<-goB
+			return ei.UpsertUnder(m, "b", "b", [][]float32{{0, 1}})
+		})
+	}()
+	<-gateHeld
+
+	// A starts a standalone Upsert and signals immediately before its gate
+	// acquisition. With the documented lock order (gate before e.mu) A is
+	// parked at the gate and has not taken e.mu.
+	aAtGate := make(chan struct{})
+	aDone := make(chan struct{})
+	var aErr error
+	go func() {
+		defer close(aDone)
+		aErr = ei.upsert("a", "a", [][]float32{{1, 0}}, func() { close(aAtGate) })
+	}()
+	<-aAtGate
+
+	// Release B: it publishes under the held gate, taking e.mu. If the
+	// standalone path held e.mu before the gate, A would hold e.mu while
+	// parked at the gate and B would deadlock waiting for it.
+	close(goB)
+	select {
+	case <-bDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: standalone Upsert held e.mu while blocked on the repository gate")
+	}
+	<-aDone
+	if aErr != nil {
+		t.Errorf("standalone upsert: %v", aErr)
+	}
+	if bErr != nil {
+		t.Errorf("upsert under transaction: %v", bErr)
+	}
+
+	r, err := rootfs.Open(EpisodeIndexDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close() }()
+	opened, err := index.OpenRooted(r, EpisodeIndexDir(dir), dr.Identity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opened.Contains("a") || !opened.Contains("b") {
+		t.Fatalf("mixed upserts lost an entry: a=%v b=%v", opened.Contains("a"), opened.Contains("b"))
+	}
+}
 
 func newTestEpisodeIndex(t *testing.T, projectRoot string) *EpisodeIndex {
 	t.Helper()
@@ -29,7 +133,7 @@ func newTestEpisodeIndex(t *testing.T, projectRoot string) *EpisodeIndex {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ei, err := NewEpisodeIndex(a, indexDir)
+	ei, err := NewEpisodeIndex(a, indexDir, dr.Identity())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +184,7 @@ func TestEpisodeRebuilderCreatesMissingEpisodeIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open index dir: %v", err)
 	}
-	opened, err := index.OpenRooted(r, indexDir)
+	opened, err := index.OpenRooted(r, indexDir, dr.Identity())
 	_ = r.Close()
 	if err != nil {
 		t.Fatalf("Open rebuilt index: %v", err)
@@ -182,7 +286,7 @@ func TestEpisodeRebuilderSkipsUnchangedIndexedEpisodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open index dir: %v", err)
 	}
-	idx, err := index.CreateRooted(r, indexDir, 2)
+	idx, err := index.CreateRooted(r, indexDir, 2, mustRepoID(t, root))
 	_ = r.Close()
 	if err != nil {
 		t.Fatalf("Create index: %v", err)
@@ -361,7 +465,7 @@ func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ei, err := NewEpisodeIndex(a, indexDir)
+	ei, err := NewEpisodeIndex(a, indexDir, dr.Identity())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +504,7 @@ func TestEpisodeIndex_RepointedAfterPinFailsClosed(t *testing.T) {
 }
 
 func TestNewEpisodeIndex_NilAnchorRejected(t *testing.T) {
-	_, err := NewEpisodeIndex(nil, "/some/path")
+	_, err := NewEpisodeIndex(nil, "/some/path", pathid.ID{})
 	if err == nil {
 		t.Fatal("expected error for nil anchor")
 	}
@@ -426,7 +530,7 @@ func TestNewEpisodeIndex_MismatchedDirectoryRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = NewEpisodeIndex(a, EpisodeIndexDir(dir2))
+	_, err = NewEpisodeIndex(a, EpisodeIndexDir(dir2), dr.Identity())
 	if err == nil {
 		_ = a.Close()
 		t.Fatal("expected error for mismatched dir")
@@ -460,7 +564,7 @@ func TestNewEpisodeIndex_StableAliasAccepted(t *testing.T) {
 	linkDir := filepath.Join(repo, "index", "_episodes_link")
 	if err := os.Symlink(indexDir, linkDir); err == nil {
 		defer func() { _ = os.Remove(linkDir) }()
-		ei, err := NewEpisodeIndex(a, linkDir)
+		ei, err := NewEpisodeIndex(a, linkDir, dr.Identity())
 		if err != nil {
 			_ = a.Close()
 			t.Fatalf("NewEpisodeIndex via symlink alias: %v", err)
@@ -472,7 +576,7 @@ func TestNewEpisodeIndex_StableAliasAccepted(t *testing.T) {
 	// Try Windows junction as alias pathname.
 	cmd := exec.Command("cmd", "/c", "mklink", "/J", linkDir, indexDir)
 	if _, jerr := cmd.CombinedOutput(); jerr == nil {
-		ei, err := NewEpisodeIndex(a, linkDir)
+		ei, err := NewEpisodeIndex(a, linkDir, dr.Identity())
 		if err != nil {
 			_ = a.Close()
 			t.Fatalf("NewEpisodeIndex via junction alias: %v", err)

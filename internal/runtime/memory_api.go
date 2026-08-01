@@ -184,6 +184,9 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		uiServer.AddStartupError(fmt.Errorf("open global memory: %w", err))
 		return nil
 	}
+	if rt.beforeActiveMemOpen != nil {
+		rt.beforeActiveMemOpen()
+	}
 	activeMem, err := memory.NewDirReader(roots.activeRoot)
 	if err != nil {
 		_ = globalMem.Close()
@@ -215,7 +218,10 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		uiServer.AddStartupError(fmt.Errorf("episode index: %w", err))
 		return nil
 	}
-	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir)
+	// The episode index serializes on the repository-wide mutation coordinator,
+	// so its identity is the repository's verified identity, not the index
+	// directory's.
+	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir, activeMem.Identity())
 	if err != nil {
 		_ = indexAnchor.Close()
 		doClose()
@@ -228,6 +234,11 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 
 	infClient := rt.newInferenceClientFor(cfg)
 	gitRepo, sessionStore, sessionMgr, sessionAdapter := rt.buildSessionManagerWithClients(metricsStore, uiServer, roots, infClient, embedClient, episodeIndex, cfg.Project.ActiveProjectSlug)
+	if gitRepo != nil {
+		// The retained boundary handle joins the candidate's owned handles so
+		// every failure path below and generation retirement releases it.
+		handles = append(handles, gitRepo)
+	}
 	if sessionMgr == nil {
 		doClose()
 		closeHandles()
@@ -235,6 +246,41 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 			_ = sessionStore.Close()
 		}
 		return nil
+	}
+
+	// Every independently opened handle on the active repository — the
+	// memory/project reader, the git repository, and the session store — must
+	// be one physical repository. They are compared by their retained pinned
+	// boundaries (os.SameFile), never by pathid identity, so a directory
+	// replaced at the same pathname between any two opens fails closed rather
+	// than combining readers rooted in different repositories. The global
+	// reader is compared against the active one when the two are configured to
+	// the same path (the active project is the global project).
+	failMismatch := func(err error) {
+		doClose()
+		closeHandles()
+		if sessionStore != nil {
+			_ = sessionStore.Close()
+		}
+		uiServer.AddStartupError(fmt.Errorf("session manager: memory readers and git repository identify different directories: %w", err))
+	}
+	if same, err := activeMem.SameRepo(gitRepo); err != nil || !same {
+		failMismatch(fmt.Errorf("active memory reader and git repository: %v", err))
+		return nil
+	}
+	if same, err := sessionStore.SameDirReader(activeMem); err != nil || !same {
+		failMismatch(fmt.Errorf("session store and active memory reader: %v", err))
+		return nil
+	}
+	if same, err := sessionStore.SameRepo(gitRepo); err != nil || !same {
+		failMismatch(fmt.Errorf("session store and git repository: %v", err))
+		return nil
+	}
+	if roots.globalRoot == roots.activeRoot {
+		if same, err := globalMem.SameDirReader(activeMem); err != nil || !same {
+			failMismatch(fmt.Errorf("global and active memory readers: %v", err))
+			return nil
+		}
 	}
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
@@ -416,6 +462,9 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 
 func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, uiServer *ui.Server, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex, projectSlug string) (*gitw.Repo, *memory.DirReader, *session.Manager, *uiSessionStoreAdapter) {
 	repoPath := roots.activeRoot
+	if rt.beforeGitOpen != nil {
+		rt.beforeGitOpen()
+	}
 	repo, err := gitw.Open(repoPath)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("session manager: %w", err))
@@ -427,6 +476,9 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ui
 		rec = metrics.NewRecorder(metricsStore)
 	}
 
+	if rt.beforeSessionStoreOpen != nil {
+		rt.beforeSessionStoreOpen()
+	}
 	sessionStore, err := memory.NewDirReader(repoPath)
 	if err != nil {
 		uiServer.AddStartupError(fmt.Errorf("open session store %s: %w", repoPath, err))

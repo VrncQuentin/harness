@@ -106,6 +106,7 @@ func initRepo(t *testing.T) (string, *git.Repo) {
 	if err != nil {
 		t.Fatalf("git.Open: %v", err)
 	}
+	t.Cleanup(func() { _ = r.Close() })
 	return dir, r
 }
 

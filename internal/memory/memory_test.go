@@ -872,6 +872,77 @@ func TestSameDirReader_RightReaderClosed(t *testing.T) {
 	}
 }
 
+// TestDirReader_Identity binds the verified physical identity to the reader:
+// two readers on one directory, reached through an alias and its target, hold
+// equal identities, and readers on different directories do not.
+func TestDirReader_Identity(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	symlinkOrSkip(t, dir, link)
+
+	a, err := NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	b, err := NewDirReader(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	c, err := NewDirReader(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+
+	if !a.Identity().Equal(b.Identity()) {
+		t.Error("identity of alias reader must equal the physical target reader")
+	}
+	if a.Identity().Equal(c.Identity()) {
+		t.Error("identity of readers on different directories must differ")
+	}
+}
+
+// TestDirReader_Identity_RePointedAliasFailsClosed verifies the identity is
+// bound to the directory actually pinned, not to a spelling that was
+// repointed after construction. A reader opened through a stable alias, whose
+// alias is then repointed at a different directory, must not silently take on
+// the replacement's identity.
+func TestDirReader_Identity_RePointedAliasFailsClosed(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	symlinkOrSkip(t, dir1, link)
+
+	before, err := NewDirReader(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = before.Close() })
+
+	if err := os.Remove(link); err != nil {
+		_ = before.Close()
+		if err := os.Remove(link); err != nil {
+			t.Fatal("symlink removal should succeed after reader closed:", err)
+		}
+		return
+	}
+	symlinkOrSkip(t, dir2, link)
+
+	// Re-resolving the alias independently would hand back dir2's identity.
+	// The retained identity must still be the directory the reader pinned.
+	after, err := NewDirReader(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = after.Close() })
+
+	if before.Identity().Equal(after.Identity()) {
+		t.Fatal("reader identity silently followed a repointed alias; the retained identity must stay bound to the pinned directory")
+	}
+}
+
 func TestDirReader_ReplacedDirectoryFailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "known.txt"), []byte("original"), 0o644); err != nil {

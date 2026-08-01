@@ -432,6 +432,15 @@ func (s Set) open(path string, afterPin func()) (*Target, error) {
 	return nil, fmt.Errorf("%w: %s", ErrOutsideRoots, path)
 }
 
+// OpenIdentifiedHooked is OpenIdentified with a hook that runs in the window
+// between the pin and the identity resolution, so a test can stage the
+// replacement the SameFile check exists to catch. The hook is a parameter
+// rather than package state so parallel tests cannot see each other's. It is
+// nil on every production path.
+func OpenIdentifiedHooked(path string, afterPin func()) (*Root, pathid.ID, error) {
+	return openIdentified(path, afterPin)
+}
+
 // OpenIdentified pins the directory at path and returns it together with the
 // physical identity that the pinned directory has been confirmed to have.
 //
