@@ -28,7 +28,7 @@ until the sequence below is merged and the final audit (PR 12) passes.
 
 | # | Finding | Test |
 |---|---------|------|
-| 2.8b | (Deferred) Git and memory readers compare identities from later `pathid` resolutions, not from the objects each component actually opened | PR 5b4, after `gitw.Repo` exposes its opened directory identity; `SameDirReader` is exercised by unit tests but has no production caller. |
+| 2.8b | Git and memory readers compare identities from later `pathid` resolutions, not from the objects each component actually opened | PR 5b4: `gitw.Repo` retains the physical identity verified against a pinned repository boundary (`rootfs.OpenIdentifiedHooked`), `memory.DirReader` captures its anchor-verified identity (`rootfs.Anchor.Identity`), and runtime construction compares the two and fails closed on mismatch (`TestCandidateIdentityMismatchFailsClosed`). `SameDirReader` remains the reader-to-reader handle comparison; the git-to-memory comparison uses each side's verified `Identity()`. |
 
 ### PR 3a — Atomic publication and governor B3
 
@@ -95,7 +95,7 @@ until the sequence below is merged and the final audit (PR 12) passes.
 | 5.4 | Post-rename `os.Remove` + retry fallback deletes a stranger's replacement | `TestIndex_WriteManifestDoesNotRemoveStranger` |
 | 5.6 | Manifest publication not fsynced before rename | `TestIndex_WriteManifestFsyncsBeforeRename` |
 | 5.7 | Temp file cleanup deletes by name after the rename may have consumed it | `TestIndex_WriteManifestCleansUpOwnTemp` |
-| 5.8 | Scattered lock maps — no unified per-repo coordinator | Narrowed: one index-directory coordinator keyed by physical identity and bound to the pinned root (`TestIndex_TwoHandlesShareCoordinator`, `TestIndex_ColdStartTwoHandles`, `TestIndex_ColdStartAdoptsExisting`, `TestIndex_SpellingsShareCoordinator`, `TestIndex_RepointedAliasRefused`). The repository-wide coordinator shared with git commits is assigned to PR 5b4, which requires `gitw.Repo` to expose its opened directory identity. |
+| 5.8 | Scattered lock maps — no unified per-repo coordinator | PR 5b3 narrowed this to one index-directory coordinator keyed by physical identity and bound to the pinned root (`TestIndex_TwoHandlesShareCoordinator`, `TestIndex_ColdStartTwoHandles`, `TestIndex_ColdStartAdoptsExisting`, `TestIndex_SpellingsShareCoordinator`, `TestIndex_RepointedAliasRefused`). PR 5b4 replaced both remaining lock maps (`repoMutationLocks`, `indexMutationLocks`) with one repository-wide coordinator in `internal/coord`, keyed by verified repository identity and shared by git mutations and index publication. Index publication and the following git commit run inside one repository transaction (`Repo.WithMutation` / `Index.UpsertRootedUnder`); discriminating tests: `TestRepoAndIndex_ShareRepositoryTransaction`, `TestRepoTransaction_CommitInsideSessionDoesNotReacquire`, `TestRepoTransaction_FailedMutationReleasesCoordinator`. |
 | 5.9 | Compare-then-rollback against unlocked concurrent writer | `TestIndex_TwoHandlesShareCoordinator` (each write re-reads committed state under the coordinator) |
 
 ### PR 6 — Project repository workflow

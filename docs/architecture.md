@@ -166,8 +166,9 @@ Responsibilities:
   in a separator), accepts a sibling sharing a textual prefix, and has no
   answer for two different volumes.
 - `Same`, `SameOrWithin`, and `LockKey` are the high-level operations: repo
-  identity, sandbox/C2 containment, and the git mutation-lock key. `LockKey`
-  exists so no caller composes resolution and key derivation by hand.
+  identity, sandbox/C2 containment, and the physical-identity key of a path.
+  The repository-wide mutation coordinator is keyed by an identity's `Key`,
+  never by a pathname or a hand-composed resolution.
 - Key maps and locks with `ID.Key`, never with the `ID` itself. Go compares
   every field including the display path, and `Resolve` re-appends a
   not-yet-created tail in the caller's case, so one identity can produce two
@@ -207,6 +208,12 @@ Responsibilities:
   an identity resolved separately from a pin describes a name, so any later
   reasoning about the handle — is it inside that other directory, is it the same
   as this one — is reasoning about something that need not be what is held open.
+  `Anchor.Identity` exposes the same pairing for a retained anchor. `internal/git`
+  opens its repository boundary through `OpenIdentified`, `memory.DirReader`
+  captures its identity through `Anchor.Identity`, and runtime construction
+  compares the two before publishing a candidate, so git commits and index
+  publication are bound to the same physical repository or the candidate fails
+  closed.
 - `Set` is the sandbox-root list. `Set.Open` uses `OpenIdentified` on the
   configured root, then picks the owner by containment and returns a `Target`.
 - `Target` carries the caller's display spelling — locators and tool output stay
@@ -293,9 +300,9 @@ guarantees below.
 | Same-name directory replacement | `OpenIdentified` verifies the pinned handle against the physical identity with `os.SameFile`; a replacement fails the comparison | implemented |
 | Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name | implemented |
 | Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere | implemented |
-| In-process concurrent writers | Index-directory mutation coordinator keyed by physical identity, bound to the pinned root and shared across all handles to one index (PR 5b3); a repository-wide coordinator shared with git commits is assigned to PR 5b4 | partial |
+| In-process concurrent writers | One repository-wide mutation coordinator per physical repository identity (`internal/coord`), shared by git mutations and index publication; index publication and the following git commit run inside one repository transaction held across both (PR 5b4) | implemented |
 | Check/use races on intermediate directories | `OpenChildNoFollow` opens the child, Lstats the entry through the parent, rejects links, and compares the entry with the opened handle via `os.SameFile` — what is opened and what is checked are the same object | implemented |
-| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); DirReader identity via PR 2c (git/memory opened-object identity deferred per finding 2.8b); index rooted identity via PR 5b2; index-directory serialization via PR 5b3 | implemented; repository-wide coordinator spanning git commits assigned to PR 5b4 |
+| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); DirReader identity via PR 2c, compared against the git repository's retained identity at runtime construction (PR 5b4); index rooted identity via PR 5b2; repository-wide mutation coordinator spanning git commits and index publication via PR 5b4 | implemented |
 
 #### Out of scope
 
@@ -308,7 +315,11 @@ guarantees below.
   Command containment is a separate problem.
 - **go-git pathname boundary.** go-git resolves its storage by pathname, not by
   handle. The harness keeps explicit identity and C2 checks around the go-git
-  boundary.
+  boundary: the wrapper pins and verifies the repository boundary at open,
+  retains that verified identity for coordinator selection, and refuses to open
+  through a repointed spelling. A spelling repointed *after* the open is a
+  documented go-git limitation the wrapper does not claim to close, and go-git
+  itself will not open through a directory link.
 
 #### Acknowledged residual window
 
@@ -444,6 +455,27 @@ Thin wrapper around `go-git` (pure Go — no git binary dependency).
 Operations:
 - `Init(path string)` — init or open one memory repo or attached code repo
 - `Commit(msg string, files []string)` — stage specific files + commit in the selected repo
+- `WithMutation(fn)` — run index publication and the following git commit as one
+  repository-wide mutation transaction
+
+Every `Repo` handle retains the physical identity of its repository directory,
+verified at open against a pinned boundary (`rootfs.OpenIdentifiedHooked`).
+That identity selects the repository-wide mutation coordinator
+(`internal/coord`), the same gate index publication on the repository
+acquires, so git mutations and index publication serialize on one object and
+an alias spelling cannot split one repository across two coordinators.
+
+`WithMutation` holds the coordinator across both the index publication and the
+git commit; the `Mutation` session's commit methods do not reacquire it.
+Memoryops `AfterSaveEmbed` and the episode-index rebuild publish and commit
+inside one such transaction.
+
+go-git resolves its storage by pathname, not by handle. The wrapper pins and
+verifies its repository boundary at open and retains that verified identity,
+but it does not claim go-git itself is handle-relative: a pathname repointed
+after the open is a documented go-git limitation, and go-git refuses to open
+through a directory link at all (go-billy reports "path escapes from parent"),
+so git handles are only ever opened through non-link spellings.
 
 Commit message format (machine-parseable):
 ```
