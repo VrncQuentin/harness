@@ -108,6 +108,17 @@ func (r *Repo) SameAnchor(other *rootfs.Anchor) (bool, error) {
 	return r.boundary.SameAnchor(other)
 }
 
+// SameRoot reports whether the repository directory this handle pinned is the
+// same filesystem object as root. The comparison uses os.SameFile on the
+// retained pinned handle — no pathname re-resolution is involved — so an
+// independently opened handle that does not refer to the same directory (a
+// repointed spelling, a same-name replacement) is reported as different. This
+// is how a component that opened its own handle binds it to the repository
+// boundary before writing through it.
+func (r *Repo) SameRoot(root *rootfs.Root) (bool, error) {
+	return r.boundary.SameRoot(root)
+}
+
 // WithMutation runs fn under the repository-wide mutation coordinator,
 // holding it for the whole call. Index publication and the following git
 // commit for one repository must happen inside one WithMutation call so they

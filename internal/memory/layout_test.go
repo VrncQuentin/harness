@@ -2,6 +2,7 @@ package memory
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
@@ -161,6 +163,99 @@ func TestCreateMissingProjectRepoWritesGitkeep(t *testing.T) {
 	}
 }
 
+// The scaffolder addresses layout entries by validated repo-relative paths
+// through the pinned root, never by joining an absolute layout-directory path
+// and reopening it. The cases here are the ones where identity selection
+// changes: an ordinary directory (different), a root reached through an alias
+// (same physical repository), a layout directory that is itself a link leaving
+// the repo (alias — must not place .gitkeep outside), and a root alias
+// repointed after the pin (repoint — must fail closed).
+func TestCreateMissing_LinkedLayoutDirectoryDoesNotPlaceGitkeepOutside(t *testing.T) {
+	t.Run("ordinary layout directory", func(t *testing.T) {
+		root := t.TempDir()
+		if err := CreateMissing(root, []LayoutItem{{Path: "artifacts", Dir: true}}); err != nil {
+			t.Fatalf("CreateMissing: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "artifacts", ".gitkeep")); err != nil {
+			t.Fatalf(".gitkeep was not created inside the ordinary layout directory: %v", err)
+		}
+	})
+
+	t.Run("root reached through an alias spelling", func(t *testing.T) {
+		base := t.TempDir()
+		real := filepath.Join(base, "real")
+		if err := os.MkdirAll(real, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		alias := filepath.Join(base, "alias")
+		mustLinkDir(t, real, alias)
+		if err := CreateMissing(alias, []LayoutItem{{Path: "artifacts", Dir: true}}); err != nil {
+			t.Fatalf("CreateMissing through an alias spelling: %v", err)
+		}
+		// The scaffold lands in the physical root, not a copy at the alias.
+		if _, err := os.Stat(filepath.Join(real, "artifacts", ".gitkeep")); err != nil {
+			t.Fatalf(".gitkeep missing from the physical root reached through the alias: %v", err)
+		}
+	})
+
+	t.Run("layout directory linked outside", func(t *testing.T) {
+		base := t.TempDir()
+		root := filepath.Join(base, "repo")
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		outside := filepath.Join(base, "outside")
+		if err := os.MkdirAll(outside, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		link := filepath.Join(root, "artifacts")
+		mustLinkDir(t, outside, link)
+
+		if err := CreateMissing(root, []LayoutItem{{Path: "artifacts", Dir: true}}); err == nil {
+			t.Error("CreateMissing succeeded with a layout directory linked outside the repo")
+		}
+		if _, statErr := os.Stat(filepath.Join(outside, ".gitkeep")); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf(".gitkeep escaped the repo through the linked layout directory: %v", statErr)
+		}
+	})
+
+	t.Run("root alias repointed after pin", func(t *testing.T) {
+		base := t.TempDir()
+		real := filepath.Join(base, "real")
+		if err := os.MkdirAll(real, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		alias := filepath.Join(base, "alias")
+		mustLinkDir(t, real, alias)
+		replacement := filepath.Join(base, "replacement")
+		if err := os.MkdirAll(replacement, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+
+		swapped := false
+		err := createMissingHooked(alias, []LayoutItem{{Path: "artifacts", Dir: true}}, func() {
+			if swapped {
+				return
+			}
+			swapped = true
+			if rmErr := os.Remove(alias); rmErr != nil {
+				t.Fatalf("Remove alias: %v", rmErr)
+			}
+			mustLinkDir(t, replacement, alias)
+		})
+		if !swapped {
+			t.Fatal("the hook never ran; the window was not exercised")
+		}
+		if err == nil {
+			t.Error("CreateMissing succeeded on a root alias repointed after the pin")
+		}
+		// The replacement must not have received the scaffold.
+		if _, statErr := os.Stat(filepath.Join(replacement, "artifacts")); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("the replacement received the scaffold: %v", statErr)
+		}
+	})
+}
+
 func TestEnsureProjectRepoInitializesAndScaffolds(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "project-repo")
 	if err := EnsureProjectRepo(root, false); err != nil {
@@ -262,7 +357,7 @@ func TestSameProjectRepoPathFailsClosedOnUnresolvablePath(t *testing.T) {
 // Recognising the alias may either collapse the move into an ensure or refuse
 // it outright: go-git declines to open a repository through a reparse point.
 // Both outcomes are correct. What must never happen is the copy.
-func TestMoveProjectRepoDoesNotCopyARepoOntoItself(t *testing.T) {
+func TestMoveProjectRepo_SameRepoAlias(t *testing.T) {
 	const body = "keep me"
 
 	newRepo := func(t *testing.T) (base, src, notes string) {
@@ -319,7 +414,7 @@ func TestMoveProjectRepoDoesNotCopyARepoOntoItself(t *testing.T) {
 // Without the handle comparison the copy opens every destination file with
 // O_TRUNC — the same file it is about to read — so the repository is emptied
 // one file at a time.
-func TestCopyTreeWithoutGitRefusesAnAliasedDestination(t *testing.T) {
+func TestMoveProjectRepo_RecursiveSelfCopy(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	if err := EnsureProjectRepo(src, false); err != nil {
@@ -442,7 +537,7 @@ func TestCopyTreeWithoutGitPreservesACrossLinkedSourceFile(t *testing.T) {
 // rejects it — but creating it adds an entry to the tree about to be walked,
 // and the walk copies it into itself until a path length or recursion limit
 // stops it. The refusal therefore has to come before the destination exists.
-func TestCopyTreeWithoutGitRefusesADestinationInsideTheSource(t *testing.T) {
+func TestMoveProjectRepo_NestedDestination(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	if err := EnsureProjectRepo(src, false); err != nil {
@@ -483,7 +578,7 @@ func TestCopyTreeWithoutGitRefusesADestinationInsideTheSource(t *testing.T) {
 //
 // The hook stages exactly that re-point, so the reproduction does not depend on
 // winning a race.
-func TestCopyTreeWithoutGitRefusesADestinationRepointedIntoTheSource(t *testing.T) {
+func TestMoveProjectRepo_ContainmentCheckByNameIsInsufficient(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	if err := EnsureProjectRepo(src, false); err != nil {
@@ -586,7 +681,7 @@ func TestCopyTreeBetweenRootsRefusesToDescendIntoTheDestination(t *testing.T) {
 // itself, because the property under test is that the walk stays with what it
 // cleared; staging it with the destination would additionally require renaming a
 // directory the walk holds open, which Windows refuses.
-func TestCopyDirStaysWithTheChildItCleared(t *testing.T) {
+func TestMoveProjectRepo_DescendsThroughPinnedChild(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	child := filepath.Join(src, "child")
@@ -722,7 +817,7 @@ func TestAnySameDir(t *testing.T) {
 //
 // Every newly pinned destination directory is therefore checked against every
 // pinned source directory, which is what catches it.
-func TestCopyDirRefusesADestinationThatBecomesASourceAncestor(t *testing.T) {
+func TestMoveProjectRepo_RenamedChildMidCopy(t *testing.T) {
 	base := t.TempDir()
 	src := filepath.Join(base, "src")
 	parent := filepath.Join(src, "parent")
@@ -795,23 +890,41 @@ func TestCopyDirRefusesADestinationThatBecomesASourceAncestor(t *testing.T) {
 	}
 }
 
-// The two trees must be disjoint. A source below the destination was once
-// waved through on the reasoning that it cannot recurse; it can still lose
-// data, because the walk writes a source subdirectory over the source itself.
-func TestCopyTreeWithoutGitRefusesASourceInsideTheDestination(t *testing.T) {
-	base := t.TempDir()
-	dst := filepath.Join(base, "outer")
-	src := filepath.Join(dst, "inner")
-	if err := EnsureProjectRepo(src, false); err != nil {
-		t.Fatalf("EnsureProjectRepo: %v", err)
+// The two trees must be disjoint in both directions. A source below the
+// destination was once waved through on the reasoning that it cannot recurse;
+// it can still lose data, because the walk writes a source subdirectory over
+// the source itself. The reverse — a destination inside the source — recurses.
+// Either way the move is refused before anything is created.
+func TestMoveProjectRepo_OverlappingTreesRejected(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(base string) (src, dst string)
+		want  string
+	}{
+		{"source inside destination", func(base string) (string, string) {
+			dst := filepath.Join(base, "outer")
+			return filepath.Join(dst, "inner"), dst
+		}, "which contains it"},
+		{"destination inside source", func(base string) (string, string) {
+			src := filepath.Join(base, "src")
+			return src, filepath.Join(src, "nested", "dst")
+		}, "into itself"},
 	}
-
-	err := copyTreeWithoutGit(src, dst)
-	if err == nil {
-		t.Fatal("copied a project memory repo into a directory that contains it")
-	}
-	if !strings.Contains(err.Error(), "which contains it") {
-		t.Errorf("err = %v, want the containing-destination refusal", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			src, dst := tc.setup(base)
+			if err := EnsureProjectRepo(src, false); err != nil {
+				t.Fatalf("EnsureProjectRepo: %v", err)
+			}
+			err := copyTreeWithoutGit(src, dst)
+			if err == nil {
+				t.Fatalf("copied a project memory repo into an overlapping destination %s", dst)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want the %s refusal", err, tc.want)
+			}
+		})
 	}
 }
 
@@ -861,34 +974,421 @@ func TestMoveProjectRepoFailsClosedOnUnresolvablePath(t *testing.T) {
 		t.Error("MoveProjectRepo proceeded with a destination it could not resolve")
 	}
 }
-func TestMoveProjectRepoCopiesWorkingTreeWithoutGitDir(t *testing.T) {
-	tmp := t.TempDir()
-	src := filepath.Join(tmp, "src")
+
+// The whole working tree is copied through the two pinned ends of the move,
+// including nested content, while the source .git stays behind. A complete
+// copy is part of the discriminator; the rest proves the two ends are pinned:
+// an alias repointed after both roots are pinned must not redirect the copy.
+// The former pathname-based implementation re-resolved each file by name, so
+// it would read the repointed source and write the repointed destination.
+func TestMoveProjectRepo_SourceAndDestinationPinned(t *testing.T) {
+	t.Run("complete copy", func(t *testing.T) {
+		tmp := t.TempDir()
+		src := filepath.Join(tmp, "src")
+		if err := EnsureProjectRepo(src, false); err != nil {
+			t.Fatalf("EnsureProjectRepo(src): %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+			t.Fatalf("write notes: %v", err)
+		}
+		nested := filepath.Join(src, "episodes", "coder")
+		if err := os.MkdirAll(nested, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(nested, "2026-01-01.md"), []byte("episode"), 0o644); err != nil {
+			t.Fatalf("write nested episode: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(src, ".git", "source-only"), []byte("do not copy"), 0o644); err != nil {
+			t.Fatalf("write git marker: %v", err)
+		}
+
+		dst := filepath.Join(tmp, "dst")
+		if err := MoveProjectRepo(src, dst, false); err != nil {
+			t.Fatalf("MoveProjectRepo: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(dst, "notes.md"))
+		if err != nil {
+			t.Fatalf("read copied notes: %v", err)
+		}
+		if string(got) != "keep me" {
+			t.Fatalf("copied notes = %q", string(got))
+		}
+		if got, err := os.ReadFile(filepath.Join(dst, "episodes", "coder", "2026-01-01.md")); err != nil {
+			t.Fatalf("read nested copy: %v", err)
+		} else if string(got) != "episode" {
+			t.Fatalf("nested file = %q, want %q", string(got), "episode")
+		}
+		if _, err := os.Stat(filepath.Join(dst, ".git", "source-only")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("source .git marker copied, err=%v", err)
+		}
+		if err := ValidateProjectRepo(dst, false); err != nil {
+			t.Fatalf("ValidateProjectRepo(dst): %v", err)
+		}
+	})
+
+	t.Run("source alias repointed mid-copy", func(t *testing.T) {
+		base := t.TempDir()
+		realSrc := filepath.Join(base, "real-src")
+		if err := EnsureProjectRepo(realSrc, false); err != nil {
+			t.Fatalf("EnsureProjectRepo(realSrc): %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(realSrc, "notes.md"), []byte("from the pinned source"), 0o644); err != nil {
+			t.Fatalf("write real source notes: %v", err)
+		}
+		impostor := filepath.Join(base, "impostor")
+		if err := EnsureProjectRepo(impostor, false); err != nil {
+			t.Fatalf("EnsureProjectRepo(impostor): %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(impostor, "notes.md"), []byte("from the impostor"), 0o644); err != nil {
+			t.Fatalf("write impostor notes: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(impostor, "marker.txt"), []byte("do not copy"), 0o644); err != nil {
+			t.Fatalf("write impostor marker: %v", err)
+		}
+		alias := filepath.Join(base, "src-alias")
+		mustLinkDir(t, realSrc, alias)
+		dst := filepath.Join(base, "dst")
+
+		swapped := false
+		err := moveProjectRepoHooked(alias, dst, false, nil, func() {
+			if swapped {
+				return
+			}
+			swapped = true
+			if rmErr := os.Remove(alias); rmErr != nil {
+				t.Fatalf("Remove alias: %v", rmErr)
+			}
+			mustLinkDir(t, impostor, alias)
+		})
+		if !swapped {
+			t.Fatal("the hook never ran; the window was not exercised")
+		}
+		if err != nil {
+			t.Fatalf("MoveProjectRepo: %v", err)
+		}
+		// The copy must have read the pinned source, wherever the alias went.
+		got, readErr := os.ReadFile(filepath.Join(dst, "notes.md"))
+		if readErr != nil {
+			t.Fatalf("read copied notes: %v", readErr)
+		}
+		if string(got) != "from the pinned source" {
+			t.Errorf("copied notes = %q, want the pinned source's content — the copy followed the repointed alias", string(got))
+		}
+		if _, statErr := os.Stat(filepath.Join(dst, "marker.txt")); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("the impostor was copied: %v", statErr)
+		}
+	})
+
+	t.Run("destination alias repointed mid-copy", func(t *testing.T) {
+		base := t.TempDir()
+		src := filepath.Join(base, "src")
+		if err := EnsureProjectRepo(src, false); err != nil {
+			t.Fatalf("EnsureProjectRepo(src): %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+			t.Fatalf("write notes: %v", err)
+		}
+		realDst := filepath.Join(base, "real-dst")
+		if err := os.MkdirAll(realDst, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		impostor := filepath.Join(base, "impostor-dst")
+		if err := os.MkdirAll(impostor, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		dstAlias := filepath.Join(base, "dst-alias")
+		mustLinkDir(t, realDst, dstAlias)
+
+		// Both trees are pinned before the alias is re-pointed. The copy must
+		// write through the pinned destination handle, wherever the alias now
+		// resolves.
+		dstRoot, dstID, err := rootfs.OpenIdentified(dstAlias)
+		if err != nil {
+			t.Fatalf("OpenIdentified(dstAlias): %v", err)
+		}
+		defer dstRoot.Close() //nolint:errcheck // test cleanup
+		srcRoot, srcID, err := rootfs.OpenIdentified(src)
+		if err != nil {
+			t.Fatalf("OpenIdentified(src): %v", err)
+		}
+		defer srcRoot.Close() //nolint:errcheck // test cleanup
+
+		if rmErr := os.Remove(dstAlias); rmErr != nil {
+			t.Fatalf("Remove dstAlias: %v", rmErr)
+		}
+		mustLinkDir(t, impostor, dstAlias)
+
+		if err := copyTreeBetweenRoots(srcRoot, srcID, dstRoot, dstID, src, dstAlias); err != nil {
+			t.Fatalf("copyTreeBetweenRoots: %v", err)
+		}
+		// The copy must have written to the pinned destination, wherever the
+		// alias went.
+		got, readErr := os.ReadFile(filepath.Join(realDst, "notes.md"))
+		if readErr != nil {
+			t.Fatalf("read copied notes: %v", readErr)
+		}
+		if string(got) != "keep me" {
+			t.Errorf("copied notes = %q, want %q", string(got), "keep me")
+		}
+		if _, statErr := os.Stat(filepath.Join(impostor, "notes.md")); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("the copy followed the repointed destination alias: %v", statErr)
+		}
+	})
+}
+
+// The transaction gate in EnsureProjectRepo belongs to the directory git
+// opened. A directory replaced at the same pathname between that open and the
+// scaffold open canonicalizes to the same pathid key — an identity comparison
+// would accept it — while the retained-boundary comparison must reject it.
+// This is the exact-boundary discriminator, analogous to the runtime's
+// active-reader↔git check.
+func TestEnsureProjectRepo_BoundaryMismatchFailsClosed(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repo")
+	if err := EnsureProjectRepo(root, false); err != nil {
+		t.Fatalf("seed repo: %v", err)
+	}
+	origID, err := pathid.Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the directory at the same pathname between the git open and the
+	// scaffold pin.
+	swapped := false
+	swapFailed := ""
+	err = ensureProjectRepoHooked(root, false, func() {
+		if swapped || swapFailed != "" {
+			return
+		}
+		if rnErr := os.Rename(root, root+".aside"); rnErr != nil {
+			swapFailed = rnErr.Error()
+			return
+		}
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			swapFailed = err.Error()
+			return
+		}
+		swapped = true
+	})
+	if !swapped {
+		if swapFailed != "" {
+			t.Skipf("Windows: the retained boundary handle blocks replacing the directory at the same pathname; the handle-block is the fail-closed outcome: %s", swapFailed)
+		}
+		t.Fatal("the hook never ran; the window was not exercised")
+	}
+	if err == nil {
+		t.Fatal("EnsureProjectRepo scaffolded under a boundary different from the git repository")
+	}
+	// The replacement must not have received the scaffold.
+	if _, statErr := os.Stat(filepath.Join(root, "rules.md")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the replacement received the scaffold: %v", statErr)
+	}
+	// Precondition: the same-name replacement reuses the pathid key, so the
+	// rejection cannot be explained by a pathid-based comparison.
+	replacedID, err := pathid.Resolve(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !origID.Equal(replacedID) {
+		t.Fatal("same-name replacement must reuse the pathid key, or this test no longer discriminates")
+	}
+}
+
+// The MoveProjectRepo boundary comparison must fail when the destination is
+// re-pointed between the pinned destination handle and git opening the
+// destination: the pinned handle refers to one physical repository while the
+// git boundary and its coordinator refer to another. The copy and scaffold
+// must never run.
+//
+// The staging re-points an intermediate component (the junction alias) so it
+// works on every platform, and the same-name-replacement precondition is not
+// needed because the two destinations never shared a pathname.
+func TestMoveProjectRepo_BoundaryMismatchFailsClosed(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
 	if err := EnsureProjectRepo(src, false); err != nil {
 		t.Fatalf("EnsureProjectRepo(src): %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
 		t.Fatalf("write notes: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(src, ".git", "source-only"), []byte("do not copy"), 0o644); err != nil {
-		t.Fatalf("write git marker: %v", err)
+	parentA := filepath.Join(base, "parent-a")
+	if err := os.MkdirAll(parentA, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	parentB := filepath.Join(base, "parent-b")
+	if err := os.MkdirAll(parentB, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, parentA, alias)
+	dst := filepath.Join(alias, "repo")
+
+	swapped := false
+	err := moveProjectRepoHooked(src, dst, false, nil, func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		if rmErr := os.RemoveAll(alias); rmErr != nil {
+			t.Fatalf("Remove alias: %v", rmErr)
+		}
+		mustLinkDir(t, parentB, alias)
+	})
+	if !swapped {
+		t.Fatal("the hook never ran; the window was not exercised")
+	}
+	if err == nil {
+		t.Fatal("MoveProjectRepo moved into a destination different from the git boundary")
+	}
+	// Neither the repointed destination nor the pinned one may have received
+	// the copy or scaffold.
+	if _, statErr := os.Stat(filepath.Join(parentB, "repo", "notes.md")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the repointed destination received the copy: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(parentA, "repo", "notes.md")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the pinned destination received the copy: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(parentB, "repo", "rules.md")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the repointed destination received the scaffold: %v", statErr)
+	}
+}
+
+// A destination re-pointed into the source after the name-based containment
+// check must be refused by the handle-bound check before the destination is
+// initialized as a git repository: no .git metadata and no copied files may
+// appear inside the source. This is the race the pinning ordering exists to
+// survive.
+func TestMoveProjectRepo_RefusedRepointLeavesNoGitInSource(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo(src): %v", err)
+	}
+	const body = "keep me"
+	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	alias := filepath.Join(base, "alias")
+	mustLinkDir(t, outside, alias)
+	dst := filepath.Join(alias, "nested", "dst")
+
+	swapped := false
+	err := moveProjectRepoHooked(src, dst, false, func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		if rmErr := os.RemoveAll(alias); rmErr != nil {
+			t.Fatalf("Remove alias: %v", rmErr)
+		}
+		mustLinkDir(t, src, alias)
+	}, nil)
+	if !swapped {
+		t.Fatal("the hook never ran; the window was not exercised")
+	}
+	if err == nil {
+		t.Fatal("MoveProjectRepo copied into a destination re-pointed inside the source")
+	}
+	// The refused move must not have initialized a repository inside the
+	// source, and must not have copied anything there.
+	if _, statErr := os.Stat(filepath.Join(src, "nested", "dst", ".git")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf(".git was created inside the source at the re-pointed destination: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(src, "nested", "dst", "notes.md")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("copied files were left at the re-pointed destination inside the source: %v", statErr)
+	}
+	// The source's own tree is intact.
+	got, readErr := os.ReadFile(filepath.Join(src, "notes.md"))
+	if readErr != nil {
+		t.Fatalf("read source notes: %v", readErr)
+	}
+	if string(got) != body {
+		t.Errorf("source notes = %q, want %q", string(got), body)
+	}
+}
+
+// The destination may name any number of missing ancestor components; they are
+// created through the pinned deepest existing ancestor rather than by name.
+func TestCopyTreeWithoutGit_CreatesMissingAncestors(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
 	}
 
-	dst := filepath.Join(tmp, "dst")
+	dst := filepath.Join(base, "missing", "nested", "dst")
+	if err := copyTreeWithoutGit(src, dst); err != nil {
+		t.Fatalf("copyTreeWithoutGit: %v", err)
+	}
+	got, readErr := os.ReadFile(filepath.Join(base, "missing", "nested", "dst", "notes.md"))
+	if readErr != nil {
+		t.Fatalf("read copied notes: %v", readErr)
+	}
+	if string(got) != "keep me" {
+		t.Errorf("copied notes = %q, want %q", string(got), "keep me")
+	}
+}
+
+// A trailing separator must not turn the destination into a nested
+// dst/dst directory: it is cleaned and the files land in dst itself.
+func TestCopyTreeWithoutGit_TrailingSeparatorDestination(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+
+	dst := filepath.Join(base, "dst") + string(filepath.Separator)
+	if err := copyTreeWithoutGit(src, dst); err != nil {
+		t.Fatalf("copyTreeWithoutGit: %v", err)
+	}
+	got, readErr := os.ReadFile(filepath.Join(base, "dst", "notes.md"))
+	if readErr != nil {
+		t.Fatalf("read copied notes: %v", readErr)
+	}
+	if string(got) != "keep me" {
+		t.Errorf("copied notes = %q, want %q", string(got), "keep me")
+	}
+	if _, statErr := os.Stat(filepath.Join(base, "dst", "dst")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("trailing separator created a nested destination: %v", statErr)
+	}
+}
+
+// MoveProjectRepo cleans its destination, so a trailing separator and missing
+// ancestor components are accepted the same way they were by os.MkdirAll.
+func TestMoveProjectRepo_TrailingSeparatorDestination(t *testing.T) {
+	base := t.TempDir()
+	src := filepath.Join(base, "src")
+	if err := EnsureProjectRepo(src, false); err != nil {
+		t.Fatalf("EnsureProjectRepo: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "notes.md"), []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write notes: %v", err)
+	}
+
+	dst := filepath.Join(base, "missing", "dst") + string(filepath.Separator)
 	if err := MoveProjectRepo(src, dst, false); err != nil {
 		t.Fatalf("MoveProjectRepo: %v", err)
 	}
-	got, err := os.ReadFile(filepath.Join(dst, "notes.md"))
-	if err != nil {
-		t.Fatalf("read copied notes: %v", err)
+	got, readErr := os.ReadFile(filepath.Join(base, "missing", "dst", "notes.md"))
+	if readErr != nil {
+		t.Fatalf("read copied notes: %v", readErr)
 	}
 	if string(got) != "keep me" {
-		t.Fatalf("copied notes = %q", string(got))
+		t.Errorf("copied notes = %q, want %q", string(got), "keep me")
 	}
-	if _, err := os.Stat(filepath.Join(dst, ".git", "source-only")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("source .git marker copied, err=%v", err)
-	}
-	if err := ValidateProjectRepo(dst, false); err != nil {
-		t.Fatalf("ValidateProjectRepo(dst): %v", err)
+	if _, statErr := os.Stat(filepath.Join(base, "missing", "dst", "dst")); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("trailing separator created a nested destination: %v", statErr)
 	}
 }

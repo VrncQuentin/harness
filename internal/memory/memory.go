@@ -301,6 +301,45 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 	}
 	defer func() { _ = root.Close() }()
 
+	startDir := root
+	defer func() {
+		if startDir != root {
+			_ = startDir.Close()
+		}
+	}()
+	startPrefix := ""
+	if relPath != "" {
+		comps := strings.Split(filepath.FromSlash(relPath), string(filepath.Separator))
+		for _, comp := range comps {
+			child, _, err := startDir.OpenChildNoFollow(comp)
+			if err != nil {
+				if errors.Is(err, fs.ErrNotExist) {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
+			}
+			if startDir != root {
+				_ = startDir.Close()
+			}
+			startDir = child
+			if startPrefix == "" {
+				startPrefix = comp
+			} else {
+				startPrefix = path.Join(startPrefix, comp)
+			}
+		}
+	}
+	return walkEntriesFrom(startDir, startPrefix)
+}
+
+// walkEntriesFrom returns every entry under dir, sorted by path, skipping .git
+// and descending each directory through the pinned child handle it inspected.
+// prefix names the level for diagnostics and path assembly; "" is the top.
+//
+// The descent is what keeps the walk inside the tree: a directory swapped
+// between inspection and entry cannot redirect the traversal, and a link
+// leaving the tree is refused rather than followed.
+func walkEntriesFrom(dir *rootfs.Root, prefix string) ([]Entry, error) {
 	var out []Entry
 	var walkDir func(dir *rootfs.Root, prefix string) error
 	walkDir = func(dir *rootfs.Root, prefix string) error {
@@ -341,36 +380,7 @@ func (r *DirReader) Walk(relPath string) ([]Entry, error) {
 		}
 		return nil
 	}
-
-	startDir := root
-	defer func() {
-		if startDir != root {
-			_ = startDir.Close()
-		}
-	}()
-	startPrefix := ""
-	if relPath != "" {
-		comps := strings.Split(filepath.FromSlash(relPath), string(filepath.Separator))
-		for _, comp := range comps {
-			child, _, err := startDir.OpenChildNoFollow(comp)
-			if err != nil {
-				if errors.Is(err, fs.ErrNotExist) {
-					return nil, nil
-				}
-				return nil, fmt.Errorf("memory: walk %s: %w", relPath, err)
-			}
-			if startDir != root {
-				_ = startDir.Close()
-			}
-			startDir = child
-			if startPrefix == "" {
-				startPrefix = comp
-			} else {
-				startPrefix = path.Join(startPrefix, comp)
-			}
-		}
-	}
-	if err := walkDir(startDir, startPrefix); err != nil {
+	if err := walkDir(dir, prefix); err != nil {
 		return nil, err
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
