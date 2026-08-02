@@ -19,18 +19,26 @@ import (
 	"github.com/VrncQuentin/harness/internal/prompt"
 	"github.com/VrncQuentin/harness/internal/queue"
 	"github.com/VrncQuentin/harness/internal/session"
+	"github.com/VrncQuentin/harness/internal/ui"
 )
 
 // generation owns the concrete resources of one reload cycle: readers,
-// assembler, and session manager. Operations acquire a lease before using
-// any generation resource and release it after. When the lease count
-// reaches zero, the generation's readers and owned handles are closed.
+// assembler, session manager, and the immutable UI dependency snapshot. The
+// publisher holds one lease for as long as the generation is installed;
+// operations acquire an additional lease before using any generation resource
+// and release it after. When the lease count reaches zero, the generation's
+// readers and owned handles are closed.
 type generation struct {
 	readers    []memory.Repo
 	assembler  *prompt.DiskAssembler
 	sessionMgr *session.Manager
 	handles    []io.Closer
-	leases     atomic.Int64
+	// uiSnap is the complete set of generation-bound UI dependencies. It is
+	// captured once when the generation is published and handed out (with a
+	// lease) by AcquireUISnapshot, so every UI request observes one coherent
+	// generation.
+	uiSnap ui.ServiceDeps
+	leases atomic.Int64
 }
 
 func (g *generation) acquire() { g.leases.Add(1) }
@@ -131,6 +139,30 @@ func (rt *Runtime) AcquireRequestGeneration() (api.Assembler, api.SessionRecorde
 		rec = &staticSessionRecorder{mgr: mgr}
 	}
 	return &staticAssembler{asm: asm, active: active}, rec, active, g.release
+}
+
+// AcquireUISnapshot implements ui.SnapshotProvider. It atomically captures
+// the current generation's complete UI dependency snapshot and pins the
+// generation under rt.mu, so publication cannot retire and close the old
+// generation between a handler selecting its snapshot and obtaining its
+// lease. The caller must use only fields from the returned snapshot and call
+// release when the request completes; release is safe to transfer to a
+// detached goroutine.
+func (rt *Runtime) AcquireUISnapshot() (ui.ServiceDeps, func()) {
+	rt.mu.Lock()
+	g := rt.gen
+	if g == nil {
+		rt.mu.Unlock()
+		return ui.ServiceDeps{}, func() {}
+	}
+	g.acquire()
+	snap := g.uiSnap
+	// The active agent is a user selection that changes without a generation
+	// rebuild (/agents/active), so it is resolved here per acquisition under
+	// the same lock as the generation rather than frozen in the snapshot.
+	snap.ActiveAgent = rt.cfg.Agent.Active
+	rt.mu.Unlock()
+	return snap, g.release
 }
 
 // staticAssembler implements api.Assembler against a concrete assembler

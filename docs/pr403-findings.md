@@ -129,9 +129,41 @@ until the sequence below is merged and the final audit (PR 12) passes.
 |---|---------|------|
 | 8.1 | Repeated getter calls can combine store/committer/runner from different publications | `TestSnapshot_RequestUsesConsistentDependencies` |
 | 8.2 | Detached goroutines hold references across reload without generation lease | `TestSnapshot_DetachedGoroutineCapturesSnapshotBeforeStart` |
-| 8.3 | Old snapshot references remain valid after reload | `TestSnapshot_OldReferencesRemainValidAfterReload` — deferred to PR 8 |
-| 8.4 | `memoryHandles` / `genGate` / route-by-route drain NOT introduced | Eliminated mechanism — route-by-route genGate is rejected. Snapshot-scoped leasing (if any) is deferred to PR 8. |
+| 8.3 | Old snapshot references remain valid after reload | `TestSnapshot_OldReferencesRemainValidAfterReload` |
+| 8.4 | `memoryHandles` / `genGate` / route-by-route drain NOT introduced | Eliminated mechanism — route-by-route genGate is rejected. The snapshot lease model below replaces it; no second drain/gate lifecycle exists. |
 | 8.5 | `memoryAPISnapshot` NOT introduced | Eliminated mechanism — snapshot pattern replaces it |
+
+**Snapshot protocol (shipped):** each runtime generation owns one immutable
+`ui.ServiceDeps` (memory repo path/store, agent registry, session store,
+committer, dedup checker + threshold, retrieval scorer, index rebuilder, chat
+runner, task runner) bound to that generation's readers, git handle, and
+episode index. Every adapter in the snapshot is bound to concrete
+candidate-generation resources: the chat/task runners use a static assembler
+over the candidate's concrete assembler plus the candidate's session manager,
+active agent, project slug, loop config, and active memory — they never
+dereference `Runtime` (except the deliberately-live C2 memory-repo predicate),
+so an old snapshot reads and records exclusively in the project it was
+published for. The active agent is an exception: `/agents/active` switches
+it without a generation rebuild, so `AcquireUISnapshot` resolves
+`ServiceDeps.ActiveAgent` per acquisition under the same runtime lock and the
+chat/task handlers fall back to it for an empty agent field; the adapters hold
+no frozen active agent, and the `/chat` and `/agents` pages render their
+active-agent marker from the snapshot's value rather than re-reading the
+registry's live selection. The provider is installed both by `Runtime.Start` and
+at the top of `ApplyConfig`, so a retry-only startup (first run, invalid
+config, or failed validation) still wires generation-backed handlers. The API
+server alone keeps a dynamic assembler (`AcquireRequestGeneration`), because
+API requests legitimately use the current generation. `Runtime.AcquireUISnapshot`
+captures the current generation's snapshot and pins the generation under
+`rt.mu`; publication swaps the installed generation and retires the old
+publisher lease under the same lock, so a handler cannot select an old
+snapshot after its generation was retired (no load-before-increment window).
+UI handlers call `acquireSnapshot` once and release on every completion/error
+path; `/chat/send` and `/task/send` transfer the release to the detached
+goroutine, which releases after the run/stream ends. Old readers and handles
+close only after the last acquired snapshot on the old generation is
+released, so an old snapshot stays usable for real rooted operations against
+the original repository.
 
 ### PR 9 — Explicit applied runtime state
 
@@ -196,7 +228,7 @@ makes them unnecessary.
 | Mechanism | Why eliminated |
 |-----------|---------------|
 | `memoryHandles` — runtime holds root handles and closes on shutdown | Replaced by generation lease model: the `Runtime` tracks generations through `generation.leases` and closes old-generation readers when the last in-flight operation releases its lease. |
-| `genGate` — route-by-route drain wrapping | Eliminated. Route-by-route generation gates are rejected. Deferred snapshot-scoped leasing (if any) is designed in PR 8. |
+| `genGate` — route-by-route drain wrapping | Eliminated. Route-by-route generation gates are rejected. Snapshot-scoped leasing is implemented in PR 8: `AcquireUISnapshot` pins the generation, never a per-route gate. |
 | `memoryAPISnapshot` — snapshot of memory API per generation | Replaced by immutable UI snapshots in PR 8 |
 | `snapshot.closeReplaced()` — close handles when replacement starts | Deferred to PR 8: Anchor ownership and lifetime design there |
 | `stopMemoryAndAPI` — drops references, does not close | Replaced by Anchor ownership in PR 2a: consumers own and close their Anchors; no runtime stop/drop cycle |

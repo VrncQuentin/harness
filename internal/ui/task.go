@@ -60,10 +60,7 @@ var (
 	ErrTaskNotReady = errors.New("task runner not available — the harness may still be starting")
 )
 
-func (s *Server) getTaskRunner() TaskRunner {
-	return s.depsSnapshot().taskRunner
-}
-
+// taskView is the template context for the /task page.
 func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -93,26 +90,39 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	runner := s.getTaskRunner()
-	if runner == nil {
+	// Acquire the snapshot before reading the runner or session store and
+	// transfer the lease to the detached goroutine, which releases it after
+	// the entire task stream ends. Every pre-launch error path releases
+	// exactly once.
+	snap, release := s.acquireSnapshot()
+	if snap.TaskRunner == nil {
+		release()
 		http.Error(w, ErrTaskNotReady.Error(), http.StatusServiceUnavailable)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, taskSendMaxBytes)
 	if err := r.ParseForm(); err != nil {
+		release()
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
 	msg := strings.TrimSpace(r.FormValue("message"))
 	if msg == "" {
+		release()
 		http.Error(w, "message must not be empty", http.StatusBadRequest)
 		return
 	}
 	agent := strings.TrimSpace(r.FormValue("agent"))
+	// The task form has no agent field; an empty value means "use the active
+	// agent", resolved from the per-acquisition snapshot so an agent switch
+	// made without a generation rebuild is picked up.
+	if agent == "" {
+		agent = snap.ActiveAgent
+	}
 	sessionID := strings.TrimSpace(r.FormValue("session_id"))
 	streamID := strings.TrimSpace(r.FormValue("stream_id"))
 	textEvent := "task-text-" + newEventStreamID()
-	conversation := s.liveConversationForTask(sessionID)
+	conversation := s.liveConversationForTask(snap.SessionStore, sessionID)
 	conversation = append(conversation, ChatMessage{Role: "user", Content: msg})
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -122,22 +132,24 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 		StreamID:    streamID,
 		TextEvent:   textEvent,
 	}); err != nil {
+		release()
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
 	}
 
 	ctx, cancel := context.WithCancel(s.asyncContext())
+	runner := snap.TaskRunner
 	go func() {
 		defer cancel()
+		defer release()
 		s.streamTaskEvents(ctx, runner, agent, sessionID, streamID, textEvent, conversation)
 	}()
 }
 
-func (s *Server) liveConversationForTask(sessionID string) []ChatMessage {
+func (s *Server) liveConversationForTask(store SessionStore, sessionID string) []ChatMessage {
 	if sessionID == "" {
 		return nil
 	}
-	store := s.getSessionStore()
 	if store == nil {
 		return nil
 	}
@@ -232,7 +244,9 @@ func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	runner := s.getTaskRunner()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	runner := snap.TaskRunner
 	if runner == nil {
 		http.Error(w, ErrTaskNotReady.Error(), http.StatusServiceUnavailable)
 		return
@@ -257,7 +271,9 @@ func (s *Server) handleTaskApproval(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	runner := s.getTaskRunner()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	runner := snap.TaskRunner
 	if runner == nil {
 		http.Error(w, ErrTaskNotReady.Error(), http.StatusServiceUnavailable)
 		return

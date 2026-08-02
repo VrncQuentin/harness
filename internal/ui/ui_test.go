@@ -108,31 +108,39 @@ type noopIndexRebuilder struct{}
 
 func (noopIndexRebuilder) Rebuild(context.Context) error { return nil }
 
-func serviceDepsForTest(s *Server) ServiceDeps {
-	deps := s.depsSnapshot()
-	return ServiceDeps{
-		MemoryRepoPath:          deps.memRepo,
-		AgentRegistry:           deps.agentReg,
-		MemoryStore:             deps.memStore,
-		SessionStore:            deps.sessionStore,
-		Committer:               deps.committer,
-		Dedup:                   deps.dedup,
-		PromotionDedupThreshold: deps.promotionDedupThreshold,
-		RetrievalScorer:         deps.scorer,
-		IndexRebuilder:          deps.rebuilder,
-		ChatRunner:              deps.chatRunner,
-		TaskRunner:              deps.taskRunner,
-	}
+// staticSnapshotProvider serves one fixed snapshot with a no-op lease. It is
+// the test stand-in for the runtime's generation-bound snapshot provider.
+type staticSnapshotProvider struct {
+	snap ServiceDeps
+}
+
+func (p *staticSnapshotProvider) AcquireUISnapshot() (ServiceDeps, func()) {
+	return p.snap, func() {}
+}
+
+func currentSnapshotForTest(s *Server) ServiceDeps {
+	snap, _ := s.acquireSnapshot()
+	return snap
 }
 
 func setServiceDepsForTest(s *Server, mut func(*ServiceDeps)) {
-	deps := serviceDepsForTest(s)
+	deps := currentSnapshotForTest(s)
 	mut(&deps)
-	s.SetServiceDeps(deps)
+	s.SetSnapshotProvider(&staticSnapshotProvider{snap: deps})
+}
+
+func setSnapshotForTest(s *Server, deps ServiceDeps) {
+	s.SetSnapshotProvider(&staticSnapshotProvider{snap: deps})
 }
 
 func setAgentRegistryForTest(s *Server, reg AgentRegistry) {
-	setServiceDepsForTest(s, func(d *ServiceDeps) { d.AgentRegistry = reg })
+	setServiceDepsForTest(s, func(d *ServiceDeps) {
+		d.AgentRegistry = reg
+		// Mirror the production acquisition-scoped active agent so the
+		// rendered chat/agents pages highlight the same selection the registry
+		// was configured with.
+		d.ActiveAgent = reg.Active()
+	})
 }
 
 func setChatRunnerForTest(s *Server, runner ChatRunner) {
@@ -170,7 +178,7 @@ func setTaskRunnerForTest(s *Server, runner TaskRunner) {
 func setMemoryRepoPathForTest(s *Server, path string) {
 	setServiceDepsForTest(s, func(d *ServiceDeps) { d.MemoryRepoPath = path })
 }
-func TestSetServiceDepsPublishesAndClearsSnapshot(t *testing.T) {
+func TestSnapshotProviderPublishesAndClearsDeps(t *testing.T) {
 	s := NewServer(3000)
 	reg := newStubRegistry("coder", AgentInfo{Name: "coder"})
 	memStore := newStubMemoryStore(nil)
@@ -182,7 +190,7 @@ func TestSetServiceDepsPublishesAndClearsSnapshot(t *testing.T) {
 	chatRunner := &stubChatRunner{}
 	taskRunner := &recordingTaskRunner{}
 
-	s.SetServiceDeps(ServiceDeps{
+	s.SetSnapshotProvider(&staticSnapshotProvider{snap: ServiceDeps{
 		MemoryRepoPath:          "C:\\repo",
 		AgentRegistry:           reg,
 		MemoryStore:             memStore,
@@ -194,45 +202,67 @@ func TestSetServiceDepsPublishesAndClearsSnapshot(t *testing.T) {
 		IndexRebuilder:          rebuilder,
 		ChatRunner:              chatRunner,
 		TaskRunner:              taskRunner,
-	})
+	}})
 
-	if got := s.getMemoryRepoPath(); got != "C:\\repo" {
+	snap, _ := s.acquireSnapshot()
+	if got := snap.MemoryRepoPath; got != "C:\\repo" {
 		t.Fatalf("memory repo path = %q", got)
 	}
-	if got := s.agentRegistry(); got != reg {
+	if snap.AgentRegistry != reg {
 		t.Fatal("agent registry was not published")
 	}
-	if got := s.memoryStore(); got != memStore {
+	if snap.MemoryStore != memStore {
 		t.Fatal("memory store was not published")
 	}
-	if got := s.getSessionStore(); got != sessionStore {
+	if snap.SessionStore != sessionStore {
 		t.Fatal("session store was not published")
 	}
-	if got := s.getCommitter(); got != committer {
+	if snap.Committer != committer {
 		t.Fatal("committer was not published")
 	}
-	if got := s.getDedupChecker(); got != dedup {
+	if snap.Dedup != dedup {
 		t.Fatal("dedup checker was not published")
 	}
-	if got := s.getPromotionDedupThreshold(); got != 0.95 {
-		t.Fatalf("dedup threshold = %v", got)
+	if snap.PromotionDedupThreshold != 0.95 {
+		t.Fatalf("dedup threshold = %v", snap.PromotionDedupThreshold)
 	}
-	if got := s.retrievalScorer(); got != scorer {
+	if snap.RetrievalScorer != scorer {
 		t.Fatal("retrieval scorer was not published")
 	}
-	if got := s.indexRebuilder(); got != rebuilder {
+	if snap.IndexRebuilder != rebuilder {
 		t.Fatal("index rebuilder was not published")
 	}
-	if got := s.getChatRunner(); got != chatRunner {
+	if snap.ChatRunner != chatRunner {
 		t.Fatal("chat runner was not published")
 	}
-	if got := s.getTaskRunner(); got != taskRunner {
+	if snap.TaskRunner != taskRunner {
 		t.Fatal("task runner was not published")
 	}
 
-	s.SetServiceDeps(ServiceDeps{})
-	if s.getMemoryRepoPath() != "" || s.agentRegistry() != nil || s.memoryStore() != nil || s.getSessionStore() != nil || s.getCommitter() != nil || s.getDedupChecker() != nil || s.retrievalScorer() != nil || s.indexRebuilder() != nil || s.getChatRunner() != nil || s.getTaskRunner() != nil {
+	// A provider without a snapshot clears every generation-bound field
+	// together, so handlers observe an empty snapshot.
+	s.SetSnapshotProvider(&staticSnapshotProvider{})
+	cleared, _ := s.acquireSnapshot()
+	if cleared.MemoryRepoPath != "" || cleared.AgentRegistry != nil || cleared.MemoryStore != nil || cleared.SessionStore != nil || cleared.Committer != nil || cleared.Dedup != nil || cleared.RetrievalScorer != nil || cleared.IndexRebuilder != nil || cleared.ChatRunner != nil || cleared.TaskRunner != nil {
 		t.Fatal("service deps were not cleared together")
+	}
+}
+
+func TestSetSnapshotProviderNilYieldsEmptySnapshot(t *testing.T) {
+	s := NewServer(3000)
+	s.SetSnapshotProvider(&staticSnapshotProvider{snap: ServiceDeps{
+		MemoryStore: newStubMemoryStore(nil),
+		ChatRunner:  &stubChatRunner{},
+	}})
+
+	// A nil provider must clear the atomic pointer, not store a non-nil
+	// pointer to a nil interface that acquisition would call into.
+	s.SetSnapshotProvider(nil)
+
+	snap, release := s.acquireSnapshot()
+	defer release()
+	if snap.MemoryStore != nil || snap.ChatRunner != nil {
+		t.Fatalf("nil provider left deps visible: store=%T runner=%T", snap.MemoryStore, snap.ChatRunner)
 	}
 }
 func TestNewBasePageUsesCachedProjectNav(t *testing.T) {

@@ -53,10 +53,6 @@ type SessionRecord struct {
 	EpisodePath string    `json:"episode_path"`
 }
 
-func (s *Server) getSessionStore() SessionStore {
-	return s.depsSnapshot().sessionStore
-}
-
 // chatSaveView is the template data for the chat-save-fragment partial.
 type chatSaveView struct {
 	SessionID string
@@ -75,7 +71,9 @@ func (s *Server) handleChatSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	store := s.getSessionStore()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	store := snap.SessionStore
 	if store == nil {
 		http.Error(w, "session manager not available", http.StatusServiceUnavailable)
 		return
@@ -122,7 +120,9 @@ func (s *Server) handleChatSessionResume(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	store := s.getSessionStore()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	store := snap.SessionStore
 	if store == nil {
 		http.Error(w, "session manager not available", http.StatusServiceUnavailable)
 		return

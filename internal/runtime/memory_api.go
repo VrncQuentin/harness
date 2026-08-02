@@ -148,6 +148,16 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	oldGlobal := rt.globalMem
 	oldActive := rt.activeMem
 
+	// Bind the candidate's complete UI snapshot to its generation before
+	// anything observes it, and take the publisher lease up front.
+	newGen := &generation{
+		assembler:  candidate.assembler,
+		sessionMgr: candidate.sessionMgr,
+		handles:    candidate.handles,
+		uiSnap:     candidate.serviceDeps,
+	}
+	newGen.acquire()
+
 	rt.globalMem = candidate.globalMem
 	rt.activeMem = candidate.activeMem
 	rt.agentReg = candidate.agentReg
@@ -158,23 +168,18 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		rt.apiServer = candidate.apiServer
 	}
 
-	uiServer.SetServiceDeps(candidate.serviceDeps)
-
-	// Retire the old generation: attach the retired readers and release
-	// the publisher lease. When the last in-flight operation releases
-	// its lease, the generation's readers are closed.
-	if rt.gen != nil {
-		rt.gen.readers = []memory.Repo{oldGlobal, oldActive}
-		rt.gen.release()
+	// Publish the generation and its snapshot coherently: swap rt.gen under
+	// the same lock acquisition uses, then retire the old publisher lease.
+	// Old readers and handles close only after the last acquired snapshot on
+	// the old generation is released.
+	oldGen := rt.gen
+	rt.gen = newGen
+	if oldGen != nil {
+		oldGen.readers = []memory.Repo{oldGlobal, oldActive}
+		oldGen.release()
 	} else {
 		closeReaders(oldGlobal, oldActive)
 	}
-	rt.gen = &generation{
-		assembler:  candidate.assembler,
-		sessionMgr: candidate.sessionMgr,
-		handles:    candidate.handles,
-	}
-	rt.gen.acquire()
 
 	return true
 }
@@ -270,6 +275,18 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
 
+	// The UI snapshot's runners and registry adapters are bound to concrete
+	// candidate-generation resources and config, never to adapters that
+	// reacquire the live generation at execution time. The API server alone
+	// keeps the dynamic asmAdapter, because API requests legitimately use the
+	// current generation.
+	//
+	// The snapshot's static assembler deliberately carries no active agent:
+	// /agents/active switches the selection without a generation rebuild, so
+	// the active agent is resolved per acquisition in AcquireUISnapshot
+	// (ServiceDeps.ActiveAgent) and the chat/task handlers pass it explicitly.
+	snapshotAsm := &staticAssembler{asm: assembler}
+
 	loopCfg := cfg.Loop
 	userLayer := approvals.Layer{Name: "user-config"}
 	if !loopCfg.EditEnabled {
@@ -334,9 +351,13 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	}
 	taskAdapter := &taskRunnerAdapter{
 		rt:             rt,
+		asm:            snapshotAsm,
 		registry:       registry,
-		asm:            asmAdapter,
 		q:              rt.reqQueue,
+		sessionMgr:     sessionMgr,
+		slug:           cfg.Project.ActiveProjectSlug,
+		loopCfg:        loopCfg,
+		mem:            activeMem,
 		memScorer:      &memoryops.EpisodeScorer{Embedder: embedClient, Config: cfg.Prompt, Index: episodeIndex},
 		approvalLayers: approvalLayers,
 		metrics:        loopMetrics,
@@ -357,7 +378,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		Index:    episodeIndex,
 	}}
 	svcDeps.MemoryStore = activeMem
-	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: agentReg, globalMem: globalMem, activeMem: activeMem, getProjectSlug: rt.getActiveProjectSlug, setActive: rt.setActiveAgent}
+	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: agentReg, globalMem: globalMem, activeMem: activeMem, slug: cfg.Project.ActiveProjectSlug, setActive: rt.setActiveAgent}
 	if sessionAdapter != nil {
 		svcDeps.SessionStore = sessionAdapter
 	}
@@ -380,7 +401,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	}
 	if rt.reqQueue != nil {
 		svcDeps.ChatRunner = &chatRunnerAdapter{
-			asm: asmAdapter,
+			asm: snapshotAsm,
 			q:   rt.reqQueue,
 			mgr: sessionMgr,
 		}
@@ -467,7 +488,7 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ro
 	if err != nil {
 		return repo, nil, nil, fmt.Errorf("session manager: %w", err)
 	}
-	adapter := &uiSessionStoreAdapter{mgr: mgr, getActive: rt.getActiveAgent}
+	adapter := &uiSessionStoreAdapter{mgr: mgr}
 	return repo, mgr, adapter, nil
 }
 
@@ -543,16 +564,6 @@ func (rt *Runtime) getActiveAgent() string {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.cfg.Agent.Active
-}
-
-func (rt *Runtime) getActiveProjectSlug() string {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	slug := rt.cfg.Project.ActiveProjectSlug
-	if slug == "" {
-		slug = "global"
-	}
-	return slug
 }
 
 func (rt *Runtime) setActiveAgent(name string) error {

@@ -23,18 +23,6 @@ type DedupChecker interface {
 	CheckSimilar(ctx context.Context, text string, threshold float64) (blocked bool, similarFact string, score float64, err error)
 }
 
-func (s *Server) getCommitter() Committer {
-	return s.depsSnapshot().committer
-}
-
-func (s *Server) getDedupChecker() DedupChecker {
-	return s.depsSnapshot().dedup
-}
-
-func (s *Server) getPromotionDedupThreshold() float64 {
-	return s.depsSnapshot().promotionDedupThreshold
-}
-
 // handlePromoteFact appends text to facts.md in the active project memory repo and commits it.
 // When a DedupChecker and non-zero threshold are available, the handler
 // checks for near-duplicate facts before writing and redirects with a
@@ -44,12 +32,14 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	store := s.memoryStore()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	store := snap.MemoryStore
 	if store == nil {
 		http.Error(w, "memory store not available", http.StatusServiceUnavailable)
 		return
 	}
-	c := s.getCommitter()
+	c := snap.Committer
 	if c == nil {
 		http.Error(w, "committer not available", http.StatusServiceUnavailable)
 		return
@@ -61,8 +51,8 @@ func (s *Server) handlePromoteFact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Dedup check (optional — skipped when checker or threshold is absent).
-	if checker := s.getDedupChecker(); checker != nil {
-		threshold := s.getPromotionDedupThreshold()
+	if checker := snap.Dedup; checker != nil {
+		threshold := snap.PromotionDedupThreshold
 		if threshold > 0 {
 			blocked, similar, score, err := checker.CheckSimilar(r.Context(), text, threshold)
 			if err != nil {
@@ -91,12 +81,14 @@ func (s *Server) handleAppendNote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	store := s.memoryStore()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	store := snap.MemoryStore
 	if store == nil {
 		http.Error(w, "memory store not available", http.StatusServiceUnavailable)
 		return
 	}
-	c := s.getCommitter()
+	c := snap.Committer
 	if c == nil {
 		http.Error(w, "committer not available", http.StatusServiceUnavailable)
 		return

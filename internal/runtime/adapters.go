@@ -12,7 +12,9 @@ import (
 
 	"github.com/VrncQuentin/harness/internal/agent"
 	"github.com/VrncQuentin/harness/internal/agentloop"
+	"github.com/VrncQuentin/harness/internal/api"
 	"github.com/VrncQuentin/harness/internal/approvals"
+	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/httpclient"
 	"github.com/VrncQuentin/harness/internal/inference"
 	"github.com/VrncQuentin/harness/internal/memory"
@@ -26,11 +28,14 @@ import (
 )
 
 type uiAgentRegistryAdapter struct {
-	reg            agent.Registry
-	globalMem      memory.Repo
-	activeMem      memory.Repo
-	getProjectSlug func() string
-	setActive      func(string) error
+	reg       agent.Registry
+	globalMem memory.Repo
+	activeMem memory.Repo
+	// slug is the active project slug captured when the generation was
+	// published, so a reload to another project does not make an old snapshot
+	// resolve its project registry against the new project.
+	slug      string
+	setActive func(string) error
 }
 
 func (ad *uiAgentRegistryAdapter) List() ([]ui.AgentInfo, error) {
@@ -54,15 +59,11 @@ func (ad *uiAgentRegistryAdapter) Get(name string) (ui.AgentInfo, error) {
 }
 
 func (ad *uiAgentRegistryAdapter) projectRegistry() *agent.ProjectRegistry {
-	slug := ""
-	if ad.getProjectSlug != nil {
-		slug = ad.getProjectSlug()
-	}
 	return &agent.ProjectRegistry{
 		Global:      ad.reg,
 		GlobalMem:   ad.globalMem,
 		ActiveMem:   ad.activeMem,
-		ProjectSlug: slug,
+		ProjectSlug: ad.slug,
 		GlobalSlug:  project.GlobalSlug,
 		SetActiveFn: ad.setActive,
 	}
@@ -142,8 +143,15 @@ func chatMessagesToInference(conversation []ui.ChatMessage) []inference.Message 
 // to the UI so the browser can pin it to subsequent stream + save
 // requests, and the assistant turn is appended to the live session as
 // tokens arrive.
+//
+// Every resource is generation-bound: asm is a static assembler over the
+// candidate generation's concrete assembler and mgr is the candidate's
+// session manager. The active agent is NOT stored here — the UI handler
+// resolves an empty agent field from the per-acquisition snapshot
+// (ServiceDeps.ActiveAgent), because /agents/active switches the selection
+// without a generation rebuild.
 type chatRunnerAdapter struct {
-	asm *apiAssemblerAdapter
+	asm api.Assembler
 	q   *queue.Queue
 	mgr *session.Manager
 }
@@ -159,23 +167,19 @@ func (ad *chatRunnerAdapter) Run(ctx context.Context, agentName, sessionID strin
 
 	// Resolve the active agent up front so the session is bound to the
 	// same value the assembler will use.
-	resolvedAgent := agentName
-	if resolvedAgent == "" {
-		resolvedAgent = ad.asm.rt.getActiveAgent()
-	}
-	if resolvedAgent == "" {
+	if agentName == "" {
 		return "", nil, ui.ErrChatNoAgent
 	}
 
 	// Mint or attach to a session id and replay any user-side delta before
 	// dispatch so a save on the next click captures the turn even if the user
 	// navigates away mid-stream.
-	id := attachSessionTurn(ad.mgr, sessionID, resolvedAgent, msgs)
+	id := attachSessionTurn(ad.mgr, sessionID, agentName, msgs)
 
 	reqID := fmt.Sprintf("uichat-%d", time.Now().UnixNano())
 	ctx = reqid.WithID(ctx, reqID)
 
-	assembled, err := ad.asm.Assemble(ctx, resolvedAgent, msgs)
+	assembled, err := ad.asm.Assemble(ctx, agentName, msgs)
 	if err != nil {
 		if errors.Is(err, errNoActiveAgent) {
 			return "", nil, ui.ErrChatNoAgent
@@ -272,12 +276,13 @@ func appendUserSide(mgr *session.Manager, id string, conversation []inference.Me
 	}
 }
 
-// uiSessionStoreAdapter implements ui.SessionStore against the live
-// session manager. It hides the manager type from the ui package so
-// the import graph stays one-way.
+// uiSessionStoreAdapter implements ui.SessionStore against the session
+// manager captured by one generation. It hides the manager type from the ui
+// package so the import graph stays one-way. An empty agent in Records is
+// treated as "no agent" rather than resolved against a stale captured
+// selection; the UI always passes the per-acquisition active agent.
 type uiSessionStoreAdapter struct {
-	mgr       *session.Manager
-	getActive func() string
+	mgr *session.Manager
 }
 
 // Save persists the live session and returns the result.
@@ -302,9 +307,6 @@ func (ad *uiSessionStoreAdapter) Save(ctx context.Context, id string) (ui.Sessio
 func (ad *uiSessionStoreAdapter) Records(agent string) ([]ui.SessionRecord, error) {
 	if ad.mgr == nil {
 		return nil, nil
-	}
-	if agent == "" {
-		agent = ad.getActive()
 	}
 	if agent == "" {
 		return nil, nil
@@ -385,11 +387,27 @@ func (ad *uiSessionStoreAdapter) Resume(id string) error {
 }
 
 type taskRunnerAdapter struct {
-	rt        *Runtime
-	registry  *tools.Registry
-	asm       *apiAssemblerAdapter
-	q         *queue.Queue
-	memScorer *memoryops.EpisodeScorer // injected for memory_query tool; nil if unavailable
+	// rt is kept only for the deliberately live C2 memory-repo predicate
+	// (memoryRepoPaths): the project store is shared across generations and a
+	// store failure must reject a git write rather than read as "no memory
+	// repos exist". Every other resource the runner touches is
+	// generation-bound below, so a snapshot captured before a reload reads and
+	// records in the project it was published for.
+	rt *Runtime
+	// asm is a static assembler over the candidate generation's concrete
+	// assembler; sessionMgr, slug, loopCfg, and mem are the candidate
+	// generation's values. The active agent is NOT stored here — the UI
+	// handler resolves an empty agent field from the per-acquisition snapshot
+	// (ServiceDeps.ActiveAgent), because /agents/active switches the selection
+	// without a generation rebuild.
+	asm        api.Assembler
+	registry   *tools.Registry
+	q          *queue.Queue
+	sessionMgr *session.Manager
+	slug       string
+	loopCfg    config.LoopConfig
+	mem        memory.Repo
+	memScorer  *memoryops.EpisodeScorer // injected for memory_query tool; nil if unavailable
 	// approvalLayers seed a fresh permission evaluator for each task engine.
 	// The evaluator session layer is mutable, so sharing an evaluator would leak
 	// "always" approvals across task sessions.
@@ -462,9 +480,7 @@ func (ad *taskRunnerAdapter) memoryQueryFn() func(context.Context, string, int) 
 		return nil
 	}
 	return func(ctx context.Context, query string, k int) ([]tools.MemoryHit, error) {
-		ad.rt.mu.Lock()
-		mem := ad.rt.activeMem
-		ad.rt.mu.Unlock()
+		mem := ad.mem
 		if mem == nil {
 			return nil, nil
 		}
@@ -527,9 +543,6 @@ func memExcerpt(s string, n int) string {
 
 func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sessionID string, conversation []ui.ChatMessage) (string, <-chan ui.TaskEvent, error) {
 	if agentName == "" {
-		agentName = ad.rt.getActiveAgent()
-	}
-	if agentName == "" {
 		return "", nil, ui.ErrTaskNoAgent
 	}
 
@@ -548,22 +561,17 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		assembled = msgs
 	}
 
-	mgr := ad.rt.SessionManager()
-	id := attachSessionTurn(mgr, sessionID, agentName, msgs)
+	id := attachSessionTurn(ad.sessionMgr, sessionID, agentName, msgs)
 
 	if ad.q == nil {
 		return "", nil, fmt.Errorf("task queue not ready")
 	}
 	loopClient := &queuedInferClient{q: ad.q}
 
-	// Resolve sandbox roots from the active project's directories.
+	// Resolve sandbox roots from the generation's active project directories.
 	var sandboxRoots []string
-	ad.rt.mu.Lock()
-	slug := ad.rt.cfg.Project.ActiveProjectSlug
-	loopCfg := ad.rt.cfg.Loop
-	ad.rt.mu.Unlock()
-	if slug != "" && ad.rt.projectStore != nil {
-		dirs, err := ad.rt.projectStore.ListDirectories(slug)
+	if ad.slug != "" && ad.rt != nil && ad.rt.projectStore != nil {
+		dirs, err := ad.rt.projectStore.ListDirectories(ad.slug)
 		if err == nil {
 			for _, d := range dirs {
 				sandboxRoots = append(sandboxRoots, d.Path)
@@ -573,7 +581,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 	loopCtx, cancelLoop := context.WithCancel(ctx)
 
 	toolCtx := tools.CallInfo{
-		ProjectSlug:  slug,
+		ProjectSlug:  ad.slug,
 		SandboxRoots: sandboxRoots,
 		// C2 is resolved per call, not snapshotted here: a project can be
 		// created or repointed while this task runs, and a store failure must
@@ -587,7 +595,7 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		MemoryQuery:     ad.memoryQueryFn(),
 	}
 
-	engine := agentloop.NewEngine(loopClient, ad.registry, loopCfg, toolCtx)
+	engine := agentloop.NewEngine(loopClient, ad.registry, ad.loopCfg, toolCtx)
 	if ad.metrics != nil {
 		engine.WithMetrics(ad.metrics)
 	}
@@ -615,8 +623,8 @@ func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sess
 		defer ad.unregisterEngine(id, done)
 		var events []agentloop.Event
 		defer func() {
-			if mgr != nil && id != "" {
-				recordTaskEvents(mgr, id, events)
+			if ad.sessionMgr != nil && id != "" {
+				recordTaskEvents(ad.sessionMgr, id, events)
 			}
 		}()
 		for ev := range rawEvch {
