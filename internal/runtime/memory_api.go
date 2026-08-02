@@ -280,8 +280,12 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	// reacquire the live generation at execution time. The API server alone
 	// keeps the dynamic asmAdapter, because API requests legitimately use the
 	// current generation.
-	activeAgent := cfg.Agent.Active
-	snapshotAsm := &staticAssembler{asm: assembler, active: activeAgent}
+	//
+	// The snapshot's static assembler deliberately carries no active agent:
+	// /agents/active switches the selection without a generation rebuild, so
+	// the active agent is resolved per acquisition in AcquireUISnapshot
+	// (ServiceDeps.ActiveAgent) and the chat/task handlers pass it explicitly.
+	snapshotAsm := &staticAssembler{asm: assembler}
 
 	loopCfg := cfg.Loop
 	userLayer := approvals.Layer{Name: "user-config"}
