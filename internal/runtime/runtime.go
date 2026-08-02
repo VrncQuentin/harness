@@ -134,6 +134,11 @@ type Runtime struct {
 	enterApply   func()
 	afterPrepare func()
 	leaveApply   func()
+
+	// beforeApplyMu runs at the top of setActiveAgent, immediately before it
+	// acquires applyMu. Tests use it as a barrier to prove the active-agent
+	// write reached the transaction lock. Nil on every production path.
+	beforeApplyMu func()
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

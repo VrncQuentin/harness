@@ -445,6 +445,13 @@ func TestAppliedState_LiveAppliedReflectsFinalState(t *testing.T) {
 // an apply that has loaded one agent and is preparing cannot be overwritten by
 // a concurrent active-agent save, and vice versa. After both operations the
 // live config, the recorded applied config, and the store must agree.
+//
+// The test is barrier-driven and deterministic: a before-lock hook proves the
+// writer reached the apply transaction lock while the apply is paused holding
+// it, and an instrumented-store seam proves the writer's Save cannot land
+// while the apply is paused. Without the production lock the writer's Save
+// fires during the pause and the test fails; with it, the writer blocks at the
+// lock until the apply commits.
 func TestAppliedState_ActiveAgentWriteSerializedWithApply(t *testing.T) {
 	cfg := config.Defaults()
 	seedRequiredConfigFiles(t, &cfg)
@@ -467,6 +474,14 @@ func TestAppliedState_ActiveAgentWriteSerializedWithApply(t *testing.T) {
 	store := &runtimeConfigStore{cfg: &loaded, saved: true}
 	rt.cfgStore = store
 
+	// Barrier A: the writer reached the transaction lock boundary.
+	writerAtLock := make(chan struct{})
+	rt.beforeApplyMu = func() { close(writerAtLock) }
+	// Barrier B: the writer's store Save landed. If it lands while the apply
+	// is paused, the writer bypassed the lock (regression).
+	writerSaved := make(chan struct{}, 1)
+	store.onSave = func() { close(writerSaved) }
+
 	applyDone := make(chan bool, 1)
 	go func() {
 		res := rt.ApplyConfig(context.Background(), ui.NewServer(0), NewEventChannel(), nil)
@@ -474,14 +489,21 @@ func TestAppliedState_ActiveAgentWriteSerializedWithApply(t *testing.T) {
 	}()
 
 	<-prepared
-	// The active-agent write cannot complete while the apply holds the lock; a
-	// completion probe here would be timing-based, so the discriminator is the
-	// final-state assertion: the write runs after the apply commits and the
-	// store, live config, and recorded applied config all agree on B.
 	agentDone := make(chan error, 1)
 	go func() {
 		agentDone <- rt.setActiveAgent("coderB")
 	}()
+	<-writerAtLock
+
+	// With the lock present the writer is blocked at applyMu (the apply holds
+	// it and is paused), so its Save cannot fire here. If the lock were
+	// removed, the writer's Save would land during the pause and the apply's
+	// later commit would overwrite the live state with the stale loaded agent.
+	select {
+	case <-writerSaved:
+		t.Fatal("active-agent write landed while the apply was paused; the write must serialize with the apply")
+	case <-time.After(50 * time.Millisecond):
+	}
 
 	close(resume)
 	if !<-applyDone {

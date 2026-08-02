@@ -1453,6 +1453,9 @@ func (c *sequenceInferenceClient) Complete(_ context.Context, req inference.Comp
 type runtimeConfigStore struct {
 	cfg   *config.Config
 	saved bool
+	// onSave, when set, runs after each successful Save. Tests use it as a
+	// seam to observe store writes from concurrent operations.
+	onSave func()
 }
 
 func (s *runtimeConfigStore) Load() (*config.Config, bool, error) {
@@ -1468,6 +1471,9 @@ func (s *runtimeConfigStore) Save(cfg *config.Config) error {
 	copied := *cfg
 	s.cfg = &copied
 	s.saved = true
+	if s.onSave != nil {
+		s.onSave()
+	}
 	return nil
 }
 

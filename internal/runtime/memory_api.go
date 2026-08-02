@@ -737,6 +737,9 @@ func (rt *Runtime) setActiveAgent(name string) error {
 	// ApplyConfig: an apply that has already loaded an agent and is preparing
 	// must not be overwritten by this save, and vice versa. The lock order is
 	// applyMu then rt.mu, matching ApplyConfig.
+	if rt.beforeApplyMu != nil {
+		rt.beforeApplyMu()
+	}
 	rt.applyMu.Lock()
 	defer rt.applyMu.Unlock()
 

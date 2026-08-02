@@ -778,6 +778,37 @@ func TestServer_StopIdempotent(t *testing.T) {
 	}
 }
 
+// TestStopClosesBoundListener verifies that Stop closes a listener that was
+// bound but never served. net/http registers the listener with Shutdown only
+// inside Serve, so a discarded prepared candidate must release its port
+// explicitly; otherwise the same address cannot be rebound.
+func TestStopClosesBoundListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	s := NewServer(port, &stubAssembler{}, newStubEnqueuer(nil), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Bind(ctx); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if !s.Stop() {
+		t.Fatal("Stop must report termination for a bound-but-unserved server")
+	}
+
+	// The port must be released: rebinding the same address succeeds.
+	ln2, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("port not released after Bind then Stop: %v", err)
+	}
+	_ = ln2.Close()
+}
+
 // TestBindDoesNotServeUntilServe verifies that a bound listener does not answer
 // requests until Serve activates it. An apply transaction reserves the port
 // during preparation with Bind and only calls Serve on commit, so a request on

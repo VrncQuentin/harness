@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VrncQuentin/harness/internal/inference"
@@ -68,7 +69,11 @@ type Server struct {
 	httpSrv   *http.Server
 	ln        net.Listener
 	serveOnce sync.Once
-	ctx       context.Context
+	// served records that Serve has begun serving. net/http registers the
+	// listener only inside Serve, so a listener that was bound but never
+	// served must be closed explicitly rather than through Shutdown.
+	served atomic.Bool
+	ctx    context.Context
 }
 
 // WithGenLease sets a function that acquires a generation-bound assembler,
@@ -146,6 +151,7 @@ func (s *Server) Serve() {
 		if srv == nil || ln == nil {
 			return
 		}
+		s.served.Store(true)
 		go func() {
 			if err := srv.Serve(ln); unexpectedServeError(err) {
 				s.logger.Error("api serve failed", slog.Any("err", err))
@@ -168,14 +174,32 @@ func unexpectedServeError(err error) bool {
 // Start or more than once. It reports whether the server actually terminated
 // within the shutdown timeout; false means the server is still serving and the
 // caller must retain ownership until a later Stop confirms termination.
+//
+// A listener that was bound but never served is closed explicitly: net/http
+// registers the listener with Shutdown only inside Serve, so Shutdown on an
+// unserved server would return successfully while the raw listener still owns
+// its port.
 func (s *Server) Stop() bool {
-	if s.httpSrv == nil {
+	srv := s.httpSrv
+	if srv == nil {
+		return true
+	}
+	if !s.served.Load() {
+		if s.ln != nil {
+			_ = s.ln.Close()
+		}
 		return true
 	}
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := s.httpSrv.Shutdown(shutCtx); err != nil {
+	if err := srv.Shutdown(shutCtx); err != nil {
 		return false
+	}
+	// Belt-and-suspenders for the window between Serve marking itself served
+	// and net/http registering the listener; a closed listener makes this a
+	// no-op.
+	if s.ln != nil {
+		_ = s.ln.Close()
 	}
 	return true
 }
