@@ -139,6 +139,13 @@ type Runtime struct {
 	// acquires applyMu. Tests use it as a barrier to prove the active-agent
 	// write reached the transaction lock. Nil on every production path.
 	beforeApplyMu func()
+
+	// shutdownHook records the step transitions of one shutdown attempt:
+	// admissions-closed, root-cancelled, tasks-cancelled, sessions-flushed,
+	// api-stopped, queue-wait, generation-released. Tests use it to assert the
+	// shutdown lifecycle order and to block at a specific step. Nil on every
+	// production path.
+	shutdownHook func(step string)
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

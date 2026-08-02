@@ -17,6 +17,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/home"
 	"github.com/VrncQuentin/harness/internal/logbuf"
 	"github.com/VrncQuentin/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/retrieval"
 	harnessruntime "github.com/VrncQuentin/harness/internal/runtime"
 	"github.com/VrncQuentin/harness/internal/tray"
@@ -132,6 +133,9 @@ func run() error {
 	uiServer.SetRetry(func() ui.ApplyResult {
 		return rt.ApplyConfig(rootCtx, uiServer, events, metricsStore)
 	})
+	uiServer.SetProjectEditor(func(input project.UpdateInput, memoryRepoMode string) (project.Project, error) {
+		return rt.EditProject(rootCtx, uiServer, events, metricsStore, input, memoryRepoMode)
+	})
 	uiServer.SetProcRestarts(rt.RestartLlama, rt.RestartEmbedder)
 	uiServer.SetQuit(tray.Quit)
 
@@ -144,11 +148,10 @@ func run() error {
 
 	onQuit := func() {
 		slog.Info("harness shutting down")
-		rt.Stop()
-		rootCancel()
-		waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		rt.WaitManagers(waitCtx)
-		cancel()
+		// One cohesive shutdown lifecycle owned by the runtime: stop
+		// admissions, cancel the root/task contexts, bounded drains, stop
+		// API/queue/process components, release only resources proven idle.
+		rt.Shutdown(rootCancel, 10*time.Second)
 		if harnessDB != nil {
 			_ = harnessDB.Close()
 		}

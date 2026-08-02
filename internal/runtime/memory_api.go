@@ -282,12 +282,13 @@ func (rt *Runtime) drainPendingRetired() {
 	rt.mu.Unlock()
 }
 
-// drainRetiredAPI is the terminal drain, used by Stop and tests: it stops
-// anything still pending from the last commit and re-attempts servers whose
-// earlier shutdown timed out. A server that still refuses to terminate keeps
-// its slot; ownership is retained. It must be called without rt.mu held
-// because Stop waits.
-func (rt *Runtime) drainRetiredAPI() {
+// drainRetiredAPI is the terminal drain, used by Stop, Shutdown, and tests:
+// it stops anything still pending from the last commit and re-attempts servers
+// whose earlier shutdown timed out. A server that still refuses to terminate
+// keeps its slot; ownership is retained. It returns true when every server
+// confirmed termination. It must be called without rt.mu held because Stop
+// waits.
+func (rt *Runtime) drainRetiredAPI() bool {
 	rt.mu.Lock()
 	pending := append([]*api.Server(nil), rt.pendingRetiredAPI...)
 	rt.pendingRetiredAPI = nil
@@ -295,15 +296,18 @@ func (rt *Runtime) drainRetiredAPI() {
 	rt.retiredAPI = nil
 	rt.mu.Unlock()
 
+	allConfirmed := true
 	kept := make([]*api.Server, 0, len(pending))
 	for _, srv := range pending {
 		if !rt.stopAPIServer(srv) {
+			allConfirmed = false
 			kept = append(kept, srv)
 		}
 	}
 	rt.mu.Lock()
 	rt.retiredAPI = kept
 	rt.mu.Unlock()
+	return allConfirmed
 }
 
 // commitApply installs a prepared apply under rt.mu: the generation and applied

@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/VrncQuentin/harness/internal/httpclient"
@@ -107,6 +108,10 @@ type Manager struct {
 	failures []time.Time
 	failed   bool
 	done     chan struct{}
+	// started records that Run was entered, so a shutdown can tell a manager
+	// that is actually running (and whose done channel will close) from one
+	// that was constructed but never launched.
+	started atomic.Bool
 }
 
 // ManagerConfig holds the configuration for a Manager.
@@ -174,6 +179,11 @@ func (m *Manager) Wait(ctx context.Context) error {
 		return ctx.Err()
 	}
 }
+
+// Started reports whether the manager's Run loop was entered. A manager that
+// was constructed but never launched never closes done, so waiting on it would
+// only ever time out; Started lets shutdown paths skip that wait.
+func (m *Manager) Started() bool { return m.started.Load() }
 
 // Args returns the currently configured binary, arguments, and health URL.
 // After Reconfigure these reflect the new configuration; the Run loop restarts
@@ -263,6 +273,7 @@ func (m *Manager) isFailed() bool {
 // It blocks until ctx is cancelled. Callers are responsible for launching it
 // as a goroutine: go mgr.Run(ctx).
 func (m *Manager) Run(ctx context.Context) {
+	m.started.Store(true)
 	defer close(m.done)
 	backoff := time.Second
 	maxBackoff := 30 * time.Second
