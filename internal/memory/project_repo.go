@@ -589,22 +589,24 @@ func SameProjectRepoPath(a, b string) (bool, error) {
 
 // repoIdentity is a handle-bound proof of a project memory repository's
 // physical identity. The handle pins the directory the decision was made
-// about, so SameAs can tell a later caller whether a path still identifies
-// that same physical repository after a repoint.
+// about, so SameAs can tell a later caller whether a path still opens to that
+// same physical directory after a repoint or a same-name replacement.
 type repoIdentity struct {
 	root *rootfs.Root
-	id   pathid.ID
 }
 
-// SameAs reports whether path still identifies the physical repository this
-// proof was pinned to. It fails closed: an unresolvable path or a different
-// physical repository reports false.
+// SameAs reports whether path still opens to the physical directory this proof
+// was pinned to. It compares the newly opened handle with the retained handle
+// through Root.SameDir (os.SameFile), never a re-resolved pathname: a same-name
+// replacement reuses the pathid key but is a different filesystem object, and
+// must fail closed. An unresolvable path also fails closed.
 func (i *repoIdentity) SameAs(path string) (bool, error) {
-	now, err := pathid.Resolve(path)
+	now, err := rootfs.Open(path)
 	if err != nil {
 		return false, err
 	}
-	return now.Equal(i.id), nil
+	defer func() { _ = now.Close() }()
+	return now.SameDir(i.root)
 }
 
 func (i *repoIdentity) Close() error {
@@ -618,9 +620,9 @@ func (i *repoIdentity) Close() error {
 // repository it pinned. The caller retains the proof, re-verifies the boundary
 // with it at mutation time, and closes it.
 func PinProjectRepo(path string) (project.RepoIdentity, error) {
-	root, id, err := rootfs.OpenIdentified(path)
+	root, _, err := rootfs.OpenIdentified(path)
 	if err != nil {
 		return nil, err
 	}
-	return &repoIdentity{root: root, id: id}, nil
+	return &repoIdentity{root: root}, nil
 }
