@@ -63,6 +63,9 @@ type workflowRepos struct {
 	sameErr   error
 	ensures   []string
 	moves     [][2]string
+	// sameCalls counts SameProjectRepoPath invocations. Tests use it to prove
+	// a settled identity decision is carried through without recomputation.
+	sameCalls int
 }
 
 func (r *workflowRepos) EnsureProjectRepo(root string, global bool) error {
@@ -74,6 +77,7 @@ func (r *workflowRepos) MoveProjectRepo(src, dst string, global bool) error {
 	return r.moveErr
 }
 func (r *workflowRepos) SameProjectRepoPath(a, b string) (bool, error) {
+	r.sameCalls++
 	if r.sameErr != nil {
 		return false, r.sameErr
 	}
@@ -127,6 +131,53 @@ func TestWorkflowUpdateRejectsMissingMoveModeBeforeMetadataChange(t *testing.T) 
 	}
 	if len(repos.ensures) != 0 || len(repos.moves) != 0 {
 		t.Fatalf("repo operations ran before mode validation: ensures=%v moves=%v", repos.ensures, repos.moves)
+	}
+}
+
+// TestWorkflowUpdateResolvedCarriesSettledIdentity verifies that a caller that
+// settled the repository-identity decision once can carry it into the mutation:
+// UpdateResolved never recomputes the identity and never runs a move when the
+// settled decision is "same".
+func TestWorkflowUpdateResolvedCarriesSettledIdentity(t *testing.T) {
+	store := newWorkflowStore(Project{Slug: "demo", DisplayName: "Demo", MemoryRepoPath: "/repo/old"})
+	repos := &workflowRepos{}
+	workflow := NewWorkflow(store, repos)
+
+	updated, err := workflow.UpdateResolved(UpdateInput{
+		Slug: "demo", DisplayName: "Renamed", MemoryRepoPath: "/alias",
+	}, MemoryRepoModeMove, true)
+	if err != nil {
+		t.Fatalf("UpdateResolved: %v", err)
+	}
+	if updated.MemoryRepoPath != "/alias" {
+		t.Fatalf("memory repo path = %q, want the alias", updated.MemoryRepoPath)
+	}
+	if len(repos.moves) != 0 {
+		t.Fatalf("a move ran despite the settled 'same' decision: %v", repos.moves)
+	}
+	if repos.sameCalls != 0 {
+		t.Fatalf("SameProjectRepoPath called %d times; the settled decision must not be recomputed", repos.sameCalls)
+	}
+}
+
+// TestWorkflowUpdateResolvedAppliesSettledMove verifies that a settled
+// "different" decision does execute the move through UpdateResolved.
+func TestWorkflowUpdateResolvedAppliesSettledMove(t *testing.T) {
+	store := newWorkflowStore(Project{Slug: "demo", DisplayName: "Demo", MemoryRepoPath: "/repo/old"})
+	repos := &workflowRepos{}
+	workflow := NewWorkflow(store, repos)
+
+	updated, err := workflow.UpdateResolved(UpdateInput{
+		Slug: "demo", DisplayName: "Renamed", MemoryRepoPath: "/repo/new",
+	}, MemoryRepoModeMove, false)
+	if err != nil {
+		t.Fatalf("UpdateResolved: %v", err)
+	}
+	if updated.MemoryRepoPath != "/repo/new" {
+		t.Fatalf("memory repo path = %q, want /repo/new", updated.MemoryRepoPath)
+	}
+	if len(repos.moves) != 1 || repos.moves[0] != [2]string{"/repo/old", "/repo/new"} {
+		t.Fatalf("moves = %v, want the settled move", repos.moves)
 	}
 }
 

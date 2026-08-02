@@ -76,10 +76,13 @@ type RetryFunc func() ApplyResult
 // ApplyResult reports the outcome of re-reading + re-applying the saved config.
 // LiveApplied is true when at least one component was reconfigured in place.
 // RestartNeeded lists human-readable reasons (e.g. "UI port") for changes that
-// require a full harness restart to take effect.
+// require a full harness restart to take effect. Err is non-nil when the apply
+// could not commit (config load, validation, or candidate-preparation
+// failure); the live generation and recorded applied state are then untouched.
 type ApplyResult struct {
 	LiveApplied   bool
 	RestartNeeded []string
+	Err           error
 }
 
 // ProcessStatus is the UI-facing status of a managed process.

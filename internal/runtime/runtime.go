@@ -146,6 +146,12 @@ type Runtime struct {
 	// shutdown lifecycle order and to block at a specific step. Nil on every
 	// production path.
 	shutdownHook func(step string)
+
+	// afterProjectIdentity runs in EditProject once the repository identity
+	// decision is settled and immediately before the workflow update executes.
+	// Tests use it to repoint an alias in that window and prove the settled
+	// decision carries through the mutation. Nil on every production path.
+	afterProjectIdentity func()
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

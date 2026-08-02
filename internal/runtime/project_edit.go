@@ -64,25 +64,29 @@ func (rt *Runtime) EditProject(
 		return project.Project{}, fmt.Errorf("edit project %q: %w", input.Slug, err)
 	}
 
-	// Settle the repository identity before mutating anything: a failure to
-	// answer "is this the same repository" aborts the edit rather than folding
-	// into "different" (which would run a move against a repository that might
-	// be the destination itself) or "same" (which would silently drop a
-	// repointing the user asked for).
-	memoryRepoChanged := false
-	if input.MemoryRepoPath != "" && current.MemoryRepoPath != "" {
-		same, err := memory.ProjectRepoManager{}.SameProjectRepoPath(input.MemoryRepoPath, current.MemoryRepoPath)
-		if err != nil {
-			return project.Project{}, fmt.Errorf("identify memory repo path: %w", err)
-		}
-		memoryRepoChanged = !same
+	// Settle the repository identity once, before any mutation, and carry that
+	// settled decision into the workflow's update. A failure to answer "is this
+	// the same repository" aborts the edit rather than folding into
+	// "different" (which would run a move against a repository that might be
+	// the destination itself) or "same" (which would silently drop a
+	// repointing the user asked for). Using one decision for both the
+	// active-move refusal and the mutation closes the compare-then-use window
+	// where an alias repointed in between could flip the outcome.
+	workflow := project.NewWorkflow(rt.projectStore, memory.ProjectRepoManager{})
+	sameRepo, err := workflow.SameMemoryRepoPath(input)
+	if err != nil {
+		return project.Project{}, fmt.Errorf("identify memory repo path: %w", err)
 	}
+	memoryRepoChanged := !sameRepo
 	if memoryRepoChanged {
 		switch memoryRepoMode {
 		case project.MemoryRepoModeMove, project.MemoryRepoModeFresh:
 		default:
 			return project.Project{}, errors.New("choose whether to move existing memory data or start fresh")
 		}
+	}
+	if rt.afterProjectIdentity != nil {
+		rt.afterProjectIdentity()
 	}
 
 	// Refuse to move the active project's memory repository before any
@@ -92,8 +96,7 @@ func (rt *Runtime) EditProject(
 		return project.Project{}, ErrActiveProjectRepoMove
 	}
 
-	workflow := project.NewWorkflow(rt.projectStore, memory.ProjectRepoManager{})
-	updated, err := workflow.Update(input, memoryRepoMode)
+	updated, err := workflow.UpdateResolved(input, memoryRepoMode, sameRepo)
 	if err != nil {
 		return project.Project{}, err
 	}
@@ -104,7 +107,26 @@ func (rt *Runtime) EditProject(
 	// recorded applied state (never with a store-derived reconstruction of the
 	// old values) and the live processes follow the new effective model.
 	if input.Slug == applied.activeSlug {
-		rt.applyConfigLocked(ctx, uiServer, events, metricsStore)
+		result := rt.applyConfigLocked(ctx, uiServer, events, metricsStore)
+		if result.Err != nil {
+			// The re-apply failed: the installed generation and recorded
+			// applied state are untouched, so the persisted project row must
+			// be restored to match. The failure is reported to the handler.
+			rollback := project.UpdateInput{
+				Slug:           current.Slug,
+				DisplayName:    current.DisplayName,
+				MemoryRepoPath: current.MemoryRepoPath,
+				ModelBinary:    current.ModelBinary,
+				ModelPath:      current.ModelPath,
+				ModelCtxSize:   current.ModelCtxSize,
+				ModelGPULayers: current.ModelGPULayers,
+				ModelNParallel: current.ModelNParallel,
+			}
+			if _, rollbackErr := rt.projectStore.Update(rollback); rollbackErr != nil {
+				return project.Project{}, fmt.Errorf("apply project edit: %v; rollback project metadata: %v", result.Err, rollbackErr)
+			}
+			return project.Project{}, fmt.Errorf("apply project edit: %w", result.Err)
+		}
 	}
 
 	return updated, nil

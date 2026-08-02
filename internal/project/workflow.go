@@ -74,7 +74,8 @@ func (w *Workflow) Create(input CreateInput) (Project, error) {
 }
 
 // Update persists project metadata and reconciles memory repo path changes with
-// rollback when repo initialization or migration fails.
+// rollback when repo initialization or migration fails. The repository identity
+// decision is computed here and passed to updateResolved.
 func (w *Workflow) Update(input UpdateInput, memoryRepoMode string) (Project, error) {
 	if w.Store == nil {
 		return Project{}, errors.New("project: store not configured")
@@ -82,6 +83,55 @@ func (w *Workflow) Update(input UpdateInput, memoryRepoMode string) (Project, er
 	if w.Repos == nil {
 		return Project{}, errors.New("project: memory repo manager not configured")
 	}
+	same, err := w.SameMemoryRepoPath(input)
+	if err != nil {
+		return Project{}, err
+	}
+	return w.updateResolved(input, memoryRepoMode, same)
+}
+
+// SameMemoryRepoPath settles whether input's destination memory repo is the
+// same physical repository as the stored project's current one. It is the
+// identity decision Update makes internally; a caller that must settle the
+// identity once — before any other mutation — computes it here and carries it
+// into UpdateResolved, so an alias repointed in between cannot flip the
+// decision from "same" to "different" and manufacture a move.
+func (w *Workflow) SameMemoryRepoPath(input UpdateInput) (bool, error) {
+	if w.Store == nil {
+		return false, errors.New("project: store not configured")
+	}
+	if w.Repos == nil {
+		return false, errors.New("project: memory repo manager not configured")
+	}
+	current, err := w.Store.Get(input.Slug)
+	if err != nil {
+		return false, err
+	}
+	return w.sameRepo(current, input)
+}
+
+// UpdateResolved applies an update using a repository-identity decision already
+// settled by the caller (see SameMemoryRepoPath). Using one settled decision
+// avoids a compare-then-use window in which an alias repointed between the
+// caller's check and this mutation changes the outcome.
+func (w *Workflow) UpdateResolved(input UpdateInput, memoryRepoMode string, sameRepo bool) (Project, error) {
+	if w.Store == nil {
+		return Project{}, errors.New("project: store not configured")
+	}
+	if w.Repos == nil {
+		return Project{}, errors.New("project: memory repo manager not configured")
+	}
+	return w.updateResolved(input, memoryRepoMode, sameRepo)
+}
+
+func (w *Workflow) sameRepo(current Project, input UpdateInput) (bool, error) {
+	if input.MemoryRepoPath == "" || current.MemoryRepoPath == "" {
+		return true, nil
+	}
+	return w.Repos.SameProjectRepoPath(input.MemoryRepoPath, current.MemoryRepoPath)
+}
+
+func (w *Workflow) updateResolved(input UpdateInput, memoryRepoMode string, sameRepo bool) (Project, error) {
 	current, err := w.Store.Get(input.Slug)
 	if err != nil {
 		return Project{}, err
@@ -90,14 +140,7 @@ func (w *Workflow) Update(input UpdateInput, memoryRepoMode string) (Project, er
 	// Identity is settled before the metadata update, not after it. Resolving
 	// later would leave a failure to answer "is this the same repository"
 	// stranded between a committed metadata change and an untouched repo.
-	memoryRepoChanged := false
-	if input.MemoryRepoPath != "" && current.MemoryRepoPath != "" {
-		same, err := w.Repos.SameProjectRepoPath(input.MemoryRepoPath, current.MemoryRepoPath)
-		if err != nil {
-			return Project{}, fmt.Errorf("identify memory repo path: %w", err)
-		}
-		memoryRepoChanged = !same
-	}
+	memoryRepoChanged := !sameRepo
 	if memoryRepoChanged {
 		switch memoryRepoMode {
 		case MemoryRepoModeMove, MemoryRepoModeFresh:

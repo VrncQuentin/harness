@@ -196,6 +196,113 @@ func TestProjectEdit_RetryComparesAgainstAppliedState(t *testing.T) {
 	_ = bin
 }
 
+// TestProjectEdit_FailedReapplyRollsBack verifies that an active-project edit
+// whose re-apply fails reports failure and restores the captured project row:
+// the installed generation and recorded applied state stay live, and the store
+// is rolled back to match. Without the rollback, the store would silently
+// diverge from the live system — the exact 10.2 divergence this PR removes.
+func TestProjectEdit_FailedReapplyRollsBack(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
+	root := projects.projects[project.GlobalSlug].MemoryRepoPath
+	oldGen := rt.gen
+	oldApplied := rt.applied
+	oldCtx := rt.applied.runningModel.CtxSize
+
+	// Corrupt the episode index manifest so candidate preparation fails during
+	// the active edit's re-apply.
+	manifestDir := filepath.Join(root, "index", "_episodes")
+	if err := os.MkdirAll(manifestDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(manifestDir, "manifest.json"), []byte("{not json}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	newCtx := oldCtx + 1024
+	_, err := rt.EditProject(context.Background(), ui.NewServer(0), NewEventChannel(), nil, project.UpdateInput{
+		Slug:           project.GlobalSlug,
+		DisplayName:    "Global Renamed",
+		MemoryRepoPath: root,
+		ModelCtxSize:   &newCtx,
+	}, "")
+	if err == nil {
+		t.Fatal("active edit with a failed re-apply must report an error")
+	}
+
+	// The store rolled back to the captured project row.
+	got := projects.projects[project.GlobalSlug]
+	if got.DisplayName != "Global" {
+		t.Fatalf("project display name = %q, want rollback to Global", got.DisplayName)
+	}
+	if got.ModelCtxSize != nil {
+		t.Fatalf("project ctx override = %v, want rollback to nil", got.ModelCtxSize)
+	}
+
+	// The old generation and recorded applied state remain live.
+	if rt.gen != oldGen {
+		t.Fatal("failed re-apply replaced the installed generation")
+	}
+	if rt.applied != oldApplied {
+		t.Fatal("failed re-apply replaced the recorded applied state")
+	}
+	if _, err := rt.activeMem.Read("rules.md"); err != nil {
+		t.Fatalf("installed generation reader failed after rejected edit: %v", err)
+	}
+}
+
+// TestProjectEdit_ActiveRepoIdentityCarriedThrough verifies that the
+// active-repository identity decision is settled once and carried through the
+// mutation: an alias repointed after the decision but before the workflow
+// update cannot flip "same" into a move. Without the carried decision, the
+// workflow would recompute the identity, observe "different", and execute an
+// active move — the 10.1 violation — leaving the runtime and store divergent.
+func TestProjectEdit_ActiveRepoIdentityCarriedThrough(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
+	oldPath := projects.projects[project.GlobalSlug].MemoryRepoPath
+
+	base := t.TempDir()
+	alias := filepath.Join(base, "alias")
+	linkDir(t, oldPath, alias)
+
+	// The repoint target does not exist yet; a move would create it.
+	other := filepath.Join(base, "other-repo")
+
+	rt.afterProjectIdentity = func() {
+		if err := os.RemoveAll(alias); err != nil {
+			t.Fatal(err)
+		}
+		linkDir(t, other, alias)
+	}
+
+	// The edit approves "same" at decision time (alias points at oldPath), and
+	// the carried decision means the mutation runs no move even though the
+	// alias now points at a different, not-yet-existing repository.
+	if _, err := rt.EditProject(context.Background(), ui.NewServer(0), NewEventChannel(), nil, project.UpdateInput{
+		Slug:           project.GlobalSlug,
+		DisplayName:    "Global",
+		MemoryRepoPath: alias,
+	}, project.MemoryRepoModeMove); err != nil {
+		t.Fatalf("EditProject: %v", err)
+	}
+
+	// No move executed: the repointed destination was never created.
+	if _, err := os.Stat(other); !os.IsNotExist(err) {
+		t.Fatalf("repointed destination %q was created by a move; the settled decision was not carried through", other)
+	}
+	// The original repository is untouched.
+	if _, err := os.Stat(filepath.Join(oldPath, "rules.md")); err != nil {
+		t.Fatalf("original repository files gone after the edit: %v", err)
+	}
+}
+
 // TestProjectEdit_InactiveRepoMoveStillWorks verifies that an inactive
 // project's repository can still be moved through the rooted MoveProjectRepo
 // workflow, and that the active generation is untouched by the edit.

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -66,12 +67,13 @@ func (rt *Runtime) applyConfigLocked(
 	uiServer.SetProjectDirectoryWarnings("", nil)
 	if rt.cfgStore == nil {
 		uiServer.AddStartupError(ErrConfigStoreUnavailable)
-		return ui.ApplyResult{}
+		return ui.ApplyResult{Err: ErrConfigStoreUnavailable}
 	}
 	loaded, wasSaved, lerr := rt.cfgStore.Load()
 	if lerr != nil {
-		uiServer.AddStartupError(fmt.Errorf("config load: %w", lerr))
-		return ui.ApplyResult{}
+		err := fmt.Errorf("config load: %w", lerr)
+		uiServer.AddStartupError(err)
+		return ui.ApplyResult{Err: err}
 	}
 	uiServer.SetFirstRun(!wasSaved)
 	if !wasSaved {
@@ -79,10 +81,10 @@ func (rt *Runtime) applyConfigLocked(
 	}
 	if verr := config.Validate(loaded); verr != nil {
 		uiServer.AddStartupError(verr)
-		return ui.ApplyResult{}
+		return ui.ApplyResult{Err: verr}
 	}
 	if !ValidatePaths(uiServer, loaded) {
-		return ui.ApplyResult{}
+		return ui.ApplyResult{Err: errors.New("path validation failed")}
 	}
 
 	rt.mu.Lock()
@@ -144,6 +146,8 @@ func (rt *Runtime) applyConfigLocked(
 		var result ui.ApplyResult
 		if ok {
 			result.LiveApplied = true
+		} else {
+			result.Err = errors.New("memory/API services failed to start")
 		}
 		rt.finishResult(&result, oldCfg, loaded)
 		rt.mu.Unlock()
@@ -167,7 +171,7 @@ func (rt *Runtime) applyConfigLocked(
 			if rt.leaveApply != nil {
 				rt.leaveApply()
 			}
-			return ui.ApplyResult{}
+			return ui.ApplyResult{Err: errors.New("candidate preparation failed")}
 		}
 	}
 	if rt.afterPrepare != nil {
