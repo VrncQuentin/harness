@@ -72,17 +72,27 @@ func (s *Summarizer) Summarize(ctx context.Context, conversation []inference.Mes
 	}
 
 	var out strings.Builder
-	for tok := range tokens {
-		if tok.Err != nil {
-			return "", fmt.Errorf("session: summarize: %w", tok.Err)
+streamLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("session: summarize: %w", ctx.Err())
+		case tok, ok := <-tokens:
+			if !ok {
+				// Stream closed without Done: accept whatever was joined.
+				break streamLoop
+			}
+			if tok.Err != nil {
+				return "", fmt.Errorf("session: summarize: %w", tok.Err)
+			}
+			if tok.Done {
+				break streamLoop
+			}
+			if tok.Content == "" {
+				continue
+			}
+			out.WriteString(tok.Content)
 		}
-		if tok.Done {
-			break
-		}
-		if tok.Content == "" {
-			continue
-		}
-		out.WriteString(tok.Content)
 	}
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("session: summarize: %w", err)
