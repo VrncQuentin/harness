@@ -236,13 +236,13 @@ Shutdown lifecycle guarantees beyond ownership retention are assigned to PR 10.
 
 | # | Finding | Test |
 |---|---------|------|
-| 10.1 | Active project moved while runtime still targets it | `TestProjectEdit_ActiveRepoNotMovable`, `TestProjectEdit_ActiveRepoAliasIsNotAMove` |
-| 10.2 | Project edits silently update store, runtime deps on old repo | `TestProjectEdit_UpdateRoutesThroughTransaction`, `TestHandleProjectEditRoutesThroughEditor` |
+| 10.1 | Active project moved while runtime still targets it | `TestProjectEdit_ActiveRepoNotMovable`, `TestProjectEdit_ActiveRepoAliasIsNotAMove`, `TestProjectEdit_ActiveRepoIdentityCarriedThrough` |
+| 10.2 | Project edits silently update store, runtime deps on old repo | `TestProjectEdit_UpdateRoutesThroughTransaction`, `TestProjectEdit_FailedReapplyRollsBack`, `TestHandleProjectEditRoutesThroughEditor` |
 | 10.3 | Retry compares against newly-read store values, not recorded applied state | `TestProjectEdit_RetryComparesAgainstAppliedState` |
 | 10.4 | New admissions accepted during shutdown | `TestShutdown_StopsNewAdmissionsFirst` |
 | 10.5 | Root/task contexts not cancelled before waiting on components | `TestShutdown_CancelsBeforeWaiting` |
-| 10.6 | Every wait is bounded or context-aware | `TestShutdown_BoundedWait` |
-| 10.7 | Timed-out drain closes resources still in use | `TestShutdown_DrainTimeoutDoesNotCloseInUse` |
+| 10.6 | Every wait is bounded or context-aware | `TestShutdown_BoundedWait`, `TestShutdown_SessionFlushBounded`, `TestQueue_WorkerResolvesAcceptedRequestsOnCancel` |
+| 10.7 | Timed-out drain closes resources still in use | `TestShutdown_DrainTimeoutDoesNotCloseInUse`, `TestShutdown_RetryAfterFlushFailureUsesRetainedReader` |
 | 10.8 | Unbounded queue stop called after bounded drain already failed | `TestShutdown_NoUnboundedStopAfterDrainFailure` |
 | 10.9 | API ownership released before termination known | `TestShutdown_APIOwnershipPreservedToTermination` |
 
@@ -252,13 +252,16 @@ Runtime-owned project-update surface for the UI, serialized end-to-end with
 the same `applyMu` that serializes `ApplyConfig`. The active project's
 memory-repository boundary cannot be moved while the installed generation
 still targets it: the edit refuses before any metadata or filesystem mutation,
-deciding the question by physical identity (`SameProjectRepoPath`) so an alias
-cannot manufacture a move. Active-project display/model-override edits proceed
-and their live apply runs through the same transaction boundary
+settling the repository identity once by physical identity
+(`SameProjectRepoPath`) and carrying that one decision through the mutation
+(`Workflow.UpdateResolved`), so an alias repointed in between cannot flip
+"same" into a move. Active-project display/model-override edits proceed and
+their live apply runs through the same transaction boundary
 (`applyConfigLocked`), so the reload compares the freshly-mutated store with
 PR 9's recorded applied state and never derives the pre-edit model or
-repository from the store it just changed. Inactive-project repository moves
-keep using the rooted `MoveProjectRepo` workflow with its rollback behavior.
+repository from the store it just changed. A failed re-apply is reported and
+the captured project row is restored. Inactive-project repository moves keep
+using the rooted `MoveProjectRepo` workflow with its rollback behavior.
 
 **Shutdown ownership protocol (shipped):** `Runtime.Shutdown(rootCancel,
 timeout)` is the one cohesive lifecycle, serialized with the apply transaction;
@@ -267,13 +270,18 @@ only as the no-root-cancel test/compat wrapper. The lifecycle is explicit —
 stop admissions (`Queue.CloseAdmissions` refuses new work), cancel the
 root/task contexts, bounded drain (task cancel + session flush + queue wait),
 stop API/queue/process components, release only resources proven idle, retain
-ownership for anything whose termination is unconfirmed. A drain timeout is
-not termination: on a timeout the queue, session manager, task runner, API
-servers, and any generation still held by an in-flight lease keep their
-ownership for a later `Shutdown` retry, and `Queue.Stop` (unbounded) is never
-called after a failed bounded drain. API ownership is preserved to termination
-for active, pending-retired, and previously timed-out servers, building on
-PR 9's retained API ownership rather than introducing another lifecycle.
+ownership for anything whose termination is unconfirmed. Every wait is
+genuinely bounded: the session flush runs detached and is bounded by the drain
+context (a save can block on the manager-wide save lock; the summarizer's token
+loop is context-aware), and queue cancellation terminally resolves every
+accepted request (in-flight or buffered) so consumers never range an open
+response channel. A drain timeout is not termination: on a timeout the queue,
+session manager, task runner, and the complete generation they are bound to —
+readers and handles included — keep their ownership for a later `Shutdown`
+retry, and `Queue.Stop` (unbounded) is never called after a failed bounded
+drain. API ownership is preserved to termination for active, pending-retired,
+and previously timed-out servers, building on PR 9's retained API ownership
+rather than introducing another lifecycle.
 
 ### PR 11 — Explicit session recovery state
 

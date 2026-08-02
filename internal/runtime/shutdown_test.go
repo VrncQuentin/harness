@@ -15,27 +15,32 @@ import (
 	"github.com/VrncQuentin/harness/internal/api"
 	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/inference"
+	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/queue"
+	"github.com/VrncQuentin/harness/internal/session"
 )
 
 // hangClient never sends a token and never closes its stream, so a queue
-// worker dispatching through it stays blocked in `range tokenCh` regardless of
+// worker dispatching through it stays blocked in the token loop regardless of
 // context cancellation. started closes on the first Complete call so tests can
 // wait until the worker is genuinely stuck. Releasing closes the stream, which
 // lets the worker finish and exit.
 type hangClient struct {
-	ch      chan inference.Token
-	started chan struct{}
-	once    sync.Once
+	ch          chan inference.Token
+	started     chan struct{}
+	startOnce   sync.Once
+	releaseOnce sync.Once
 }
 
 func (c *hangClient) Complete(context.Context, inference.CompletionRequest) (<-chan inference.Token, error) {
-	c.once.Do(func() { close(c.started) })
+	c.startOnce.Do(func() { close(c.started) })
 	return c.ch, nil
 }
 
-func (c *hangClient) release() { close(c.ch) }
+func (c *hangClient) release() {
+	c.releaseOnce.Do(func() { close(c.ch) })
+}
 
 // newHangQueue builds a started queue whose worker will block on a hung
 // client once a request is dispatched. The caller must release the client so
@@ -178,6 +183,14 @@ func TestShutdown_BoundedWait(t *testing.T) {
 	}
 	if result.Completed {
 		t.Fatal("shutdown with hung components must not claim completion")
+	}
+
+	// Release the hung components and retry so the retained generation is
+	// released and the temp repo can be removed during cleanup.
+	rt.stopAPIServer = func(s *api.Server) bool { return s.Stop() }
+	client.release()
+	if retry := rt.Shutdown(nil, 2*time.Second); !retry.Completed {
+		t.Fatalf("retry after clearing the hangs = %+v, want completed", retry)
 	}
 }
 
@@ -366,6 +379,179 @@ func TestShutdown_APIOwnershipPreservedToTermination(t *testing.T) {
 	}
 	if len(gotRetired) != 0 {
 		t.Fatalf("retired API servers = %d after confirmed termination, want 0", len(gotRetired))
+	}
+}
+
+// hangOnceThenDoneClient hangs on the first Complete call (returning an open
+// stream that never sends or closes) and completes on later calls, so a save
+// that holds saveMu can be released by cancelling its context and a later
+// flush can succeed.
+type hangOnceThenDoneClient struct {
+	mu      sync.Mutex
+	calls   int
+	hangCh  chan inference.Token
+	started chan struct{}
+	once    sync.Once
+}
+
+func (c *hangOnceThenDoneClient) Complete(context.Context, inference.CompletionRequest) (<-chan inference.Token, error) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	c.mu.Unlock()
+	if call == 1 {
+		c.once.Do(func() { close(c.started) })
+		return c.hangCh, nil
+	}
+	ch := make(chan inference.Token, 2)
+	ch <- inference.Token{Content: "summary"}
+	ch <- inference.Token{Done: true}
+	close(ch)
+	return ch, nil
+}
+
+// errThenDoneClient fails the first Complete call and completes later ones,
+// so a session save fails on the first flush attempt and succeeds on a retry.
+type errThenDoneClient struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *errThenDoneClient) Complete(context.Context, inference.CompletionRequest) (<-chan inference.Token, error) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	c.mu.Unlock()
+	if call == 1 {
+		return nil, errors.New("summarizer backend down")
+	}
+	ch := make(chan inference.Token, 2)
+	ch <- inference.Token{Content: "summary"}
+	ch <- inference.Token{Done: true}
+	close(ch)
+	return ch, nil
+}
+
+// newGenerationedManagerForTest builds a session manager over a fresh project
+// repo reader wired to client, and publishes a generation that owns the reader,
+// so shutdown release semantics can be exercised directly.
+func newGenerationedManagerForTest(t *testing.T, cfg *config.Config, client inference.Client) (*Runtime, *session.Manager, string) {
+	t.Helper()
+	root := initRuntimeProjectRepo(t)
+	rt := New(*cfg, &runtimeConfigStore{cfg: cfg, saved: true}, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, client)
+	t.Cleanup(func() { _ = gitRepo.Close() })
+	rt.setSessionManager(mgr)
+	rt.gen = &generation{readers: []memory.Repo{rt.activeMem}}
+	rt.gen.acquire()
+	return rt, mgr, root
+}
+
+// TestShutdown_SessionFlushBounded verifies that the session flush is
+// genuinely bounded: with a save in flight holding saveMu (its summarizer
+// blocked on an unresponsive inference client), Shutdown returns within the
+// drain budget and retains the session manager and generation for a retry.
+func TestShutdown_SessionFlushBounded(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	client := &hangOnceThenDoneClient{hangCh: make(chan inference.Token), started: make(chan struct{})}
+	rt, mgr, _ := newGenerationedManagerForTest(t, &cfg, client)
+	t.Cleanup(func() { rt.Stop() })
+
+	s := mgr.Start("coder")
+	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A save in flight: it acquires saveMu and its summarizer blocks on the
+	// unresponsive client, so no later flush can acquire the lock.
+	saveCtx, saveCancel := context.WithCancel(context.Background())
+	defer saveCancel()
+	saveDone := make(chan error, 1)
+	go func() {
+		_, err := mgr.Save(saveCtx, s.ID)
+		saveDone <- err
+	}()
+	<-client.started
+
+	start := time.Now()
+	result := rt.Shutdown(nil, 100*time.Millisecond)
+	elapsed := time.Since(start)
+	if elapsed > 5*time.Second {
+		t.Fatalf("Shutdown took %v while a session save held saveMu; the flush must be bounded", elapsed)
+	}
+	if !result.TimedOut {
+		t.Fatal("shutdown with an in-flight session save must report a timed-out drain")
+	}
+
+	// Ownership is retained: the session manager and generation stay for a
+	// later Shutdown retry.
+	if rt.SessionManager() != mgr {
+		t.Fatal("session manager ownership dropped while its save was still in flight")
+	}
+	rt.mu.Lock()
+	retainedGen := rt.gen
+	rt.mu.Unlock()
+	if retainedGen == nil {
+		t.Fatal("generation dropped while a dependent session manager was retained")
+	}
+
+	// Releasing the in-flight save lets a retry flush complete and release.
+	saveCancel()
+	if err := <-saveDone; err == nil {
+		t.Fatal("cancelled save should report an error")
+	}
+	if retry := rt.Shutdown(nil, 2*time.Second); !retry.Completed {
+		t.Fatalf("retry after releasing the in-flight save = %+v, want completed", retry)
+	}
+}
+
+// TestShutdown_RetryAfterFlushFailureUsesRetainedReader verifies that a failed
+// first session flush retains the generation (its readers stay open) and that
+// a later Shutdown retry succeeds by saving through the still-open retained
+// reader.
+func TestShutdown_RetryAfterFlushFailureUsesRetainedReader(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	client := &errThenDoneClient{}
+	rt, mgr, root := newGenerationedManagerForTest(t, &cfg, client)
+	t.Cleanup(func() { rt.Stop() })
+
+	s := mgr.Start("coder")
+	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "known.txt"), []byte("retained"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	first := rt.Shutdown(nil, 100*time.Millisecond)
+	if !first.TimedOut {
+		t.Fatal("a failed first session flush must report a timed-out drain")
+	}
+
+	// The retained reader is still open and performs a real operation.
+	if b, err := rt.activeMem.Read("known.txt"); err != nil || string(b) != "retained" {
+		t.Fatalf("retained reader read = %q, %v", b, err)
+	}
+
+	// The retry saves the session through the still-open retained reader.
+	second := rt.Shutdown(nil, 2*time.Second)
+	if !second.Completed {
+		t.Fatalf("retry after the flush failure = %+v, want completed", second)
+	}
+	rt.mu.Lock()
+	releasedGen := rt.gen
+	rt.mu.Unlock()
+	if releasedGen != nil {
+		t.Fatal("generation not released after a completed retry")
 	}
 }
 

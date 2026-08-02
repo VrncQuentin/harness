@@ -101,7 +101,7 @@ func TestHandleProjectEditSurfacesEditorError(t *testing.T) {
 
 	form := url.Values{
 		"display_name":     {"Demo"},
-		"memory_repo_path": {"C:\\repo\\other"},
+		"memory_repo_path": {"C:\\repo\\relocate"},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/projects/edit?slug=demo", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

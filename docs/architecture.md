@@ -225,16 +225,25 @@ the transaction:
 - The active project's memory-repository boundary cannot be moved while the
   installed generation still targets it. The edit refuses before any metadata
   or filesystem mutation, deciding the question by physical identity
-  (`SameProjectRepoPath`), so a symlink/junction alias of the same repository
-  does not manufacture a move. Active-project display and model-override edits
+  (`SameProjectRepoPath`) and carrying that one settled decision through the
+  mutation (`Workflow.UpdateResolved`), so an alias repointed in between cannot
+  flip "same" into a move. Active-project display and model-override edits
   proceed; their live apply runs through the same transaction boundary
   (`applyConfigLocked`), so the reload decision compares the freshly-mutated
   store contents with the recorded applied state — never with an "old" value
-  derived from the store the edit already changed.
+  derived from the store the edit already changed. If that re-apply fails
+  (config load, validation, or candidate-preparation failure), the edit
+  reports failure and restores the captured project row, so the store never
+  silently diverges from the live generation.
 - Inactive-project repository moves continue through the rooted
   `MoveProjectRepo` workflow (`project.Workflow.Update`), preserving its
   rollback behavior on initialization or move failure. The pre-edit active
   model or repository is never derived from the mutated project store.
+
+`ui.ApplyResult` carries an explicit `Err` so a failed apply is distinguishable
+from a successful no-op: `LiveApplied=false` plus `Err=nil` means "nothing
+needed changing", while a non-nil `Err` means the apply could not commit and
+the installed generation and recorded applied state are untouched.
 
 #### Shutdown lifecycle and ownership protocol (PR 10)
 
@@ -251,21 +260,25 @@ wrapper for tests. The lifecycle is explicit:
 2. **cancel root/task contexts** — `rootCancel` stops process managers, the
    queue worker, and UI request contexts before any wait begins;
 3. **bounded drain** — task loops are cancelled and live sessions flushed with
-   explicit timeouts;
+   explicit timeouts. The session flush runs detached and is bounded by the
+   drain context, because a save can block on the manager-wide save lock or a
+   hung summarizer; the summarizer's token loop is itself context-aware so a
+   stream that never sends or closes cannot hang it;
 4. **stop API/queue/process components** — API servers stop under the timeout
    ownership protocol; the queue is waited on with a bounded, context-aware
-   wait (`Queue.Wait`), never an unbounded `Queue.Stop`;
+   wait (`Queue.Wait`), never an unbounded `Queue.Stop`. Queue cancellation is
+   terminal: every accepted request — in-flight or buffered — is resolved
+   (failed and closed), so consumers ranging a response channel never hang;
 5. **release only resources proven idle**;
 6. **retain ownership for anything whose termination is unconfirmed**.
 
 A drain timeout is not termination. When a bounded wait expires, the runtime
-retains the queue, session manager, task runner, API servers, and any
-generation still held by an in-flight lease (`generation.leases` beyond the
-publisher lease) so a later `Shutdown` retries them. An idle generation —
-publisher lease alone, nothing in use — is released even on a timed-out drain.
-API ownership is preserved to termination for every class of server: active,
-pending-retired, and previously timed-out. `Queue.Stop` is never called after
-a failed bounded drain; the queue stays owned for a retry instead.
+retains ownership and a later `Shutdown` retries: the queue stays owned, and
+the session manager and task runner stay owned together with the complete
+generation they are bound to — its readers and handles stay open so a retry can
+save through them. API ownership is preserved to termination for every class of
+server: active, pending-retired, and previously timed-out. `Queue.Stop` is
+never called after a failed bounded drain.
 
 ### Agent Loop (`internal/agentloop`)
 Owns the first-party agentic turn loop. This package is separate from `internal/agent`, which remains the agent/persona registry.

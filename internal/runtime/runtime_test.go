@@ -856,7 +856,13 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
 	t.Cleanup(func() { rt.Stop() })
-	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
+	// The first call (the task turn) blocks on cancellation after one token;
+	// later calls (the shutdown session flush) complete with a summary and
+	// Done, so a retained session can be saved by a later shutdown attempt.
+	rt.inferClient = &blockingThenSummaryClient{
+		taskToken: inference.Token{Content: "partial answer"},
+		summary:   "cancelled partial task",
+	}
 
 	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
 	defer func() { _ = gitRepo.Close() }()
@@ -1407,20 +1413,6 @@ func (c *blockingThenSummaryClient) Complete(ctx context.Context, _ inference.Co
 	ch <- inference.Token{Content: summary}
 	ch <- inference.Token{Done: true}
 	close(ch)
-	return ch, nil
-}
-
-type blockingInferenceClient struct {
-	token inference.Token
-}
-
-func (c blockingInferenceClient) Complete(ctx context.Context, _ inference.CompletionRequest) (<-chan inference.Token, error) {
-	ch := make(chan inference.Token, 1)
-	go func() {
-		defer close(ch)
-		ch <- c.token
-		<-ctx.Done()
-	}()
 	return ch, nil
 }
 
@@ -2460,7 +2452,10 @@ func TestSnapshot_RunnerReadsAndRecordsInOriginalProject(t *testing.T) {
 // agent left tasks failing with ErrTaskNoAgent even after one was selected.
 func TestSnapshot_ActiveAgentResolvedPerAcquisition(t *testing.T) {
 	modelPort, shutdownModel, capture := startCapturingModelServer(t, "test summary")
-	defer shutdownModel()
+	// The model server must outlive the runtime's shutdown flush, or the
+	// summarizer would fail to save the task's session during cleanup. Cleanups
+	// run LIFO, so registering this first runs it after rt.Stop's cleanup.
+	t.Cleanup(shutdownModel)
 
 	root := initRuntimeProjectRepo(t)
 	if err := os.MkdirAll(filepath.Join(root, "agents", "coder"), 0o755); err != nil {

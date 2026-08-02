@@ -73,7 +73,10 @@ func (rt *Runtime) Shutdown(rootCancel context.CancelFunc, drainTimeout time.Dur
 
 	// 3. Bounded drain. Every wait below is context-aware or has an explicit
 	// bound; a wait that expires marks the attempt as timed out rather than
-	// hanging shutdown indefinitely.
+	// hanging shutdown indefinitely. The session flush is run detached and
+	// bounded by the drain context because a save can block on saveMu or a
+	// hung summarizer; the flush goroutine then keeps running, and the
+	// retained session manager and generation let a later Shutdown retry it.
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), drainTimeout)
 	if tasks != nil {
 		if err := tasks.CancelAll(drainCtx); err != nil {
@@ -84,8 +87,19 @@ func (rt *Runtime) Shutdown(rootCancel context.CancelFunc, drainTimeout time.Dur
 	}
 	rt.emitShutdownHook("tasks-cancelled")
 	if mgr := rt.SessionManager(); mgr != nil {
-		if err := mgr.FlushAll(drainCtx); err != nil {
-			slog.Warn("runtime shutdown: session flush", "err", err)
+		flushDone := make(chan error, 1)
+		go func() {
+			flushDone <- mgr.FlushAll(drainCtx)
+		}()
+		select {
+		case err := <-flushDone:
+			if err != nil {
+				slog.Warn("runtime shutdown: session flush", "err", err)
+				result.TimedOut = true
+				result.Completed = false
+			}
+		case <-drainCtx.Done():
+			slog.Warn("runtime shutdown: session flush wait expired; session ownership retained")
 			result.TimedOut = true
 			result.Completed = false
 		}
@@ -141,13 +155,12 @@ func (rt *Runtime) Shutdown(rootCancel context.CancelFunc, drainTimeout time.Dur
 
 	// 5+6. Release only resources proven idle; retain ownership for anything
 	// whose drain timed out or whose termination is unconfirmed, so a later
-	// Shutdown can retry it. A timeout never closes a generation still held by
-	// an in-flight lease; an idle generation (publisher lease only) is released
-	// because nothing uses it.
+	// Shutdown can retry it. A timed-out attempt retains the complete
+	// generation — its readers, session manager, and task runner are all
+	// generation-bound — because a dependent component is still retained; only
+	// a fully completed attempt releases and clears ownership.
 	if result.Completed {
-		rt.releaseOwnedResources(true)
-	} else {
-		rt.releaseOwnedResources(false)
+		rt.releaseOwnedResources()
 	}
 	rt.emitShutdownHook("generation-released")
 	return result
@@ -185,23 +198,15 @@ func (rt *Runtime) stopAPIServers() bool {
 	return rt.drainRetiredAPI() && allConfirmed
 }
 
-// releaseOwnedResources drops the runtime's ownership of resources proven
-// idle. force reports that every drain confirmed quiescence, so every owned
-// resource is released and the ownership fields are cleared. When force is
-// false (a drain timed out), a generation still held by in-flight work —
-// outstanding acquired leases beyond the publisher lease — is retained with
-// its readers and handles open, and the queue, session manager, and task
-// runner ownership is kept so a later Shutdown can retry; only an idle
-// generation (publisher lease alone, nothing in use) is released. Caller must
-// hold applyMu.
-func (rt *Runtime) releaseOwnedResources(force bool) {
+// releaseOwnedResources drops the runtime's ownership of every resource proven
+// idle. It is called only after every drain confirmed quiescence and every
+// component reported termination, so nothing released here is still in use.
+// Caller must hold applyMu.
+func (rt *Runtime) releaseOwnedResources() {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
 	g := rt.gen
-	if !force && g != nil && g.leases.Load() > 1 {
-		return
-	}
 	global := rt.globalMem
 	active := rt.activeMem
 	rt.gen = nil
@@ -209,16 +214,11 @@ func (rt *Runtime) releaseOwnedResources(force bool) {
 	rt.activeMem = nil
 	rt.agentReg = nil
 	rt.assembler = nil
+	rt.taskRunner = nil
 	rt.started = false
 	rt.applied = nil
-	// On a timed-out drain the queue, session manager, and task runner are
-	// retained so a later Shutdown can retry them; only a fully completed
-	// attempt clears their ownership.
-	if force {
-		rt.taskRunner = nil
-		rt.setSessionManager(nil)
-		rt.reqQueue = nil
-	}
+	rt.setSessionManager(nil)
+	rt.reqQueue = nil
 	if g != nil {
 		g.readers = []memory.Repo{global, active}
 		g.release()
