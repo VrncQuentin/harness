@@ -54,16 +54,16 @@ func (rt *Runtime) QueueStats() (int, int) {
 
 func (rt *Runtime) newInferenceClient() inference.Client {
 	model := rt.effectiveModelFor(&rt.cfg)
-	return inference.NewClient(
-		fmt.Sprintf("http://127.0.0.1:%d", model.Port),
-		httpclient.NewStreaming(),
-	)
+	return rt.newInferenceClientForPort(model.Port)
 }
 
-func (rt *Runtime) newInferenceClientFor(cfg *config.Config) inference.Client {
-	model := rt.effectiveModelFor(cfg)
+// newInferenceClientForPort builds an inference client for a concrete port.
+// The port always comes from the running model, never the preferred one:
+// under llama_on_switch=keep the harness keeps talking to wherever llama-server
+// actually runs.
+func (rt *Runtime) newInferenceClientForPort(port int) inference.Client {
 	return inference.NewClient(
-		fmt.Sprintf("http://127.0.0.1:%d", model.Port),
+		fmt.Sprintf("http://127.0.0.1:%d", port),
 		httpclient.NewStreaming(),
 	)
 }
@@ -109,6 +109,11 @@ func (rt *Runtime) RestartEmbedder() {
 // Stop captures and clears every owned field under the lock, then
 // releases the lock before acting on the captured values. A second
 // call is a no-op — every field was cleared on the first pass.
+//
+// The API server is the one exception to clear-on-first-pass: a server whose
+// Stop does not confirm termination within the timeout is still running, and
+// the runtime must retain ownership until termination is known. rt.apiServer
+// is only cleared after Stop reports termination.
 func (rt *Runtime) Stop() {
 	rt.mu.Lock()
 	q := rt.reqQueue
@@ -118,9 +123,9 @@ func (rt *Runtime) Stop() {
 	active := rt.activeMem
 	g := rt.gen
 	sessionMgr := rt.SessionManager()
+	pendingAPI := len(rt.pendingRetiredAPI) + len(rt.retiredAPI)
 
 	rt.reqQueue = nil
-	rt.apiServer = nil
 	rt.taskRunner = nil
 	rt.globalMem = nil
 	rt.activeMem = nil
@@ -128,10 +133,11 @@ func (rt *Runtime) Stop() {
 	rt.agentReg = nil
 	rt.assembler = nil
 	rt.started = false
+	rt.applied = nil
 	rt.setSessionManager(nil)
 	rt.mu.Unlock()
 
-	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && g == nil {
+	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && g == nil && pendingAPI == 0 {
 		return
 	}
 
@@ -149,9 +155,18 @@ func (rt *Runtime) Stop() {
 		}
 		cancel()
 	}
-	if apiSrv != nil {
-		apiSrv.Stop()
+	if apiSrv != nil && rt.stopAPIServer(apiSrv) {
+		rt.mu.Lock()
+		if rt.apiServer == apiSrv {
+			rt.apiServer = nil
+		}
+		rt.mu.Unlock()
 	}
+	// Pending and previously-retired API servers get one final Stop attempt. If
+	// a server is still serving at this point the process is exiting and the OS
+	// reclaims its resources; the guarantee here is that the runtime never
+	// silently dropped the reference earlier.
+	rt.drainRetiredAPI()
 	if q != nil {
 		q.Stop()
 	}

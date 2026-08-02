@@ -20,9 +20,13 @@ func (rt *Runtime) effectiveModelFor(cfg *config.Config) config.ModelConfig {
 	return config.EffectiveModel(cfg, proj)
 }
 
-func (rt *Runtime) effectivePromptFor(cfg *config.Config) config.PromptConfig {
+// promptConfigFor derives a generation's prompt config: the persisted prompt
+// fields plus the context-size ceiling of the model the generation will
+// actually talk to — the running model, which under llama_on_switch=keep may
+// lag the active project's preferred model.
+func promptConfigFor(cfg *config.Config, runningModel config.ModelConfig) config.PromptConfig {
 	promptCfg := cfg.Prompt
-	promptCfg.CtxSize = rt.effectiveModelFor(cfg).CtxSize
+	promptCfg.CtxSize = runningModel.CtxSize
 	return promptCfg
 }
 

@@ -15,12 +15,34 @@ import (
 // services for the first time or reconfigures the live ones to match. Tier-3
 // changes (UI port, queue) are returned as RestartNeeded so the UI can flag
 // them - no live apply path exists for those yet.
+//
+// ApplyConfig is one transaction, serialized end-to-end by applyMu: two
+// concurrent applies cannot interleave validation, preparation, process
+// changes, generation publication, or retirement. The transaction runs in
+// explicit phases:
+//
+//	prepare  - build the candidate and its API server locally, unpublished
+//	quiesce  - cancel task loops and flush sessions before the old generation drops
+//	commit   - install the generation and one coherent applied state atomically
+//	         - under rt.mu, issuing process reconfigurations from that state
+//	retire   - release the old generation's publisher lease and API ownership
+//	         - under the timeout ownership protocol
+//
+// The old/live state is read exclusively from rt.applied (the recorded applied
+// state), never reconstructed from the mutable config store or project store.
 func (rt *Runtime) ApplyConfig(
 	ctx context.Context,
 	uiServer *ui.Server,
 	events chan proc.Event,
 	metricsStore metrics.Store,
 ) ui.ApplyResult {
+	rt.applyMu.Lock()
+	defer rt.applyMu.Unlock()
+
+	if rt.enterApply != nil {
+		rt.enterApply()
+	}
+
 	// Install the snapshot provider before anything else so the UI never
 	// observes an empty snapshot after a retry-only startup. Start also wires
 	// it, but production skips Start on first run, invalid initial config, or
@@ -52,90 +74,173 @@ func (rt *Runtime) ApplyConfig(
 	}
 
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
+	oldApplied := rt.applied
+	started := rt.started
+	oldCfg := rt.cfg
+	if oldApplied != nil {
+		oldCfg = oldApplied.cfg
+	}
 
-	old := rt.cfg
-	oldModel := rt.effectiveModelFor(&old)
+	// The preferred model resolves from the loaded config and the current
+	// project store. The *old* state comes exclusively from the recorded
+	// applied state — never reconstructed from the mutable project store.
 	newModel := rt.effectiveModelFor(loaded)
-	modelEndpointChanged := oldModel.Port != newModel.Port
-	embedderEndpointChanged := old.Embedder.Port != loaded.Embedder.Port
+	newEmbedder := loaded.Embedder
 
-	var result ui.ApplyResult
+	// The model that will actually run. llama_on_switch=keep means the
+	// previously running model stays across config applies and project
+	// switches; reload retargets it to the new preferred model. runningModel
+	// is recorded separately from model so the status UI can represent a
+	// mismatch honestly.
+	runningModel := newModel
+	if oldApplied != nil && loaded.Project.LlamaOnSwitch == "keep" {
+		runningModel = oldApplied.runningModel
+	}
+	newApplied := newAppliedState(loaded, newModel, runningModel)
 
-	if !rt.started {
-		slog.Info("starting services", "model_port", newModel.Port, "embed_port", loaded.Embedder.Port)
+	projectSwitched := oldApplied != nil &&
+		oldApplied.cfg.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug
+	modelChanged := oldApplied != nil && oldApplied.runningModel != runningModel
+	embedderChanged := oldApplied != nil && oldApplied.runningEmbedder != newEmbedder
+	endpointChanged := oldApplied != nil && oldApplied.runningModel.Port != runningModel.Port
+
+	rebuild := rt.memoryAPIUnavailable()
+	if oldApplied != nil {
+		rebuild = rebuild ||
+			oldApplied.cfg.Prompt != loaded.Prompt ||
+			oldApplied.cfg.API != loaded.API ||
+			oldApplied.cfg.Loop != loaded.Loop ||
+			oldApplied.cfg.Agent.Active != loaded.Agent.Active ||
+			projectSwitched ||
+			endpointChanged ||
+			oldApplied.runningModel.CtxSize != runningModel.CtxSize ||
+			oldApplied.embedder.Port != newEmbedder.Port
+	}
+	apiPortChanged := apiPortNeedsChange(oldApplied, loaded)
+
+	if !started {
+		slog.Info("starting services", "model_port", newModel.Port, "embed_port", newEmbedder.Port)
 		rt.cfg = *loaded
 		rt.refreshProjectDirectoryWarnings(uiServer)
 		rt.startServices(ctx, uiServer, events, metricsStore)
-		rt.startMemoryAndAPI(ctx, uiServer, metricsStore, loaded)
-		result.LiveApplied = true
-	} else {
-		needsMemoryAPIRetry := rt.memoryAPIUnavailable()
-
-		rebuild := old.Prompt != loaded.Prompt ||
-			old.API != loaded.API ||
-			old.Loop != loaded.Loop ||
-			old.Agent.Active != loaded.Agent.Active ||
-			old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug ||
-			modelEndpointChanged ||
-			embedderEndpointChanged ||
-			needsMemoryAPIRetry
-
-		commit := true
-		if rebuild {
-			rt.quiesceMemoryAndAPI(ctx)
-			if old.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug {
-				rt.handleProjectSwitch(ctx, uiServer, &old, loaded)
-			}
-			slog.Info("rebuilding memory and api services")
-			if rt.startMemoryAndAPI(ctx, uiServer, metricsStore, loaded) {
-				result.LiveApplied = true
-			} else {
-				commit = false
-			}
+		ok := rt.startMemoryAndAPI(ctx, uiServer, metricsStore, loaded)
+		var result ui.ApplyResult
+		if ok {
+			result.LiveApplied = true
 		}
-		if commit {
-			if oldModel != newModel {
-				slog.Info("reconfiguring llama-server", "old_port", oldModel.Port, "new_port", newModel.Port)
-				rt.llamaMgr.Reconfigure(func() (string, []string) { return llamaArgsForModel(newModel) }, llamaHealthURL(newModel))
-				result.LiveApplied = true
+		rt.finishResult(&result, oldCfg, loaded)
+		rt.mu.Unlock()
+		rt.drainPendingRetired()
+		rt.setModelMismatch(uiServer, rt.applied)
+		if rt.leaveApply != nil {
+			rt.leaveApply()
+		}
+		return result
+	}
+	rt.mu.Unlock()
+
+	// PREPARE: build the candidate (and its API server when the port/enabled
+	// state changed) locally. Nothing is published and no process is touched
+	// until commit; a failed candidate is discarded wholesale and the
+	// installed generation and recorded applied state stay as they were.
+	var tx *applyTx
+	if rebuild {
+		tx = rt.prepareApply(ctx, uiServer, metricsStore, loaded, runningModel, apiPortChanged)
+		if tx == nil {
+			if rt.leaveApply != nil {
+				rt.leaveApply()
 			}
-			if old.Embedder != loaded.Embedder {
-				slog.Info("reconfiguring embedder", "old_port", old.Embedder.Port, "new_port", loaded.Embedder.Port)
-				rt.embedMgr.Reconfigure(func() (string, []string) {
-					return embedderArgsForConfig(loaded.Embedder)
-				}, embedderHealthURL(loaded.Embedder))
-				result.LiveApplied = true
-			}
-			if modelEndpointChanged && rt.reqQueue != nil {
-				client := rt.newInferenceClientFor(loaded)
-				rt.inferClient = client
-				rt.reqQueue.SetClient(client)
-			}
-			rt.cfg = *loaded
-			rt.refreshProjectDirectoryWarnings(uiServer)
+			return ui.ApplyResult{}
+		}
+	}
+	if rt.afterPrepare != nil {
+		rt.afterPrepare()
+	}
+
+	// QUIESCE + COMMIT: cancel task loops and flush sessions before the old
+	// generation is dropped, then install the candidate and applied state
+	// atomically and retire the previous resources. quiesce releases rt.mu
+	// while it waits so session summarization can read live config without
+	// deadlocking; commit reacquires it.
+	rt.mu.Lock()
+	if rebuild {
+		rt.quiesceMemoryAndAPI(ctx)
+	}
+	drainQueue := projectSwitched && modelChanged && rt.reqQueue != nil
+	rt.mu.Unlock()
+
+	// Draining the request queue on a project-switch model reload happens
+	// outside rt.mu: it waits for in-flight requests that would otherwise be
+	// dispatched to a llama-server that is about to be killed.
+	if drainQueue {
+		if err := rt.reqQueue.Restart(ctx); err != nil {
+			slog.Warn("project switch: queue restart failed", "err", err)
 		}
 	}
 
-	if old.UI.Port != loaded.UI.Port {
+	rt.mu.Lock()
+	result := rt.commitApply(tx, &newApplied, oldApplied, modelChanged, embedderChanged, endpointChanged, apiPortChanged, oldCfg, uiServer)
+	rt.mu.Unlock()
+
+	// Retirement of the previous API server runs outside rt.mu: Stop can wait
+	// on active connections. A server that outlives its shutdown timeout keeps
+	// a retained slot (see drainPendingRetired).
+	rt.drainPendingRetired()
+
+	if rt.leaveApply != nil {
+		rt.leaveApply()
+	}
+	rt.setModelMismatch(uiServer, &newApplied)
+	return result
+}
+
+// apiPortNeedsChange reports whether the API listener must be rebuilt when
+// applying loaded. The comparison is against the recorded applied state, so an
+// enabled/disabled or port change is noticed even when the rest of the config
+// is identical.
+func apiPortNeedsChange(old *appliedState, loaded *config.Config) bool {
+	wasRunning := old != nil && old.cfg.API.Enabled
+	wantRunning := loaded.API.Enabled
+	if wasRunning != wantRunning {
+		return true
+	}
+	return wasRunning && old.cfg.API.Port != loaded.API.Port
+}
+
+// finishResult appends restart-required reasons and live-applies the log-ring
+// resizes, mirroring the apply tail. Caller must hold rt.mu.
+func (rt *Runtime) finishResult(result *ui.ApplyResult, oldCfg config.Config, newCfg *config.Config) {
+	if oldCfg.UI.Port != newCfg.UI.Port {
 		result.RestartNeeded = append(result.RestartNeeded, "UI port")
 	}
-	if old.Queue.MaxDepth != loaded.Queue.MaxDepth {
+	if oldCfg.Queue.MaxDepth != newCfg.Queue.MaxDepth {
 		result.RestartNeeded = append(result.RestartNeeded, "queue max depth")
 	}
-	if old.Log.RingMaxEntries != loaded.Log.RingMaxEntries && rt.logRings.Log != nil {
-		rt.logRings.Log.Resize(loaded.Log.RingMaxEntries)
+	if oldCfg.Log.RingMaxEntries != newCfg.Log.RingMaxEntries && rt.logRings.Log != nil {
+		rt.logRings.Log.Resize(newCfg.Log.RingMaxEntries)
 		result.LiveApplied = true
 	}
-	if old.Log.ProcMaxLines != loaded.Log.ProcMaxLines {
+	if oldCfg.Log.ProcMaxLines != newCfg.Log.ProcMaxLines {
 		if rt.logRings.Llama != nil {
-			rt.logRings.Llama.Resize(loaded.Log.ProcMaxLines)
+			rt.logRings.Llama.Resize(newCfg.Log.ProcMaxLines)
 		}
 		if rt.logRings.Embed != nil {
-			rt.logRings.Embed.Resize(loaded.Log.ProcMaxLines)
+			rt.logRings.Embed.Resize(newCfg.Log.ProcMaxLines)
 		}
 		result.LiveApplied = true
 	}
+}
 
-	return result
+// setModelMismatch reflects the recorded running-versus-preferred model on the
+// status UI. The two are recorded separately (see appliedState) so the UI can
+// represent llama_on_switch=keep honestly.
+func (rt *Runtime) setModelMismatch(uiServer *ui.Server, applied *appliedState) {
+	if uiServer == nil || applied == nil {
+		return
+	}
+	if !config.ModelConfigEqual(applied.runningModel, applied.model) {
+		uiServer.SetModelMismatch(true, applied.runningModel.ModelPath, applied.model.ModelPath)
+		return
+	}
+	uiServer.SetModelMismatch(false, "", "")
 }
