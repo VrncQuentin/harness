@@ -137,7 +137,7 @@ func TestEffectiveModelForUsesActiveProjectOverrides(t *testing.T) {
 	}
 }
 
-func TestEffectivePromptForUsesEffectiveModelCtx(t *testing.T) {
+func TestPromptConfigForUsesRunningModelCtx(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Model.CtxSize = 2048
 	cfg.Prompt.CtxSize = 9999
@@ -155,9 +155,15 @@ func TestEffectivePromptForUsesEffectiveModelCtx(t *testing.T) {
 		},
 	}}
 
-	promptCfg := rt.effectivePromptFor(&cfg)
+	// The running model for a generation is the effective model; the prompt
+	// context ceiling must track it (project ctx override flows through).
+	effective := rt.effectiveModelFor(&cfg)
+	if effective.CtxSize != projectCtx {
+		t.Fatalf("effective model ctx = %d, want project override %d", effective.CtxSize, projectCtx)
+	}
+	promptCfg := promptConfigFor(&cfg, effective)
 	if promptCfg.CtxSize != projectCtx {
-		t.Fatalf("prompt ctx = %d, want effective model ctx %d", promptCfg.CtxSize, projectCtx)
+		t.Fatalf("prompt ctx = %d, want running model ctx %d", promptCfg.CtxSize, projectCtx)
 	}
 	if promptCfg.MemoryTokenBudget != cfg.Prompt.MemoryTokenBudget {
 		t.Fatalf("prompt config was not otherwise preserved: %+v", promptCfg)
