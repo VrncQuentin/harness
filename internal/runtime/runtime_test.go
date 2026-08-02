@@ -300,7 +300,10 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	}}
 
 	uiServer := ui.NewServer(0)
-	uiServer.SetServiceDeps(ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem})
+	// The existing generation carries the published UI snapshot; a failed
+	// reload must not replace it.
+	rt.gen = &generation{uiSnap: ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem}}
+	rt.gen.acquire()
 
 	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
 	if result.LiveApplied {
@@ -309,7 +312,8 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	if rt.globalMem != mem || rt.activeMem != mem {
 		t.Fatal("runtime memory repos were not restored after failed reload")
 	}
-	deps := uiServer.ServiceDepsSnapshot()
+	deps, release := rt.AcquireUISnapshot()
+	defer release()
 	if deps.MemoryRepoPath != root || deps.MemoryStore != mem {
 		t.Fatalf("UI service deps were not restored: path=%q store=%T", deps.MemoryRepoPath, deps.MemoryStore)
 	}
@@ -336,7 +340,8 @@ func TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange(t *testing.T
 	if rt.SessionManager() == nil || rt.taskRunner == nil || rt.assembler == nil {
 		t.Fatalf("memory/API graph was not rebuilt: session=%T task=%T assembler=%T", rt.SessionManager(), rt.taskRunner, rt.assembler)
 	}
-	deps := uiServer.ServiceDepsSnapshot()
+	deps, release := rt.AcquireUISnapshot()
+	defer release()
 	if deps.MemoryRepoPath != root || deps.SessionStore == nil || deps.TaskRunner == nil {
 		t.Fatalf("rebuilt UI deps missing: path=%q session=%T task=%T", deps.MemoryRepoPath, deps.SessionStore, deps.TaskRunner)
 	}
@@ -439,7 +444,8 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			if rt.SessionManager() == oldMgr {
 				t.Fatal("session manager was not replaced by endpoint change")
 			}
-			deps := uiServer.ServiceDepsSnapshot()
+			deps, release := rt.AcquireUISnapshot()
+			defer release()
 			if deps.MemoryRepoPath != root || deps.SessionStore == nil || deps.RetrievalScorer == nil || deps.IndexRebuilder == nil {
 				t.Fatalf("endpoint-only reload did not publish rebuilt UI deps: path=%q session=%T scorer=%T rebuilder=%T", deps.MemoryRepoPath, deps.SessionStore, deps.RetrievalScorer, deps.IndexRebuilder)
 			}
@@ -1784,7 +1790,10 @@ func TestFailedReloadPreservesReadableGeneration(t *testing.T) {
 	}
 
 	uiServer := ui.NewServer(0)
-	uiServer.SetServiceDeps(ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem})
+	// The existing generation owns the published snapshot and the readable
+	// reader; a failed reload must leave both untouched.
+	rt.gen = &generation{uiSnap: ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem}}
+	rt.gen.acquire()
 
 	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
 	if result.LiveApplied {
@@ -2052,6 +2061,91 @@ func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
 	// After release + Stop, oldRoot must be removable even on Windows.
 	if err := os.RemoveAll(oldRoot); err != nil {
 		t.Fatalf("old root not removable after release and Stop: %v", err)
+	}
+}
+
+// TestSnapshot_OldReferencesRemainValidAfterReload verifies that a UI
+// snapshot acquired before a reload keeps its generation's readers usable
+// against the original repository after the reload retires the old
+// generation. The old root stays pinned while the snapshot is held (a fatal
+// Windows assertion where handle blocking is the discriminator), retires
+// after release, and Runtime.Stop does not close resources protected by an
+// outstanding snapshot lease. All waiting is barrier-free: the assertions are
+// synchronous and deterministic.
+func TestSnapshot_OldReferencesRemainValidAfterReload(t *testing.T) {
+	oldRoot := initRuntimeProjectRepo(t)
+	newRoot := initRuntimeProjectRepo(t)
+	if err := os.WriteFile(filepath.Join(oldRoot, "known.txt"), []byte("leased"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: oldRoot},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+
+	uiServer := ui.NewServer(0)
+	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
+	t.Cleanup(func() { rt.Stop() })
+
+	// The held-lease phase runs inside a closure so every assertion path
+	// releases exactly once via the deferred release.
+	func() {
+		snap, release := rt.AcquireUISnapshot()
+		defer release()
+
+		// Reload to newRoot while holding the snapshot lease on the original
+		// generation.
+		loaded := cfg
+		loaded.Prompt.MemoryTokenBudget++
+		rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+			project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: newRoot},
+		}}
+		store := &runtimeConfigStore{cfg: &loaded, saved: true}
+		rt.cfgStore = store
+		if !rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil).LiveApplied {
+			t.Fatal("reload failed")
+		}
+
+		// The held snapshot must still perform a real rooted read against the
+		// original repository.
+		memStore := snap.MemoryStore
+		if memStore == nil {
+			t.Fatal("held snapshot has no memory store")
+		}
+		if b, err := memStore.Read("known.txt"); err != nil || string(b) != "leased" {
+			t.Fatalf("held snapshot read = %q, %v", b, err)
+		}
+
+		// Runtime.Stop must not close resources protected by an outstanding
+		// snapshot lease.
+		rt.Stop()
+		if _, err := memStore.Read("known.txt"); err != nil {
+			t.Fatalf("held snapshot read failed after Stop: %v", err)
+		}
+
+		// Old handles stay pinned while the snapshot is held. The RemoveAll
+		// checks run last because a blocked RemoveAll still deletes files
+		// under the held directory; the reads above must run first.
+		if err := os.RemoveAll(oldRoot); err == nil {
+			if runtime.GOOS == "windows" {
+				t.Fatal("old root was removable despite held snapshot on Windows")
+			}
+			// Unix: inode-based handles allow removal even while open.
+		} else {
+			t.Logf("old root blocked by held snapshot: %v", err)
+		}
+	}()
+
+	// After the last acquired snapshot is released, the old readers close and
+	// the old root must be removable even on Windows.
+	if err := os.RemoveAll(oldRoot); err != nil {
+		t.Fatalf("old root not removable after snapshot release: %v", err)
 	}
 }
 

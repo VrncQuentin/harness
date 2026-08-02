@@ -97,16 +97,19 @@ func editableDesc(p string) (string, bool) {
 	return "", false
 }
 
-func (s *Server) memoryStore() MemoryStore {
-	return s.depsSnapshot().memStore
-}
-
-func (s *Server) retrievalScorer() RetrievalScorer {
-	return s.depsSnapshot().scorer
-}
-
-func (s *Server) indexRebuilder() IndexRebuilder {
-	return s.depsSnapshot().rebuilder
+func (s *Server) memoryAgentNames(reg AgentRegistry) []string {
+	if reg == nil {
+		return nil
+	}
+	list, err := reg.List()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(list))
+	for _, a := range list {
+		names = append(names, a.Name)
+	}
+	return names
 }
 
 // memoryView is the template context for /memory.
@@ -210,23 +213,6 @@ type memoryEditView struct {
 	SaveErr string
 }
 
-func (s *Server) memoryAgentNames() []string {
-	reg := s.agentRegistry()
-	if reg == nil {
-		return nil
-	}
-	list, err := reg.List()
-	if err != nil {
-		return nil
-	}
-	names := make([]string, 0, len(list))
-	for _, a := range list {
-		names = append(names, a.Name)
-	}
-	return names
-}
-
-// handleMemory renders the /memory tree (GET only).
 func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/memory" {
 		http.NotFound(w, r)
@@ -237,11 +223,14 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	snap, release := s.acquireSnapshot()
+	defer release()
+
 	data := memoryView{basePage: s.newBasePage("memory")}
-	store := s.memoryStore()
+	store := snap.MemoryStore
 	if store != nil {
 		data.Configured = true
-		data.RepoPath = s.getMemoryRepoPath()
+		data.RepoPath = snap.MemoryRepoPath
 		if data.RepoPath != "" {
 			data.AgentsPath = filepath.Join(data.RepoPath, agentsDirName)
 		}
@@ -258,7 +247,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 		}
 		data.EpisodesByAgent = counts
 	}
-	data.CanRebuild = s.indexRebuilder() != nil
+	data.CanRebuild = snap.IndexRebuilder != nil
 	if saved := strings.TrimSpace(r.URL.Query().Get("saved")); saved != "" {
 		data.SavedPath = saved
 	}
@@ -275,7 +264,7 @@ func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
 			data.DedupScore = 0
 		}
 	}
-	data.AgentNames = s.memoryAgentNames()
+	data.AgentNames = s.memoryAgentNames(snap.AgentRegistry)
 
 	s.renderMemory(w, data)
 }
@@ -291,7 +280,9 @@ func (s *Server) handleMemoryEpisodes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	store := s.memoryStore()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	store := snap.MemoryStore
 	if store == nil {
 		http.Error(w, "memory store not configured", http.StatusServiceUnavailable)
 		return
@@ -303,7 +294,7 @@ func (s *Server) handleMemoryEpisodes(w http.ResponseWriter, r *http.Request) {
 	}
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 
-	scorer := s.retrievalScorer()
+	scorer := snap.RetrievalScorer
 	rows, err := listAgentEpisodes(r.Context(), store, agent, query, scorer)
 	if err != nil {
 		http.Error(w, "could not list episodes: "+err.Error(), http.StatusInternalServerError)
@@ -315,7 +306,7 @@ func (s *Server) handleMemoryEpisodes(w http.ResponseWriter, r *http.Request) {
 		Query:    query,
 		Episodes: rows,
 	}
-	data.AgentNames = s.memoryAgentNames()
+	data.AgentNames = s.memoryAgentNames(snap.AgentRegistry)
 
 	s.renderMemoryEpisodes(w, data)
 }
@@ -329,7 +320,9 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	store := s.memoryStore()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	store := snap.MemoryStore
 	if store == nil {
 		http.Error(w, "memory store not configured", http.StatusServiceUnavailable)
 		return
@@ -377,7 +370,7 @@ func (s *Server) handleMemoryEpisodeView(w http.ResponseWriter, r *http.Request)
 	content := string(body)
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	retrieval := RetrievalScore{}
-	if scorer := s.retrievalScorer(); scorer != nil {
+	if scorer := snap.RetrievalScorer; scorer != nil {
 		if scores, serr := scorer.ScoreEpisodes(r.Context(), query, []string{p}); serr == nil {
 			retrieval = scores[p]
 		}
@@ -531,7 +524,9 @@ func (s *Server) handleMemoryEdit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not editable: "+p, http.StatusBadRequest)
 		return
 	}
-	store := s.memoryStore()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	store := snap.MemoryStore
 	if store == nil {
 		http.Error(w, "memory store not configured", http.StatusServiceUnavailable)
 		return
@@ -564,7 +559,9 @@ func (s *Server) handleMemoryRebuildIndex(w http.ResponseWriter, r *http.Request
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	rb := s.indexRebuilder()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	rb := snap.IndexRebuilder
 	if rb == nil {
 		http.Error(w, "index rebuild not available (embedder or index is not ready)", http.StatusServiceUnavailable)
 		return
@@ -594,7 +591,9 @@ func (s *Server) handleMemorySave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not editable: "+p, http.StatusBadRequest)
 		return
 	}
-	store := s.memoryStore()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	store := snap.MemoryStore
 	if store == nil {
 		http.Error(w, "memory store not configured", http.StatusServiceUnavailable)
 		return

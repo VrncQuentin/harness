@@ -113,13 +113,18 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The memory layout prompt reads the active project's memory repo path,
+	// which is generation-bound.
+	svcSnap, release := s.acquireSnapshot()
+	defer release()
+
 	data := statusPageData{
 		basePage:        s.newBasePage("status"),
 		stateSnapshot:   snap,
 		QueuePct:        queuePct(snap.QueueDepth, snap.QueueMax),
 		HasRetry:        s.hasRetry(),
 		StartupErrText:  errTexts,
-		MemoryLayout:    s.memoryLayoutView(),
+		MemoryLayout:    s.memoryLayoutView(svcSnap.MemoryRepoPath),
 		ScaffoldErr:     r.URL.Query().Get("scaffold_err"),
 		ScaffoldCreated: scaffoldCreated,
 		LlamaPanel:      llamaPanelFromSnapshot(snap),
@@ -186,8 +191,7 @@ func formatMetricTags(tags map[string]string) string {
 // swallowed: those conditions are surfaced separately as startup errors
 // or via the agents page setup CTA. We do not want two different
 // alerts pointing at the same root cause on the status page.
-func (s *Server) memoryLayoutView() memoryLayoutView {
-	path := s.getMemoryRepoPath()
+func (s *Server) memoryLayoutView(path string) memoryLayoutView {
 	if path == "" {
 		return memoryLayoutView{}
 	}
@@ -293,7 +297,9 @@ func (s *Server) handleMemoryScaffold(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	path := s.getMemoryRepoPath()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	path := snap.MemoryRepoPath
 	if path == "" {
 		http.Redirect(w, r, "/?scaffold_err="+url.QueryEscape("memory repo path is not configured"), http.StatusSeeOther)
 		return

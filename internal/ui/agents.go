@@ -51,10 +51,6 @@ type AgentRegistry interface {
 	Delete(name string) error
 }
 
-func (s *Server) agentRegistry() AgentRegistry {
-	return s.depsSnapshot().agentReg
-}
-
 // agentsView is the template context for the /agents page.
 type agentsView struct {
 	basePage
@@ -98,7 +94,9 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := s.buildAgentsView()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	data := s.buildAgentsView(snap.AgentRegistry)
 	if name := strings.TrimSpace(r.URL.Query().Get("created")); name != "" {
 		data.CreatedName = name
 	}
@@ -130,9 +128,8 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 // from the registry's List() output, which the adapter hydrates with
 // file contents - that lets each card render inline without an extra
 // Get() per agent.
-func (s *Server) buildAgentsView() agentsView {
+func (s *Server) buildAgentsView(reg AgentRegistry) agentsView {
 	data := agentsView{basePage: s.newBasePage("agents")}
-	reg := s.agentRegistry()
 	if reg == nil {
 		return data
 	}
@@ -163,7 +160,9 @@ func (s *Server) handleAgentsActive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reg := s.agentRegistry()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	reg := snap.AgentRegistry
 	if reg == nil {
 		http.Error(w, "agent registry not configured", http.StatusServiceUnavailable)
 		return
@@ -203,7 +202,9 @@ func (s *Server) handleAgentsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reg := s.agentRegistry()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	reg := snap.AgentRegistry
 	if reg == nil {
 		http.Error(w, "agent registry not configured", http.StatusServiceUnavailable)
 		return
@@ -216,7 +217,7 @@ func (s *Server) handleAgentsCreate(w http.ResponseWriter, r *http.Request) {
 
 	name := strings.TrimSpace(r.FormValue("name"))
 	if err := reg.Create(name); err != nil {
-		data := s.buildAgentsView()
+		data := s.buildAgentsView(reg)
 		data.CreateErr = err.Error()
 		data.CreateName = name
 		w.WriteHeader(http.StatusBadRequest)
@@ -273,7 +274,9 @@ func (s *Server) handleAgentsEdit(
 		return
 	}
 
-	reg := s.agentRegistry()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	reg := snap.AgentRegistry
 	if reg == nil {
 		http.Error(w, "agent registry not configured", http.StatusServiceUnavailable)
 		return
@@ -299,7 +302,7 @@ func (s *Server) handleAgentsEdit(
 
 	body := []byte(r.FormValue("body"))
 	if err := write(reg, name, body); err != nil {
-		data := s.buildAgentsView()
+		data := s.buildAgentsView(reg)
 		data.SaveErr = err.Error()
 		data.EditName = name
 		// Show what the user just typed so they don't lose work
@@ -339,7 +342,9 @@ func (s *Server) handleAgentsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reg := s.agentRegistry()
+	snap, release := s.acquireSnapshot()
+	defer release()
+	reg := snap.AgentRegistry
 	if reg == nil {
 		http.Error(w, "agent registry not configured", http.StatusServiceUnavailable)
 		return

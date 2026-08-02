@@ -53,10 +53,6 @@ var (
 	ErrSessionConversationLost = errors.New("session conversation history not available - only the summary survives in git")
 )
 
-func (s *Server) getChatRunner() ChatRunner {
-	return s.depsSnapshot().chatRunner
-}
-
 // chatView is the template context for the /chat page.
 type chatView struct {
 	basePage
@@ -90,16 +86,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	snap, release := s.acquireSnapshot()
+	defer release()
+
 	data := chatView{basePage: s.newBasePage("chat"), StreamID: newEventStreamID()}
-	data.Configured = s.getChatRunner() != nil
-	if reg := s.agentRegistry(); reg != nil {
+	data.Configured = snap.ChatRunner != nil
+	if reg := snap.AgentRegistry; reg != nil {
 		data.ActiveAgent = reg.Active()
 		if list, err := reg.List(); err == nil {
 			data.HasAgents = len(list) > 0
 		}
 	}
 	if data.Configured && data.ActiveAgent != "" {
-		data.RecentSessions, data.ResumeErr = s.chatResumeRows(data.ActiveAgent)
+		data.RecentSessions, data.ResumeErr = s.chatResumeRows(snap.SessionStore, data.ActiveAgent)
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -108,8 +107,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) chatResumeRows(agent string) ([]chatResumeRow, string) {
-	store := s.getSessionStore()
+func (s *Server) chatResumeRows(store SessionStore, agent string) ([]chatResumeRow, string) {
 	if store == nil {
 		return nil, "session manager not available"
 	}
@@ -154,22 +152,30 @@ const chatSendMaxBytes = 32 * 1024
 // handleChatSend is the htmx POST handler for the chat input form. It
 // renders the user's message and an empty assistant placeholder into
 // the transcript via htmx swap, then starts server-owned token streaming.
+//
+// The snapshot is acquired before the runner or session store is read and its
+// lease is transferred to the detached goroutine, which releases it after the
+// entire stream ends. Every pre-launch error path releases exactly once.
 func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if s.getChatRunner() == nil {
+	snap, release := s.acquireSnapshot()
+	if snap.ChatRunner == nil {
+		release()
 		http.Error(w, "chat backend not configured", http.StatusServiceUnavailable)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, chatSendMaxBytes)
 	if err := r.ParseForm(); err != nil {
+		release()
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
 	msg := strings.TrimSpace(r.FormValue("message"))
 	if msg == "" {
+		release()
 		http.Error(w, "message must not be empty", http.StatusBadRequest)
 		return
 	}
@@ -179,11 +185,9 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	tokenEvent := "chat-token-" + newEventStreamID()
 
 	var conversation []ChatMessage
-	if sessionID != "" {
-		if store := s.getSessionStore(); store != nil {
-			if live, err := store.LiveConversation(sessionID); err == nil {
-				conversation = live
-			}
+	if sessionID != "" && snap.SessionStore != nil {
+		if live, err := snap.SessionStore.LiveConversation(sessionID); err == nil {
+			conversation = live
 		}
 	}
 	conversation = append(conversation, ChatMessage{Role: "user", Content: msg})
@@ -196,19 +200,21 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 		StreamID:    streamID,
 		TokenEvent:  tokenEvent,
 	}); err != nil {
+		release()
 		http.Error(w, "template error", http.StatusInternalServerError)
 		return
 	}
 
-	// Start the runner in the background and broadcast tokens via SSE.
-	runner := s.getChatRunner()
-	if runner != nil {
-		ctx, cancel := context.WithCancel(s.asyncContext())
-		go func() {
-			defer cancel()
-			s.streamChatTokens(ctx, runner, agent, sessionID, streamID, tokenEvent, conversation)
-		}()
-	}
+	// Start the runner in the background and broadcast tokens via SSE. The
+	// snapshot lease transfers to the goroutine so the captured runner and
+	// session store survive a reload while the stream is in flight.
+	runner := snap.ChatRunner
+	ctx, cancel := context.WithCancel(s.asyncContext())
+	go func() {
+		defer cancel()
+		defer release()
+		s.streamChatTokens(ctx, runner, agent, sessionID, streamID, tokenEvent, conversation)
+	}()
 }
 
 // streamChatTokens runs the chat runner in a goroutine and broadcasts

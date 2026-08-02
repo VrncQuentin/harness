@@ -325,7 +325,7 @@ func TestHandlePromoteFact_UsesActiveProjectStore(t *testing.T) {
 		"facts.md": "global fact\n",
 	})
 	committer := &stubCommitter{}
-	s.SetServiceDeps(ServiceDeps{MemoryStore: activeStore, Committer: committer})
+	setSnapshotForTest(s, ServiceDeps{MemoryStore: activeStore, Committer: committer})
 
 	form := url.Values{}
 	form.Set("text", "new project fact")
@@ -367,7 +367,7 @@ func TestHandlePromoteFact_CommitErrorReturns500(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "commit fact") {
 		t.Errorf("expected commit error in body, got %q", rec.Body.String())
 	}
-	store := s.memoryStore().(*stubMemoryStore)
+	store := currentSnapshotForTest(s).MemoryStore.(*stubMemoryStore)
 	if got := store.files["facts.md"]; got != "existing fact\n" {
 		t.Fatalf("facts.md after commit failure = %q", got)
 	}
@@ -394,7 +394,7 @@ func TestHandleAppendNote_CommitErrorReturns500(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "commit note") {
 		t.Errorf("expected commit error in body, got %q", rec.Body.String())
 	}
-	store := s.memoryStore().(*stubMemoryStore)
+	store := currentSnapshotForTest(s).MemoryStore.(*stubMemoryStore)
 	if got := store.files["agents/coder/notes.md"]; got != "existing note\n" {
 		t.Fatalf("notes.md after commit failure = %q", got)
 	}
@@ -708,7 +708,7 @@ func TestHandleMemoryEpisodes_UsesActiveProject(t *testing.T) {
 	activeStore := newStubMemoryStore(map[string]string{
 		"episodes/coder/dt.md": "project",
 	})
-	s.SetServiceDeps(ServiceDeps{MemoryStore: activeStore})
+	setSnapshotForTest(s, ServiceDeps{MemoryStore: activeStore})
 
 	req := httptest.NewRequest(http.MethodGet, "/memory/episodes?agent=coder", nil)
 	rec := httptest.NewRecorder()

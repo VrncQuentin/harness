@@ -148,6 +148,16 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	oldGlobal := rt.globalMem
 	oldActive := rt.activeMem
 
+	// Bind the candidate's complete UI snapshot to its generation before
+	// anything observes it, and take the publisher lease up front.
+	newGen := &generation{
+		assembler:  candidate.assembler,
+		sessionMgr: candidate.sessionMgr,
+		handles:    candidate.handles,
+		uiSnap:     candidate.serviceDeps,
+	}
+	newGen.acquire()
+
 	rt.globalMem = candidate.globalMem
 	rt.activeMem = candidate.activeMem
 	rt.agentReg = candidate.agentReg
@@ -158,23 +168,18 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 		rt.apiServer = candidate.apiServer
 	}
 
-	uiServer.SetServiceDeps(candidate.serviceDeps)
-
-	// Retire the old generation: attach the retired readers and release
-	// the publisher lease. When the last in-flight operation releases
-	// its lease, the generation's readers are closed.
-	if rt.gen != nil {
-		rt.gen.readers = []memory.Repo{oldGlobal, oldActive}
-		rt.gen.release()
+	// Publish the generation and its snapshot coherently: swap rt.gen under
+	// the same lock acquisition uses, then retire the old publisher lease.
+	// Old readers and handles close only after the last acquired snapshot on
+	// the old generation is released.
+	oldGen := rt.gen
+	rt.gen = newGen
+	if oldGen != nil {
+		oldGen.readers = []memory.Repo{oldGlobal, oldActive}
+		oldGen.release()
 	} else {
 		closeReaders(oldGlobal, oldActive)
 	}
-	rt.gen = &generation{
-		assembler:  candidate.assembler,
-		sessionMgr: candidate.sessionMgr,
-		handles:    candidate.handles,
-	}
-	rt.gen.acquire()
 
 	return true
 }

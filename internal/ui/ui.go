@@ -17,10 +17,12 @@ import (
 	"github.com/VrncQuentin/harness/internal/metrics"
 )
 
-// ServiceDeps is the set of UI-facing adapters produced by the runtime memory
-// and API service graph. SetServiceDeps publishes these as one immutable
-// snapshot so handlers never observe a half-rebuilt mix of old and new
-// adapters while config/project changes are being applied.
+// ServiceDeps is the set of UI-facing adapters owned by one runtime
+// generation. The runtime binds an immutable ServiceDeps to each generation
+// it publishes and hands it out through SnapshotProvider.AcquireUISnapshot,
+// which also pins the generation so its readers and handles stay open until
+// the returned release func is called. Handlers must use only the fields of
+// one captured snapshot and must never reread individual live getters.
 type ServiceDeps struct {
 	MemoryRepoPath string
 
@@ -37,6 +39,16 @@ type ServiceDeps struct {
 
 	ChatRunner ChatRunner
 	TaskRunner TaskRunner
+}
+
+// SnapshotProvider hands out generation-bound UI dependency snapshots.
+// AcquireUISnapshot atomically captures the current generation's complete
+// snapshot and pins the generation so it cannot be retired (and its readers
+// closed) before the returned release func is called. The concrete
+// implementation lives in internal/runtime; the ui package only consumes it,
+// keeping the import graph one-way.
+type SnapshotProvider interface {
+	AcquireUISnapshot() (ServiceDeps, func())
 }
 
 // RetryFunc is called when the user clicks Retry on the status page or saves
@@ -113,25 +125,7 @@ type uiDeps struct {
 	metricsStore metrics.Store
 	projectStore ProjectStore
 
-	agentReg AgentRegistry
-	binDir   string
-
-	// memRepo is the active project memory repo path. Empty means
-	// project memory is not available yet, in which case the status page
-	// suppresses the layout-scaffolding prompt entirely.
-	memRepo  string
-	memStore MemoryStore
-
-	committer Committer
-	dedup     DedupChecker
-
-	promotionDedupThreshold float64
-	scorer                  RetrievalScorer
-	rebuilder               IndexRebuilder
-
-	chatRunner   ChatRunner
-	taskRunner   TaskRunner
-	sessionStore SessionStore
+	binDir string
 
 	projectNavSlugs []string
 	projectNavNames map[string]string
@@ -195,8 +189,16 @@ type Server struct {
 	shutdownTmpl *template.Template
 
 	// deps is swapped whole so handlers never observe a half-rebuilt mix of
-	// adapters while the runtime tears down and rewires memory/API services.
+	// control adapters while the runtime tears down and rewires services. It
+	// holds only stable UI/control dependencies (retry, stores, restart
+	// callbacks, navigation, quit). Generation-bound service adapters live in
+	// the runtime generation and are reached through snapProvider.
 	deps atomic.Pointer[uiDeps]
+
+	// snapProvider hands out generation-bound UI snapshots with a lease.
+	// Nil until the runtime wires itself, in which case handlers observe an
+	// empty snapshot (setup CTA / service-unavailable responses).
+	snapProvider atomic.Pointer[SnapshotProvider]
 
 	logRing   atomic.Pointer[logbuf.Ring]
 	llamaRing atomic.Pointer[logbuf.Ring]
@@ -292,51 +294,33 @@ func (s *Server) updateDeps(mut func(*uiDeps)) {
 		}
 	}
 }
+
+// SetSnapshotProvider installs the runtime's generation-bound snapshot
+// provider. The provider is set once during runtime startup and is safe to
+// call again on later reloads; a nil provider leaves handlers with an empty
+// snapshot (setup CTA / service-unavailable responses).
+func (s *Server) SetSnapshotProvider(p SnapshotProvider) {
+	s.snapProvider.Store(&p)
+}
+
+// acquireSnapshot captures the current generation-bound UI snapshot exactly
+// once and pins the generation until the returned release func runs. Every
+// handler that needs a generation-scoped dependency must acquire once and use
+// only fields from the captured snapshot; it must not reread individual live
+// getters, because those could span two publications.
+func (s *Server) acquireSnapshot() (ServiceDeps, func()) {
+	pp := s.snapProvider.Load()
+	if pp == nil {
+		return ServiceDeps{}, func() {}
+	}
+	return (*pp).AcquireUISnapshot()
+}
 func parsePageTemplates(pages map[string][]string) map[string]*template.Template {
 	out := make(map[string]*template.Template, len(pages))
 	for name, paths := range pages {
 		out[name] = template.Must(template.ParseFS(assets.TemplateFS, paths...))
 	}
 	return out
-}
-
-// SetServiceDeps publishes the runtime-owned UI adapters as one snapshot. Pass
-// a zero value to detach them while the memory/API service graph is stopped or
-// invalid.
-func (s *Server) SetServiceDeps(deps ServiceDeps) {
-	s.updateDeps(func(d *uiDeps) {
-		d.memRepo = deps.MemoryRepoPath
-		d.agentReg = deps.AgentRegistry
-		d.memStore = deps.MemoryStore
-		d.sessionStore = deps.SessionStore
-		d.committer = deps.Committer
-		d.dedup = deps.Dedup
-		d.promotionDedupThreshold = deps.PromotionDedupThreshold
-		d.scorer = deps.RetrievalScorer
-		d.rebuilder = deps.IndexRebuilder
-		d.chatRunner = deps.ChatRunner
-		d.taskRunner = deps.TaskRunner
-	})
-}
-
-// ServiceDepsSnapshot returns the currently published runtime service adapters.
-// Runtime uses it to restore a known-good UI graph if a live reload fails after
-// detaching services.
-func (s *Server) ServiceDepsSnapshot() ServiceDeps {
-	deps := s.depsSnapshot()
-	return ServiceDeps{
-		MemoryRepoPath:          deps.memRepo,
-		AgentRegistry:           deps.agentReg,
-		MemoryStore:             deps.memStore,
-		SessionStore:            deps.sessionStore,
-		Committer:               deps.committer,
-		Dedup:                   deps.dedup,
-		PromotionDedupThreshold: deps.promotionDedupThreshold,
-		RetrievalScorer:         deps.scorer,
-		IndexRebuilder:          deps.rebuilder,
-		ChatRunner:              deps.chatRunner,
-		TaskRunner:              deps.taskRunner,
-	}
 }
 
 // SetRetry installs the callback invoked on /retry and after a successful
@@ -448,10 +432,6 @@ func (s *Server) SetBinDir(dir string) {
 
 func (s *Server) getBinDir() string {
 	return s.depsSnapshot().binDir
-}
-
-func (s *Server) getMemoryRepoPath() string {
-	return s.depsSnapshot().memRepo
 }
 
 // SetQuit installs the callback invoked when the user confirms the shutdown
