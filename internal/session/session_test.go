@@ -120,13 +120,13 @@ func newTestManager(t *testing.T, fi *fakeInference) (*Manager, *memory.DirReade
 	t.Cleanup(func() { _ = reader.Close() })
 	metricsRec := &fakeMetrics{}
 	mgr, err := NewManager(ManagerDeps{
-		Repo:               repo,
-		Writer:             reader,
-		Reader:             reader,
-		Inference:          fi,
-		Metrics:            metricsRec,
-		SummarizerPrompt:   func() string { return "test prompt" },
-		ResolveAbsRepoPath: dir,
+		Repo:             repo,
+		Writer:           reader,
+		Reader:           reader,
+		Appender:         reader,
+		Inference:        fi,
+		Metrics:          metricsRec,
+		SummarizerPrompt: func() string { return "test prompt" },
 	}, project.GlobalSlug)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -237,8 +237,7 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 	}
 
 	// Sessions log has one entry.
-	logPath := filepath.Join(dir, "sessions.jsonl")
-	records, err := ReadAll(logPath)
+	records, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -278,7 +277,7 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 
 func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 	fi := newFakeInference(summaryTokens("first summary"), summaryTokens("second summary"))
-	mgr, reader, dir, fm := newTestManager(t, fi)
+	mgr, reader, _, fm := newTestManager(t, fi)
 	s := mgr.Start("reviewer")
 	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "what is up"}); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -298,8 +297,7 @@ func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 	}
 
 	// Sessions log has two records (append-only).
-	logPath := filepath.Join(dir, "sessions.jsonl")
-	records, err := ReadAll(logPath)
+	records, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -330,7 +328,7 @@ func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 
 func TestManager_ConcurrentSavesSerializeSaveSeq(t *testing.T) {
 	fi := newFakeInference(summaryTokens("first concurrent summary"), summaryTokens("second concurrent summary"))
-	mgr, _, dir, _ := newTestManager(t, fi)
+	mgr, reader, _, _ := newTestManager(t, fi)
 	s := mgr.Start("coder")
 	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "save this safely"}); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -364,7 +362,7 @@ func TestManager_ConcurrentSavesSerializeSaveSeq(t *testing.T) {
 		t.Fatalf("concurrent save seqs = %#v, want exactly 1 and 2", seenSeq)
 	}
 
-	records, err := ReadAll(filepath.Join(dir, "sessions.jsonl"))
+	records, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -448,7 +446,7 @@ func TestManager_AppendUnknown(t *testing.T) {
 
 func TestManager_FlushAllSavesEveryLiveSession(t *testing.T) {
 	fi := newFakeInference(summaryTokens("first"), summaryTokens("second"))
-	mgr, _, dir, _ := newTestManager(t, fi)
+	mgr, reader, _, _ := newTestManager(t, fi)
 
 	a := mgr.Start("coder")
 	b := mgr.Start("reviewer")
@@ -462,8 +460,7 @@ func TestManager_FlushAllSavesEveryLiveSession(t *testing.T) {
 		t.Fatalf("FlushAll: %v", err)
 	}
 
-	logPath := filepath.Join(dir, "sessions.jsonl")
-	records, err := ReadAll(logPath)
+	records, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}

@@ -285,6 +285,85 @@ func (r *Root) CreateExclusive(rel string, data []byte, perm fs.FileMode) error 
 	return nil
 }
 
+// appendHooks are the seams threaded into appendSync. The fields run at the
+// lifecycle points they name:
+//
+//   - Write, if non-nil, replaces the single f.Write(data) that appends the
+//     record.
+//   - Sync, if non-nil, replaces f.Sync().
+//
+// The hooks are unexported on purpose: they receive the live append target as
+// an *os.File, which can truncate, seek, or rewrite — exactly what the
+// append-only contract forbids. Keeping them package-private means only this
+// package's own tests can reach that handle; every production caller is left
+// with AppendSync, whose open is fixed to O_WRONLY|O_CREATE|O_APPEND.
+type appendHooks struct {
+	Write func(f *os.File, data []byte) error
+	Sync  func(f *os.File) error
+}
+
+// AppendSync appends data to rel, creating the file if it is absent, and
+// fsyncs before returning. It is the narrow append primitive for append-only
+// logs such as sessions.jsonl.
+//
+// The open is rooted, with the flag surface fixed to O_WRONLY|O_CREATE|O_APPEND
+// and nothing else: no O_TRUNC, no O_RDWR, no seek, no caller-supplied flags.
+// An append-only log's whole guarantee is that what is already there stays
+// there, so no truncation-capable spelling of the open exists here for a
+// caller to reach. The complete record is appended with one write, the file is
+// synced before success, and write, sync, and close failures all propagate.
+// A failed append never attempts rollback or cleanup by name: the file it was
+// appending to is not removed and its existing contents are not shortened,
+// because removing or replacing a name whose ownership may have changed since
+// it was opened is unsafe.
+//
+// The parent directory is not created here — the caller (memory.DirReader)
+// creates missing parents through the same root before appending.
+//
+// Append writes in place, which is inherent to the operation and worth saying
+// plainly: unlike WriteStreamAtomic's rename publication, an append cannot
+// replace the directory entry, so a sessions.jsonl entry that is a hard link
+// to a file elsewhere is written through — the same underlying file gains the
+// record. Rooted access prevents pathname, symlink, and junction escapes, but
+// it cannot distinguish a hard-linked entry from the same file outside the
+// repo. That limitation is inherent to appending in place and is not worked
+// around with a read-modify-rename; doing that would replace the audit log's
+// append-only identity with a rewrite on every save.
+func (r *Root) AppendSync(rel string, data []byte, perm fs.FileMode) error {
+	return r.appendSync(rel, data, perm, appendHooks{})
+}
+
+// appendSync is AppendSync with the appendHooks seams enabled. It is
+// unexported because the only callers are this package's tests; the production
+// surface is AppendSync alone, so no caller outside rootfs can turn the live
+// append target into a truncate, seek, or rewrite.
+func (r *Root) appendSync(rel string, data []byte, perm fs.FileMode, hooks appendHooks) error {
+	f, err := r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_APPEND, perm)
+	if err != nil {
+		return err
+	}
+	wf := hooks.Write
+	if wf == nil {
+		wf = func(f *os.File, data []byte) error {
+			_, err := f.Write(data)
+			return err
+		}
+	}
+	if err := wf(f, data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	sf := hooks.Sync
+	if sf == nil {
+		sf = func(f *os.File) error { return f.Sync() }
+	}
+	if err := sf(f); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // SameDir reports whether r and other are handles on one directory.
 //
 // It compares filesystem objects, not pathnames, and both are already open, so

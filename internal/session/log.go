@@ -2,13 +2,12 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"sort"
 	"time"
 )
@@ -35,24 +34,41 @@ type Record struct {
 // math stays self-evidently correct.
 const readMaxLineBytes = 1024 * 1024
 
-// ReadAll parses the entire log at path. Garbled lines are skipped with
+// LogReader is the rooted read capability the session log needs. relPath is
+// relative to the project memory repo, which the implementation holds open —
+// the manager never opens sessions.jsonl by pathname.
+type LogReader interface {
+	Read(relPath string) ([]byte, error)
+}
+
+// LogAppender is the rooted append capability the session log needs. It is
+// deliberately narrower than a file API: an append-only audit log must not be
+// reachable through anything that can truncate or replace it.
+type LogAppender interface {
+	AppendFile(relPath string, data []byte) error
+}
+
+// ReadAll parses the entire log at relPath, read through the pinned project
+// memory repo rather than by pathname. Garbled lines are skipped with
 // a slog.Warn that names the line number so an operator can find the
 // offending entry. The caller still gets every parseable record so a
 // single bad line never blocks the harness from starting.
 //
-// A missing log file is not an error - it returns an empty slice. The
-// log only exists once at least one session has been saved.
-func ReadAll(path string) ([]Record, error) {
-	f, err := os.Open(path)
+// A missing log file is not an error — it returns an empty slice. The
+// log only exists once at least one session has been saved. Only
+// fs.ErrNotExist means "no sessions": a permission, containment, or I/O
+// failure is an error the caller must see, because treating a log it
+// could not read as empty would hide a real problem.
+func ReadAll(r LogReader, relPath string) ([]Record, error) {
+	data, err := r.Read(relPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("session: read log %s: %w", path, err)
+		return nil, fmt.Errorf("session: read log %s: %w", relPath, err)
 	}
-	defer func() { _ = f.Close() }()
 
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
 	scanner.Buffer(make([]byte, 0, readMaxLineBytes), readMaxLineBytes)
 	var out []Record
 	line := 0
@@ -65,7 +81,7 @@ func ReadAll(path string) ([]Record, error) {
 		var rec Record
 		if err := json.Unmarshal(raw, &rec); err != nil {
 			slog.Warn("session: skipping garbled sessions.jsonl line",
-				"path", path,
+				"path", relPath,
 				"line", line,
 				"err", err,
 			)
@@ -73,7 +89,7 @@ func ReadAll(path string) ([]Record, error) {
 		}
 		if rec.ID == "" {
 			slog.Warn("session: skipping log entry with empty id",
-				"path", path,
+				"path", relPath,
 				"line", line,
 			)
 			continue
@@ -84,26 +100,26 @@ func ReadAll(path string) ([]Record, error) {
 		// A scan error halfway through still returns the records we
 		// already parsed - same recovery posture as a garbled line.
 		slog.Warn("session: sessions.jsonl scan error",
-			"path", path,
+			"path", relPath,
 			"err", err,
 		)
 	}
 	return out, nil
 }
 
-// AppendRecord appends rec to the log at path. The parent directory is
-// created on first call so the caller does not need to scaffold the
-// project repo tree separately. Each record is fsynced so a power
-// loss between saves keeps the previous records intact.
-func AppendRecord(path string, rec Record) error {
+// AppendRecord appends rec to the log at relPath, through the pinned project
+// memory repo. The parent directory is created on first call so the caller does
+// not need to scaffold the project repo tree separately. Each record is fsynced
+// so a power loss between saves keeps the previous records intact.
+//
+// The append goes through a rooted capability rather than an absolute pathname
+// for the same reason the log is append-only in the first place: a name that
+// resolves somewhere else — because a component of it became a link, or because
+// the repo directory was replaced — would send the harness's own audit trail
+// out of the repository, or let a write land on a file that is not the log.
+func AppendRecord(w LogAppender, relPath string, rec Record) error {
 	if rec.ID == "" {
 		return errors.New("session: append: record has empty id")
-	}
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("session: mkdir %s: %w", dir, err)
-		}
 	}
 	body, err := json.Marshal(rec)
 	if err != nil {
@@ -111,16 +127,8 @@ func AppendRecord(path string, rec Record) error {
 	}
 	body = append(body, '\n')
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("session: open log %s: %w", path, err)
-	}
-	defer func() { _ = f.Close() }()
-	if _, err := f.Write(body); err != nil {
-		return fmt.Errorf("session: write log %s: %w", path, err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("session: sync log %s: %w", path, err)
+	if err := w.AppendFile(relPath, body); err != nil {
+		return fmt.Errorf("session: write log %s: %w", relPath, err)
 	}
 	return nil
 }

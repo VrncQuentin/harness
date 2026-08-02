@@ -46,12 +46,12 @@ func TestManager_ConcurrentSaveAndPromotionShareRepoSafely(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reader.Close() })
 	mgr, err := NewManager(ManagerDeps{
-		Repo:               repo,
-		Writer:             reader,
-		Reader:             reader,
-		Inference:          fi,
-		SummarizerPrompt:   func() string { return "test prompt" },
-		ResolveAbsRepoPath: dir,
+		Repo:             repo,
+		Writer:           reader,
+		Reader:           reader,
+		Appender:         reader,
+		Inference:        fi,
+		SummarizerPrompt: func() string { return "test prompt" },
 	}, project.GlobalSlug)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)

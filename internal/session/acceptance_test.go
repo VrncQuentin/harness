@@ -60,7 +60,7 @@ func scaffoldMemoryRepo(t *testing.T, agentName string) (string, *git.Repo) {
 	return root, repo
 }
 
-func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
+func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, *memory.DirReader, string) {
 	t.Helper()
 	root, repo := scaffoldMemoryRepo(t, "coder")
 	reader, err := memory.NewDirReader(root)
@@ -69,17 +69,17 @@ func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 	}
 	t.Cleanup(func() { _ = reader.Close() })
 	mgr, err := NewManager(ManagerDeps{
-		Repo:               repo,
-		Writer:             reader,
-		Reader:             reader,
-		Inference:          fi,
-		SummarizerPrompt:   func() string { return "test" },
-		ResolveAbsRepoPath: root,
+		Repo:             repo,
+		Writer:           reader,
+		Reader:           reader,
+		Appender:         reader,
+		Inference:        fi,
+		SummarizerPrompt: func() string { return "test" },
 	}, project.GlobalSlug)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	return mgr, root
+	return mgr, reader, root
 }
 
 // TestEpisodeFileAndCommit covers:
@@ -88,7 +88,7 @@ func newAcceptanceManager(t *testing.T, fi *fakeInference) (*Manager, string) {
 //	 episodes/<agent>/<timestamp>.md, committed to git"
 func TestEpisodeFileAndCommit(t *testing.T) {
 	fi := newFakeInference(summaryTokens("first sessions summary"))
-	mgr, root := newAcceptanceManager(t, fi)
+	mgr, _, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
 	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hi"}); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -116,7 +116,7 @@ func TestEpisodeFileAndCommit(t *testing.T) {
 //	"Episode commit message matches format [agent:x] [type:episode] ..."
 func TestEpisodeCommitMessageFormat(t *testing.T) {
 	fi := newFakeInference(summaryTokens("user wants summary regex"))
-	mgr, root := newAcceptanceManager(t, fi)
+	mgr, _, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
 	_ = mgr.Append(s.ID, inference.Message{Role: "user", Content: "x"})
 	if _, err := mgr.Save(context.Background(), s.ID); err != nil {
@@ -154,7 +154,7 @@ func TestSavedEpisodeVisibleToPromptRecency(t *testing.T) {
 		summaryTokens("FIRST_EPISODE_BODY: covered the failover plan"),
 		summaryTokens("SECOND_EPISODE_BODY: discussed the rollback procedure"),
 	)
-	mgr, root := newAcceptanceManager(t, fi)
+	mgr, _, root := newAcceptanceManager(t, fi)
 
 	// Save two episodes so the recency layer has something to feed in.
 	for i := range 2 {
@@ -210,7 +210,7 @@ func TestTenSessionsCreateTenEpisodeCommits(t *testing.T) {
 		scripts = append(scripts, summaryTokens(fmt.Sprintf("summary %d", i)))
 	}
 	fi := newFakeInference(scripts...)
-	mgr, root := newAcceptanceManager(t, fi)
+	mgr, reader, root := newAcceptanceManager(t, fi)
 
 	for i := range 10 {
 		s := mgr.Start("coder")
@@ -244,8 +244,7 @@ func TestTenSessionsCreateTenEpisodeCommits(t *testing.T) {
 	}
 
 	// 10 records in sessions.jsonl.
-	logPath := filepath.Join(root, "sessions.jsonl")
-	records, err := ReadAll(logPath)
+	records, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -260,7 +259,7 @@ func TestTenSessionsCreateTenEpisodeCommits(t *testing.T) {
 //	 harness starts without crashing, logs a warning"
 func TestGarbledSessionLogIsTolerated(t *testing.T) {
 	fi := newFakeInference(summaryTokens("clean record"))
-	mgr, root := newAcceptanceManager(t, fi)
+	mgr, reader, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
 	_ = mgr.Append(s.ID, inference.Message{Role: "user", Content: "hi"})
 	if _, err := mgr.Save(context.Background(), s.ID); err != nil {
@@ -277,7 +276,7 @@ func TestGarbledSessionLogIsTolerated(t *testing.T) {
 	}
 	_ = f.Close()
 
-	records, err := ReadAll(logPath)
+	records, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll on corrupted log: %v", err)
 	}
@@ -291,7 +290,7 @@ func TestGarbledSessionLogIsTolerated(t *testing.T) {
 // rendering coverage lives in internal/ui tests.
 func TestEpisodeVisibleToMemoryWalker(t *testing.T) {
 	fi := newFakeInference(summaryTokens("UI test summary"))
-	mgr, root := newAcceptanceManager(t, fi)
+	mgr, _, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
 	_ = mgr.Append(s.ID, inference.Message{Role: "user", Content: "ui"})
 	if _, err := mgr.Save(context.Background(), s.ID); err != nil {
@@ -326,7 +325,7 @@ func TestEpisodeVisibleToMemoryWalker(t *testing.T) {
 // ErrSessionConversationLost. We check the manager half here.
 func TestSidecarMissingResumeError(t *testing.T) {
 	fi := newFakeInference(summaryTokens("clean"))
-	mgr, root := newAcceptanceManager(t, fi)
+	mgr, _, root := newAcceptanceManager(t, fi)
 	s := mgr.Start("coder")
 	_ = mgr.Append(s.ID, inference.Message{Role: "user", Content: "ack"})
 	if _, err := mgr.Save(context.Background(), s.ID); err != nil {

@@ -7,11 +7,17 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/VrncQuentin/harness/internal/memory"
 )
 
 func TestReadAll_MissingFileReturnsEmpty(t *testing.T) {
-	dir := t.TempDir()
-	got, err := ReadAll(filepath.Join(dir, "sessions.jsonl"))
+	reader, err := memory.NewDirReader(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	got, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -21,8 +27,11 @@ func TestReadAll_MissingFileReturnsEmpty(t *testing.T) {
 }
 
 func TestAppendRecordAndReadAll(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sessions.jsonl")
+	reader, err := memory.NewDirReader(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
 
 	rec := Record{
 		ID:          "2026-04-26T22-15-03Z",
@@ -33,16 +42,16 @@ func TestAppendRecordAndReadAll(t *testing.T) {
 		SaveSeq:     1,
 		EpisodePath: "episodes/coder/2026-04-26T22-15-03Z.md",
 	}
-	if err := AppendRecord(path, rec); err != nil {
+	if err := AppendRecord(reader, sessionsLogRel, rec); err != nil {
 		t.Fatalf("AppendRecord: %v", err)
 	}
 	rec.SaveSeq = 2
 	rec.SavedAt = rec.SavedAt.Add(time.Minute)
-	if err := AppendRecord(path, rec); err != nil {
+	if err := AppendRecord(reader, sessionsLogRel, rec); err != nil {
 		t.Fatalf("AppendRecord 2: %v", err)
 	}
 
-	got, err := ReadAll(path)
+	got, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
@@ -63,7 +72,11 @@ func TestReadAll_SkipsGarbledLine(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	dir := t.TempDir()
-	path := filepath.Join(dir, "sessions.jsonl")
+	reader, err := memory.NewDirReader(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
 	good := Record{
 		ID:        "2026-04-26T22-15-03Z",
 		Agent:     "coder",
@@ -72,11 +85,11 @@ func TestReadAll_SkipsGarbledLine(t *testing.T) {
 		SavedAt:   time.Date(2026, 4, 26, 22, 15, 3, 0, time.UTC),
 		SaveSeq:   1,
 	}
-	if err := AppendRecord(path, good); err != nil {
+	if err := AppendRecord(reader, sessionsLogRel, good); err != nil {
 		t.Fatalf("AppendRecord: %v", err)
 	}
 	// Corrupt the file: append garbage that is not valid JSON.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(filepath.Join(dir, "sessions.jsonl"), os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		t.Fatalf("open for append: %v", err)
 	}
@@ -85,7 +98,7 @@ func TestReadAll_SkipsGarbledLine(t *testing.T) {
 	}
 	_ = f.Close()
 
-	got, err := ReadAll(path)
+	got, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}

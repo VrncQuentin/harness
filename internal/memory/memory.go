@@ -31,6 +31,16 @@ type FileWriter interface {
 	WriteFile(relPath string, data []byte) error
 }
 
+// Appender is the append-only write capability a consumer needs to extend a
+// log inside the repo. AppendFile adds to the end of a file, creating the file
+// and its missing parent directories when they are absent, and fsyncs before
+// returning. It can extend and nothing else: there is no truncate, no replace,
+// and no general open, so an append-only audit log is never reachable through
+// a spelling that can shorten or rewrite it.
+type Appender interface {
+	AppendFile(relPath string, data []byte) error
+}
+
 // Walker walks the directory tree rooted at relPath, returning every entry
 // sorted by path. It skips .git and does not follow symlinks out of the
 // pinned root.
@@ -72,6 +82,7 @@ var (
 	_ Reader     = (*DirReader)(nil)
 	_ Repo       = (*DirReader)(nil)
 	_ FileWriter = (*DirReader)(nil)
+	_ Appender   = (*DirReader)(nil)
 	_ Walker     = (*DirReader)(nil)
 )
 
@@ -224,6 +235,41 @@ func (r *DirReader) WriteFile(relPath string, data []byte) error {
 	}
 	if err := root.WriteStreamAtomic(clean, bytes.NewReader(data), 0o644); err != nil {
 		return fmt.Errorf("memory: write %s: %w", relPath, err)
+	}
+	return nil
+}
+
+// AppendFile appends data to relPath through the pinned root, creating the
+// file and its missing parent directories when they are absent, and fsyncs
+// before returning. It never truncates and never replaces what is already
+// there: the underlying rootfs.AppendSync opens with O_WRONLY|O_CREATE|O_APPEND
+// and nothing more, so an append-only log like sessions.jsonl is never
+// reachable through a spelling that can shorten or rewrite it.
+//
+// Unlike WriteFile's rename publication, AppendFile writes in place, which is
+// inherent to appending. A relPath entry that is a hard link to a file
+// elsewhere is written through — the same underlying file gains the data. The
+// pinned root prevents pathname, symlink, and junction escapes, but it cannot
+// distinguish a hard-linked entry from the same file outside the repo; see
+// rootfs.AppendSync for the documented limitation.
+func (r *DirReader) AppendFile(relPath string, data []byte) error {
+	if err := checkRel(relPath); err != nil {
+		return fmt.Errorf("memory: append %s: %w", relPath, err)
+	}
+	clean := filepath.Clean(filepath.FromSlash(relPath))
+	if clean == "." {
+		return fmt.Errorf("memory: append %s: refusing to write to repo root", relPath)
+	}
+	root, err := r.openRoot()
+	if err != nil {
+		return fmt.Errorf("memory: append %s: %w", relPath, err)
+	}
+	defer func() { _ = root.Close() }()
+	if err := root.MkdirAll(filepath.Dir(clean), 0o755); err != nil {
+		return fmt.Errorf("memory: append %s: %w", relPath, err)
+	}
+	if err := root.AppendSync(clean, data, 0o644); err != nil {
+		return fmt.Errorf("memory: append %s: %w", relPath, err)
 	}
 	return nil
 }

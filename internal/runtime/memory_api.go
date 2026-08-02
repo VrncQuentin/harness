@@ -449,18 +449,20 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ro
 		rec = metrics.NewRecorder(metricsStore)
 	}
 
-	// The session manager reads and writes the same generation-owned reader
-	// the active memory and episode index use, so there is no separately
-	// opened session handle to race against the git boundary.
+	// The session manager reads, writes, and appends through the same
+	// generation-owned reader the active memory and episode index use, so
+	// there is no separately opened session handle to race against the git
+	// boundary. The sessions.jsonl append goes through the same pinned root,
+	// not an absolute pathname.
 	mgr, err := session.NewManager(session.ManagerDeps{
-		Repo:               repo,
-		Writer:             sessionReader,
-		Reader:             sessionReader,
-		Inference:          infClient,
-		Metrics:            rec,
-		SummarizerPrompt:   rt.summarizerPromptFn(),
-		ResolveAbsRepoPath: repoPath,
-		AfterSave:          memoryops.AfterSaveEmbed(embedClient, episodeIndex, repo),
+		Repo:             repo,
+		Writer:           sessionReader,
+		Reader:           sessionReader,
+		Appender:         sessionReader,
+		Inference:        infClient,
+		Metrics:          rec,
+		SummarizerPrompt: rt.summarizerPromptFn(),
+		AfterSave:        memoryops.AfterSaveEmbed(embedClient, episodeIndex, repo),
 	}, projectSlug)
 	if err != nil {
 		return repo, nil, nil, fmt.Errorf("session manager: %w", err)
