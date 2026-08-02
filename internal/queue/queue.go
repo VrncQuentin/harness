@@ -179,18 +179,47 @@ func (q *Queue) MaxDepth() int {
 	return q.maxDepth
 }
 
-// worker pulls from the channel and dispatches to the inference client.
+// worker pulls from the channel and dispatches to the inference client. When
+// the worker exits — because its context was cancelled or the intake channel
+// closed — every request still accepted but not yet dispatched is resolved:
+// it is failed with the cancellation cause and its response channel is closed,
+// so a consumer ranging that channel never hangs. Accepted requests are never
+// abandoned by cancellation.
 func (q *Queue) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			q.resolveBuffered(ctx.Err())
 			return
+		case req, ok := <-q.ch:
+			if !ok {
+				q.resolveBuffered(ctx.Err())
+				return
+			}
+			q.depth.Add(-1)
+			q.dispatch(req)
+		}
+	}
+}
+
+// resolveBuffered terminally resolves every request still sitting in the
+// intake channel: each is failed with err (when non-nil) and its response
+// channel is closed. err is the worker-context cancellation cause, so callers
+// never mistake an abandoned request for a completed stream.
+func (q *Queue) resolveBuffered(err error) {
+	for {
+		select {
 		case req, ok := <-q.ch:
 			if !ok {
 				return
 			}
 			q.depth.Add(-1)
-			q.dispatch(req)
+			if err != nil {
+				q.trySend(req.Response, inference.Token{Err: err})
+			}
+			close(req.Response)
+		default:
+			return
 		}
 	}
 }
@@ -212,6 +241,10 @@ func (q *Queue) SetMetrics(rec MetricsRecorder) {
 }
 
 // dispatch sends the request to the inference client and streams tokens back.
+// The token loop is genuinely cancellation-aware: it selects on the request
+// context and the token stream, so cancelling the request (a client disconnect
+// or shutdown) terminally resolves it even when the inference client never
+// sends or closes its stream.
 func (q *Queue) dispatch(req Request) {
 	defer close(req.Response)
 
@@ -236,31 +269,42 @@ func (q *Queue) dispatch(req Request) {
 	var firstTokenAt time.Time
 	var lastTokenAt time.Time
 	textTokenEvents := 0
-	for tok := range tokenCh {
-		if tok.Content != "" || tok.ToolCallDelta != nil {
-			now := time.Now()
-			if firstTokenAt.IsZero() {
-				firstTokenAt = now
-				q.recordTTFT(firstTokenAt.Sub(started))
-			}
-			lastTokenAt = now
-		}
-		if tok.Content != "" {
-			textTokenEvents++
-		}
-
+	for {
 		select {
 		case <-req.Ctx.Done():
 			q.trySend(req.Response, inference.Token{Err: req.Ctx.Err()})
-			return
-		case req.Response <- tok:
-		}
-		if tok.Done || tok.Err != nil {
 			q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
 			return
+		case tok, ok := <-tokenCh:
+			if !ok {
+				q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
+				return
+			}
+			if tok.Content != "" || tok.ToolCallDelta != nil {
+				now := time.Now()
+				if firstTokenAt.IsZero() {
+					firstTokenAt = now
+					q.recordTTFT(firstTokenAt.Sub(started))
+				}
+				lastTokenAt = now
+			}
+			if tok.Content != "" {
+				textTokenEvents++
+			}
+
+			select {
+			case <-req.Ctx.Done():
+				q.trySend(req.Response, inference.Token{Err: req.Ctx.Err()})
+				q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
+				return
+			case req.Response <- tok:
+			}
+			if tok.Done || tok.Err != nil {
+				q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
+				return
+			}
 		}
 	}
-	q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
 }
 
 func (q *Queue) recordTTFT(d time.Duration) {
