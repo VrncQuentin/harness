@@ -212,8 +212,85 @@ when the recorded config is unchanged. The `/agents/active` write
 (`setActiveAgent`) takes the same apply lock as `ApplyConfig`, so an apply
 that has loaded one agent and is preparing cannot be overwritten by a
 concurrent active-agent save, or vice versa; the live config, the recorded
-applied config, and the store always agree. Shutdown lifecycle guarantees
-beyond this ownership retention are assigned to PR 10.
+applied config, and the store always agree.
+
+#### Project-edit transaction (PR 10)
+
+`/projects/edit` never constructs and executes `project.Workflow` directly.
+`Runtime.EditProject` is the single Runtime-owned project-update surface for
+the UI: it serializes the edit end-to-end with `applyMu`, so an edit cannot
+interleave with a config apply, an active-agent write, or a shutdown. Inside
+the transaction:
+
+- The active project's memory-repository boundary cannot be moved while the
+  installed generation still targets it. The edit refuses before any metadata
+  or filesystem mutation. The repository identity is settled once as a
+  handle-bound proof (`Workflow.SettleUpdate` pins the destination via
+  `PinRepoIdentity` and `OpenIdentified`), and that proof is re-verified at the
+  moment of mutation (`Workflow.ApplyUpdate`): `SameAs` opens the current path
+  and compares the retained handles with `Root.SameDir` (`os.SameFile`), so a
+  repointed alias or a same-name physical replacement fails closed even when it
+  reuses the pathid key. The settlement is produced only by `SettleUpdate` — the
+  decision is private behind `IsSameRepo` and a forged or zero `SettledUpdate`
+  is rejected — so an old "same" result can never persist a path that no
+  longer identifies the installed reader. Active-project display and
+  model-override edits proceed; their live apply runs through the same
+  transaction boundary (`applyConfigLocked`), so the reload decision compares
+  the freshly-mutated store contents with the recorded applied state — never
+  with an "old" value derived from the store the edit already changed. If that
+  re-apply fails (config load, validation, or candidate-preparation failure),
+  the edit reports failure and restores the captured project row, so the store
+  never silently diverges from the live generation.
+- Inactive-project repository moves continue through the rooted
+  `MoveProjectRepo` workflow (`project.Workflow.Update`), preserving its
+  rollback behavior on initialization or move failure. The pre-edit active
+  model or repository is never derived from the mutated project store.
+
+`ui.ApplyResult` carries an explicit `Err` so a failed apply is distinguishable
+from a successful no-op: `LiveApplied=false` plus `Err=nil` means "nothing
+needed changing", while a non-nil `Err` means the apply could not commit and
+the installed generation and recorded applied state are untouched.
+
+#### Shutdown lifecycle and ownership protocol (PR 10)
+
+`Runtime.Shutdown` is the one cohesive shutdown lifecycle, serialized with the
+apply transaction so a shutdown cannot interleave with a config apply or a
+project edit. It replaces the split coordination between `cmd/harness/main.go`
+and `Runtime.Stop`: `main` calls `rt.Shutdown(rootCancel, 10s)` and nothing
+else, and `Runtime.Stop` is retained only as the no-root-cancel compatibility
+wrapper for tests. The lifecycle is explicit:
+
+1. **stop admissions** — the request queue closes its intake
+   (`Queue.CloseAdmissions`), so new UI/API chat or task work is refused before
+   anything is drained;
+2. **cancel root/task contexts** — `rootCancel` stops process managers, the
+   queue worker, and UI request contexts before any wait begins;
+3. **bounded drain** — task loops are cancelled and live sessions flushed with
+   explicit timeouts. The runtime owns exactly one in-flight session flush: a
+   save can block on the manager-wide save lock or a hung summarizer, so the
+   flush runs detached from any single attempt, retries join the in-flight
+   flush instead of stacking another (blocked flushes cannot accumulate saveMu
+   waiters or duplicate durable saves), and a new flush starts only after a
+   previous one completed with a retryable failure. The flush result is
+   published under the flush lock before a broadcast completion channel is
+   closed, so an immediate retry can never miss a completion. The summarizer's
+   token loop is itself context-aware so a stream that never sends or closes
+   cannot hang it;
+4. **stop API/queue/process components** — API servers stop under the timeout
+   ownership protocol; the queue is waited on with a bounded, context-aware
+   wait (`Queue.Wait`), never an unbounded `Queue.Stop`. Queue cancellation is
+   terminal: every accepted request — in-flight or buffered — is resolved
+   (failed and closed), so consumers ranging a response channel never hang;
+5. **release only resources proven idle**;
+6. **retain ownership for anything whose termination is unconfirmed**.
+
+A drain timeout is not termination. When a bounded wait expires, the runtime
+retains ownership and a later `Shutdown` retries: the queue stays owned, and
+the session manager and task runner stay owned together with the complete
+generation they are bound to — its readers and handles stay open so a retry can
+save through them. API ownership is preserved to termination for every class of
+server: active, pending-retired, and previously timed-out. `Queue.Stop` is
+never called after a failed bounded drain.
 
 ### Agent Loop (`internal/agentloop`)
 Owns the first-party agentic turn loop. This package is separate from `internal/agent`, which remains the agent/persona registry.

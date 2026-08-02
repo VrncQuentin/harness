@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -38,7 +39,19 @@ func (rt *Runtime) ApplyConfig(
 ) ui.ApplyResult {
 	rt.applyMu.Lock()
 	defer rt.applyMu.Unlock()
+	return rt.applyConfigLocked(ctx, uiServer, events, metricsStore)
+}
 
+// applyConfigLocked is the body of ApplyConfig, assuming the caller already
+// holds applyMu. The project-edit transaction (EditProject) reuses it so an
+// active-project edit's live apply runs inside the same transaction boundary
+// as the edit itself, serialized against any concurrent apply or shutdown.
+func (rt *Runtime) applyConfigLocked(
+	ctx context.Context,
+	uiServer *ui.Server,
+	events chan proc.Event,
+	metricsStore metrics.Store,
+) ui.ApplyResult {
 	if rt.enterApply != nil {
 		rt.enterApply()
 	}
@@ -54,12 +67,13 @@ func (rt *Runtime) ApplyConfig(
 	uiServer.SetProjectDirectoryWarnings("", nil)
 	if rt.cfgStore == nil {
 		uiServer.AddStartupError(ErrConfigStoreUnavailable)
-		return ui.ApplyResult{}
+		return ui.ApplyResult{Err: ErrConfigStoreUnavailable}
 	}
 	loaded, wasSaved, lerr := rt.cfgStore.Load()
 	if lerr != nil {
-		uiServer.AddStartupError(fmt.Errorf("config load: %w", lerr))
-		return ui.ApplyResult{}
+		err := fmt.Errorf("config load: %w", lerr)
+		uiServer.AddStartupError(err)
+		return ui.ApplyResult{Err: err}
 	}
 	uiServer.SetFirstRun(!wasSaved)
 	if !wasSaved {
@@ -67,10 +81,10 @@ func (rt *Runtime) ApplyConfig(
 	}
 	if verr := config.Validate(loaded); verr != nil {
 		uiServer.AddStartupError(verr)
-		return ui.ApplyResult{}
+		return ui.ApplyResult{Err: verr}
 	}
 	if !ValidatePaths(uiServer, loaded) {
-		return ui.ApplyResult{}
+		return ui.ApplyResult{Err: errors.New("path validation failed")}
 	}
 
 	rt.mu.Lock()
@@ -132,6 +146,8 @@ func (rt *Runtime) ApplyConfig(
 		var result ui.ApplyResult
 		if ok {
 			result.LiveApplied = true
+		} else {
+			result.Err = errors.New("memory/API services failed to start")
 		}
 		rt.finishResult(&result, oldCfg, loaded)
 		rt.mu.Unlock()
@@ -155,7 +171,7 @@ func (rt *Runtime) ApplyConfig(
 			if rt.leaveApply != nil {
 				rt.leaveApply()
 			}
-			return ui.ApplyResult{}
+			return ui.ApplyResult{Err: errors.New("candidate preparation failed")}
 		}
 	}
 	if rt.afterPrepare != nil {

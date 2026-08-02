@@ -856,7 +856,13 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
 	t.Cleanup(func() { rt.Stop() })
-	rt.inferClient = blockingInferenceClient{token: inference.Token{Content: "partial answer"}}
+	// The first call (the task turn) blocks on cancellation after one token;
+	// later calls (the shutdown session flush) complete with a summary and
+	// Done, so a retained session can be saved by a later shutdown attempt.
+	rt.inferClient = &blockingThenSummaryClient{
+		taskToken: inference.Token{Content: "partial answer"},
+		summary:   "cancelled partial task",
+	}
 
 	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
 	defer func() { _ = gitRepo.Close() }()
@@ -1410,20 +1416,6 @@ func (c *blockingThenSummaryClient) Complete(ctx context.Context, _ inference.Co
 	return ch, nil
 }
 
-type blockingInferenceClient struct {
-	token inference.Token
-}
-
-func (c blockingInferenceClient) Complete(ctx context.Context, _ inference.CompletionRequest) (<-chan inference.Token, error) {
-	ch := make(chan inference.Token, 1)
-	go func() {
-		defer close(ch)
-		ch <- c.token
-		<-ctx.Done()
-	}()
-	return ch, nil
-}
-
 type sequenceInferenceClient struct {
 	mu        sync.Mutex
 	sequences [][]inference.Token
@@ -1494,6 +1486,9 @@ type runtimeProjectStoreStub struct {
 	projects map[string]project.Project
 	dirs     map[string][]project.Directory
 	listErr  error // when set, List fails — exercises fail-closed callers
+	// updateCalls counts successful Update mutations. Tests use it to prove an
+	// edit was refused before any metadata was written.
+	updateCalls int
 }
 
 func (s *runtimeProjectStoreStub) List(bool) ([]project.Project, error) {
@@ -1519,8 +1514,21 @@ func (s *runtimeProjectStoreStub) Create(project.CreateInput) (project.Project, 
 	return project.Project{}, nil
 }
 
-func (s *runtimeProjectStoreStub) Update(project.UpdateInput) (project.Project, error) {
-	return project.Project{}, nil
+func (s *runtimeProjectStoreStub) Update(input project.UpdateInput) (project.Project, error) {
+	p, ok := s.projects[input.Slug]
+	if !ok {
+		return project.Project{}, project.ErrNotFound
+	}
+	p.DisplayName = input.DisplayName
+	p.MemoryRepoPath = input.MemoryRepoPath
+	p.ModelBinary = input.ModelBinary
+	p.ModelPath = input.ModelPath
+	p.ModelCtxSize = input.ModelCtxSize
+	p.ModelGPULayers = input.ModelGPULayers
+	p.ModelNParallel = input.ModelNParallel
+	s.projects[input.Slug] = p
+	s.updateCalls++
+	return p, nil
 }
 
 func (s *runtimeProjectStoreStub) SetHidden(string, bool) error { return nil }
@@ -2444,7 +2452,10 @@ func TestSnapshot_RunnerReadsAndRecordsInOriginalProject(t *testing.T) {
 // agent left tasks failing with ErrTaskNoAgent even after one was selected.
 func TestSnapshot_ActiveAgentResolvedPerAcquisition(t *testing.T) {
 	modelPort, shutdownModel, capture := startCapturingModelServer(t, "test summary")
-	defer shutdownModel()
+	// The model server must outlive the runtime's shutdown flush, or the
+	// summarizer would fail to save the task's session during cleanup. Cleanups
+	// run LIFO, so registering this first runs it after rt.Stop's cleanup.
+	t.Cleanup(shutdownModel)
 
 	root := initRuntimeProjectRepo(t)
 	if err := os.MkdirAll(filepath.Join(root, "agents", "coder"), 0o755); err != nil {

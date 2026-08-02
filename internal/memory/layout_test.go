@@ -1392,3 +1392,110 @@ func TestMoveProjectRepo_TrailingSeparatorDestination(t *testing.T) {
 		t.Errorf("trailing separator created a nested destination: %v", statErr)
 	}
 }
+
+// TestRepoIdentitySameNameReplacementFailsClosed verifies that the handle-bound
+// proof compares physical objects, not pathid keys: a same-name replacement
+// reuses the pathid key but is a different filesystem object, and SameAs must
+// reject it through the retained handle.
+func TestRepoIdentitySameNameReplacementFailsClosed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows: the retained proof handle blocks replacing the directory at the same pathname; the handle-block is the fail-closed outcome")
+	}
+	base := t.TempDir()
+	path := filepath.Join(base, "repo")
+	if err := EnsureProjectRepo(path, false); err != nil {
+		t.Fatal(err)
+	}
+	origID, err := pathid.Resolve(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	proof, err := PinProjectRepo(path)
+	if err != nil {
+		t.Fatalf("PinProjectRepo: %v", err)
+	}
+	defer func() { _ = proof.Close() }()
+
+	// Replace the directory at the same pathname with a different physical
+	// repository.
+	if err := os.Rename(path, path+".aside"); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureProjectRepo(path, false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Precondition: the same-name replacement reuses the pathid key, so only
+	// the retained-handle comparison can reject it.
+	replacedID, err := pathid.Resolve(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !origID.Equal(replacedID) {
+		t.Fatal("same-name replacement must reuse the pathid key, or this test no longer discriminates")
+	}
+
+	ok, err := proof.SameAs(path)
+	if err != nil {
+		t.Fatalf("SameAs: %v", err)
+	}
+	if ok {
+		t.Fatal("a same-name replacement was accepted; SameAs must compare the retained handle, not the pathid key")
+	}
+}
+
+// TestPinProjectRepoDetectsRepointedBoundary verifies the handle-bound proof
+// behind project-edit identity decisions: SameAs confirms a path that still
+// names the pinned physical repository (including an alias) and fails closed
+// once the alias is repointed to a different repository.
+func TestPinProjectRepoDetectsRepointedBoundary(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := EnsureProjectRepo(repo, false); err != nil {
+		t.Fatal(err)
+	}
+
+	proof, err := PinProjectRepo(repo)
+	if err != nil {
+		t.Fatalf("PinProjectRepo: %v", err)
+	}
+	defer func() { _ = proof.Close() }()
+
+	// A stable spelling still names the pinned repository.
+	ok, err := proof.SameAs(repo)
+	if err != nil || !ok {
+		t.Fatalf("SameAs(repo) = %v, %v; want true", ok, err)
+	}
+
+	// An alias of the same physical repository still names it.
+	base := t.TempDir()
+	alias := filepath.Join(base, "alias")
+	symlinkOrSkip(t, repo, alias)
+	ok, err = proof.SameAs(alias)
+	if err != nil || !ok {
+		t.Fatalf("SameAs(alias) = %v, %v; want true", ok, err)
+	}
+
+	// Repointing the alias at a different repository fails closed.
+	other := filepath.Join(t.TempDir(), "other")
+	if err := EnsureProjectRepo(other, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(alias); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, other, alias)
+	ok, err = proof.SameAs(alias)
+	if err != nil {
+		t.Fatalf("SameAs(repointed alias): %v", err)
+	}
+	if ok {
+		t.Fatal("repointed alias still reported as the pinned repository")
+	}
+
+	// An unresolvable path fails closed, not as "same".
+	bad := filepath.Join(base, "bad\x00name")
+	if _, err := proof.SameAs(bad); err == nil {
+		t.Fatal("SameAs on an unresolvable path must fail closed with an error")
+	}
+}

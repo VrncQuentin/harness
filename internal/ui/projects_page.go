@@ -252,12 +252,6 @@ func (s *Server) handleProjectEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	store := s.getProjectStore()
-	if store == nil {
-		http.Error(w, "project store not available", http.StatusServiceUnavailable)
-		return
-	}
-
 	if err := r.ParseForm(); err != nil {
 		http.Redirect(w, r, "/projects?error="+url.QueryEscape("parse form: "+err.Error()), http.StatusSeeOther)
 		return
@@ -289,8 +283,18 @@ func (s *Server) handleProjectEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workflow := project.NewWorkflow(store, memory.ProjectRepoManager{})
-	if _, err := workflow.Update(input, r.FormValue("memory_repo_mode")); err != nil {
+	// Edits route through the runtime-owned project editor, which serializes
+	// the edit with the apply transaction, refuses to move the active
+	// project's memory repository, and re-applies the live system for
+	// active-project edits. The handler never constructs project.Workflow
+	// directly, so a store mutation can never silently diverge from the live
+	// generation.
+	edit := s.getProjectEditor()
+	if edit == nil {
+		http.Redirect(w, r, "/projects?error="+url.QueryEscape("project editor not available"), http.StatusSeeOther)
+		return
+	}
+	if _, err := edit(input, r.FormValue("memory_repo_mode")); err != nil {
 		http.Redirect(w, r, "/projects?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}

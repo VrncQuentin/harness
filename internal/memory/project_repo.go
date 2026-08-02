@@ -8,6 +8,7 @@ import (
 
 	gitw "github.com/VrncQuentin/harness/internal/git"
 	"github.com/VrncQuentin/harness/internal/pathid"
+	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 	gogit "github.com/go-git/go-git/v6"
 )
@@ -31,6 +32,10 @@ func (ProjectRepoManager) MoveProjectRepo(src, dst string, global bool) error {
 
 func (ProjectRepoManager) SameProjectRepoPath(a, b string) (bool, error) {
 	return SameProjectRepoPath(a, b)
+}
+
+func (ProjectRepoManager) PinRepoIdentity(path string) (project.RepoIdentity, error) {
+	return PinProjectRepo(path)
 }
 
 // EnsureProjectRepo initializes a project memory repo and fills in
@@ -580,4 +585,44 @@ func listRepoFilesRooted(pinned *rootfs.Root) ([]string, error) {
 // the callers here mutate on the strength of the answer.
 func SameProjectRepoPath(a, b string) (bool, error) {
 	return pathid.Same(a, b)
+}
+
+// repoIdentity is a handle-bound proof of a project memory repository's
+// physical identity. The handle pins the directory the decision was made
+// about, so SameAs can tell a later caller whether a path still opens to that
+// same physical directory after a repoint or a same-name replacement.
+type repoIdentity struct {
+	root *rootfs.Root
+}
+
+// SameAs reports whether path still opens to the physical directory this proof
+// was pinned to. It compares the newly opened handle with the retained handle
+// through Root.SameDir (os.SameFile), never a re-resolved pathname: a same-name
+// replacement reuses the pathid key but is a different filesystem object, and
+// must fail closed. An unresolvable path also fails closed.
+func (i *repoIdentity) SameAs(path string) (bool, error) {
+	now, err := rootfs.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = now.Close() }()
+	return now.SameDir(i.root)
+}
+
+func (i *repoIdentity) Close() error {
+	if i.root == nil {
+		return nil
+	}
+	return i.root.Close()
+}
+
+// PinProjectRepo opens path and returns a handle-bound proof of the physical
+// repository it pinned. The caller retains the proof, re-verifies the boundary
+// with it at mutation time, and closes it.
+func PinProjectRepo(path string) (project.RepoIdentity, error) {
+	root, _, err := rootfs.OpenIdentified(path)
+	if err != nil {
+		return nil, err
+	}
+	return &repoIdentity{root: root}, nil
 }

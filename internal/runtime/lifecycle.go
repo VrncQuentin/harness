@@ -3,14 +3,12 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/embedder"
 	"github.com/VrncQuentin/harness/internal/httpclient"
 	"github.com/VrncQuentin/harness/internal/inference"
-	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/metrics"
 	"github.com/VrncQuentin/harness/internal/proc"
 	"github.com/VrncQuentin/harness/internal/queue"
@@ -96,102 +94,16 @@ func (rt *Runtime) RestartEmbedder() {
 	}
 }
 
-// Stop tears down runtime-owned services that need explicit shutdown.
+// Stop tears down runtime-owned services that need explicit shutdown. It is
+// retained for tests and compatibility; production shutdown goes through
+// Shutdown, which cancels the root context and owns the whole lifecycle.
 //
-// Live sessions are flushed first so the summarizer can still reach
-// the live llama-server. The flush has its own context with a 10s
-// timeout - if llama-server is unhealthy, the summarizer call will
-// error and the flush will return an error, which we log and continue
-// rather than block shutdown indefinitely. The .json sidecars survive
-// in the working tree for next-session resume even if the summary
-// commit never lands.
-//
-// Stop captures and clears every owned field under the lock, then
-// releases the lock before acting on the captured values. A second
-// call is a no-op — every field was cleared on the first pass.
-//
-// The API server is the one exception to clear-on-first-pass: a server whose
-// Stop does not confirm termination within the timeout is still running, and
-// the runtime must retain ownership until termination is known. rt.apiServer
-// is only cleared after Stop reports termination.
+// Stop performs one shutdown attempt without a root-context cancel (callers
+// own their service contexts and process managers), with each bounded wait
+// capped at defaultDrainTimeout. A second call is a no-op because the first
+// released ownership of everything proven idle.
 func (rt *Runtime) Stop() {
-	rt.mu.Lock()
-	q := rt.reqQueue
-	apiSrv := rt.apiServer
-	tasks := rt.taskRunner
-	global := rt.globalMem
-	active := rt.activeMem
-	g := rt.gen
-	sessionMgr := rt.SessionManager()
-	pendingAPI := len(rt.pendingRetiredAPI) + len(rt.retiredAPI)
-
-	rt.reqQueue = nil
-	rt.taskRunner = nil
-	rt.globalMem = nil
-	rt.activeMem = nil
-	rt.gen = nil
-	rt.agentReg = nil
-	rt.assembler = nil
-	rt.started = false
-	rt.applied = nil
-	rt.setSessionManager(nil)
-	rt.mu.Unlock()
-
-	if q == nil && apiSrv == nil && tasks == nil && global == nil && active == nil && g == nil && pendingAPI == 0 {
-		return
-	}
-
-	if tasks != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := tasks.CancelAll(ctx); err != nil {
-			slog.Warn("task loop shutdown wait", "err", err)
-		}
-		cancel()
-	}
-	if sessionMgr != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := sessionMgr.FlushAll(ctx); err != nil {
-			slog.Warn("session flush on shutdown", "err", err)
-		}
-		cancel()
-	}
-	if apiSrv != nil && rt.stopAPIServer(apiSrv) {
-		rt.mu.Lock()
-		if rt.apiServer == apiSrv {
-			rt.apiServer = nil
-		}
-		rt.mu.Unlock()
-	}
-	// Pending and previously-retired API servers get one final Stop attempt. If
-	// a server is still serving at this point the process is exiting and the OS
-	// reclaims its resources; the guarantee here is that the runtime never
-	// silently dropped the reference earlier.
-	rt.drainRetiredAPI()
-	if q != nil {
-		q.Stop()
-	}
-	if g != nil {
-		g.readers = []memory.Repo{global, active}
-		g.release()
-	} else {
-		closeReaders(global, active)
-	}
-}
-
-// WaitManagers waits for process manager goroutines to exit after their context
-// has been cancelled. It is safe to call when either manager is nil.
-func (rt *Runtime) WaitManagers(ctx context.Context) {
-	llama, embed := rt.Managers()
-	if llama != nil {
-		if err := llama.Wait(ctx); err != nil {
-			slog.Warn("llama manager shutdown wait", "err", err)
-		}
-	}
-	if embed != nil {
-		if err := embed.Wait(ctx); err != nil {
-			slog.Warn("embedder manager shutdown wait", "err", err)
-		}
-	}
+	rt.Shutdown(nil, defaultDrainTimeout)
 }
 
 // startServices brings llama-server, embedder, queue, and metrics up under the

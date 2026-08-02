@@ -139,6 +139,38 @@ type Runtime struct {
 	// acquires applyMu. Tests use it as a barrier to prove the active-agent
 	// write reached the transaction lock. Nil on every production path.
 	beforeApplyMu func()
+
+	// shutdownHook records the step transitions of one shutdown attempt:
+	// admissions-closed, root-cancelled, tasks-cancelled, sessions-flushed,
+	// api-stopped, queue-wait, generation-released. Tests use it to assert the
+	// shutdown lifecycle order and to block at a specific step. Nil on every
+	// production path.
+	shutdownHook func(step string)
+
+	// afterProjectIdentity runs in EditProject once the repository identity
+	// decision is settled and immediately before the workflow update executes.
+	// Tests use it to repoint an alias in that window and prove the settled
+	// decision carries through the mutation. Nil on every production path.
+	afterProjectIdentity func()
+
+	// flushMu serializes the shutdown session flush: at most one detached
+	// FlushAll runs at a time, and a later Shutdown joins the in-flight flush
+	// instead of stacking another, so blocked flushes cannot accumulate saveMu
+	// waiters or produce duplicate durable saves. The result is published under
+	// flushMu before the completion channel is closed, so no retry can miss the
+	// completion; the channel is closed (broadcast), not signalled by a value.
+	flushMu      sync.Mutex
+	flushRunning bool
+	flushDone    chan struct{}
+	flushLastErr error
+	flushEver    bool
+
+	// beforeFlushPublish and afterFlushNotify are test seams for the detached
+	// flush. beforeFlushPublish runs once FlushAll returns and before the
+	// result is published; afterFlushNotify runs after the completion channel
+	// is closed. Nil on every production path.
+	beforeFlushPublish func()
+	afterFlushNotify   func()
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

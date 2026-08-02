@@ -43,8 +43,9 @@ type Queue struct {
 	ch       chan Request
 	depth    atomic.Int64
 	stopped  atomic.Bool
-	stopOnce sync.Once
 	enqMu    sync.RWMutex
+	// done is closed when the worker goroutine exits. Nil until Start.
+	done chan struct{}
 
 	clientMu sync.RWMutex
 	client   inference.Client
@@ -68,25 +69,55 @@ func New(maxDepth int, client inference.Client) *Queue {
 
 // Start begins the worker goroutine.
 func (q *Queue) Start(ctx context.Context) error {
+	q.enqMu.Lock()
+	q.done = make(chan struct{})
+	q.enqMu.Unlock()
 	q.wg.Add(1)
 	go func() {
 		defer q.wg.Done()
+		defer close(q.done)
 		q.worker(ctx)
 	}()
 	return nil
 }
 
+// CloseAdmissions refuses new enqueues and closes the intake channel. It does
+// not wait for the worker to drain accepted requests; use Wait or Stop for
+// that. Idempotent and safe to call from shutdown paths that must stop
+// admitting new work before draining.
+func (q *Queue) CloseAdmissions() {
+	q.enqMu.Lock()
+	defer q.enqMu.Unlock()
+	if q.stopped.Load() {
+		return
+	}
+	q.stopped.Store(true)
+	close(q.ch)
+}
+
 // Stop closes the intake channel and waits for the worker to drain accepted
 // requests.
 func (q *Queue) Stop() {
-	q.stopOnce.Do(func() {
-		q.enqMu.Lock()
-		q.stopped.Store(true)
-		close(q.ch)
-		q.enqMu.Unlock()
+	q.CloseAdmissions()
+	q.wg.Wait()
+}
 
-		q.wg.Wait()
-	})
+// Wait blocks until the worker goroutine has exited or ctx is done. It
+// reports whether the worker exited within the deadline. A queue that was
+// never started reports true immediately.
+func (q *Queue) Wait(ctx context.Context) bool {
+	q.enqMu.RLock()
+	done := q.done
+	q.enqMu.RUnlock()
+	if done == nil {
+		return true
+	}
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // Restart drains the current worker, recreates the intake channel, and starts a
@@ -99,7 +130,6 @@ func (q *Queue) Restart(ctx context.Context) error {
 	q.ch = make(chan Request, q.maxDepth)
 	q.depth.Store(0)
 	q.stopped.Store(false)
-	q.stopOnce = sync.Once{}
 	q.enqMu.Unlock()
 
 	return q.Start(ctx)
@@ -149,18 +179,47 @@ func (q *Queue) MaxDepth() int {
 	return q.maxDepth
 }
 
-// worker pulls from the channel and dispatches to the inference client.
+// worker pulls from the channel and dispatches to the inference client. When
+// the worker exits — because its context was cancelled or the intake channel
+// closed — every request still accepted but not yet dispatched is resolved:
+// it is failed with the cancellation cause and its response channel is closed,
+// so a consumer ranging that channel never hangs. Accepted requests are never
+// abandoned by cancellation.
 func (q *Queue) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			q.resolveBuffered(ctx.Err())
 			return
+		case req, ok := <-q.ch:
+			if !ok {
+				q.resolveBuffered(ctx.Err())
+				return
+			}
+			q.depth.Add(-1)
+			q.dispatch(req)
+		}
+	}
+}
+
+// resolveBuffered terminally resolves every request still sitting in the
+// intake channel: each is failed with err (when non-nil) and its response
+// channel is closed. err is the worker-context cancellation cause, so callers
+// never mistake an abandoned request for a completed stream.
+func (q *Queue) resolveBuffered(err error) {
+	for {
+		select {
 		case req, ok := <-q.ch:
 			if !ok {
 				return
 			}
 			q.depth.Add(-1)
-			q.dispatch(req)
+			if err != nil {
+				q.trySend(req.Response, inference.Token{Err: err})
+			}
+			close(req.Response)
+		default:
+			return
 		}
 	}
 }
@@ -182,6 +241,10 @@ func (q *Queue) SetMetrics(rec MetricsRecorder) {
 }
 
 // dispatch sends the request to the inference client and streams tokens back.
+// The token loop is genuinely cancellation-aware: it selects on the request
+// context and the token stream, so cancelling the request (a client disconnect
+// or shutdown) terminally resolves it even when the inference client never
+// sends or closes its stream.
 func (q *Queue) dispatch(req Request) {
 	defer close(req.Response)
 
@@ -206,31 +269,42 @@ func (q *Queue) dispatch(req Request) {
 	var firstTokenAt time.Time
 	var lastTokenAt time.Time
 	textTokenEvents := 0
-	for tok := range tokenCh {
-		if tok.Content != "" || tok.ToolCallDelta != nil {
-			now := time.Now()
-			if firstTokenAt.IsZero() {
-				firstTokenAt = now
-				q.recordTTFT(firstTokenAt.Sub(started))
-			}
-			lastTokenAt = now
-		}
-		if tok.Content != "" {
-			textTokenEvents++
-		}
-
+	for {
 		select {
 		case <-req.Ctx.Done():
 			q.trySend(req.Response, inference.Token{Err: req.Ctx.Err()})
-			return
-		case req.Response <- tok:
-		}
-		if tok.Done || tok.Err != nil {
 			q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
 			return
+		case tok, ok := <-tokenCh:
+			if !ok {
+				q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
+				return
+			}
+			if tok.Content != "" || tok.ToolCallDelta != nil {
+				now := time.Now()
+				if firstTokenAt.IsZero() {
+					firstTokenAt = now
+					q.recordTTFT(firstTokenAt.Sub(started))
+				}
+				lastTokenAt = now
+			}
+			if tok.Content != "" {
+				textTokenEvents++
+			}
+
+			select {
+			case <-req.Ctx.Done():
+				q.trySend(req.Response, inference.Token{Err: req.Ctx.Err()})
+				q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
+				return
+			case req.Response <- tok:
+			}
+			if tok.Done || tok.Err != nil {
+				q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
+				return
+			}
 		}
 	}
-	q.recordThroughput(firstTokenAt, lastTokenAt, textTokenEvents)
 }
 
 func (q *Queue) recordTTFT(d time.Duration) {

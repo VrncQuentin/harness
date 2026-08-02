@@ -203,6 +203,125 @@ func TestStop_DrainsAcceptedRequests(t *testing.T) {
 	}
 }
 
+// TestCloseAdmissionsRefusesNewWorkBeforeDraining verifies the shutdown
+// admission boundary: CloseAdmissions refuses new enqueues and closes the
+// intake channel without waiting for the worker, and a later Wait reports
+// whether the worker actually exited within the deadline.
+func TestCloseAdmissionsRefusesNewWorkBeforeDraining(t *testing.T) {
+	client := &streamClient{tokens: make(chan inference.Token), started: make(chan struct{})}
+	q := New(2, client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := q.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// A request in flight blocks the worker on the stream client.
+	if err := q.Enqueue(Request{
+		Response: make(chan inference.Token, 4),
+		Ctx:      context.Background(),
+	}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("worker never started the in-flight request")
+	}
+
+	q.CloseAdmissions()
+	if err := q.Enqueue(Request{Response: make(chan inference.Token, 1), Ctx: context.Background()}); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Enqueue after CloseAdmissions = %v, want ErrStopped", err)
+	}
+
+	// CloseAdmissions does not wait: the worker is still blocked on the stream.
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer waitCancel()
+	if q.Wait(waitCtx) {
+		t.Fatal("Wait reported the worker exited while it was still blocked on the stream")
+	}
+
+	// Releasing the stream lets the worker finish; a fresh Wait confirms exit.
+	close(client.tokens)
+	waitCtx2, waitCancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer waitCancel2()
+	if !q.Wait(waitCtx2) {
+		t.Fatal("Wait did not report the worker exited after the stream released")
+	}
+}
+
+// TestQueue_WorkerResolvesAcceptedRequestsOnCancel verifies that cancellation
+// terminally resolves every accepted request: the in-flight request's dispatch
+// is interrupted by its context and the buffered request is failed and closed
+// by the worker as it exits. Neither response channel may stay open forever,
+// so UI/API consumers ranging them never hang.
+func TestQueue_WorkerResolvesAcceptedRequestsOnCancel(t *testing.T) {
+	client := &streamClient{tokens: make(chan inference.Token), started: make(chan struct{})}
+	q := New(2, client)
+
+	workerCtx, workerCancel := context.WithCancel(context.Background())
+	if err := q.Start(workerCtx); err != nil {
+		t.Fatal(err)
+	}
+	defer q.Stop()
+
+	// Request 1: in-flight, dispatched and blocked on the never-sending stream.
+	resp1 := make(chan inference.Token, 4)
+	reqCtx1, cancel1 := context.WithCancel(workerCtx)
+	defer cancel1()
+	if err := q.Enqueue(Request{Response: resp1, Ctx: reqCtx1}); err != nil {
+		t.Fatalf("enqueue in-flight: %v", err)
+	}
+	<-client.started
+
+	// Request 2: accepted but still buffered in the intake channel.
+	resp2 := make(chan inference.Token, 4)
+	if err := q.Enqueue(Request{Response: resp2, Ctx: workerCtx}); err != nil {
+		t.Fatalf("enqueue buffered: %v", err)
+	}
+
+	cancel1()
+	workerCancel()
+
+	// The in-flight request resolves: an error token, then the channel closes.
+	if tok, ok := <-resp1; !ok {
+		t.Fatal("in-flight response closed without a terminal token")
+	} else if tok.Err == nil {
+		t.Fatal("in-flight request resolved without an error")
+	}
+	if _, ok := <-resp1; ok {
+		t.Fatal("in-flight response channel stayed open after resolution")
+	}
+
+	// The buffered request resolves the same way.
+	if tok, ok := <-resp2; !ok {
+		t.Fatal("buffered response closed without a terminal token")
+	} else if tok.Err == nil {
+		t.Fatal("buffered request resolved without an error")
+	}
+	if _, ok := <-resp2; ok {
+		t.Fatal("buffered response channel stayed open after resolution")
+	}
+}
+
+// TestStopAfterCloseAdmissionsIsIdempotent verifies that Stop composes with
+// CloseAdmissions and that a second Stop is a no-op.
+func TestStopAfterCloseAdmissionsIsIdempotent(t *testing.T) {
+	q := New(2, &fakeClient{tokens: []string{"ok"}})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := q.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	q.CloseAdmissions()
+	q.Stop()
+	q.Stop()
+	if err := q.Enqueue(Request{Response: make(chan inference.Token, 1), Ctx: context.Background()}); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Enqueue after Stop = %v, want ErrStopped", err)
+	}
+}
+
 func TestRestart_AllowsRequestsAfterStop(t *testing.T) {
 	client := &fakeClient{tokens: []string{"restarted"}}
 	q := New(4, client)

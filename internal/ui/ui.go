@@ -15,7 +15,15 @@ import (
 	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/logbuf"
 	"github.com/VrncQuentin/harness/internal/metrics"
+	"github.com/VrncQuentin/harness/internal/project"
 )
+
+// ProjectEditFunc is the Runtime-owned project-update surface used by the UI's
+// /projects/edit handler. The runtime implements it so an edit serializes with
+// the apply transaction and refuses to move the active project's memory repo;
+// the UI never constructs and executes project.Workflow directly. main.go wires
+// it to a closure over the runtime.
+type ProjectEditFunc func(input project.UpdateInput, memoryRepoMode string) (project.Project, error)
 
 // ServiceDeps is the set of UI-facing adapters owned by one runtime
 // generation. The runtime binds an immutable ServiceDeps to each generation
@@ -68,10 +76,13 @@ type RetryFunc func() ApplyResult
 // ApplyResult reports the outcome of re-reading + re-applying the saved config.
 // LiveApplied is true when at least one component was reconfigured in place.
 // RestartNeeded lists human-readable reasons (e.g. "UI port") for changes that
-// require a full harness restart to take effect.
+// require a full harness restart to take effect. Err is non-nil when the apply
+// could not commit (config load, validation, or candidate-preparation
+// failure); the live generation and recorded applied state are then untouched.
 type ApplyResult struct {
 	LiveApplied   bool
 	RestartNeeded []string
+	Err           error
 }
 
 // ProcessStatus is the UI-facing status of a managed process.
@@ -132,6 +143,8 @@ type uiDeps struct {
 	store        config.Store
 	metricsStore metrics.Store
 	projectStore ProjectStore
+
+	projectEdit ProjectEditFunc
 
 	binDir string
 
@@ -406,6 +419,17 @@ func (s *Server) SetProjectStore(store ProjectStore) {
 
 func (s *Server) getProjectStore() ProjectStore {
 	return s.depsSnapshot().projectStore
+}
+
+// SetProjectEditor installs the runtime-backed project-edit surface used by
+// /projects/edit. Nil disables the editor; the handler then redirects with a
+// clear error instead of mutating the project store directly.
+func (s *Server) SetProjectEditor(fn ProjectEditFunc) {
+	s.updateDeps(func(d *uiDeps) { d.projectEdit = fn })
+}
+
+func (s *Server) getProjectEditor() ProjectEditFunc {
+	return s.depsSnapshot().projectEdit
 }
 func (s *Server) refreshProjectNav() {
 	store := s.getProjectStore()
