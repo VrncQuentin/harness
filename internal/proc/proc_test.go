@@ -41,6 +41,44 @@ func TestStatus_InitialState(t *testing.T) {
 	}
 }
 
+func TestArgs_ReportsCurrentConfig(t *testing.T) {
+	m := NewManager(ManagerConfig{
+		Name: "test",
+		BuildArgs: func() (string, []string) {
+			return "old-binary", []string{"--old"}
+		},
+		HealthURL: "http://127.0.0.1:9999/old",
+	})
+
+	bin, args, url := m.Args()
+	if bin != "old-binary" || len(args) != 1 || args[0] != "--old" {
+		t.Errorf("Args before Reconfigure = %s %v, want old-binary [--old]", bin, args)
+	}
+	if url != "http://127.0.0.1:9999/old" {
+		t.Errorf("Args healthURL = %s, want old URL", url)
+	}
+
+	m.Reconfigure(func() (string, []string) {
+		return "new-binary", []string{"--new"}
+	}, "http://127.0.0.1:9999/new")
+
+	bin, args, url = m.Args()
+	if bin != "new-binary" || len(args) != 1 || args[0] != "--new" {
+		t.Errorf("Args after Reconfigure = %s %v, want new-binary [--new]", bin, args)
+	}
+	if url != "http://127.0.0.1:9999/new" {
+		t.Errorf("Args healthURL = %s, want new URL", url)
+	}
+}
+
+func TestArgs_NilBuildArgsIsSafe(t *testing.T) {
+	m := NewManager(ManagerConfig{Name: "test"})
+	bin, args, _ := m.Args()
+	if bin != "" || len(args) != 0 {
+		t.Errorf("Args with nil BuildArgs = %q %v, want empty", bin, args)
+	}
+}
+
 func TestReconfigure_SwapsArgsAndSignalsReload(t *testing.T) {
 	events := make(chan Event, 10)
 	m := NewManager(ManagerConfig{

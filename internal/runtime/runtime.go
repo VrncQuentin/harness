@@ -94,20 +94,55 @@ type Runtime struct {
 	taskRunner *taskRunnerAdapter
 	gen        *generation
 
+	// applyMu serializes ApplyConfig end-to-end: validation, preparation,
+	// quiesce, commit, and retirement are one transaction, so two concurrent
+	// applies cannot interleave their decisions or their process changes.
+	applyMu sync.Mutex
+
+	// applied records the facts about the live system the last successful
+	// apply committed: committed config, active project, preferred effective
+	// model, and the actually-running llama/embedder process configuration. It
+	// is the source of truth for what "old" means on the next apply; the
+	// runtime never reconstructs the old state from the mutable stores.
+	applied *appliedState
+
+	// pendingRetiredAPI holds API servers retired by the current commit; their
+	// Stop runs right after the commit, outside rt.mu.
+	pendingRetiredAPI []*api.Server
+
+	// retiredAPI holds API servers whose shutdown did not confirm termination
+	// within the timeout. The runtime retains ownership until a later Stop
+	// confirms termination, so a still-serving server is never dropped.
+	retiredAPI []*api.Server
+
+	// stopAPIServer terminates an API server and reports whether termination
+	// was confirmed. Defaults to api.Server.Stop; a field so tests can
+	// simulate a shutdown that never confirms termination.
+	stopAPIServer func(*api.Server) bool
+
 	// beforeGitOpen runs after the memory readers are pinned and immediately
 	// before the git repository is opened, at the git-to-memory identity
 	// boundary. A test stages a repoint of the active repository path in this
 	// window so the git and memory identities differ and candidate
 	// construction must fail closed. Nil on every production path.
 	beforeGitOpen func()
+
+	// enterApply, afterPrepare, and leaveApply are test seams for the apply
+	// transaction. enterApply runs at the top of ApplyConfig under applyMu;
+	// afterPrepare runs once a prepared candidate is ready and still
+	// unpublished; leaveApply runs at the end of ApplyConfig under applyMu.
+	enterApply   func()
+	afterPrepare func()
+	leaveApply   func()
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.
 func New(cfg config.Config, cfgStore config.Store, rings LogRings) *Runtime {
 	return &Runtime{
-		cfg:      cfg,
-		cfgStore: cfgStore,
-		logRings: rings,
+		cfg:           cfg,
+		cfgStore:      cfgStore,
+		logRings:      rings,
+		stopAPIServer: func(s *api.Server) bool { return s.Stop() },
 	}
 }
 

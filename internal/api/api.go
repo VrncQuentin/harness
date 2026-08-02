@@ -129,14 +129,19 @@ func unexpectedServeError(err error) bool {
 }
 
 // Stop gracefully shuts the server down. Idempotent: safe to call before
-// Start or more than once.
-func (s *Server) Stop() {
+// Start or more than once. It reports whether the server actually terminated
+// within the shutdown timeout; false means the server is still serving and the
+// caller must retain ownership until a later Stop confirms termination.
+func (s *Server) Stop() bool {
 	if s.httpSrv == nil {
-		return
+		return true
 	}
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = s.httpSrv.Shutdown(shutCtx)
+	if err := s.httpSrv.Shutdown(shutCtx); err != nil {
+		return false
+	}
+	return true
 }
 
 // handler returns the mux. Exposed at package level (lowercase) so tests can

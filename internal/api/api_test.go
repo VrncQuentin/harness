@@ -750,11 +750,16 @@ func TestChatCompletions_DefaultModelEcho(t *testing.T) {
 	}
 }
 
-// Sanity check that Stop is idempotent and safe before Start.
+// Sanity check that Stop is idempotent and safe before Start, and that it
+// reports whether termination was confirmed.
 func TestServer_StopIdempotent(t *testing.T) {
 	s := NewServer(0, &stubAssembler{}, newStubEnqueuer(nil), nil)
-	s.Stop() // before Start: no-op
-	s.Stop() // again: no-op
+	if !s.Stop() { // before Start: nothing running, termination is certain
+		t.Error("Stop before Start must report termination")
+	}
+	if !s.Stop() { // again: no-op
+		t.Error("Stop before Start must report termination")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -764,8 +769,12 @@ func TestServer_StopIdempotent(t *testing.T) {
 	if err != nil {
 		t.Skipf("bind :0 failed (benign, environment dependent): %v", err)
 	}
-	s.Stop()
-	s.Stop()
+	if !s.Stop() {
+		t.Error("Stop of an idle server must report termination")
+	}
+	if !s.Stop() {
+		t.Error("second Stop must report termination (idempotent)")
+	}
 }
 
 // Guard test: the handler wires the right paths.
