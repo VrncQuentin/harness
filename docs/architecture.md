@@ -212,8 +212,60 @@ when the recorded config is unchanged. The `/agents/active` write
 (`setActiveAgent`) takes the same apply lock as `ApplyConfig`, so an apply
 that has loaded one agent and is preparing cannot be overwritten by a
 concurrent active-agent save, or vice versa; the live config, the recorded
-applied config, and the store always agree. Shutdown lifecycle guarantees
-beyond this ownership retention are assigned to PR 10.
+applied config, and the store always agree.
+
+#### Project-edit transaction (PR 10)
+
+`/projects/edit` never constructs and executes `project.Workflow` directly.
+`Runtime.EditProject` is the single Runtime-owned project-update surface for
+the UI: it serializes the edit end-to-end with `applyMu`, so an edit cannot
+interleave with a config apply, an active-agent write, or a shutdown. Inside
+the transaction:
+
+- The active project's memory-repository boundary cannot be moved while the
+  installed generation still targets it. The edit refuses before any metadata
+  or filesystem mutation, deciding the question by physical identity
+  (`SameProjectRepoPath`), so a symlink/junction alias of the same repository
+  does not manufacture a move. Active-project display and model-override edits
+  proceed; their live apply runs through the same transaction boundary
+  (`applyConfigLocked`), so the reload decision compares the freshly-mutated
+  store contents with the recorded applied state — never with an "old" value
+  derived from the store the edit already changed.
+- Inactive-project repository moves continue through the rooted
+  `MoveProjectRepo` workflow (`project.Workflow.Update`), preserving its
+  rollback behavior on initialization or move failure. The pre-edit active
+  model or repository is never derived from the mutated project store.
+
+#### Shutdown lifecycle and ownership protocol (PR 10)
+
+`Runtime.Shutdown` is the one cohesive shutdown lifecycle, serialized with the
+apply transaction so a shutdown cannot interleave with a config apply or a
+project edit. It replaces the split coordination between `cmd/harness/main.go`
+and `Runtime.Stop`: `main` calls `rt.Shutdown(rootCancel, 10s)` and nothing
+else, and `Runtime.Stop` is retained only as the no-root-cancel compatibility
+wrapper for tests. The lifecycle is explicit:
+
+1. **stop admissions** — the request queue closes its intake
+   (`Queue.CloseAdmissions`), so new UI/API chat or task work is refused before
+   anything is drained;
+2. **cancel root/task contexts** — `rootCancel` stops process managers, the
+   queue worker, and UI request contexts before any wait begins;
+3. **bounded drain** — task loops are cancelled and live sessions flushed with
+   explicit timeouts;
+4. **stop API/queue/process components** — API servers stop under the timeout
+   ownership protocol; the queue is waited on with a bounded, context-aware
+   wait (`Queue.Wait`), never an unbounded `Queue.Stop`;
+5. **release only resources proven idle**;
+6. **retain ownership for anything whose termination is unconfirmed**.
+
+A drain timeout is not termination. When a bounded wait expires, the runtime
+retains the queue, session manager, task runner, API servers, and any
+generation still held by an in-flight lease (`generation.leases` beyond the
+publisher lease) so a later `Shutdown` retries them. An idle generation —
+publisher lease alone, nothing in use — is released even on a timed-out drain.
+API ownership is preserved to termination for every class of server: active,
+pending-retired, and previously timed-out. `Queue.Stop` is never called after
+a failed bounded drain; the queue stays owned for a retry instead.
 
 ### Agent Loop (`internal/agentloop`)
 Owns the first-party agentic turn loop. This package is separate from `internal/agent`, which remains the agent/persona registry.
