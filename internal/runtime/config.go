@@ -38,7 +38,19 @@ func (rt *Runtime) ApplyConfig(
 ) ui.ApplyResult {
 	rt.applyMu.Lock()
 	defer rt.applyMu.Unlock()
+	return rt.applyConfigLocked(ctx, uiServer, events, metricsStore)
+}
 
+// applyConfigLocked is the body of ApplyConfig, assuming the caller already
+// holds applyMu. The project-edit transaction (EditProject) reuses it so an
+// active-project edit's live apply runs inside the same transaction boundary
+// as the edit itself, serialized against any concurrent apply or shutdown.
+func (rt *Runtime) applyConfigLocked(
+	ctx context.Context,
+	uiServer *ui.Server,
+	events chan proc.Event,
+	metricsStore metrics.Store,
+) ui.ApplyResult {
 	if rt.enterApply != nil {
 		rt.enterApply()
 	}

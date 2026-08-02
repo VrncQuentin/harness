@@ -1494,6 +1494,9 @@ type runtimeProjectStoreStub struct {
 	projects map[string]project.Project
 	dirs     map[string][]project.Directory
 	listErr  error // when set, List fails — exercises fail-closed callers
+	// updateCalls counts successful Update mutations. Tests use it to prove an
+	// edit was refused before any metadata was written.
+	updateCalls int
 }
 
 func (s *runtimeProjectStoreStub) List(bool) ([]project.Project, error) {
@@ -1519,8 +1522,21 @@ func (s *runtimeProjectStoreStub) Create(project.CreateInput) (project.Project, 
 	return project.Project{}, nil
 }
 
-func (s *runtimeProjectStoreStub) Update(project.UpdateInput) (project.Project, error) {
-	return project.Project{}, nil
+func (s *runtimeProjectStoreStub) Update(input project.UpdateInput) (project.Project, error) {
+	p, ok := s.projects[input.Slug]
+	if !ok {
+		return project.Project{}, project.ErrNotFound
+	}
+	p.DisplayName = input.DisplayName
+	p.MemoryRepoPath = input.MemoryRepoPath
+	p.ModelBinary = input.ModelBinary
+	p.ModelPath = input.ModelPath
+	p.ModelCtxSize = input.ModelCtxSize
+	p.ModelGPULayers = input.ModelGPULayers
+	p.ModelNParallel = input.ModelNParallel
+	s.projects[input.Slug] = p
+	s.updateCalls++
+	return p, nil
 }
 
 func (s *runtimeProjectStoreStub) SetHidden(string, bool) error { return nil }
