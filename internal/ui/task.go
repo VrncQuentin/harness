@@ -113,6 +113,12 @@ func (s *Server) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agent := strings.TrimSpace(r.FormValue("agent"))
+	// The task form has no agent field; an empty value means "use the active
+	// agent", resolved from the per-acquisition snapshot so an agent switch
+	// made without a generation rebuild is picked up.
+	if agent == "" {
+		agent = snap.ActiveAgent
+	}
 	sessionID := strings.TrimSpace(r.FormValue("session_id"))
 	streamID := strings.TrimSpace(r.FormValue("stream_id"))
 	textEvent := "task-text-" + newEventStreamID()

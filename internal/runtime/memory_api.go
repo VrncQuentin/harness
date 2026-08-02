@@ -257,7 +257,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 
 	infClient := rt.newInferenceClientFor(cfg)
-	gitRepo, sessionMgr, sessionAdapter, err := rt.buildSessionManagerWithClients(metricsStore, roots, infClient, embedClient, episodeIndex, activeMem, cfg.Project.ActiveProjectSlug, cfg.Agent.Active)
+	gitRepo, sessionMgr, sessionAdapter, err := rt.buildSessionManagerWithClients(metricsStore, roots, infClient, embedClient, episodeIndex, activeMem, cfg.Project.ActiveProjectSlug)
 	cand.addHandle(gitRepo)
 	if err != nil {
 		return fail(err)
@@ -348,7 +348,6 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	taskAdapter := &taskRunnerAdapter{
 		rt:             rt,
 		asm:            snapshotAsm,
-		active:         activeAgent,
 		registry:       registry,
 		q:              rt.reqQueue,
 		sessionMgr:     sessionMgr,
@@ -398,10 +397,9 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	}
 	if rt.reqQueue != nil {
 		svcDeps.ChatRunner = &chatRunnerAdapter{
-			asm:    snapshotAsm,
-			q:      rt.reqQueue,
-			mgr:    sessionMgr,
-			active: activeAgent,
+			asm: snapshotAsm,
+			q:   rt.reqQueue,
+			mgr: sessionMgr,
 		}
 	}
 	svcDeps.TaskRunner = taskAdapter
@@ -453,7 +451,7 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 	}, nil
 }
 
-func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex, sessionReader *memory.DirReader, projectSlug, activeAgent string) (*gitw.Repo, *session.Manager, *uiSessionStoreAdapter, error) {
+func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex, sessionReader *memory.DirReader, projectSlug string) (*gitw.Repo, *session.Manager, *uiSessionStoreAdapter, error) {
 	repoPath := roots.activeRoot
 	if rt.beforeGitOpen != nil {
 		rt.beforeGitOpen()
@@ -486,7 +484,7 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ro
 	if err != nil {
 		return repo, nil, nil, fmt.Errorf("session manager: %w", err)
 	}
-	adapter := &uiSessionStoreAdapter{mgr: mgr, active: activeAgent}
+	adapter := &uiSessionStoreAdapter{mgr: mgr}
 	return repo, mgr, adapter, nil
 }
 

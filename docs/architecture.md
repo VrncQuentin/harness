@@ -128,7 +128,10 @@ in the project it was published for. `Runtime.AcquireUISnapshot` captures the
 current generation's snapshot and pins the generation under `rt.mu`; the UI
 server holds the runtime as a `ui.SnapshotProvider`, and every handler calls
 `acquireSnapshot` once, uses only fields of that snapshot, and releases on
-every completion/error path. The provider is installed by both `Runtime.Start`
+every completion/error path. The active agent is resolved into
+`ServiceDeps.ActiveAgent` per acquisition under the same lock — `/agents/active`
+switches it without a generation rebuild — and chat/task handlers fall back to
+it for an empty agent field. The provider is installed by both `Runtime.Start`
 and `ApplyConfig`, so a retry-only startup still wires generation-backed
 handlers.
 

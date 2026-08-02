@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,7 +66,7 @@ func newSessionManagerForTest(t *testing.T, rt *Runtime, root string, infClient 
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
-	}, infClient, nil, nil, reader, project.GlobalSlug, "coder")
+	}, infClient, nil, nil, reader, project.GlobalSlug)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +485,6 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 		registry:   tools.NewRegistry(),
 		q:          rt.reqQueue,
 		sessionMgr: mgr,
-		active:     "coder",
 	}
 
 	sessionID, evch, err := rt.taskRunner.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
@@ -856,7 +856,7 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	defer func() { _ = gitRepo.Close() }()
 	rt.setSessionManager(mgr)
 
-	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), sessionMgr: mgr, active: "coder"}
+	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), sessionMgr: mgr}
 	id, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
@@ -967,7 +967,7 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 		t.Fatalf("seed Append: %v", err)
 	}
 
-	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), sessionMgr: mgr, active: "coder"}
+	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), sessionMgr: mgr}
 	_, evch, err := ad.RunTask(context.Background(), "coder", s.ID, []ui.ChatMessage{{Role: "user", Content: "hello"}, {Role: "user", Content: "follow-up"}})
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
@@ -1020,7 +1020,7 @@ func TestTaskRunnerWiresHTTPClientIntoToolContext(t *testing.T) {
 	if err := registry.Register(probe); err != nil {
 		t.Fatalf("Register probe tool: %v", err)
 	}
-	ad := &taskRunnerAdapter{rt: rt, registry: registry, q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), active: "coder", loopCfg: cfg.Loop}
+	ad := &taskRunnerAdapter{rt: rt, registry: registry, q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), loopCfg: cfg.Loop}
 
 	_, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "search"}})
 	if err != nil {
@@ -1085,7 +1085,7 @@ func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 	if err := tools.RegisterBuiltins(registry); err != nil {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
-	ad := &taskRunnerAdapter{rt: rt, registry: registry, q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), active: "coder", loopCfg: cfg.Loop}
+	ad := &taskRunnerAdapter{rt: rt, registry: registry, q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), loopCfg: cfg.Loop}
 
 	_, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "read the file"}})
 	if err != nil {
@@ -1166,7 +1166,6 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	ad := &taskRunnerAdapter{
 		rt:       rt,
 		asm:      &staticAssembler{asm: rt.assembler, active: "coder"},
-		active:   "coder",
 		registry: tools.NewRegistry(),
 		q:        q,
 		slug:     "global",
@@ -1228,7 +1227,7 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
-	}, rt.ensureInferenceClient(), nil, nil, dr, project.GlobalSlug, "coder")
+	}, rt.ensureInferenceClient(), nil, nil, dr, project.GlobalSlug)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2230,16 +2229,20 @@ func TestSnapshot_RetryOnlyStartupWiresProvider(t *testing.T) {
 
 // requestCapture records every completion request body the fake model server
 // receives, so a test can assert which generation's prompt files were used to
-// assemble it.
+// assemble it. first is closed on the first request so tests can wait
+// barrier-style for a task to reach the model.
 type requestCapture struct {
 	mu     sync.Mutex
 	bodies []string
+	first  chan struct{}
+	once   sync.Once
 }
 
 func (c *requestCapture) add(body string) {
 	c.mu.Lock()
 	c.bodies = append(c.bodies, body)
 	c.mu.Unlock()
+	c.once.Do(func() { close(c.first) })
 }
 
 func (c *requestCapture) snapshot() []string {
@@ -2253,7 +2256,7 @@ func (c *requestCapture) snapshot() []string {
 // generation assembled it.
 func startCapturingModelServer(t *testing.T, summary string) (int, func(), *requestCapture) {
 	t.Helper()
-	capture := &requestCapture{}
+	capture := &requestCapture{first: make(chan struct{})}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen fake model: %v", err)
@@ -2417,6 +2420,99 @@ func TestSnapshot_RunnerReadsAndRecordsInOriginalProject(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(newRoot, filepath.FromSlash(rel))); !os.IsNotExist(err) {
 			t.Fatalf("captured session file leaked into newRoot: %s", rel)
 		}
+	}
+}
+
+// TestSnapshot_ActiveAgentResolvedPerAcquisition verifies that the active
+// agent is resolved per snapshot acquisition rather than frozen when the
+// generation is built. /agents/active switches the active agent through the
+// production registry without rebuilding the generation; a task posted with no
+// explicit agent field must then run under the newly selected agent. Before
+// the fix the task runner kept a build-time copy, so starting with no active
+// agent left tasks failing with ErrTaskNoAgent even after one was selected.
+func TestSnapshot_ActiveAgentResolvedPerAcquisition(t *testing.T) {
+	modelPort, shutdownModel, capture := startCapturingModelServer(t, "test summary")
+	defer shutdownModel()
+
+	root := initRuntimeProjectRepo(t)
+	if err := os.MkdirAll(filepath.Join(root, "agents", "coder"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agents", "coder", "persona.md"), []byte("coder persona"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.Agent.Active = "" // no active agent at startup
+	cfg.Model.Port = modelPort
+	cfg.Embedder.Port = freeTCPPort(t)
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+
+	port := freeTCPPort(t)
+	uiServer := ui.NewServer(port)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := uiServer.Start(ctx); err != nil {
+		t.Fatalf("ui server start: %v", err)
+	}
+	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
+	t.Cleanup(func() { rt.Stop() })
+
+	// Startup has no active agent.
+	snap, release := rt.AcquireUISnapshot()
+	if snap.ActiveAgent != "" {
+		release()
+		t.Fatalf("startup active agent = %q, want empty", snap.ActiveAgent)
+	}
+	// Switch the active agent through the production registry. This updates
+	// the config store and rt.cfg without rebuilding the generation.
+	if err := snap.AgentRegistry.SetActive("coder"); err != nil {
+		release()
+		t.Fatalf("SetActive: %v", err)
+	}
+	release()
+
+	// A fresh acquisition reflects the switch with no rebuild.
+	snap2, release2 := rt.AcquireUISnapshot()
+	if snap2.ActiveAgent != "coder" {
+		release2()
+		t.Fatalf("active agent after switch = %q, want coder", snap2.ActiveAgent)
+	}
+	release2()
+
+	// POST /task/send with no agent field: the handler must fall back to the
+	// per-acquisition active agent and run the task under coder.
+	resp, err := http.PostForm(fmt.Sprintf("http://127.0.0.1:%d/task/send", port), url.Values{"message": {"hello"}})
+	if err != nil {
+		t.Fatalf("task/send: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		t.Fatalf("task/send status = %d, want 200", resp.StatusCode)
+	}
+	_ = resp.Body.Close()
+
+	select {
+	case <-capture.first:
+	case <-time.After(15 * time.Second):
+		t.Fatal("task with no explicit agent never reached the model after an agent switch; the runner still used the stale empty active agent")
+	}
+
+	sawCoder := false
+	for _, body := range capture.snapshot() {
+		if strings.Contains(body, "coder persona") {
+			sawCoder = true
+		}
+	}
+	if !sawCoder {
+		t.Fatal("task ran without the switched agent's persona; it did not fall back to the active agent")
 	}
 }
 

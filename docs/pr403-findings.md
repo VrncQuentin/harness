@@ -143,11 +143,15 @@ over the candidate's concrete assembler plus the candidate's session manager,
 active agent, project slug, loop config, and active memory — they never
 dereference `Runtime` (except the deliberately-live C2 memory-repo predicate),
 so an old snapshot reads and records exclusively in the project it was
-published for. The provider is installed both by `Runtime.Start` and at the
-top of `ApplyConfig`, so a retry-only startup (first run, invalid config, or
-failed validation) still wires generation-backed handlers. The API server
-alone keeps a dynamic assembler (`AcquireRequestGeneration`), because API
-requests legitimately use the current generation. `Runtime.AcquireUISnapshot`
+published for. The active agent is an exception: `/agents/active` switches
+it without a generation rebuild, so `AcquireUISnapshot` resolves
+`ServiceDeps.ActiveAgent` per acquisition under the same runtime lock and the
+chat/task handlers fall back to it for an empty agent field; the adapters hold
+no frozen active agent. The provider is installed both by `Runtime.Start` and
+at the top of `ApplyConfig`, so a retry-only startup (first run, invalid
+config, or failed validation) still wires generation-backed handlers. The API
+server alone keeps a dynamic assembler (`AcquireRequestGeneration`), because
+API requests legitimately use the current generation. `Runtime.AcquireUISnapshot`
 captures the current generation's snapshot and pins the generation under
 `rt.mu`; publication swaps the installed generation and retires the old
 publisher lease under the same lock, so a handler cannot select an old

@@ -26,6 +26,14 @@ import (
 type ServiceDeps struct {
 	MemoryRepoPath string
 
+	// ActiveAgent is the active agent selection captured at snapshot
+	// acquisition time, under the same runtime lock as the generation. It is
+	// filled per request rather than frozen at generation build time because
+	// /agents/active switches the active agent without rebuilding the
+	// generation; chat/task handlers with an empty agent field fall back to
+	// this value.
+	ActiveAgent string
+
 	AgentRegistry AgentRegistry
 	MemoryStore   MemoryStore
 	SessionStore  SessionStore

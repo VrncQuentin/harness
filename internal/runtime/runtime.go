@@ -157,6 +157,10 @@ func (rt *Runtime) AcquireUISnapshot() (ui.ServiceDeps, func()) {
 	}
 	g.acquire()
 	snap := g.uiSnap
+	// The active agent is a user selection that changes without a generation
+	// rebuild (/agents/active), so it is resolved here per acquisition under
+	// the same lock as the generation rather than frozen in the snapshot.
+	snap.ActiveAgent = rt.cfg.Agent.Active
 	rt.mu.Unlock()
 	return snap, g.release
 }

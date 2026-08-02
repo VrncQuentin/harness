@@ -145,15 +145,15 @@ func chatMessagesToInference(conversation []ui.ChatMessage) []inference.Message 
 // tokens arrive.
 //
 // Every resource is generation-bound: asm is a static assembler over the
-// candidate generation's concrete assembler, mgr is the candidate's session
-// manager, and active is the active agent at publication time. The adapter
-// never dereferences Runtime, so a snapshot captured before a reload keeps
-// reading and recording in the project it was published for.
+// candidate generation's concrete assembler and mgr is the candidate's
+// session manager. The active agent is NOT stored here — the UI handler
+// resolves an empty agent field from the per-acquisition snapshot
+// (ServiceDeps.ActiveAgent), because /agents/active switches the selection
+// without a generation rebuild.
 type chatRunnerAdapter struct {
-	asm    api.Assembler
-	q      *queue.Queue
-	mgr    *session.Manager
-	active string
+	asm api.Assembler
+	q   *queue.Queue
+	mgr *session.Manager
 }
 
 // Run assembles the prompt, enqueues a request, and returns a channel of
@@ -167,23 +167,19 @@ func (ad *chatRunnerAdapter) Run(ctx context.Context, agentName, sessionID strin
 
 	// Resolve the active agent up front so the session is bound to the
 	// same value the assembler will use.
-	resolvedAgent := agentName
-	if resolvedAgent == "" {
-		resolvedAgent = ad.active
-	}
-	if resolvedAgent == "" {
+	if agentName == "" {
 		return "", nil, ui.ErrChatNoAgent
 	}
 
 	// Mint or attach to a session id and replay any user-side delta before
 	// dispatch so a save on the next click captures the turn even if the user
 	// navigates away mid-stream.
-	id := attachSessionTurn(ad.mgr, sessionID, resolvedAgent, msgs)
+	id := attachSessionTurn(ad.mgr, sessionID, agentName, msgs)
 
 	reqID := fmt.Sprintf("uichat-%d", time.Now().UnixNano())
 	ctx = reqid.WithID(ctx, reqID)
 
-	assembled, err := ad.asm.Assemble(ctx, resolvedAgent, msgs)
+	assembled, err := ad.asm.Assemble(ctx, agentName, msgs)
 	if err != nil {
 		if errors.Is(err, errNoActiveAgent) {
 			return "", nil, ui.ErrChatNoAgent
@@ -282,12 +278,11 @@ func appendUserSide(mgr *session.Manager, id string, conversation []inference.Me
 
 // uiSessionStoreAdapter implements ui.SessionStore against the session
 // manager captured by one generation. It hides the manager type from the ui
-// package so the import graph stays one-way. active is the active agent at
-// publication time, so a reload to another project does not make an old
-// snapshot resolve empty-agent lookups against the new project.
+// package so the import graph stays one-way. An empty agent in Records is
+// treated as "no agent" rather than resolved against a stale captured
+// selection; the UI always passes the per-acquisition active agent.
 type uiSessionStoreAdapter struct {
-	mgr    *session.Manager
-	active string
+	mgr *session.Manager
 }
 
 // Save persists the live session and returns the result.
@@ -312,9 +307,6 @@ func (ad *uiSessionStoreAdapter) Save(ctx context.Context, id string) (ui.Sessio
 func (ad *uiSessionStoreAdapter) Records(agent string) ([]ui.SessionRecord, error) {
 	if ad.mgr == nil {
 		return nil, nil
-	}
-	if agent == "" {
-		agent = ad.active
 	}
 	if agent == "" {
 		return nil, nil
@@ -403,10 +395,12 @@ type taskRunnerAdapter struct {
 	// records in the project it was published for.
 	rt *Runtime
 	// asm is a static assembler over the candidate generation's concrete
-	// assembler; active, sessionMgr, slug, loopCfg, and mem are the candidate
-	// generation's values.
+	// assembler; sessionMgr, slug, loopCfg, and mem are the candidate
+	// generation's values. The active agent is NOT stored here — the UI
+	// handler resolves an empty agent field from the per-acquisition snapshot
+	// (ServiceDeps.ActiveAgent), because /agents/active switches the selection
+	// without a generation rebuild.
 	asm        api.Assembler
-	active     string
 	registry   *tools.Registry
 	q          *queue.Queue
 	sessionMgr *session.Manager
@@ -548,9 +542,6 @@ func memExcerpt(s string, n int) string {
 }
 
 func (ad *taskRunnerAdapter) RunTask(ctx context.Context, agentName string, sessionID string, conversation []ui.ChatMessage) (string, <-chan ui.TaskEvent, error) {
-	if agentName == "" {
-		agentName = ad.active
-	}
 	if agentName == "" {
 		return "", nil, ui.ErrTaskNoAgent
 	}
