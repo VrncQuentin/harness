@@ -180,6 +180,43 @@ the original repository.
 | 9.9 | Global port changes not reflected until restart | `TestAppliedState_GlobalPortChanges` |
 | 9.10 | `llama_on_switch=keep` violated on config apply | `TestAppliedState_LlamaOnSwitchKeep` |
 
+**Applied-state protocol (shipped):** the runtime owns one explicit record of
+the facts about the live system that config applies and project switches
+compare against, publish, and roll back to (`appliedState`): the committed
+config, the active project, the preferred/effective model, and the actually
+running llama/embedder process configuration. The old/live state is read
+exclusively from this record — never reconstructed from the mutable config
+store or the mutable project store.
+
+`ApplyConfig` is one transaction serialized end-to-end by a dedicated apply
+lock (`applyMu`); validation, preparation, process changes, generation
+publication, and retirement cannot interleave across two applies. The
+transaction phases are explicit:
+
+- **prepare** — the candidate and its API server are built locally and left
+  unpublished; a failed candidate is discarded wholesale (`applyTx.close`),
+  and the installed generation and recorded applied state stay untouched.
+- **quiesce** — task loops are cancelled and sessions flushed when a rebuild
+  will drop the old generation; these waits run without `rt.mu`.
+- **commit** — the generation and one coherent applied state are installed
+  atomically under `rt.mu`, and process reconfigurations are issued from that
+  state (never re-derived from the stores). Commit is structured to be
+  infallible, so the recorded state always describes the live processes and
+  `ui.ApplyResult.LiveApplied` reports exactly what happened.
+- **retire** — the old generation's publisher lease is released under the
+  same lock acquisition uses, and the previous API server is retired under
+  the timeout ownership protocol: a server whose Stop does not confirm
+  termination within the timeout keeps a retained slot until a later Stop
+  confirms it, so the runtime never clears or replaces the pointer to a
+  still-serving component.
+
+`llama_on_switch=keep` records the running model separately from the newly
+preferred model; llama-server is never reconfigured during a config apply or
+project switch under keep, the prompt context and inference client track the
+running model's port/ctx, and the status UI renders the mismatch honestly
+from the two recorded values. Shutdown lifecycle guarantees beyond ownership
+retention are assigned to PR 10.
+
 ### PR 10 — Project edits and shutdown lifecycle
 
 | # | Finding | Test |

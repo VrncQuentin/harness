@@ -160,6 +160,49 @@ API request-generation lease (`AcquireRequestGeneration`) is unchanged, and
 the API server alone keeps a dynamic assembler because API requests
 legitimately use the current generation.
 
+#### Explicit applied runtime state (PR 9)
+
+`Runtime` owns one explicit applied-state record (`appliedState`) containing
+the facts needed to compare, publish, and roll back the live system: the
+committed config, the active project, the preferred/effective model, and the
+actually-running llama/embedder process configuration. The old/live state is
+read exclusively from this record — never reconstructed from the mutable
+config store or the mutable project store — so a store edit (a project
+override change, a global port change) is compared against what was actually
+committed, not against a store-derived guess.
+
+`ApplyConfig` runs as one transaction serialized end-to-end by a dedicated
+apply lock (`applyMu`); two concurrent applies cannot interleave validation,
+preparation, process changes, generation publication, or retirement. The
+transaction phases are explicit:
+
+- **prepare** — the candidate and its API server are built locally and left
+  unpublished; a failed candidate is discarded wholesale (`applyTx.close`),
+  leaving the installed generation and recorded applied state untouched.
+- **quiesce** — task loops are cancelled and sessions flushed when a rebuild
+  will drop the old generation; these waits run without `rt.mu` so session
+  summarization can read live config without deadlocking.
+- **commit** — the generation and one coherent applied state are installed
+  atomically under `rt.mu`, and process reconfigurations are issued from that
+  state (never re-derived from the stores). Commit is structured to be
+  infallible so the recorded applied state always describes the live
+  processes, and `ui.ApplyResult.LiveApplied` reports exactly what happened.
+- **retire** — the old generation's publisher lease is released under the
+  same lock acquisition uses, and the previous API server is retired under
+  the timeout ownership protocol: a server whose shutdown does not confirm
+  termination within the timeout keeps a retained slot (`rt.retiredAPI`)
+  until a later Stop confirms it, so the runtime never clears or replaces the
+  pointer to a still-serving component.
+
+`project.llama_on_switch=keep` records the actually-running model separately
+from the newly preferred model; llama-server is never reconfigured during a
+config apply or project switch under keep, the prompt context ceiling and the
+inference client track the running model's port/ctx (the harness keeps
+talking to wherever llama-server actually runs), and the status UI renders
+the running-versus-preferred mismatch honestly from the two recorded values.
+Shutdown lifecycle guarantees beyond this ownership retention are assigned to
+PR 10.
+
 ### Agent Loop (`internal/agentloop`)
 Owns the first-party agentic turn loop. This package is separate from `internal/agent`, which remains the agent/persona registry.
 
