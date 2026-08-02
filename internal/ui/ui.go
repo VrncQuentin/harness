@@ -518,6 +518,15 @@ func (s *Server) SetProjectDirectoryWarnings(slug string, warnings []ProjectDire
 	s.broadcastState()
 }
 
+// ModelMismatch returns the current model-mismatch indicator set by the
+// runtime: whether the running model differs from the active project's
+// preferred model, plus the two model paths. Tests use it to assert the status
+// UI represents the mismatch honestly.
+func (s *Server) ModelMismatch() (bool, string, string) {
+	snap := s.state.snapshot()
+	return snap.ModelMismatch, snap.LoadedModel, snap.PreferredModel
+}
+
 // SetModelMismatch updates whether the currently loaded model differs from
 // the active project's preferred model (relevant when llama_on_switch=keep).
 // Empty strings clear the mismatch indicator.

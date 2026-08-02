@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -750,11 +751,16 @@ func TestChatCompletions_DefaultModelEcho(t *testing.T) {
 	}
 }
 
-// Sanity check that Stop is idempotent and safe before Start.
+// Sanity check that Stop is idempotent and safe before Start, and that it
+// reports whether termination was confirmed.
 func TestServer_StopIdempotent(t *testing.T) {
 	s := NewServer(0, &stubAssembler{}, newStubEnqueuer(nil), nil)
-	s.Stop() // before Start: no-op
-	s.Stop() // again: no-op
+	if !s.Stop() { // before Start: nothing running, termination is certain
+		t.Error("Stop before Start must report termination")
+	}
+	if !s.Stop() { // again: no-op
+		t.Error("Stop before Start must report termination")
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -764,8 +770,86 @@ func TestServer_StopIdempotent(t *testing.T) {
 	if err != nil {
 		t.Skipf("bind :0 failed (benign, environment dependent): %v", err)
 	}
-	s.Stop()
-	s.Stop()
+	if !s.Stop() {
+		t.Error("Stop of an idle server must report termination")
+	}
+	if !s.Stop() {
+		t.Error("second Stop must report termination (idempotent)")
+	}
+}
+
+// TestStopClosesBoundListener verifies that Stop closes a listener that was
+// bound but never served. net/http registers the listener with Shutdown only
+// inside Serve, so a discarded prepared candidate must release its port
+// explicitly; otherwise the same address cannot be rebound.
+func TestStopClosesBoundListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+
+	s := NewServer(port, &stubAssembler{}, newStubEnqueuer(nil), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Bind(ctx); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if !s.Stop() {
+		t.Fatal("Stop must report termination for a bound-but-unserved server")
+	}
+
+	// The port must be released: rebinding the same address succeeds.
+	ln2, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("port not released after Bind then Stop: %v", err)
+	}
+	_ = ln2.Close()
+}
+
+// TestBindDoesNotServeUntilServe verifies that a bound listener does not answer
+// requests until Serve activates it. An apply transaction reserves the port
+// during preparation with Bind and only calls Serve on commit, so a request on
+// the candidate's port can never be served against a generation that is not
+// the one it was prepared for.
+func TestBindDoesNotServeUntilServe(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	s := NewServer(port, &stubAssembler{}, newStubEnqueuer(nil), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Bind(ctx); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	// Before Serve the listener is bound but not serving: a request must not
+	// be answered (bounded by the client timeout; the negative outcome is the
+	// assertion).
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	if _, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", port)); err == nil {
+		t.Fatal("bound-but-unserved server answered a request")
+	}
+
+	s.Serve()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", port))
+		if err == nil {
+			_ = resp.Body.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("served server did not answer: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // Guard test: the handler wires the right paths.

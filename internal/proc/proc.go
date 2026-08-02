@@ -175,6 +175,21 @@ func (m *Manager) Wait(ctx context.Context) error {
 	}
 }
 
+// Args returns the currently configured binary, arguments, and health URL.
+// After Reconfigure these reflect the new configuration; the Run loop restarts
+// the child asynchronously. The runtime uses it to compare what a process is
+// actually configured to run against the recorded applied state.
+func (m *Manager) Args() (string, []string, string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	build := m.buildArgs
+	if build == nil {
+		return "", nil, m.healthURL
+	}
+	binary, args := build()
+	return binary, args, m.healthURL
+}
+
 // Reconfigure atomically swaps the args builder and health URL, then kills the
 // running child so Run spins it up again under the new config. The restart is
 // user-initiated, so it does not count against RestartCount, skips backoff,
