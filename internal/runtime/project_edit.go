@@ -77,7 +77,7 @@ func (rt *Runtime) EditProject(
 	if err != nil {
 		return project.Project{}, fmt.Errorf("identify memory repo path: %w", err)
 	}
-	memoryRepoChanged := !settled.SameRepo
+	memoryRepoChanged := !settled.IsSameRepo()
 	if memoryRepoChanged {
 		switch memoryRepoMode {
 		case project.MemoryRepoModeMove, project.MemoryRepoModeFresh:

@@ -93,16 +93,19 @@ func (w *Workflow) Create(input CreateInput) (Project, error) {
 
 // SettledUpdate carries a settled repository-identity decision for a project
 // edit, backed by a handle-bound proof so the decision can be re-verified at
-// the moment of mutation.
+// the moment of mutation. The decision is private: a SettledUpdate is produced
+// only by SettleUpdate (which marks it valid and, for a "same" decision, pins
+// the destination), so a caller cannot forge one to bypass identity
+// verification.
 type SettledUpdate struct {
-	// SameRepo reports whether the edit's destination identifies the same
-	// physical repository as the stored project's current one.
-	SameRepo bool
-	// proof is the retained handle-bound proof of the destination, present
-	// only when SameRepo is true (the destination exists — it is the current
-	// repository). It is opaque to callers, who carry it back into ApplyUpdate.
-	proof RepoIdentity
+	valid    bool
+	sameRepo bool
+	proof    RepoIdentity
 }
+
+// IsSameRepo reports whether the settled destination identifies the same
+// physical repository as the stored project's current one.
+func (s SettledUpdate) IsSameRepo() bool { return s.sameRepo }
 
 // SettleUpdate resolves whether input's destination memory repo is the same
 // physical repository as the stored project's current one, and pins the
@@ -133,20 +136,24 @@ func (w *Workflow) SettleUpdate(input UpdateInput) (SettledUpdate, error) {
 			return SettledUpdate{}, err
 		}
 	}
-	return SettledUpdate{SameRepo: same, proof: proof}, nil
+	return SettledUpdate{valid: true, sameRepo: same, proof: proof}, nil
 }
 
 // ApplyUpdate applies an update using a settled decision from SettleUpdate. It
 // re-verifies the destination boundary with the retained handle-bound proof
 // immediately before mutating: an alias repointed after the decision fails
-// closed instead of authorizing a mutation of a changed repository. There is no
-// caller-supplied "same" boolean to bypass the check.
+// closed instead of authorizing a mutation of a changed repository. Only a
+// valid settlement produced by SettleUpdate is accepted; a forged or zero
+// SettledUpdate is rejected.
 func (w *Workflow) ApplyUpdate(input UpdateInput, memoryRepoMode string, settled SettledUpdate) (Project, error) {
 	if w.Store == nil {
 		return Project{}, errors.New("project: store not configured")
 	}
 	if w.Repos == nil {
 		return Project{}, errors.New("project: memory repo manager not configured")
+	}
+	if !settled.valid {
+		return Project{}, errors.New("project: invalid settled update (must come from SettleUpdate)")
 	}
 	if settled.proof != nil {
 		defer func() { _ = settled.proof.Close() }()
@@ -158,7 +165,7 @@ func (w *Workflow) ApplyUpdate(input UpdateInput, memoryRepoMode string, settled
 			return Project{}, errors.New("memory repo boundary changed since the edit was checked")
 		}
 	}
-	return w.updateResolved(input, memoryRepoMode, settled.SameRepo)
+	return w.updateResolved(input, memoryRepoMode, settled.sameRepo)
 }
 
 // Update persists project metadata and reconciles memory repo path changes with

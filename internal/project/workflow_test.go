@@ -169,6 +169,31 @@ func TestWorkflowUpdateRejectsMissingMoveModeBeforeMetadataChange(t *testing.T) 
 	}
 }
 
+// TestWorkflowApplyUpdateRejectsForgedSettlement verifies that a forged or
+// zero-value SettledUpdate — not produced by SettleUpdate — is rejected, so
+// the identity verification cannot be bypassed by constructing a settlement
+// directly.
+func TestWorkflowApplyUpdateRejectsForgedSettlement(t *testing.T) {
+	store := newWorkflowStore(Project{Slug: "demo", DisplayName: "Demo", MemoryRepoPath: "/repo/old"})
+	repos := &workflowRepos{}
+	workflow := NewWorkflow(store, repos)
+
+	_, err := workflow.ApplyUpdate(UpdateInput{
+		Slug: "demo", DisplayName: "Renamed", MemoryRepoPath: "/repo/old",
+	}, MemoryRepoModeMove, SettledUpdate{})
+	if err == nil {
+		t.Fatal("a forged/zero SettledUpdate must be rejected")
+	}
+
+	got := store.projects["demo"]
+	if got.DisplayName != "Demo" || got.MemoryRepoPath != "/repo/old" {
+		t.Fatalf("store mutated despite a forged settlement: %+v", got)
+	}
+	if len(repos.moves) != 0 || len(repos.ensures) != 0 {
+		t.Fatalf("repo operations ran despite a forged settlement: moves=%v ensures=%v", repos.moves, repos.ensures)
+	}
+}
+
 // TestWorkflowApplyUpdateRejectsChangedBoundary verifies that a settled "same"
 // decision cannot authorize a mutation after the named object changed: the
 // retained handle-bound proof is re-verified at mutation time, and a repointed
@@ -189,7 +214,7 @@ func TestWorkflowApplyUpdateRejectsChangedBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SettleUpdate: %v", err)
 	}
-	if !settled.SameRepo {
+	if !settled.IsSameRepo() {
 		t.Fatal("settled decision should report the same repository")
 	}
 
@@ -254,7 +279,7 @@ func TestWorkflowApplyUpdateAppliesSettledMove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SettleUpdate: %v", err)
 	}
-	if settled.SameRepo {
+	if settled.IsSameRepo() {
 		t.Fatal("settled decision should report a different repository")
 	}
 	updated, err := workflow.ApplyUpdate(UpdateInput{
