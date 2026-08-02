@@ -180,48 +180,25 @@ func TestSessionLog_AppendDoesNotFollowLinkOutOfRoot(t *testing.T) {
 	}
 }
 
-// sidecarEscapingWriter wraps a rooted FileWriter and, immediately after the
-// first WriteFile lands (the episode .md), replaces the episode directory with
-// a link out of the root. The second WriteFile — the .json sidecar — is then
-// the write that must fail closed. Staging between the two writes matters:
-// a link installed before Save would make the first episode write fail and the
-// sidecar call would never run, so a pathname regression confined to sidecar
-// publication would pass untouched.
-type sidecarEscapingWriter struct {
-	real    FileWriter
-	root    string
-	outside string
-	t       *testing.T
-	calls   int
-	staged  bool
+// countingWriter wraps a rooted FileWriter and counts calls so a test can
+// assert which artifact writes were attempted and in what order.
+type countingWriter struct {
+	real  FileWriter
+	calls int
 }
 
-func (w *sidecarEscapingWriter) WriteFile(relPath string, data []byte) error {
+func (w *countingWriter) WriteFile(relPath string, data []byte) error {
 	w.calls++
-	if err := w.real.WriteFile(relPath, data); err != nil {
-		return err
-	}
-	if w.staged {
-		return nil
-	}
-	// The first write (episode .md) landed inside the root. Drop the episode
-	// directory and pin a link out of it in its place, so the very next write
-	// — the sidecar — is the one that has to refuse.
-	episodeDir := filepath.Join(w.root, filepath.Dir(filepath.FromSlash(relPath)))
-	if err := os.RemoveAll(episodeDir); err != nil {
-		w.t.Fatalf("remove episode dir to stage the link: %v", err)
-	}
-	sessionLinkDir(w.t, w.outside, episodeDir)
-	w.staged = true
-	return nil
+	return w.real.WriteFile(relPath, data)
 }
 
 // TestSessionLog_SidecarPublishedThroughPinnedRoot is the finding 7.4
 // discriminator: sidecar publication goes through the pinned memory writer
-// (m.deps.Writer.WriteFile), so when the sidecar's episode directory becomes a
+// (m.deps.Writer.WriteFile), so when the sidecar's episode directory is a
 // link out of the repo the sidecar write itself must fail closed and write
-// nothing outside. The link is staged between the episode and sidecar writes so
-// the sidecar call is the one that hits it.
+// nothing outside. Under PR 11 the sidecar is the first artifact Save
+// publishes, so a link installed ahead of Save is exactly the write that hits
+// it; a failed sidecar must also emit no pending recovery record.
 func TestSessionLog_SidecarPublishedThroughPinnedRoot(t *testing.T) {
 	fi := newFakeInference(summaryTokens("sidecar summary"))
 	root, repo := scaffoldMemoryRepo(t, "coder")
@@ -232,8 +209,14 @@ func TestSessionLog_SidecarPublishedThroughPinnedRoot(t *testing.T) {
 	t.Cleanup(func() { _ = reader.Close() })
 
 	outside := t.TempDir()
-	writer := &sidecarEscapingWriter{real: reader, root: root, outside: outside, t: t}
+	// Replace the episodes tree with a link out of the root before Save.
+	episodeDir := filepath.Join(root, "episodes")
+	if err := os.RemoveAll(episodeDir); err != nil {
+		t.Fatalf("remove episode dir: %v", err)
+	}
+	sessionLinkDir(t, outside, episodeDir)
 
+	writer := &countingWriter{real: reader}
 	mgr, err := NewManager(ManagerDeps{
 		Repo:             repo,
 		Writer:           writer,
@@ -255,13 +238,21 @@ func TestSessionLog_SidecarPublishedThroughPinnedRoot(t *testing.T) {
 	if err == nil {
 		t.Fatal("Save published a sidecar through an escaping link")
 	}
-	// The failure must come from the sidecar publication, not the episode
-	// write that runs before it — otherwise the sidecar call was never made.
+	// The failure must come from the sidecar publication, which is the first
+	// and only artifact write attempted.
 	if !strings.Contains(err.Error(), s.ID+episodeSidecarSuffix) {
 		t.Fatalf("error should come from sidecar publication, got %v", err)
 	}
-	if writer.calls != 2 {
-		t.Fatalf("sidecar publication was not reached: %d WriteFile calls, want 2", writer.calls)
+	if writer.calls != 1 {
+		t.Fatalf("sidecar was not the only write attempted: %d WriteFile calls, want 1", writer.calls)
+	}
+	// A failed sidecar must emit no pending recovery record.
+	records, err := ReadAll(reader, sessionsLogRel)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(records) != 0 {
+		t.Errorf("sidecar failure emitted %d log records, want none", len(records))
 	}
 	// Nothing may have landed outside: no episode, no sidecar.
 	entries, err := os.ReadDir(outside)
