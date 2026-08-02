@@ -137,16 +137,27 @@ until the sequence below is merged and the final audit (PR 12) passes.
 `ui.ServiceDeps` (memory repo path/store, agent registry, session store,
 committer, dedup checker + threshold, retrieval scorer, index rebuilder, chat
 runner, task runner) bound to that generation's readers, git handle, and
-episode index. `Runtime.AcquireUISnapshot` captures the current generation's
-snapshot and pins the generation under `rt.mu`; publication swaps the
-installed generation and retires the old publisher lease under the same lock,
-so a handler cannot select an old snapshot after its generation was retired
-(no load-before-increment window). UI handlers call `acquireSnapshot` once and
-release on every completion/error path; `/chat/send` and `/task/send` transfer
-the release to the detached goroutine, which releases after the run/stream
-ends. Old readers and handles close only after the last acquired snapshot on
-the old generation is released, so an old snapshot stays usable for real
-rooted operations against the original repository.
+episode index. Every adapter in the snapshot is bound to concrete
+candidate-generation resources: the chat/task runners use a static assembler
+over the candidate's concrete assembler plus the candidate's session manager,
+active agent, project slug, loop config, and active memory — they never
+dereference `Runtime` (except the deliberately-live C2 memory-repo predicate),
+so an old snapshot reads and records exclusively in the project it was
+published for. The provider is installed both by `Runtime.Start` and at the
+top of `ApplyConfig`, so a retry-only startup (first run, invalid config, or
+failed validation) still wires generation-backed handlers. The API server
+alone keeps a dynamic assembler (`AcquireRequestGeneration`), because API
+requests legitimately use the current generation. `Runtime.AcquireUISnapshot`
+captures the current generation's snapshot and pins the generation under
+`rt.mu`; publication swaps the installed generation and retires the old
+publisher lease under the same lock, so a handler cannot select an old
+snapshot after its generation was retired (no load-before-increment window).
+UI handlers call `acquireSnapshot` once and release on every completion/error
+path; `/chat/send` and `/task/send` transfer the release to the detached
+goroutine, which releases after the run/stream ends. Old readers and handles
+close only after the last acquired snapshot on the old generation is
+released, so an old snapshot stays usable for real rooted operations against
+the original repository.
 
 ### PR 9 — Explicit applied runtime state
 

@@ -119,11 +119,18 @@ The UI never reads individual live getters. Each runtime generation owns one
 immutable `ui.ServiceDeps` snapshot — memory repo path/store, agent registry,
 session store, committer, dedup checker + threshold, retrieval scorer, index
 rebuilder, chat runner, and task runner — bound to that generation's concrete
-readers, git handle, and episode index. `Runtime.AcquireUISnapshot` captures
-the current generation's snapshot and pins the generation under `rt.mu`; the
-UI server holds the runtime as a `ui.SnapshotProvider`, and every handler
-calls `acquireSnapshot` once, uses only fields of that snapshot, and releases
-on every completion/error path.
+readers, git handle, and episode index. Every snapshot adapter is bound to
+concrete candidate-generation resources (a static assembler over the
+candidate's concrete assembler, the candidate's session manager, active
+agent, project slug, loop config, and active memory); none dereference
+`Runtime` at execution time, so an old snapshot reads and records exclusively
+in the project it was published for. `Runtime.AcquireUISnapshot` captures the
+current generation's snapshot and pins the generation under `rt.mu`; the UI
+server holds the runtime as a `ui.SnapshotProvider`, and every handler calls
+`acquireSnapshot` once, uses only fields of that snapshot, and releases on
+every completion/error path. The provider is installed by both `Runtime.Start`
+and `ApplyConfig`, so a retry-only startup still wires generation-backed
+handlers.
 
 Lifetime protocol:
 - **Publication:** the candidate and its snapshot are built locally, bound to
@@ -144,7 +151,9 @@ Lifetime protocol:
 
 This replaces the eliminated `memoryHandles`, `genGate`, and
 `memoryAPISnapshot` mechanisms (retained in `docs/pr403-findings.md`); the
-API request-generation lease (`AcquireRequestGeneration`) is unchanged.
+API request-generation lease (`AcquireRequestGeneration`) is unchanged, and
+the API server alone keeps a dynamic assembler because API requests
+legitimately use the current generation.
 
 ### Agent Loop (`internal/agentloop`)
 Owns the first-party agentic turn loop. This package is separate from `internal/agent`, which remains the agent/persona registry.
