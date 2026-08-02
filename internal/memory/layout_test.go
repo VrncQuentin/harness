@@ -1442,7 +1442,7 @@ func TestPinProjectRepoDetectsRepointedBoundary(t *testing.T) {
 	}
 
 	// An unresolvable path fails closed, not as "same".
-	bad := filepath.Join(base, "missing", "component")
+	bad := filepath.Join(base, "bad\x00name")
 	if _, err := proof.SameAs(bad); err == nil {
 		t.Fatal("SameAs on an unresolvable path must fail closed with an error")
 	}
