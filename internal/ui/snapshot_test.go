@@ -150,6 +150,68 @@ func (p *countingSnapshotProvider) releaseCount() int {
 	return p.releases
 }
 
+// TestSnapshot_AgentsPageUsesAcquisitionActiveAgent proves the /agents page
+// marks the agent from the acquisition-scoped snapshot rather than re-reading
+// the registry's live selection. The registry's Active() returns "reviewer"
+// (as if a concurrent /agents/active switched after this snapshot was
+// captured), while the snapshot's ActiveAgent is "coder"; the page must mark
+// coder active.
+func TestSnapshot_AgentsPageUsesAcquisitionActiveAgent(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("reviewer",
+		AgentInfo{Name: "coder", Origin: "global"},
+		AgentInfo{Name: "reviewer", Origin: "global"},
+	)
+	setSnapshotForTest(s, ServiceDeps{
+		AgentRegistry: reg,
+		ActiveAgent:   "coder",
+	})
+
+	rec := httptest.NewRecorder()
+	s.handleAgents(rec, httptest.NewRequest(http.MethodGet, "/agents", nil))
+
+	body := rec.Body.String()
+	idxCoder := strings.Index(body, `<h3 class="agent-name">coder</h3>`)
+	idxReviewer := strings.Index(body, `<h3 class="agent-name">reviewer</h3>`)
+	if idxCoder < 0 || idxReviewer < 0 {
+		t.Fatalf("agents page missing cards: coder=%d reviewer=%d", idxCoder, idxReviewer)
+	}
+	coderCard := body[idxCoder:idxReviewer]
+	if !strings.Contains(coderCard, "badge badge-ok") {
+		t.Fatal("coder card is not marked active; the page used the registry's live active agent instead of the snapshot's")
+	}
+	if strings.Contains(body[idxReviewer:], "badge badge-ok") {
+		t.Fatal("reviewer card is marked active, but the snapshot captured coder as active")
+	}
+}
+
+// TestSnapshot_ChatPageUsesAcquisitionActiveAgent proves the /chat page
+// renders the acquisition-scoped active agent. Same setup as the agents test:
+// the registry reports reviewer live while the snapshot captured coder.
+func TestSnapshot_ChatPageUsesAcquisitionActiveAgent(t *testing.T) {
+	s := NewServer(3000)
+	reg := newStubRegistry("reviewer",
+		AgentInfo{Name: "coder"},
+		AgentInfo{Name: "reviewer"},
+	)
+	setSnapshotForTest(s, ServiceDeps{
+		AgentRegistry: reg,
+		ChatRunner:    &stubChatRunner{},
+		ActiveAgent:   "coder",
+	})
+
+	rec := httptest.NewRecorder()
+	s.handleChat(rec, httptest.NewRequest(http.MethodGet, "/chat", nil))
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-agent="coder"`) {
+		t.Fatalf("chat page did not render the snapshot's active agent; expected data-agent=coder, body:\n%s", body)
+	}
+	if strings.Contains(body, `data-agent="reviewer"`) {
+		t.Fatal("chat page rendered the registry's live active agent instead of the acquisition-scoped one")
+	}
+}
+
 // blockedChatRunner signals its first invocation through started and blocks
 // until release is closed, so a test can hold the detached goroutine open and
 // observe the lease state while the stream is running.

@@ -134,7 +134,13 @@ func setSnapshotForTest(s *Server, deps ServiceDeps) {
 }
 
 func setAgentRegistryForTest(s *Server, reg AgentRegistry) {
-	setServiceDepsForTest(s, func(d *ServiceDeps) { d.AgentRegistry = reg })
+	setServiceDepsForTest(s, func(d *ServiceDeps) {
+		d.AgentRegistry = reg
+		// Mirror the production acquisition-scoped active agent so the
+		// rendered chat/agents pages highlight the same selection the registry
+		// was configured with.
+		d.ActiveAgent = reg.Active()
+	})
 }
 
 func setChatRunnerForTest(s *Server, runner ChatRunner) {

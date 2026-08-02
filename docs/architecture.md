@@ -131,7 +131,9 @@ server holds the runtime as a `ui.SnapshotProvider`, and every handler calls
 every completion/error path. The active agent is resolved into
 `ServiceDeps.ActiveAgent` per acquisition under the same lock — `/agents/active`
 switches it without a generation rebuild — and chat/task handlers fall back to
-it for an empty agent field. The provider is installed by both `Runtime.Start`
+it for an empty agent field, and the `/chat` and `/agents` pages render their
+active-agent marker from the snapshot's value rather than re-reading the
+registry's live selection. The provider is installed by both `Runtime.Start`
 and `ApplyConfig`, so a retry-only startup still wires generation-backed
 handlers.
 

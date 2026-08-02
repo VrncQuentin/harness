@@ -91,8 +91,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	data := chatView{basePage: s.newBasePage("chat"), StreamID: newEventStreamID()}
 	data.Configured = snap.ChatRunner != nil
+	// Use the acquisition-scoped active agent rather than re-reading the
+	// registry's live selection, so the rendered agent matches the generation
+	// the snapshot was captured from.
+	data.ActiveAgent = snap.ActiveAgent
 	if reg := snap.AgentRegistry; reg != nil {
-		data.ActiveAgent = reg.Active()
 		if list, err := reg.List(); err == nil {
 			data.HasAgents = len(list) > 0
 		}

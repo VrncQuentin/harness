@@ -147,7 +147,9 @@ published for. The active agent is an exception: `/agents/active` switches
 it without a generation rebuild, so `AcquireUISnapshot` resolves
 `ServiceDeps.ActiveAgent` per acquisition under the same runtime lock and the
 chat/task handlers fall back to it for an empty agent field; the adapters hold
-no frozen active agent. The provider is installed both by `Runtime.Start` and
+no frozen active agent, and the `/chat` and `/agents` pages render their
+active-agent marker from the snapshot's value rather than re-reading the
+registry's live selection. The provider is installed both by `Runtime.Start` and
 at the top of `ApplyConfig`, so a retry-only startup (first run, invalid
 config, or failed validation) still wires generation-backed handlers. The API
 server alone keeps a dynamic assembler (`AcquireRequestGeneration`), because

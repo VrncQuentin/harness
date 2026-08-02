@@ -96,7 +96,7 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 
 	snap, release := s.acquireSnapshot()
 	defer release()
-	data := s.buildAgentsView(snap.AgentRegistry)
+	data := s.buildAgentsView(snap.AgentRegistry, snap.ActiveAgent)
 	if name := strings.TrimSpace(r.URL.Query().Get("created")); name != "" {
 		data.CreatedName = name
 	}
@@ -128,7 +128,12 @@ func (s *Server) handleAgents(w http.ResponseWriter, r *http.Request) {
 // from the registry's List() output, which the adapter hydrates with
 // file contents - that lets each card render inline without an extra
 // Get() per agent.
-func (s *Server) buildAgentsView(reg AgentRegistry) agentsView {
+//
+// active is the acquisition-scoped active agent from the snapshot. The page
+// marks it as the current selection; using the captured value rather than
+// re-reading the registry's live selection keeps the marker consistent with
+// the listed generation.
+func (s *Server) buildAgentsView(reg AgentRegistry, active string) agentsView {
 	data := agentsView{basePage: s.newBasePage("agents")}
 	if reg == nil {
 		return data
@@ -140,7 +145,7 @@ func (s *Server) buildAgentsView(reg AgentRegistry) agentsView {
 		data.Error = err.Error()
 	}
 	data.Agents = list
-	data.Active = reg.Active()
+	data.Active = active
 	return data
 }
 
@@ -217,7 +222,7 @@ func (s *Server) handleAgentsCreate(w http.ResponseWriter, r *http.Request) {
 
 	name := strings.TrimSpace(r.FormValue("name"))
 	if err := reg.Create(name); err != nil {
-		data := s.buildAgentsView(reg)
+		data := s.buildAgentsView(reg, snap.ActiveAgent)
 		data.CreateErr = err.Error()
 		data.CreateName = name
 		w.WriteHeader(http.StatusBadRequest)
@@ -302,7 +307,7 @@ func (s *Server) handleAgentsEdit(
 
 	body := []byte(r.FormValue("body"))
 	if err := write(reg, name, body); err != nil {
-		data := s.buildAgentsView(reg)
+		data := s.buildAgentsView(reg, snap.ActiveAgent)
 		data.SaveErr = err.Error()
 		data.EditName = name
 		// Show what the user just typed so they don't lose work
