@@ -156,12 +156,21 @@ type Runtime struct {
 	// flushMu serializes the shutdown session flush: at most one detached
 	// FlushAll runs at a time, and a later Shutdown joins the in-flight flush
 	// instead of stacking another, so blocked flushes cannot accumulate saveMu
-	// waiters or produce duplicate durable saves.
+	// waiters or produce duplicate durable saves. The result is published under
+	// flushMu before the completion channel is closed, so no retry can miss the
+	// completion; the channel is closed (broadcast), not signalled by a value.
 	flushMu      sync.Mutex
 	flushRunning bool
-	flushDone    chan error
+	flushDone    chan struct{}
 	flushLastErr error
 	flushEver    bool
+
+	// beforeFlushPublish and afterFlushNotify are test seams for the detached
+	// flush. beforeFlushPublish runs once FlushAll returns and before the
+	// result is published; afterFlushNotify runs after the completion channel
+	// is closed. Nil on every production path.
+	beforeFlushPublish func()
+	afterFlushNotify   func()
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

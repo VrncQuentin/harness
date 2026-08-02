@@ -655,6 +655,66 @@ func TestShutdown_SingleFlushAcrossRetries(t *testing.T) {
 	}
 }
 
+// TestShutdown_FlushCompletionNotMissedByRetry verifies that a shutdown retry
+// cannot miss a flush's completion: the result is published under the flush
+// lock before the completion channel is closed, so after the notification an
+// immediate retry observes the flush as completed instead of joining an
+// already-consumed channel and hanging.
+func TestShutdown_FlushCompletionNotMissedByRetry(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	client := &capturingInferenceClient{tokens: []inference.Token{{Content: "summary"}, {Done: true}}}
+	rt, mgr, _ := newGenerationedManagerForTest(t, &cfg, client)
+	t.Cleanup(func() { rt.Stop() })
+
+	s := mgr.Start("coder")
+	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+
+	atBefore := make(chan struct{})
+	releaseBefore := make(chan struct{})
+	atAfter := make(chan struct{})
+	releaseAfter := make(chan struct{})
+	rt.beforeFlushPublish = func() {
+		close(atBefore)
+		<-releaseBefore
+	}
+	rt.afterFlushNotify = func() {
+		close(atAfter)
+		<-releaseAfter
+	}
+
+	// Attempt 1 starts the single flush; it completes FlushAll and blocks
+	// before publishing its result, so attempt 1 times out.
+	if result := rt.Shutdown(nil, 100*time.Millisecond); !result.TimedOut {
+		t.Fatal("attempt 1 must time out while the flush result is unpublished")
+	}
+	<-atBefore
+
+	// Attempt 2 joins the in-flight flush with a generous budget.
+	attempt2 := make(chan ShutdownResult, 1)
+	go func() { attempt2 <- rt.Shutdown(nil, 5*time.Second) }()
+
+	// Release the flush to publish its result and broadcast completion.
+	close(releaseBefore)
+	<-atAfter
+
+	// With the result published and completion broadcast before afterFlushNotify
+	// returns, an immediate retry must observe the completed flush and must not
+	// hang on an already-consumed notification.
+	if result := rt.Shutdown(nil, 200*time.Millisecond); result.TimedOut {
+		t.Fatal("an immediate retry after flush completion must not miss the completion")
+	}
+
+	close(releaseAfter)
+	if result := <-attempt2; !result.Completed {
+		t.Fatalf("attempt 2 joining the flush = %+v, want completed", result)
+	}
+}
+
 // newServedAPIServer builds a real API server on a real loopback port and
 // serves it, so tests can make real HTTP requests against a retained server.
 func newServedAPIServer(t *testing.T, port int) *api.Server {

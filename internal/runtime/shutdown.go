@@ -178,9 +178,14 @@ func (rt *Runtime) shutdownFlush(ctx context.Context) bool {
 	if rt.flushRunning {
 		done := rt.flushDone
 		rt.flushMu.Unlock()
-		// Join the in-flight flush: never start a second one alongside it.
+		// Join the in-flight flush: never start a second one alongside it. The
+		// result is published under flushMu before done is closed, so reading
+		// flushLastErr after observing the close is stable.
 		select {
-		case err := <-done:
+		case <-done:
+			rt.flushMu.Lock()
+			err := rt.flushLastErr
+			rt.flushMu.Unlock()
 			return err != nil
 		case <-ctx.Done():
 			return true
@@ -192,13 +197,16 @@ func (rt *Runtime) shutdownFlush(ctx context.Context) bool {
 		// saved; re-flushing would duplicate durable records.
 		return false
 	}
-	done := make(chan error, 1)
+	done := make(chan struct{})
 	rt.flushRunning = true
 	rt.flushDone = done
 	rt.flushMu.Unlock()
-	go rt.runDetachedFlush(mgr, done)
+	go rt.runDetachedFlush(mgr)
 	select {
-	case err := <-done:
+	case <-done:
+		rt.flushMu.Lock()
+		err := rt.flushLastErr
+		rt.flushMu.Unlock()
 		return err != nil
 	case <-ctx.Done():
 		return true
@@ -208,18 +216,28 @@ func (rt *Runtime) shutdownFlush(ctx context.Context) bool {
 // runDetachedFlush flushes every live session to completion and records the
 // outcome on the runtime's single-flush tracker. It runs detached from any one
 // shutdown attempt so a flush that outlives its attempt's drain context can be
-// joined by a later retry rather than restarted.
-func (rt *Runtime) runDetachedFlush(mgr *session.Manager, done chan<- error) {
+// joined by a later retry rather than restarted. The result is published under
+// flushMu before the completion channel is closed, so an immediate retry either
+// observes the flush no longer running or joins the closed (broadcast) channel
+// — it can never miss the completion.
+func (rt *Runtime) runDetachedFlush(mgr *session.Manager) {
 	err := mgr.FlushAll(context.Background())
-	done <- err
-	rt.flushMu.Lock()
-	if rt.flushRunning {
-		rt.flushRunning = false
-		rt.flushDone = nil
-		rt.flushLastErr = err
-		rt.flushEver = true
+	if rt.beforeFlushPublish != nil {
+		rt.beforeFlushPublish()
 	}
+	rt.flushMu.Lock()
+	rt.flushLastErr = err
+	rt.flushEver = true
+	rt.flushRunning = false
+	done := rt.flushDone
+	rt.flushDone = nil
 	rt.flushMu.Unlock()
+	if done != nil {
+		close(done)
+	}
+	if rt.afterFlushNotify != nil {
+		rt.afterFlushNotify()
+	}
 }
 
 // stopAPIServers stops the live API server plus every pending-retired and

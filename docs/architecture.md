@@ -227,18 +227,20 @@ the transaction:
   or filesystem mutation. The repository identity is settled once as a
   handle-bound proof (`Workflow.SettleUpdate` pins the destination via
   `PinRepoIdentity` and `OpenIdentified`), and that proof is re-verified at the
-  moment of mutation (`Workflow.ApplyUpdate`): an alias repointed after the
-  decision fails closed instead of authorizing a mutation of a changed
-  repository, so an old "same" result can never persist a path that no longer
-  identifies the installed reader. There is no caller-supplied "same" boolean
-  to bypass the check. Active-project display and model-override edits proceed;
-  their live apply runs through the same transaction boundary
-  (`applyConfigLocked`), so the reload decision compares the freshly-mutated
-  store contents with the recorded applied state — never with an "old" value
-  derived from the store the edit already changed. If that re-apply fails
-  (config load, validation, or candidate-preparation failure), the edit
-  reports failure and restores the captured project row, so the store never
-  silently diverges from the live generation.
+  moment of mutation (`Workflow.ApplyUpdate`): `SameAs` opens the current path
+  and compares the retained handles with `Root.SameDir` (`os.SameFile`), so a
+  repointed alias or a same-name physical replacement fails closed even when it
+  reuses the pathid key. The settlement is produced only by `SettleUpdate` — the
+  decision is private behind `IsSameRepo` and a forged or zero `SettledUpdate`
+  is rejected — so an old "same" result can never persist a path that no
+  longer identifies the installed reader. Active-project display and
+  model-override edits proceed; their live apply runs through the same
+  transaction boundary (`applyConfigLocked`), so the reload decision compares
+  the freshly-mutated store contents with the recorded applied state — never
+  with an "old" value derived from the store the edit already changed. If that
+  re-apply fails (config load, validation, or candidate-preparation failure),
+  the edit reports failure and restores the captured project row, so the store
+  never silently diverges from the live generation.
 - Inactive-project repository moves continue through the rooted
   `MoveProjectRepo` workflow (`project.Workflow.Update`), preserving its
   rollback behavior on initialization or move failure. The pre-edit active
@@ -269,9 +271,11 @@ wrapper for tests. The lifecycle is explicit:
    flush runs detached from any single attempt, retries join the in-flight
    flush instead of stacking another (blocked flushes cannot accumulate saveMu
    waiters or duplicate durable saves), and a new flush starts only after a
-   previous one completed with a retryable failure. The summarizer's token loop
-   is itself context-aware so a stream that never sends or closes cannot hang
-   it;
+   previous one completed with a retryable failure. The flush result is
+   published under the flush lock before a broadcast completion channel is
+   closed, so an immediate retry can never miss a completion. The summarizer's
+   token loop is itself context-aware so a stream that never sends or closes
+   cannot hang it;
 4. **stop API/queue/process components** — API servers stop under the timeout
    ownership protocol; the queue is waited on with a bounded, context-aware
    wait (`Queue.Wait`), never an unbounded `Queue.Stop`. Queue cancellation is
