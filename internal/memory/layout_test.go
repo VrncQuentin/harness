@@ -1392,3 +1392,58 @@ func TestMoveProjectRepo_TrailingSeparatorDestination(t *testing.T) {
 		t.Errorf("trailing separator created a nested destination: %v", statErr)
 	}
 }
+
+// TestPinProjectRepoDetectsRepointedBoundary verifies the handle-bound proof
+// behind project-edit identity decisions: SameAs confirms a path that still
+// names the pinned physical repository (including an alias) and fails closed
+// once the alias is repointed to a different repository.
+func TestPinProjectRepoDetectsRepointedBoundary(t *testing.T) {
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := EnsureProjectRepo(repo, false); err != nil {
+		t.Fatal(err)
+	}
+
+	proof, err := PinProjectRepo(repo)
+	if err != nil {
+		t.Fatalf("PinProjectRepo: %v", err)
+	}
+	defer func() { _ = proof.Close() }()
+
+	// A stable spelling still names the pinned repository.
+	ok, err := proof.SameAs(repo)
+	if err != nil || !ok {
+		t.Fatalf("SameAs(repo) = %v, %v; want true", ok, err)
+	}
+
+	// An alias of the same physical repository still names it.
+	base := t.TempDir()
+	alias := filepath.Join(base, "alias")
+	symlinkOrSkip(t, repo, alias)
+	ok, err = proof.SameAs(alias)
+	if err != nil || !ok {
+		t.Fatalf("SameAs(alias) = %v, %v; want true", ok, err)
+	}
+
+	// Repointing the alias at a different repository fails closed.
+	other := filepath.Join(t.TempDir(), "other")
+	if err := EnsureProjectRepo(other, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(alias); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, other, alias)
+	ok, err = proof.SameAs(alias)
+	if err != nil {
+		t.Fatalf("SameAs(repointed alias): %v", err)
+	}
+	if ok {
+		t.Fatal("repointed alias still reported as the pinned repository")
+	}
+
+	// An unresolvable path fails closed, not as "same".
+	bad := filepath.Join(base, "missing", "component")
+	if _, err := proof.SameAs(bad); err == nil {
+		t.Fatal("SameAs on an unresolvable path must fail closed with an error")
+	}
+}

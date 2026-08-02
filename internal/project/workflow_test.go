@@ -63,8 +63,14 @@ type workflowRepos struct {
 	sameErr   error
 	ensures   []string
 	moves     [][2]string
-	// sameCalls counts SameProjectRepoPath invocations. Tests use it to prove
-	// a settled identity decision is carried through without recomputation.
+	// sameFn overrides the default a==b identity comparison. Tests use it to
+	// stage an alias that the settle decides is the same repository.
+	sameFn func(a, b string) (bool, error)
+	// pinErr, when set, makes PinRepoIdentity fail.
+	pinErr error
+	// pinned is the RepoIdentity returned by PinRepoIdentity.
+	pinned RepoIdentity
+	// sameCalls counts SameProjectRepoPath invocations.
 	sameCalls int
 }
 
@@ -81,7 +87,36 @@ func (r *workflowRepos) SameProjectRepoPath(a, b string) (bool, error) {
 	if r.sameErr != nil {
 		return false, r.sameErr
 	}
+	if r.sameFn != nil {
+		return r.sameFn(a, b)
+	}
 	return a == b, nil
+}
+func (r *workflowRepos) PinRepoIdentity(string) (RepoIdentity, error) {
+	if r.pinErr != nil {
+		return nil, r.pinErr
+	}
+	if r.pinned == nil {
+		r.pinned = &fakeRepoIdentity{}
+	}
+	return r.pinned, nil
+}
+
+// fakeRepoIdentity is a scriptable RepoIdentity for workflow tests.
+type fakeRepoIdentity struct {
+	sameWith func(path string) (bool, error)
+	closed   bool
+}
+
+func (f *fakeRepoIdentity) SameAs(path string) (bool, error) {
+	if f.sameWith == nil {
+		return true, nil
+	}
+	return f.sameWith(path)
+}
+func (f *fakeRepoIdentity) Close() error {
+	f.closed = true
+	return nil
 }
 
 func TestWorkflowCreateRollsBackProjectWhenRepoInitFails(t *testing.T) {
@@ -134,20 +169,67 @@ func TestWorkflowUpdateRejectsMissingMoveModeBeforeMetadataChange(t *testing.T) 
 	}
 }
 
-// TestWorkflowUpdateResolvedCarriesSettledIdentity verifies that a caller that
-// settled the repository-identity decision once can carry it into the mutation:
-// UpdateResolved never recomputes the identity and never runs a move when the
-// settled decision is "same".
-func TestWorkflowUpdateResolvedCarriesSettledIdentity(t *testing.T) {
+// TestWorkflowApplyUpdateRejectsChangedBoundary verifies that a settled "same"
+// decision cannot authorize a mutation after the named object changed: the
+// retained handle-bound proof is re-verified at mutation time, and a repointed
+// alias fails closed with no store or repo mutation.
+func TestWorkflowApplyUpdateRejectsChangedBoundary(t *testing.T) {
 	store := newWorkflowStore(Project{Slug: "demo", DisplayName: "Demo", MemoryRepoPath: "/repo/old"})
-	repos := &workflowRepos{}
+	repos := &workflowRepos{
+		// The settle decides the alias is the same repository, but the pinned
+		// proof re-verifies to "changed" at mutation time (a repoint).
+		sameFn: func(a, b string) (bool, error) { return true, nil },
+		pinned: &fakeRepoIdentity{sameWith: func(string) (bool, error) { return false, nil }},
+	}
 	workflow := NewWorkflow(store, repos)
 
-	updated, err := workflow.UpdateResolved(UpdateInput{
+	settled, err := workflow.SettleUpdate(UpdateInput{
 		Slug: "demo", DisplayName: "Renamed", MemoryRepoPath: "/alias",
-	}, MemoryRepoModeMove, true)
+	})
 	if err != nil {
-		t.Fatalf("UpdateResolved: %v", err)
+		t.Fatalf("SettleUpdate: %v", err)
+	}
+	if !settled.SameRepo {
+		t.Fatal("settled decision should report the same repository")
+	}
+
+	_, err = workflow.ApplyUpdate(UpdateInput{
+		Slug: "demo", DisplayName: "Renamed", MemoryRepoPath: "/alias",
+	}, MemoryRepoModeMove, settled)
+	if err == nil {
+		t.Fatal("a changed boundary must be rejected at mutation time")
+	}
+	got := store.projects["demo"]
+	if got.DisplayName != "Demo" || got.MemoryRepoPath != "/repo/old" {
+		t.Fatalf("store mutated despite a rejected boundary: %+v", got)
+	}
+	if len(repos.moves) != 0 {
+		t.Fatalf("a move ran despite a rejected boundary: %v", repos.moves)
+	}
+}
+
+// TestWorkflowApplyUpdateStableSameRepo verifies that a settled "same" decision
+// whose handle-bound proof still verifies persists the destination and runs no
+// move.
+func TestWorkflowApplyUpdateStableSameRepo(t *testing.T) {
+	store := newWorkflowStore(Project{Slug: "demo", DisplayName: "Demo", MemoryRepoPath: "/repo/old"})
+	repos := &workflowRepos{
+		sameFn: func(a, b string) (bool, error) { return true, nil },
+		pinned: &fakeRepoIdentity{sameWith: func(string) (bool, error) { return true, nil }},
+	}
+	workflow := NewWorkflow(store, repos)
+
+	settled, err := workflow.SettleUpdate(UpdateInput{
+		Slug: "demo", DisplayName: "Renamed", MemoryRepoPath: "/alias",
+	})
+	if err != nil {
+		t.Fatalf("SettleUpdate: %v", err)
+	}
+	updated, err := workflow.ApplyUpdate(UpdateInput{
+		Slug: "demo", DisplayName: "Renamed", MemoryRepoPath: "/alias",
+	}, MemoryRepoModeMove, settled)
+	if err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
 	}
 	if updated.MemoryRepoPath != "/alias" {
 		t.Fatalf("memory repo path = %q, want the alias", updated.MemoryRepoPath)
@@ -155,23 +237,31 @@ func TestWorkflowUpdateResolvedCarriesSettledIdentity(t *testing.T) {
 	if len(repos.moves) != 0 {
 		t.Fatalf("a move ran despite the settled 'same' decision: %v", repos.moves)
 	}
-	if repos.sameCalls != 0 {
-		t.Fatalf("SameProjectRepoPath called %d times; the settled decision must not be recomputed", repos.sameCalls)
-	}
 }
 
-// TestWorkflowUpdateResolvedAppliesSettledMove verifies that a settled
-// "different" decision does execute the move through UpdateResolved.
-func TestWorkflowUpdateResolvedAppliesSettledMove(t *testing.T) {
+// TestWorkflowApplyUpdateAppliesSettledMove verifies that a settled "different"
+// decision does execute the move.
+func TestWorkflowApplyUpdateAppliesSettledMove(t *testing.T) {
 	store := newWorkflowStore(Project{Slug: "demo", DisplayName: "Demo", MemoryRepoPath: "/repo/old"})
-	repos := &workflowRepos{}
+	repos := &workflowRepos{
+		sameFn: func(a, b string) (bool, error) { return false, nil },
+	}
 	workflow := NewWorkflow(store, repos)
 
-	updated, err := workflow.UpdateResolved(UpdateInput{
+	settled, err := workflow.SettleUpdate(UpdateInput{
 		Slug: "demo", DisplayName: "Renamed", MemoryRepoPath: "/repo/new",
-	}, MemoryRepoModeMove, false)
+	})
 	if err != nil {
-		t.Fatalf("UpdateResolved: %v", err)
+		t.Fatalf("SettleUpdate: %v", err)
+	}
+	if settled.SameRepo {
+		t.Fatal("settled decision should report a different repository")
+	}
+	updated, err := workflow.ApplyUpdate(UpdateInput{
+		Slug: "demo", DisplayName: "Renamed", MemoryRepoPath: "/repo/new",
+	}, MemoryRepoModeMove, settled)
+	if err != nil {
+		t.Fatalf("ApplyUpdate: %v", err)
 	}
 	if updated.MemoryRepoPath != "/repo/new" {
 		t.Fatalf("memory repo path = %q, want /repo/new", updated.MemoryRepoPath)

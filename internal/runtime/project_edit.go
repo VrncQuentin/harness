@@ -64,20 +64,20 @@ func (rt *Runtime) EditProject(
 		return project.Project{}, fmt.Errorf("edit project %q: %w", input.Slug, err)
 	}
 
-	// Settle the repository identity once, before any mutation, and carry that
-	// settled decision into the workflow's update. A failure to answer "is this
-	// the same repository" aborts the edit rather than folding into
-	// "different" (which would run a move against a repository that might be
-	// the destination itself) or "same" (which would silently drop a
-	// repointing the user asked for). Using one decision for both the
-	// active-move refusal and the mutation closes the compare-then-use window
-	// where an alias repointed in between could flip the outcome.
+	// Settle the repository identity once, before any mutation, backed by a
+	// handle-bound proof of the destination. A failure to answer "is this the
+	// same repository" aborts the edit rather than folding into "different"
+	// (which would run a move against a repository that might be the
+	// destination itself) or "same" (which would silently drop a repointing
+	// the user asked for). The proof is re-verified at mutation time, so an
+	// alias repointed after the decision fails closed instead of authorizing a
+	// mutation of a changed repository.
 	workflow := project.NewWorkflow(rt.projectStore, memory.ProjectRepoManager{})
-	sameRepo, err := workflow.SameMemoryRepoPath(input)
+	settled, err := workflow.SettleUpdate(input)
 	if err != nil {
 		return project.Project{}, fmt.Errorf("identify memory repo path: %w", err)
 	}
-	memoryRepoChanged := !sameRepo
+	memoryRepoChanged := !settled.SameRepo
 	if memoryRepoChanged {
 		switch memoryRepoMode {
 		case project.MemoryRepoModeMove, project.MemoryRepoModeFresh:
@@ -96,7 +96,7 @@ func (rt *Runtime) EditProject(
 		return project.Project{}, ErrActiveProjectRepoMove
 	}
 
-	updated, err := workflow.UpdateResolved(input, memoryRepoMode, sameRepo)
+	updated, err := workflow.ApplyUpdate(input, memoryRepoMode, settled)
 	if err != nil {
 		return project.Project{}, err
 	}

@@ -10,6 +10,20 @@ const (
 	MemoryRepoModeMove  = "move"
 )
 
+// RepoIdentity is a handle-bound proof that a project memory repository path
+// identified a particular physical repository when the proof was taken. The
+// runtime settles a project edit's repository identity through a pinned proof
+// and re-verifies the boundary with it immediately before mutating, so a
+// repointed alias between the decision and the mutation fails closed instead
+// of authorizing a mutation of a changed repository.
+type RepoIdentity interface {
+	// SameAs reports whether path still identifies the physical repository the
+	// proof was pinned to. It fails closed: an unresolvable path or a different
+	// physical repository reports false.
+	SameAs(path string) (bool, error)
+	Close() error
+}
+
 // MemoryRepoManager owns filesystem workflows for project memory repos. It is
 // intentionally small so project workflows can coordinate metadata and repo
 // state without importing internal/memory and creating a package cycle.
@@ -23,6 +37,10 @@ type MemoryRepoManager interface {
 	// destination", and guessing between them on an unresolved path is how a
 	// repository gets copied onto itself.
 	SameProjectRepoPath(a, b string) (bool, error)
+	// PinRepoIdentity opens path and returns a handle-bound proof of the
+	// physical repository it pinned. The caller retains the proof, re-verifies
+	// the boundary with it at mutation time, and closes it.
+	PinRepoIdentity(path string) (RepoIdentity, error)
 }
 
 // WorkflowStore is the project metadata surface required by Workflow.
@@ -73,55 +91,86 @@ func (w *Workflow) Create(input CreateInput) (Project, error) {
 	return created, nil
 }
 
-// Update persists project metadata and reconciles memory repo path changes with
-// rollback when repo initialization or migration fails. The repository identity
-// decision is computed here and passed to updateResolved.
-func (w *Workflow) Update(input UpdateInput, memoryRepoMode string) (Project, error) {
-	if w.Store == nil {
-		return Project{}, errors.New("project: store not configured")
-	}
-	if w.Repos == nil {
-		return Project{}, errors.New("project: memory repo manager not configured")
-	}
-	same, err := w.SameMemoryRepoPath(input)
-	if err != nil {
-		return Project{}, err
-	}
-	return w.updateResolved(input, memoryRepoMode, same)
+// SettledUpdate carries a settled repository-identity decision for a project
+// edit, backed by a handle-bound proof so the decision can be re-verified at
+// the moment of mutation.
+type SettledUpdate struct {
+	// SameRepo reports whether the edit's destination identifies the same
+	// physical repository as the stored project's current one.
+	SameRepo bool
+	// proof is the retained handle-bound proof of the destination, present
+	// only when SameRepo is true (the destination exists — it is the current
+	// repository). It is opaque to callers, who carry it back into ApplyUpdate.
+	proof RepoIdentity
 }
 
-// SameMemoryRepoPath settles whether input's destination memory repo is the
-// same physical repository as the stored project's current one. It is the
-// identity decision Update makes internally; a caller that must settle the
-// identity once — before any other mutation — computes it here and carries it
-// into UpdateResolved, so an alias repointed in between cannot flip the
-// decision from "same" to "different" and manufacture a move.
-func (w *Workflow) SameMemoryRepoPath(input UpdateInput) (bool, error) {
+// SettleUpdate resolves whether input's destination memory repo is the same
+// physical repository as the stored project's current one, and pins the
+// destination with a handle-bound proof so the decision can be re-verified at
+// mutation time. A failure to answer "is this the same repository" aborts the
+// edit rather than folding into "different" (which would run a move against a
+// repository that might be the destination itself) or "same" (which would
+// silently drop a repointing the user asked for).
+func (w *Workflow) SettleUpdate(input UpdateInput) (SettledUpdate, error) {
 	if w.Store == nil {
-		return false, errors.New("project: store not configured")
+		return SettledUpdate{}, errors.New("project: store not configured")
 	}
 	if w.Repos == nil {
-		return false, errors.New("project: memory repo manager not configured")
+		return SettledUpdate{}, errors.New("project: memory repo manager not configured")
 	}
 	current, err := w.Store.Get(input.Slug)
 	if err != nil {
-		return false, err
+		return SettledUpdate{}, err
 	}
-	return w.sameRepo(current, input)
+	same, err := w.sameRepo(current, input)
+	if err != nil {
+		return SettledUpdate{}, err
+	}
+	var proof RepoIdentity
+	if same && input.MemoryRepoPath != "" {
+		proof, err = w.Repos.PinRepoIdentity(input.MemoryRepoPath)
+		if err != nil {
+			return SettledUpdate{}, err
+		}
+	}
+	return SettledUpdate{SameRepo: same, proof: proof}, nil
 }
 
-// UpdateResolved applies an update using a repository-identity decision already
-// settled by the caller (see SameMemoryRepoPath). Using one settled decision
-// avoids a compare-then-use window in which an alias repointed between the
-// caller's check and this mutation changes the outcome.
-func (w *Workflow) UpdateResolved(input UpdateInput, memoryRepoMode string, sameRepo bool) (Project, error) {
+// ApplyUpdate applies an update using a settled decision from SettleUpdate. It
+// re-verifies the destination boundary with the retained handle-bound proof
+// immediately before mutating: an alias repointed after the decision fails
+// closed instead of authorizing a mutation of a changed repository. There is no
+// caller-supplied "same" boolean to bypass the check.
+func (w *Workflow) ApplyUpdate(input UpdateInput, memoryRepoMode string, settled SettledUpdate) (Project, error) {
 	if w.Store == nil {
 		return Project{}, errors.New("project: store not configured")
 	}
 	if w.Repos == nil {
 		return Project{}, errors.New("project: memory repo manager not configured")
 	}
-	return w.updateResolved(input, memoryRepoMode, sameRepo)
+	if settled.proof != nil {
+		defer func() { _ = settled.proof.Close() }()
+		still, err := settled.proof.SameAs(input.MemoryRepoPath)
+		if err != nil {
+			return Project{}, fmt.Errorf("re-verify memory repo boundary: %w", err)
+		}
+		if !still {
+			return Project{}, errors.New("memory repo boundary changed since the edit was checked")
+		}
+	}
+	return w.updateResolved(input, memoryRepoMode, settled.SameRepo)
+}
+
+// Update persists project metadata and reconciles memory repo path changes with
+// rollback when repo initialization or migration fails. It settles the
+// repository identity once (SettleUpdate) and applies it with the handle-bound
+// re-verification (ApplyUpdate).
+func (w *Workflow) Update(input UpdateInput, memoryRepoMode string) (Project, error) {
+	settled, err := w.SettleUpdate(input)
+	if err != nil {
+		return Project{}, err
+	}
+	return w.ApplyUpdate(input, memoryRepoMode, settled)
 }
 
 func (w *Workflow) sameRepo(current Project, input UpdateInput) (bool, error) {

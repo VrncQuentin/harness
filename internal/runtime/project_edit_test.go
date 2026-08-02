@@ -10,6 +10,7 @@ import (
 
 	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/ui"
 )
@@ -255,11 +256,12 @@ func TestProjectEdit_FailedReapplyRollsBack(t *testing.T) {
 }
 
 // TestProjectEdit_ActiveRepoIdentityCarriedThrough verifies that the
-// active-repository identity decision is settled once and carried through the
-// mutation: an alias repointed after the decision but before the workflow
-// update cannot flip "same" into a move. Without the carried decision, the
-// workflow would recompute the identity, observe "different", and execute an
-// active move — the 10.1 violation — leaving the runtime and store divergent.
+// active-repository identity decision is a retained handle-bound proof that
+// fails closed when the named object changes: an alias repointed after the
+// decision but before the workflow update cannot persist the now-different
+// alias under the installed generation. The edit refuses, the store keeps the
+// path that still identifies the installed reader, and the generation is
+// untouched.
 func TestProjectEdit_ActiveRepoIdentityCarriedThrough(t *testing.T) {
 	cfg := config.Defaults()
 	seedRequiredConfigFiles(t, &cfg)
@@ -267,13 +269,15 @@ func TestProjectEdit_ActiveRepoIdentityCarriedThrough(t *testing.T) {
 
 	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
 	oldPath := projects.projects[project.GlobalSlug].MemoryRepoPath
+	oldGen := rt.gen
+	oldApplied := rt.applied
 
 	base := t.TempDir()
 	alias := filepath.Join(base, "alias")
 	linkDir(t, oldPath, alias)
 
-	// The repoint target does not exist yet; a move would create it.
-	other := filepath.Join(base, "other-repo")
+	// A different, already-initialized repository to repoint the alias at.
+	other := initRuntimeProjectRepo(t)
 
 	rt.afterProjectIdentity = func() {
 		if err := os.RemoveAll(alias); err != nil {
@@ -282,24 +286,40 @@ func TestProjectEdit_ActiveRepoIdentityCarriedThrough(t *testing.T) {
 		linkDir(t, other, alias)
 	}
 
-	// The edit approves "same" at decision time (alias points at oldPath), and
-	// the carried decision means the mutation runs no move even though the
-	// alias now points at a different, not-yet-existing repository.
-	if _, err := rt.EditProject(context.Background(), ui.NewServer(0), NewEventChannel(), nil, project.UpdateInput{
+	// The edit settles "same" at decision time (alias points at oldPath), but
+	// the mutation re-verifies the boundary and must refuse once the alias
+	// names a different repository.
+	_, err := rt.EditProject(context.Background(), ui.NewServer(0), NewEventChannel(), nil, project.UpdateInput{
 		Slug:           project.GlobalSlug,
 		DisplayName:    "Global",
 		MemoryRepoPath: alias,
-	}, project.MemoryRepoModeMove); err != nil {
-		t.Fatalf("EditProject: %v", err)
+	}, project.MemoryRepoModeMove)
+	if err == nil {
+		t.Fatal("a repointed alias must be refused at mutation time")
 	}
 
-	// No move executed: the repointed destination was never created.
-	if _, err := os.Stat(other); !os.IsNotExist(err) {
-		t.Fatalf("repointed destination %q was created by a move; the settled decision was not carried through", other)
+	// The stored path still identifies the installed reader's repository.
+	stored := projects.projects[project.GlobalSlug].MemoryRepoPath
+	if stored != oldPath {
+		t.Fatalf("stored memory repo path = %q, want the original %q", stored, oldPath)
 	}
-	// The original repository is untouched.
-	if _, err := os.Stat(filepath.Join(oldPath, "rules.md")); err != nil {
-		t.Fatalf("original repository files gone after the edit: %v", err)
+	same, sErr := pathid.Same(stored, oldPath)
+	if sErr != nil {
+		t.Fatalf("resolve stored path: %v", sErr)
+	}
+	if !same {
+		t.Fatal("stored path no longer identifies the installed reader's repository")
+	}
+
+	// The installed generation and recorded applied state are untouched.
+	if rt.gen != oldGen {
+		t.Fatal("refused edit replaced the installed generation")
+	}
+	if rt.applied != oldApplied {
+		t.Fatal("refused edit replaced the recorded applied state")
+	}
+	if _, err := rt.activeMem.Read("rules.md"); err != nil {
+		t.Fatalf("installed generation reader failed after refused edit: %v", err)
 	}
 }
 
