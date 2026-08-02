@@ -113,6 +113,39 @@ Responsibilities:
 - Adapt package boundaries for the UI: chat/task runners, memory APIs, project health checks, approval routing, and session persistence.
 - Keep runtime state behind locks because UI handlers, process events, metrics, and retry callbacks run concurrently.
 
+#### Immutable UI dependency snapshots (PR 8)
+
+The UI never reads individual live getters. Each runtime generation owns one
+immutable `ui.ServiceDeps` snapshot — memory repo path/store, agent registry,
+session store, committer, dedup checker + threshold, retrieval scorer, index
+rebuilder, chat runner, and task runner — bound to that generation's concrete
+readers, git handle, and episode index. `Runtime.AcquireUISnapshot` captures
+the current generation's snapshot and pins the generation under `rt.mu`; the
+UI server holds the runtime as a `ui.SnapshotProvider`, and every handler
+calls `acquireSnapshot` once, uses only fields of that snapshot, and releases
+on every completion/error path.
+
+Lifetime protocol:
+- **Publication:** the candidate and its snapshot are built locally, bound to
+  the candidate generation, and installed by swapping the live generation
+  under the same lock acquisition uses. The old publisher lease is retired
+  next; old readers and handles close only after the last acquired snapshot on
+  the old generation is released. Acquisition and publication share the lock,
+  so a handler cannot select an old snapshot after its generation was retired
+  and its readers closed (no load-before-increment window).
+- **Handlers:** synchronous handlers release via `defer`. `/chat/send` and
+  `/task/send` acquire before reading the runner or session store and transfer
+  the release to the detached goroutine, which releases after the entire
+  run/stream ends; every pre-launch error path releases exactly once.
+  Long-lived SSE subscription handlers do not pin a generation merely for
+  remaining connected — the spawned chat/task operation owns the lease.
+- **Old references:** a held old snapshot keeps its generation's readers open
+  and usable for real rooted operations after a reload, until the release runs.
+
+This replaces the eliminated `memoryHandles`, `genGate`, and
+`memoryAPISnapshot` mechanisms (retained in `docs/pr403-findings.md`); the
+API request-generation lease (`AcquireRequestGeneration`) is unchanged.
+
 ### Agent Loop (`internal/agentloop`)
 Owns the first-party agentic turn loop. This package is separate from `internal/agent`, which remains the agent/persona registry.
 
