@@ -224,11 +224,15 @@ the transaction:
 
 - The active project's memory-repository boundary cannot be moved while the
   installed generation still targets it. The edit refuses before any metadata
-  or filesystem mutation, deciding the question by physical identity
-  (`SameProjectRepoPath`) and carrying that one settled decision through the
-  mutation (`Workflow.UpdateResolved`), so an alias repointed in between cannot
-  flip "same" into a move. Active-project display and model-override edits
-  proceed; their live apply runs through the same transaction boundary
+  or filesystem mutation. The repository identity is settled once as a
+  handle-bound proof (`Workflow.SettleUpdate` pins the destination via
+  `PinRepoIdentity` and `OpenIdentified`), and that proof is re-verified at the
+  moment of mutation (`Workflow.ApplyUpdate`): an alias repointed after the
+  decision fails closed instead of authorizing a mutation of a changed
+  repository, so an old "same" result can never persist a path that no longer
+  identifies the installed reader. There is no caller-supplied "same" boolean
+  to bypass the check. Active-project display and model-override edits proceed;
+  their live apply runs through the same transaction boundary
   (`applyConfigLocked`), so the reload decision compares the freshly-mutated
   store contents with the recorded applied state — never with an "old" value
   derived from the store the edit already changed. If that re-apply fails
@@ -260,10 +264,14 @@ wrapper for tests. The lifecycle is explicit:
 2. **cancel root/task contexts** — `rootCancel` stops process managers, the
    queue worker, and UI request contexts before any wait begins;
 3. **bounded drain** — task loops are cancelled and live sessions flushed with
-   explicit timeouts. The session flush runs detached and is bounded by the
-   drain context, because a save can block on the manager-wide save lock or a
-   hung summarizer; the summarizer's token loop is itself context-aware so a
-   stream that never sends or closes cannot hang it;
+   explicit timeouts. The runtime owns exactly one in-flight session flush: a
+   save can block on the manager-wide save lock or a hung summarizer, so the
+   flush runs detached from any single attempt, retries join the in-flight
+   flush instead of stacking another (blocked flushes cannot accumulate saveMu
+   waiters or duplicate durable saves), and a new flush starts only after a
+   previous one completed with a retryable failure. The summarizer's token loop
+   is itself context-aware so a stream that never sends or closes cannot hang
+   it;
 4. **stop API/queue/process components** — API servers stop under the timeout
    ownership protocol; the queue is waited on with a bounded, context-aware
    wait (`Queue.Wait`), never an unbounded `Queue.Stop`. Queue cancellation is

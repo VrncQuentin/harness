@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/VrncQuentin/harness/internal/memory"
+	"github.com/VrncQuentin/harness/internal/session"
 )
 
 // defaultDrainTimeout bounds each individual wait in a shutdown attempt when
@@ -86,23 +87,9 @@ func (rt *Runtime) Shutdown(rootCancel context.CancelFunc, drainTimeout time.Dur
 		}
 	}
 	rt.emitShutdownHook("tasks-cancelled")
-	if mgr := rt.SessionManager(); mgr != nil {
-		flushDone := make(chan error, 1)
-		go func() {
-			flushDone <- mgr.FlushAll(drainCtx)
-		}()
-		select {
-		case err := <-flushDone:
-			if err != nil {
-				slog.Warn("runtime shutdown: session flush", "err", err)
-				result.TimedOut = true
-				result.Completed = false
-			}
-		case <-drainCtx.Done():
-			slog.Warn("runtime shutdown: session flush wait expired; session ownership retained")
-			result.TimedOut = true
-			result.Completed = false
-		}
+	if rt.shutdownFlush(drainCtx) {
+		result.TimedOut = true
+		result.Completed = false
 	}
 	drainCancel()
 	rt.emitShutdownHook("sessions-flushed")
@@ -172,6 +159,67 @@ func (rt *Runtime) emitShutdownHook(step string) {
 	if rt.shutdownHook != nil {
 		rt.shutdownHook(step)
 	}
+}
+
+// shutdownFlush drives one shutdown attempt's session flush. At most one
+// detached FlushAll runs at a time, owned by the runtime: a retry joins the
+// in-flight flush instead of stacking another, so blocked flushes cannot
+// accumulate saveMu waiters or produce duplicate durable saves, and only a
+// flush that completed with a retryable failure is restarted. It reports
+// whether this attempt's flush is not cleanly finished — still running past
+// the drain context or completed with an error.
+func (rt *Runtime) shutdownFlush(ctx context.Context) bool {
+	mgr := rt.SessionManager()
+	if mgr == nil {
+		return false
+	}
+
+	rt.flushMu.Lock()
+	if rt.flushRunning {
+		done := rt.flushDone
+		rt.flushMu.Unlock()
+		// Join the in-flight flush: never start a second one alongside it.
+		select {
+		case err := <-done:
+			return err != nil
+		case <-ctx.Done():
+			return true
+		}
+	}
+	if rt.flushEver && rt.flushLastErr == nil {
+		rt.flushMu.Unlock()
+		// The previous flush succeeded, so every live session is already
+		// saved; re-flushing would duplicate durable records.
+		return false
+	}
+	done := make(chan error, 1)
+	rt.flushRunning = true
+	rt.flushDone = done
+	rt.flushMu.Unlock()
+	go rt.runDetachedFlush(mgr, done)
+	select {
+	case err := <-done:
+		return err != nil
+	case <-ctx.Done():
+		return true
+	}
+}
+
+// runDetachedFlush flushes every live session to completion and records the
+// outcome on the runtime's single-flush tracker. It runs detached from any one
+// shutdown attempt so a flush that outlives its attempt's drain context can be
+// joined by a later retry rather than restarted.
+func (rt *Runtime) runDetachedFlush(mgr *session.Manager, done chan<- error) {
+	err := mgr.FlushAll(context.Background())
+	done <- err
+	rt.flushMu.Lock()
+	if rt.flushRunning {
+		rt.flushRunning = false
+		rt.flushDone = nil
+		rt.flushLastErr = err
+		rt.flushEver = true
+	}
+	rt.flushMu.Unlock()
 }
 
 // stopAPIServers stops the live API server plus every pending-retired and

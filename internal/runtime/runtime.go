@@ -152,6 +152,16 @@ type Runtime struct {
 	// Tests use it to repoint an alias in that window and prove the settled
 	// decision carries through the mutation. Nil on every production path.
 	afterProjectIdentity func()
+
+	// flushMu serializes the shutdown session flush: at most one detached
+	// FlushAll runs at a time, and a later Shutdown joins the in-flight flush
+	// instead of stacking another, so blocked flushes cannot accumulate saveMu
+	// waiters or produce duplicate durable saves.
+	flushMu      sync.Mutex
+	flushRunning bool
+	flushDone    chan error
+	flushLastErr error
+	flushEver    bool
 }
 
 // New returns a runtime seeded with the loaded config and shared log rings.

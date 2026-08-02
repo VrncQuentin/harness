@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -432,6 +433,44 @@ func (c *errThenDoneClient) Complete(context.Context, inference.CompletionReques
 	return ch, nil
 }
 
+// blockThenDoneClient blocks the first Complete call until released, then
+// completes, so a single session save stays in flight across shutdown retries
+// and can be released to count exactly how many saves ran.
+type blockThenDoneClient struct {
+	mu          sync.Mutex
+	calls       int
+	block       chan struct{}
+	started     chan struct{}
+	startedOnce sync.Once
+	released    sync.Once
+}
+
+func (c *blockThenDoneClient) Complete(context.Context, inference.CompletionRequest) (<-chan inference.Token, error) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	c.mu.Unlock()
+	if call == 1 {
+		c.startedOnce.Do(func() { close(c.started) })
+		<-c.block
+	}
+	ch := make(chan inference.Token, 2)
+	ch <- inference.Token{Content: "summary"}
+	ch <- inference.Token{Done: true}
+	close(ch)
+	return ch, nil
+}
+
+func (c *blockThenDoneClient) release() {
+	c.released.Do(func() { close(c.block) })
+}
+
+func (c *blockThenDoneClient) callsCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
 // newGenerationedManagerForTest builds a session manager over a fresh project
 // repo reader wired to client, and publishes a generation that owns the reader,
 // so shutdown release semantics can be exercised directly.
@@ -552,6 +591,67 @@ func TestShutdown_RetryAfterFlushFailureUsesRetainedReader(t *testing.T) {
 	rt.mu.Unlock()
 	if releasedGen != nil {
 		t.Fatal("generation not released after a completed retry")
+	}
+}
+
+// TestShutdown_SingleFlushAcrossRetries verifies that the runtime owns exactly
+// one in-flight session flush across repeated shutdown attempts: while the
+// first flush remains blocked, each retry joins it instead of stacking another
+// (so no extra saves run), and releasing the block produces exactly one
+// successful durable save.
+func TestShutdown_SingleFlushAcrossRetries(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	client := &blockThenDoneClient{block: make(chan struct{}), started: make(chan struct{})}
+	rt, mgr, root := newGenerationedManagerForTest(t, &cfg, client)
+	t.Cleanup(func() { rt.Stop() })
+
+	s := mgr.Start("coder")
+	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// First attempt starts the single flush, whose save blocks on the client.
+	if result := rt.Shutdown(nil, 100*time.Millisecond); !result.TimedOut {
+		t.Fatal("first shutdown with a blocked flush must time out")
+	}
+	<-client.started
+
+	// Repeated retries while the flush is still blocked must join it, not
+	// start additional flushes: the save is invoked exactly once so far.
+	for i := 0; i < 3; i++ {
+		if result := rt.Shutdown(nil, 50*time.Millisecond); !result.TimedOut {
+			t.Fatalf("retry %d with a blocked flush must time out", i+1)
+		}
+	}
+	if got := client.callsCount(); got != 1 {
+		t.Fatalf("save invocations across retries = %d, want 1 (retries must join the single in-flight flush)", got)
+	}
+
+	// Release the block: the single flush completes with exactly one save.
+	client.release()
+	retry := rt.Shutdown(nil, 3*time.Second)
+	if !retry.Completed {
+		t.Fatalf("shutdown after the flush cleared = %+v, want completed", retry)
+	}
+	if got := client.callsCount(); got != 1 {
+		t.Fatalf("save invocations after clearing = %d, want exactly 1", got)
+	}
+
+	// Exactly one durable session log record exists.
+	logPath := filepath.Join(root, "sessions.jsonl")
+	b, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read session log: %v", err)
+	}
+	lines := strings.Count(strings.TrimSpace(string(b)), "\n") + 1
+	if strings.TrimSpace(string(b)) == "" {
+		lines = 0
+	}
+	if lines != 1 {
+		t.Fatalf("session log records = %d, want exactly 1 (a second flush would have duplicated the save)", lines)
 	}
 }
 
