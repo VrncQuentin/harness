@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -64,7 +65,7 @@ func newSessionManagerForTest(t *testing.T, rt *Runtime, root string, infClient 
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
-	}, infClient, nil, nil, reader, project.GlobalSlug)
+	}, infClient, nil, nil, reader, project.GlobalSlug, "coder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -478,7 +479,13 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, client)
 	defer func() { _ = gitRepo.Close() }()
 	rt.setSessionManager(mgr)
-	rt.taskRunner = &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: rt.reqQueue}
+	rt.taskRunner = &taskRunnerAdapter{
+		rt:         rt,
+		registry:   tools.NewRegistry(),
+		q:          rt.reqQueue,
+		sessionMgr: mgr,
+		active:     "coder",
+	}
 
 	sessionID, evch, err := rt.taskRunner.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
 	if err != nil {
@@ -587,7 +594,7 @@ func TestUIAgentRegistryAdapterListMatchesGet(t *testing.T) {
 		func() string { return active },
 		func(name string) error { active = name; return nil },
 	)
-	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: mem, activeMem: mem, getProjectSlug: func() string { return "global" }}
+	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: mem, activeMem: mem, slug: "global"}
 
 	list, err := ad.List()
 	if err != nil {
@@ -621,7 +628,7 @@ func TestUIAgentRegistryAdapterListTreatsMissingFilesAsEmpty(t *testing.T) {
 		func() string { return active },
 		func(name string) error { active = name; return nil },
 	)
-	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: mem, activeMem: mem, getProjectSlug: func() string { return "global" }}
+	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: mem, activeMem: mem, slug: "global"}
 
 	list, err := ad.List()
 	if err != nil {
@@ -651,7 +658,7 @@ func TestUIAgentRegistryAdapterUsesActiveProjectNotes(t *testing.T) {
 		"agents/coder/notes.md": "project notes",
 	})
 	reg := agent.NewDiskRegistry(global, func() string { return "coder" }, func(string) error { return nil })
-	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: global, activeMem: active, getProjectSlug: func() string { return "dt" }}
+	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: global, activeMem: active, slug: "dt"}
 
 	info, err := ad.Get("coder")
 	if err != nil {
@@ -689,7 +696,7 @@ func TestUIAgentRegistryAdapterWritesProjectScopedPersonaAndRules(t *testing.T) 
 	})
 	active := newMemoryRepo(t, map[string]string{})
 	reg := agent.NewDiskRegistry(global, func() string { return "coder" }, func(string) error { return nil })
-	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: global, activeMem: active, getProjectSlug: func() string { return "dt" }}
+	ad := &uiAgentRegistryAdapter{reg: reg, globalMem: global, activeMem: active, slug: "dt"}
 
 	if err := ad.WritePersona("coder", []byte("project persona")); err != nil {
 		t.Fatalf("WritePersona: %v", err)
@@ -747,11 +754,11 @@ func TestUIAgentRegistryAdapterDeletesOnlyProjectAgentInProjectScope(t *testing.
 	currentActive := "coder"
 	reg := agent.NewDiskRegistry(global, func() string { return currentActive }, func(name string) error { currentActive = name; return nil })
 	ad := &uiAgentRegistryAdapter{
-		reg:            reg,
-		globalMem:      global,
-		activeMem:      active,
-		getProjectSlug: func() string { return "dt" },
-		setActive:      func(name string) error { currentActive = name; return nil },
+		reg:       reg,
+		globalMem: global,
+		activeMem: active,
+		slug:      "dt",
+		setActive: func(name string) error { currentActive = name; return nil },
 	}
 
 	if err := ad.Delete("coder"); err != nil {
@@ -784,11 +791,11 @@ func TestUIAgentRegistryAdapterSetsProjectOnlyAgentActive(t *testing.T) {
 	currentActive := ""
 	reg := agent.NewDiskRegistry(global, func() string { return currentActive }, func(name string) error { currentActive = name; return nil })
 	ad := &uiAgentRegistryAdapter{
-		reg:            reg,
-		globalMem:      global,
-		activeMem:      active,
-		getProjectSlug: func() string { return "dt" },
-		setActive:      func(name string) error { currentActive = name; return nil },
+		reg:       reg,
+		globalMem: global,
+		activeMem: active,
+		slug:      "dt",
+		setActive: func(name string) error { currentActive = name; return nil },
 	}
 
 	if err := ad.SetActive("local"); err != nil {
@@ -849,7 +856,7 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	defer func() { _ = gitRepo.Close() }()
 	rt.setSessionManager(mgr)
 
-	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
+	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), sessionMgr: mgr, active: "coder"}
 	id, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
@@ -960,7 +967,7 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 		t.Fatalf("seed Append: %v", err)
 	}
 
-	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
+	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), sessionMgr: mgr, active: "coder"}
 	_, evch, err := ad.RunTask(context.Background(), "coder", s.ID, []ui.ChatMessage{{Role: "user", Content: "hello"}, {Role: "user", Content: "follow-up"}})
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
@@ -1013,7 +1020,7 @@ func TestTaskRunnerWiresHTTPClientIntoToolContext(t *testing.T) {
 	if err := registry.Register(probe); err != nil {
 		t.Fatalf("Register probe tool: %v", err)
 	}
-	ad := &taskRunnerAdapter{rt: rt, registry: registry, q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
+	ad := &taskRunnerAdapter{rt: rt, registry: registry, q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), active: "coder", loopCfg: cfg.Loop}
 
 	_, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "search"}})
 	if err != nil {
@@ -1078,7 +1085,7 @@ func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 	if err := tools.RegisterBuiltins(registry); err != nil {
 		t.Fatalf("RegisterBuiltins: %v", err)
 	}
-	ad := &taskRunnerAdapter{rt: rt, registry: registry, q: startRuntimeTestQueue(t, rt.ensureInferenceClient())}
+	ad := &taskRunnerAdapter{rt: rt, registry: registry, q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), active: "coder", loopCfg: cfg.Loop}
 
 	_, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "read the file"}})
 	if err != nil {
@@ -1158,9 +1165,13 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 
 	ad := &taskRunnerAdapter{
 		rt:       rt,
+		asm:      &staticAssembler{asm: rt.assembler, active: "coder"},
+		active:   "coder",
 		registry: tools.NewRegistry(),
-		asm:      &apiAssemblerAdapter{rt: rt},
 		q:        q,
+		slug:     "global",
+		loopCfg:  cfg.Loop,
+		mem:      mem,
 	}
 	_, evch, err := ad.RunTask(ctx, "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
 	if err != nil {
@@ -1217,7 +1228,7 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 		globalRoot: root,
 		activeRoot: root,
 		activeSlug: project.GlobalSlug,
-	}, rt.ensureInferenceClient(), nil, nil, dr, project.GlobalSlug)
+	}, rt.ensureInferenceClient(), nil, nil, dr, project.GlobalSlug, "coder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2146,6 +2157,266 @@ func TestSnapshot_OldReferencesRemainValidAfterReload(t *testing.T) {
 	// the old root must be removable even on Windows.
 	if err := os.RemoveAll(oldRoot); err != nil {
 		t.Fatalf("old root not removable after snapshot release: %v", err)
+	}
+}
+
+// TestSnapshot_RetryOnlyStartupWiresProvider verifies that a runtime which
+// never passes through Start — first run, invalid initial config, or failed
+// path validation — still installs the snapshot provider on the UI server
+// when a retry succeeds. Before the fix the provider was installed only by
+// Start, so a retry-only ApplyConfig published a real generation but every
+// generation-backed UI handler kept receiving an empty snapshot.
+func TestSnapshot_RetryOnlyStartupWiresProvider(t *testing.T) {
+	root := initRuntimeProjectRepo(t)
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	t.Cleanup(func() { rt.Stop() })
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+
+	// rt.Start is deliberately never called — this is the retry-only path.
+
+	port := freeTCPPort(t)
+	uiServer := ui.NewServer(port)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := uiServer.Start(ctx); err != nil {
+		t.Fatalf("ui server start: %v", err)
+	}
+
+	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
+	if !result.LiveApplied {
+		t.Fatal("retry-only startup did not report live apply")
+	}
+
+	// A generation was published and carries a chat runner.
+	deps, release := rt.AcquireUISnapshot()
+	if deps.ChatRunner == nil {
+		release()
+		t.Fatal("retry-only startup did not publish a chat runner")
+	}
+	release()
+
+	// A real handler request must observe that runner. Before the fix the UI
+	// server had no provider, so /chat rendered the unconfigured CTA even
+	// though a generation existed.
+	var body string
+	for i := 0; i < 20; i++ {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/chat", port))
+		if err != nil {
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		b, rerr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if rerr != nil {
+			t.Fatalf("read /chat body: %v", rerr)
+		}
+		body = string(b)
+		break
+	}
+	if body == "" {
+		t.Fatal("could not reach the ui server's /chat route")
+	}
+	if strings.Contains(body, "Chat backend not ready") {
+		t.Fatal("retry-only startup left the UI without a snapshot provider: /chat rendered the unconfigured CTA")
+	}
+}
+
+// requestCapture records every completion request body the fake model server
+// receives, so a test can assert which generation's prompt files were used to
+// assemble it.
+type requestCapture struct {
+	mu     sync.Mutex
+	bodies []string
+}
+
+func (c *requestCapture) add(body string) {
+	c.mu.Lock()
+	c.bodies = append(c.bodies, body)
+	c.mu.Unlock()
+}
+
+func (c *requestCapture) snapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.bodies...)
+}
+
+// startCapturingModelServer serves /v1/chat/completions like a real
+// llama-server, recording each request body so the test can prove which
+// generation assembled it.
+func startCapturingModelServer(t *testing.T, summary string) (int, func(), *requestCapture) {
+	t.Helper()
+	capture := &requestCapture{}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen fake model: %v", err)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		capture.add(string(body))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q},\"finish_reason\":null}]}\n", summary)
+		_, _ = fmt.Fprintln(w, "data: [DONE]")
+	})
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	port := ln.Addr().(*net.TCPAddr).Port
+	return port, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}, capture
+}
+
+// TestSnapshot_RunnerReadsAndRecordsInOriginalProject proves that the chat
+// and task runners captured in an old UI snapshot assemble their prompts from,
+// and record their sessions to, exclusively the project they were published
+// for — even after the runtime reloads to a different project. Before the fix
+// the snapshot's runners dereferenced Runtime: the chat/task assembler
+// reacquired the live generation (so an old snapshot would assemble with the
+// new project's rules) and the task runner re-read the live session manager
+// (so it would record into the new project).
+func TestSnapshot_RunnerReadsAndRecordsInOriginalProject(t *testing.T) {
+	modelPort, shutdownModel, capture := startCapturingModelServer(t, "test summary")
+	defer shutdownModel()
+
+	oldRoot := initRuntimeProjectRepo(t)
+	newRoot := initRuntimeProjectRepo(t)
+	for _, root := range []string{oldRoot, newRoot} {
+		if err := os.MkdirAll(filepath.Join(root, "agents", "coder"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(oldRoot, "rules.md"), []byte("old project rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newRoot, "rules.md"), []byte("new project rules"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldRoot, "agents", "coder", "persona.md"), []byte("old coder persona"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newRoot, "agents", "coder", "persona.md"), []byte("new coder persona"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.Agent.Active = "coder"
+	cfg.Model.Port = modelPort
+	cfg.Embedder.Port = freeTCPPort(t)
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: oldRoot},
+	}}
+	rt.reqQueue = queue.New(1, nil)
+
+	uiServer := ui.NewServer(0)
+	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
+	t.Cleanup(func() { rt.Stop() })
+
+	snap, release := rt.AcquireUISnapshot()
+	defer release()
+	if snap.ChatRunner == nil || snap.TaskRunner == nil {
+		t.Fatal("snapshot missing chat or task runner")
+	}
+
+	// Reload to newRoot while holding the old snapshot.
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: newRoot},
+	}}
+	store := &runtimeConfigStore{cfg: &loaded, saved: true}
+	rt.cfgStore = store
+	if !rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil).LiveApplied {
+		t.Fatal("reload failed")
+	}
+
+	// Chat run through the captured runner. Draining the token stream to Done
+	// guarantees the assembled request reached the model server.
+	chatCtx, chatCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	chatID, tokens, err := snap.ChatRunner.Run(chatCtx, "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello chat"}})
+	if err != nil {
+		chatCancel()
+		t.Fatalf("captured chat run: %v", err)
+	}
+	for tok := range tokens {
+		if tok.Err != nil {
+			chatCancel()
+			t.Fatalf("captured chat token error: %v", tok.Err)
+		}
+	}
+	chatCancel()
+	if chatID == "" {
+		t.Fatal("captured chat run minted no session")
+	}
+	if _, err := snap.SessionStore.Save(context.Background(), chatID); err != nil {
+		t.Fatalf("captured chat session save: %v", err)
+	}
+
+	// Task run through the captured runner.
+	taskCtx, taskCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	taskID, events, err := snap.TaskRunner.RunTask(taskCtx, "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello task"}})
+	if err != nil {
+		taskCancel()
+		t.Fatalf("captured task run: %v", err)
+	}
+	for ev := range events {
+		if ev.Type == agentloop.EvtError {
+			taskCancel()
+			t.Fatalf("captured task event error: %s", ev.Content)
+		}
+	}
+	taskCancel()
+	if taskID == "" {
+		t.Fatal("captured task run minted no session")
+	}
+	if _, err := snap.SessionStore.Save(context.Background(), taskID); err != nil {
+		t.Fatalf("captured task session save: %v", err)
+	}
+
+	// The captured runners must have assembled their prompts from the old
+	// project's files — no request may contain the new project's rules.
+	bodies := capture.snapshot()
+	if len(bodies) == 0 {
+		t.Fatal("model server received no completion requests")
+	}
+	sawOldRules := false
+	for _, body := range bodies {
+		if strings.Contains(body, "new project rules") {
+			t.Fatalf("captured runner assembled with the new project's rules")
+		}
+		if strings.Contains(body, "old project rules") {
+			sawOldRules = true
+		}
+	}
+	if !sawOldRules {
+		t.Fatal("captured runner never assembled with the old project's rules")
+	}
+
+	// Both sessions must be recorded exclusively in the original project.
+	chatEp := filepath.Join("episodes", "coder", chatID+".md")
+	chatJS := filepath.Join("episodes", "coder", chatID+".json")
+	taskEp := filepath.Join("episodes", "coder", taskID+".md")
+	taskJS := filepath.Join("episodes", "coder", taskID+".json")
+	for _, rel := range []string{chatEp, chatJS, taskEp, taskJS} {
+		if _, err := os.Stat(filepath.Join(oldRoot, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("captured session file missing from oldRoot %s: %v", rel, err)
+		}
+		if _, err := os.Stat(filepath.Join(newRoot, filepath.FromSlash(rel))); !os.IsNotExist(err) {
+			t.Fatalf("captured session file leaked into newRoot: %s", rel)
+		}
 	}
 }
 

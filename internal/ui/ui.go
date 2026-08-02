@@ -297,9 +297,14 @@ func (s *Server) updateDeps(mut func(*uiDeps)) {
 
 // SetSnapshotProvider installs the runtime's generation-bound snapshot
 // provider. The provider is set once during runtime startup and is safe to
-// call again on later reloads; a nil provider leaves handlers with an empty
-// snapshot (setup CTA / service-unavailable responses).
+// call again on later reloads. Passing a nil provider stores a nil atomic
+// pointer so acquisition returns the documented empty snapshot (setup CTA /
+// service-unavailable responses) rather than panicking on a nil interface.
 func (s *Server) SetSnapshotProvider(p SnapshotProvider) {
+	if p == nil {
+		s.snapProvider.Store(nil)
+		return
+	}
 	s.snapProvider.Store(&p)
 }
 

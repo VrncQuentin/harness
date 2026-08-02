@@ -241,6 +241,24 @@ func TestSnapshotProviderPublishesAndClearsDeps(t *testing.T) {
 		t.Fatal("service deps were not cleared together")
 	}
 }
+
+func TestSetSnapshotProviderNilYieldsEmptySnapshot(t *testing.T) {
+	s := NewServer(3000)
+	s.SetSnapshotProvider(&staticSnapshotProvider{snap: ServiceDeps{
+		MemoryStore: newStubMemoryStore(nil),
+		ChatRunner:  &stubChatRunner{},
+	}})
+
+	// A nil provider must clear the atomic pointer, not store a non-nil
+	// pointer to a nil interface that acquisition would call into.
+	s.SetSnapshotProvider(nil)
+
+	snap, release := s.acquireSnapshot()
+	defer release()
+	if snap.MemoryStore != nil || snap.ChatRunner != nil {
+		t.Fatalf("nil provider left deps visible: store=%T runner=%T", snap.MemoryStore, snap.ChatRunner)
+	}
+}
 func TestNewBasePageUsesCachedProjectNav(t *testing.T) {
 	s := NewServer(3000)
 	store := &countingProjectStore{projects: []project.Project{

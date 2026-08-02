@@ -21,6 +21,13 @@ func (rt *Runtime) ApplyConfig(
 	events chan proc.Event,
 	metricsStore metrics.Store,
 ) ui.ApplyResult {
+	// Install the snapshot provider before anything else so the UI never
+	// observes an empty snapshot after a retry-only startup. Start also wires
+	// it, but production skips Start on first run, invalid initial config, or
+	// failed path validation — a later successful ApplyConfig must still reach
+	// handlers with generation-backed deps.
+	uiServer.SetSnapshotProvider(rt)
+
 	uiServer.ClearStartupErrors()
 	uiServer.SetProjectDirectoryWarnings("", nil)
 	if rt.cfgStore == nil {

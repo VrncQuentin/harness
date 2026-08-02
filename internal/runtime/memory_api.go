@@ -257,7 +257,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 
 	infClient := rt.newInferenceClientFor(cfg)
-	gitRepo, sessionMgr, sessionAdapter, err := rt.buildSessionManagerWithClients(metricsStore, roots, infClient, embedClient, episodeIndex, activeMem, cfg.Project.ActiveProjectSlug)
+	gitRepo, sessionMgr, sessionAdapter, err := rt.buildSessionManagerWithClients(metricsStore, roots, infClient, embedClient, episodeIndex, activeMem, cfg.Project.ActiveProjectSlug, cfg.Agent.Active)
 	cand.addHandle(gitRepo)
 	if err != nil {
 		return fail(err)
@@ -274,6 +274,14 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	}
 
 	asmAdapter := &apiAssemblerAdapter{rt: rt}
+
+	// The UI snapshot's runners and registry adapters are bound to concrete
+	// candidate-generation resources and config, never to adapters that
+	// reacquire the live generation at execution time. The API server alone
+	// keeps the dynamic asmAdapter, because API requests legitimately use the
+	// current generation.
+	activeAgent := cfg.Agent.Active
+	snapshotAsm := &staticAssembler{asm: assembler, active: activeAgent}
 
 	loopCfg := cfg.Loop
 	userLayer := approvals.Layer{Name: "user-config"}
@@ -339,9 +347,14 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	}
 	taskAdapter := &taskRunnerAdapter{
 		rt:             rt,
+		asm:            snapshotAsm,
+		active:         activeAgent,
 		registry:       registry,
-		asm:            asmAdapter,
 		q:              rt.reqQueue,
+		sessionMgr:     sessionMgr,
+		slug:           cfg.Project.ActiveProjectSlug,
+		loopCfg:        loopCfg,
+		mem:            activeMem,
 		memScorer:      &memoryops.EpisodeScorer{Embedder: embedClient, Config: cfg.Prompt, Index: episodeIndex},
 		approvalLayers: approvalLayers,
 		metrics:        loopMetrics,
@@ -362,7 +375,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		Index:    episodeIndex,
 	}}
 	svcDeps.MemoryStore = activeMem
-	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: agentReg, globalMem: globalMem, activeMem: activeMem, getProjectSlug: rt.getActiveProjectSlug, setActive: rt.setActiveAgent}
+	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: agentReg, globalMem: globalMem, activeMem: activeMem, slug: cfg.Project.ActiveProjectSlug, setActive: rt.setActiveAgent}
 	if sessionAdapter != nil {
 		svcDeps.SessionStore = sessionAdapter
 	}
@@ -385,9 +398,10 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	}
 	if rt.reqQueue != nil {
 		svcDeps.ChatRunner = &chatRunnerAdapter{
-			asm: asmAdapter,
-			q:   rt.reqQueue,
-			mgr: sessionMgr,
+			asm:    snapshotAsm,
+			q:      rt.reqQueue,
+			mgr:    sessionMgr,
+			active: activeAgent,
 		}
 	}
 	svcDeps.TaskRunner = taskAdapter
@@ -439,7 +453,7 @@ func (rt *Runtime) resolveProjectRepoRootsForSlug(slug string) (projectRepoRoots
 	}, nil
 }
 
-func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex, sessionReader *memory.DirReader, projectSlug string) (*gitw.Repo, *session.Manager, *uiSessionStoreAdapter, error) {
+func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, roots projectRepoRoots, infClient inference.Client, embedClient embedder.Client, episodeIndex *memoryops.EpisodeIndex, sessionReader *memory.DirReader, projectSlug, activeAgent string) (*gitw.Repo, *session.Manager, *uiSessionStoreAdapter, error) {
 	repoPath := roots.activeRoot
 	if rt.beforeGitOpen != nil {
 		rt.beforeGitOpen()
@@ -472,7 +486,7 @@ func (rt *Runtime) buildSessionManagerWithClients(metricsStore metrics.Store, ro
 	if err != nil {
 		return repo, nil, nil, fmt.Errorf("session manager: %w", err)
 	}
-	adapter := &uiSessionStoreAdapter{mgr: mgr, getActive: rt.getActiveAgent}
+	adapter := &uiSessionStoreAdapter{mgr: mgr, active: activeAgent}
 	return repo, mgr, adapter, nil
 }
 
@@ -548,16 +562,6 @@ func (rt *Runtime) getActiveAgent() string {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	return rt.cfg.Agent.Active
-}
-
-func (rt *Runtime) getActiveProjectSlug() string {
-	rt.mu.Lock()
-	defer rt.mu.Unlock()
-	slug := rt.cfg.Project.ActiveProjectSlug
-	if slug == "" {
-		slug = "global"
-	}
-	return slug
 }
 
 func (rt *Runtime) setActiveAgent(name string) error {
