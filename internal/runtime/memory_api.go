@@ -153,10 +153,21 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 
 	rt.installGeneration(tx.candidate)
 	rt.transferAPIServer(tx.candidate, apiPortChanged)
+	rt.activateAPIServer(tx.candidate.apiServer)
 
 	applied := newAppliedState(candidateCfg, runningModel, runningModel)
 	rt.applied = &applied
 	return true
+}
+
+// activateAPIServer starts serving a candidate's bound API listener. It is
+// called only when the candidate commits, so no request can reach a prepared
+// server before the generation it was prepared for is installed.
+func (rt *Runtime) activateAPIServer(srv *api.Server) {
+	if srv == nil {
+		return
+	}
+	srv.Serve()
 }
 
 // apiPortChangeFromLive reports whether the API listener must be rebuilt when
@@ -172,10 +183,11 @@ func (rt *Runtime) apiPortChangeFromLive(candidateCfg *config.Config) bool {
 	return wasRunning && rt.cfg.API.Port != candidateCfg.API.Port
 }
 
-// prepareApply builds a candidate for cfg and starts its API server when the
+// prepareApply builds a candidate for cfg and binds its API listener when the
 // port/enabled state changed. The transaction is locally owned and unpublished:
-// nothing in the runtime is mutated and no process is touched until
-// commitApply installs it. A failed preparation is discarded wholesale via
+// nothing in the runtime is mutated, no process is touched, and the bound
+// listener accepts no requests until commitApply installs the candidate and
+// activates it (Serve). A failed preparation is discarded wholesale via
 // tx.close; the installed generation and recorded applied state are untouched.
 func (rt *Runtime) prepareApply(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, runningModel config.ModelConfig, buildAPI bool) *applyTx {
 	candidate := rt.buildCandidate(uiServer, metricsStore, cfg, buildAPI, runningModel)
@@ -184,7 +196,7 @@ func (rt *Runtime) prepareApply(ctx context.Context, uiServer *ui.Server, metric
 	}
 	tx := &applyTx{candidate: candidate}
 	if candidate.apiServer != nil {
-		if err := candidate.apiServer.Start(ctx); err != nil {
+		if err := candidate.apiServer.Bind(ctx); err != nil {
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
 			tx.close()
 			return nil
@@ -306,6 +318,7 @@ func (rt *Runtime) commitApply(tx *applyTx, newApplied *appliedState, oldApplied
 	if tx != nil {
 		rt.installGeneration(tx.candidate)
 		rt.transferAPIServer(tx.candidate, apiPortChanged)
+		rt.activateAPIServer(tx.candidate.apiServer)
 		result.LiveApplied = true
 	}
 
@@ -719,6 +732,14 @@ func (rt *Runtime) getActiveAgent() string {
 }
 
 func (rt *Runtime) setActiveAgent(name string) error {
+	// The active-agent write is an out-of-band mutation to the config store and
+	// live state, so it participates in the same apply transaction as
+	// ApplyConfig: an apply that has already loaded an agent and is preparing
+	// must not be overwritten by this save, and vice versa. The lock order is
+	// applyMu then rt.mu, matching ApplyConfig.
+	rt.applyMu.Lock()
+	defer rt.applyMu.Unlock()
+
 	rt.mu.Lock()
 	store := rt.cfgStore
 	rt.mu.Unlock()

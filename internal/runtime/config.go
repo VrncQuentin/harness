@@ -117,6 +117,11 @@ func (rt *Runtime) ApplyConfig(
 			oldApplied.embedder.Port != newEmbedder.Port
 	}
 	apiPortChanged := apiPortNeedsChange(oldApplied, loaded)
+	// The listener build decision is live-aware: rebuild can be forced by
+	// memoryAPIUnavailable finding rt.apiServer == nil while the applied config
+	// wants the API running, so the candidate must rebuild the listener even
+	// when the recorded config is unchanged.
+	buildAPI := apiServerNeedsBuild(oldApplied, loaded, rt.apiServer != nil)
 
 	if !started {
 		slog.Info("starting services", "model_port", newModel.Port, "embed_port", newEmbedder.Port)
@@ -145,7 +150,7 @@ func (rt *Runtime) ApplyConfig(
 	// installed generation and recorded applied state stay as they were.
 	var tx *applyTx
 	if rebuild {
-		tx = rt.prepareApply(ctx, uiServer, metricsStore, loaded, runningModel, apiPortChanged)
+		tx = rt.prepareApply(ctx, uiServer, metricsStore, loaded, runningModel, buildAPI)
 		if tx == nil {
 			if rt.leaveApply != nil {
 				rt.leaveApply()
@@ -207,6 +212,18 @@ func apiPortNeedsChange(old *appliedState, loaded *config.Config) bool {
 	return wasRunning && old.cfg.API.Port != loaded.API.Port
 }
 
+// apiServerNeedsBuild reports whether the apply must build a fresh API
+// listener. It covers both a config-driven enabled/port change and an
+// enabled-but-missing listener: rebuild can be forced by memoryAPIUnavailable
+// finding rt.apiServer == nil while the applied config wants the API running,
+// so the build decision cannot rely on config diffs alone.
+func apiServerNeedsBuild(old *appliedState, loaded *config.Config, apiRunning bool) bool {
+	if !loaded.API.Enabled {
+		return false
+	}
+	return apiPortNeedsChange(old, loaded) || !apiRunning
+}
+
 // finishResult appends restart-required reasons and live-applies the log-ring
 // resizes, mirroring the apply tail. Caller must hold rt.mu.
 func (rt *Runtime) finishResult(result *ui.ApplyResult, oldCfg config.Config, newCfg *config.Config) {
@@ -215,6 +232,12 @@ func (rt *Runtime) finishResult(result *ui.ApplyResult, oldCfg config.Config, ne
 	}
 	if oldCfg.Queue.MaxDepth != newCfg.Queue.MaxDepth {
 		result.RestartNeeded = append(result.RestartNeeded, "queue max depth")
+	}
+	// Metrics retention is read dynamically from rt.cfg by the running metrics
+	// loop, so committing a new retention is a live change even though no
+	// service is rebuilt.
+	if oldCfg.Metrics.RetentionDays != newCfg.Metrics.RetentionDays {
+		result.LiveApplied = true
 	}
 	if oldCfg.Log.RingMaxEntries != newCfg.Log.RingMaxEntries && rt.logRings.Log != nil {
 		rt.logRings.Log.Resize(newCfg.Log.RingMaxEntries)

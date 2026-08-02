@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/VrncQuentin/harness/internal/api"
 	"github.com/VrncQuentin/harness/internal/config"
@@ -39,15 +42,21 @@ func appliedRuntimeForTest(t *testing.T, cfg *config.Config, projects *runtimePr
 		t.Fatal("initial memory services failed")
 	}
 	rt.started = true
+	// The fake managers are configured from the recorded running model, not
+	// the global cfg.Model: when the store supplies a project override the
+	// helper must pretend the process already runs that override, or tests
+	// that assert a reconfiguration would be proving a transition that never
+	// happened.
+	runningModel := rt.applied.runningModel
 	rt.llamaMgr = proc.NewManager(proc.ManagerConfig{
 		Name:      "llama-server",
-		BuildArgs: func() (string, []string) { return llamaArgsForModel(cfg.Model) },
-		HealthURL: llamaHealthURL(cfg.Model),
+		BuildArgs: func() (string, []string) { return llamaArgsForModel(runningModel) },
+		HealthURL: llamaHealthURL(runningModel),
 	})
 	rt.embedMgr = proc.NewManager(proc.ManagerConfig{
 		Name:      "embedder",
-		BuildArgs: func() (string, []string) { return embedderArgsForConfig(cfg.Embedder) },
-		HealthURL: embedderHealthURL(cfg.Embedder),
+		BuildArgs: func() (string, []string) { return embedderArgsForConfig(rt.applied.runningEmbedder) },
+		HealthURL: embedderHealthURL(rt.applied.runningEmbedder),
 	})
 	t.Cleanup(func() { rt.Stop() })
 	return rt, projects
@@ -416,6 +425,212 @@ func TestAppliedState_LiveAppliedReflectsFinalState(t *testing.T) {
 	if !strings.Contains(strings.Join(args, " "), modelB) {
 		t.Fatalf("failed apply changed the live process: %v (LiveApplied=false must describe an unchanged live state)", args)
 	}
+
+	// A metrics-only change is live: the retention callback reads rt.cfg
+	// dynamically, so committing a new retention changes live behavior even
+	// though no service is rebuilt.
+	metricsOnly := cfg
+	metricsOnly.Metrics.RetentionDays = cfg.Metrics.RetentionDays + 1
+	rt.cfgStore = &runtimeConfigStore{cfg: &metricsOnly, saved: true}
+	if result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil); !result.LiveApplied {
+		t.Fatal("metrics-only change should report a live apply")
+	}
+	if rt.applied == nil || rt.applied.cfg.Metrics.RetentionDays != metricsOnly.Metrics.RetentionDays {
+		t.Fatalf("metrics-only change not recorded: %+v", rt.applied)
+	}
+}
+
+// TestAppliedState_ActiveAgentWriteSerializedWithApply verifies that the
+// /agents/active out-of-band mutation participates in the apply transaction:
+// an apply that has loaded one agent and is preparing cannot be overwritten by
+// a concurrent active-agent save, and vice versa. After both operations the
+// live config, the recorded applied config, and the store must agree.
+func TestAppliedState_ActiveAgentWriteSerializedWithApply(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.Agent.Active = "coder"
+
+	rt, _ := appliedRuntimeForTest(t, &cfg, nil)
+
+	prepared := make(chan struct{})
+	resume := make(chan struct{})
+	rt.afterPrepare = func() {
+		close(prepared)
+		<-resume
+	}
+
+	// The apply loads agent "coder" and pauses in preparation while holding
+	// the apply transaction lock.
+	loaded := cfg
+	loaded.Prompt.MemoryTokenBudget++
+	store := &runtimeConfigStore{cfg: &loaded, saved: true}
+	rt.cfgStore = store
+
+	applyDone := make(chan bool, 1)
+	go func() {
+		res := rt.ApplyConfig(context.Background(), ui.NewServer(0), NewEventChannel(), nil)
+		applyDone <- res.LiveApplied
+	}()
+
+	<-prepared
+	// The active-agent write cannot complete while the apply holds the lock; a
+	// completion probe here would be timing-based, so the discriminator is the
+	// final-state assertion: the write runs after the apply commits and the
+	// store, live config, and recorded applied config all agree on B.
+	agentDone := make(chan error, 1)
+	go func() {
+		agentDone <- rt.setActiveAgent("coderB")
+	}()
+
+	close(resume)
+	if !<-applyDone {
+		t.Fatal("apply failed")
+	}
+	if err := <-agentDone; err != nil {
+		t.Fatalf("setActiveAgent: %v", err)
+	}
+
+	storedCfg, _, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt.mu.Lock()
+	liveAgent := rt.cfg.Agent.Active
+	appliedAgent := rt.applied.cfg.Agent.Active
+	rt.mu.Unlock()
+	if liveAgent != "coderB" || appliedAgent != "coderB" || storedCfg.Agent.Active != "coderB" {
+		t.Fatalf("active agent diverged: live=%q applied=%q store=%q (the write must serialize with the apply)", liveAgent, appliedAgent, storedCfg.Agent.Active)
+	}
+}
+
+// TestAppliedState_MissingAPIServerRebuilt verifies that an apply rebuilds a
+// missing API listener even when the recorded applied config is unchanged:
+// rebuild can be forced by memoryAPIUnavailable (rt.apiServer == nil while the
+// applied config wants the API running), so the build decision must consider
+// actual listener ownership, not config diffs alone.
+func TestAppliedState_MissingAPIServerRebuilt(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.API.Enabled = true
+	cfg.API.Port = freeTCPPort(t)
+
+	root := initRuntimeProjectRepo(t)
+	store := &runtimeConfigStore{cfg: &cfg, saved: true}
+	projects := &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt := New(cfg, store, LogRings{})
+	rt.projectStore = projects
+	rt.reqQueue = queue.New(4, nil)
+	uiServer := ui.NewServer(0)
+	if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &cfg) {
+		t.Fatal("initial memory services failed")
+	}
+	rt.started = true
+	t.Cleanup(func() { rt.Stop() })
+	oldSrv := rt.apiServer
+	if oldSrv == nil {
+		t.Fatal("initial API server missing")
+	}
+
+	// The applied state says the API is enabled, but the listener is gone: the
+	// previous server terminated and its pointer was released, freeing the
+	// port.
+	if !rt.stopAPIServer(oldSrv) {
+		t.Fatal("failed to stop the initial API server")
+	}
+	rt.apiServer = nil
+
+	// Apply an unchanged config: the listener must be rebuilt and the apply
+	// must report it as a live change.
+	if !rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil).LiveApplied {
+		t.Fatal("missing API listener should be rebuilt and reported as a live apply")
+	}
+	if rt.apiServer == nil {
+		t.Fatal("API server was not rebuilt when the applied state wanted it running")
+	}
+	if rt.apiServer == oldSrv {
+		t.Fatal("rebuilt API server is the stale pointer")
+	}
+}
+
+// TestAppliedState_PreparedAPIServerNotServedBeforeCommit verifies that a
+// prepared API server reserves its port without accepting requests: during
+// preparation (before commit) a request to the new port must not be answered,
+// the old server keeps serving, and only after commit does the new port serve.
+func TestAppliedState_PreparedAPIServerNotServedBeforeCommit(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+	cfg.API.Enabled = true
+	cfg.API.Port = freeTCPPort(t)
+
+	root := initRuntimeProjectRepo(t)
+	store := &runtimeConfigStore{cfg: &cfg, saved: true}
+	projects := &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+	rt := New(cfg, store, LogRings{})
+	rt.projectStore = projects
+	rt.reqQueue = queue.New(4, nil)
+	uiServer := ui.NewServer(0)
+	if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &cfg) {
+		t.Fatal("initial memory services failed")
+	}
+	rt.started = true
+	t.Cleanup(func() { rt.Stop() })
+
+	prepared := make(chan struct{})
+	resume := make(chan struct{})
+	rt.afterPrepare = func() {
+		close(prepared)
+		<-resume
+	}
+
+	newPort := freeTCPPort(t)
+	for newPort == cfg.API.Port {
+		newPort = freeTCPPort(t)
+	}
+	loaded := cfg
+	loaded.API.Port = newPort
+	rt.cfgStore = &runtimeConfigStore{cfg: &loaded, saved: true}
+
+	done := make(chan ui.ApplyResult, 1)
+	go func() { done <- rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil) }()
+
+	<-prepared
+	// During preparation the new port must not be serving: the candidate is
+	// bound but not activated, so a request must not be answered.
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	if _, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", newPort)); err == nil {
+		t.Fatal("prepared-but-uncommitted API server answered a request")
+	}
+	// The old server keeps serving on the old port during preparation.
+	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", cfg.API.Port))
+	if err != nil {
+		t.Fatalf("old API server not serving during preparation: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	close(resume)
+	if res := <-done; !res.LiveApplied {
+		t.Fatal("apply did not report live apply")
+	}
+	// After commit the new port serves.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", newPort))
+		if err == nil {
+			_ = resp.Body.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("new API server did not serve after commit: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // TestAppliedState_TimeoutShutdownRetainsOwnership verifies that when an API
@@ -518,6 +733,16 @@ func TestAppliedState_ProjectOverrideDeletion(t *testing.T) {
 	oldMgr := rt.SessionManager()
 	if rt.applied == nil || rt.applied.runningModel.ModelPath != modelB {
 		t.Fatalf("initial applied running model = %+v, want the override model B", rt.applied)
+	}
+	// The manager must start on the recorded running model (B), so the
+	// assertions after deletion prove a real B->A reconfiguration rather than
+	// a transition that never happened.
+	bin0, args0, _ := rt.llamaMgr.Args()
+	if !strings.Contains(strings.Join(args0, " "), modelB) {
+		t.Fatalf("initial llama manager not on override model B: %v", args0)
+	}
+	if bin0 != binaryB {
+		t.Fatalf("initial llama binary = %q, want %q", bin0, binaryB)
 	}
 
 	// Delete the override: the store now resolves to the global model.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -774,6 +775,49 @@ func TestServer_StopIdempotent(t *testing.T) {
 	}
 	if !s.Stop() {
 		t.Error("second Stop must report termination (idempotent)")
+	}
+}
+
+// TestBindDoesNotServeUntilServe verifies that a bound listener does not answer
+// requests until Serve activates it. An apply transaction reserves the port
+// during preparation with Bind and only calls Serve on commit, so a request on
+// the candidate's port can never be served against a generation that is not
+// the one it was prepared for.
+func TestBindDoesNotServeUntilServe(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	s := NewServer(port, &stubAssembler{}, newStubEnqueuer(nil), nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.Bind(ctx); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+
+	// Before Serve the listener is bound but not serving: a request must not
+	// be answered (bounded by the client timeout; the negative outcome is the
+	// assertion).
+	client := &http.Client{Timeout: 300 * time.Millisecond}
+	if _, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", port)); err == nil {
+		t.Fatal("bound-but-unserved server answered a request")
+	}
+
+	s.Serve()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", port))
+		if err == nil {
+			_ = resp.Body.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("served server did not answer: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

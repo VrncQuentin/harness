@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/VrncQuentin/harness/internal/inference"
@@ -64,7 +65,10 @@ type Server struct {
 	startTime time.Time
 	logger    *slog.Logger
 
-	httpSrv *http.Server
+	httpSrv   *http.Server
+	ln        net.Listener
+	serveOnce sync.Once
+	ctx       context.Context
 }
 
 // WithGenLease sets a function that acquires a generation-bound assembler,
@@ -95,6 +99,23 @@ func NewServer(port int, asm Assembler, q Enqueuer, rec SessionRecorder) *Server
 // on bind failure so main.go can surface the error to the UI instead of
 // silently never listening. Shutdown is triggered by cancelling ctx.
 func (s *Server) Start(ctx context.Context) error {
+	if err := s.Bind(ctx); err != nil {
+		return err
+	}
+	s.Serve()
+	return nil
+}
+
+// Bind creates the HTTP server and binds its listener without accepting any
+// requests. It lets an apply transaction reserve the candidate's port during
+// preparation while the candidate is still unpublished; activation happens
+// only when the apply commits and calls Serve. Idempotent: a second Bind on an
+// already-bound server is a no-op. ctx is honoured when Serve later activates
+// the listener: cancelling it triggers Stop.
+func (s *Server) Bind(ctx context.Context) error {
+	if s.httpSrv != nil {
+		return nil
+	}
 	srv := &http.Server{
 		// Loopback only, matching the UI server. The OpenAI-compatible API
 		// is unauthenticated; exposing it beyond the host would hand any
@@ -109,19 +130,34 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 
 	s.httpSrv = srv
-
-	go func() {
-		if err := srv.Serve(ln); unexpectedServeError(err) {
-			s.logger.Error("api serve failed", slog.Any("err", err))
-		}
-	}()
-
-	go func() {
-		<-ctx.Done()
-		s.Stop()
-	}()
-
+	s.ln = ln
+	s.ctx = ctx
 	return nil
+}
+
+// Serve begins serving on the bound listener. It must be called after Bind and
+// only once the owning apply commits; until then the prepared server accepts no
+// requests, so a request on the candidate's port can never run against a
+// generation that is not the one it was prepared for.
+func (s *Server) Serve() {
+	s.serveOnce.Do(func() {
+		srv := s.httpSrv
+		ln := s.ln
+		if srv == nil || ln == nil {
+			return
+		}
+		go func() {
+			if err := srv.Serve(ln); unexpectedServeError(err) {
+				s.logger.Error("api serve failed", slog.Any("err", err))
+			}
+		}()
+		if s.ctx != nil {
+			go func() {
+				<-s.ctx.Done()
+				s.Stop()
+			}()
+		}
+	})
 }
 
 func unexpectedServeError(err error) bool {

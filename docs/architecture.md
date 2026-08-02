@@ -177,16 +177,20 @@ preparation, process changes, generation publication, or retirement. The
 transaction phases are explicit:
 
 - **prepare** — the candidate and its API server are built locally and left
-  unpublished; a failed candidate is discarded wholesale (`applyTx.close`),
-  leaving the installed generation and recorded applied state untouched.
+  unpublished; the API listener is bound (reserving its port) but does not
+  accept requests until commit, so a request on the candidate's port can never
+  run against a generation that is not the one it was prepared for. A failed
+  candidate is discarded wholesale (`applyTx.close`), leaving the installed
+  generation and recorded applied state untouched.
 - **quiesce** — task loops are cancelled and sessions flushed when a rebuild
   will drop the old generation; these waits run without `rt.mu` so session
   summarization can read live config without deadlocking.
 - **commit** — the generation and one coherent applied state are installed
-  atomically under `rt.mu`, and process reconfigurations are issued from that
-  state (never re-derived from the stores). Commit is structured to be
-  infallible so the recorded applied state always describes the live
-  processes, and `ui.ApplyResult.LiveApplied` reports exactly what happened.
+  atomically under `rt.mu`, process reconfigurations are issued from that
+  state (never re-derived from the stores), and the bound API listener is
+  activated. Commit is structured to be infallible so the recorded applied
+  state always describes the live processes, and `ui.ApplyResult.LiveApplied`
+  reports exactly what happened.
 - **retire** — the old generation's publisher lease is released under the
   same lock acquisition uses, and the previous API server is retired under
   the timeout ownership protocol: a server whose shutdown does not confirm
@@ -200,8 +204,16 @@ config apply or project switch under keep, the prompt context ceiling and the
 inference client track the running model's port/ctx (the harness keeps
 talking to wherever llama-server actually runs), and the status UI renders
 the running-versus-preferred mismatch honestly from the two recorded values.
-Shutdown lifecycle guarantees beyond this ownership retention are assigned to
-PR 10.
+
+The API listener build decision is live-aware: `rebuild` can be forced by
+`memoryAPIUnavailable()` finding `rt.apiServer == nil` while the applied
+config wants the API running, so an apply rebuilds a missing listener even
+when the recorded config is unchanged. The `/agents/active` write
+(`setActiveAgent`) takes the same apply lock as `ApplyConfig`, so an apply
+that has loaded one agent and is preparing cannot be overwritten by a
+concurrent active-agent save, or vice versa; the live config, the recorded
+applied config, and the store always agree. Shutdown lifecycle guarantees
+beyond this ownership retention are assigned to PR 10.
 
 ### Agent Loop (`internal/agentloop`)
 Owns the first-party agentic turn loop. This package is separate from `internal/agent`, which remains the agent/persona registry.
