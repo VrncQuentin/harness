@@ -9,37 +9,37 @@
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 270,
+      "line": 296,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: WriteStreamAtomic temp identity check"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 339,
+      "line": 365,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: RemoveVerified identity check"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 470,
+      "line": 496,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: directory identity comparison"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 557,
+      "line": 583,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: OpenChildNoFollow identity check"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 704,
+      "line": 741,
       "fn": "os.Stat",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
     {
       "file": "internal/rootfs/rootfs.go",
-      "line": 708,
+      "line": 745,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: identity verification via matches()"
     },

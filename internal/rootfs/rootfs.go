@@ -160,8 +160,34 @@ func (r *Root) Stat(rel string) (fs.FileInfo, error) { return r.root.Stat(rel) }
 // one that way) need the value.
 func (r *Root) Readlink(rel string) (string, error) { return r.root.Readlink(rel) }
 
-// Open opens rel for reading. The caller closes it.
-func (r *Root) Open(rel string) (*os.File, error) { return r.root.Open(rel) }
+// ReadCloser is a read-only handle over a file opened through a pinned root.
+//
+// It deliberately hides the underlying *os.File. A file handle's Name()
+// reveals the pathname it was opened through, which is exactly what the root
+// exists to keep out of a caller's hands: a caller holding that name could
+// reopen the file by pathname, and the reopened handle would not be bounded by
+// the root. ReadCloser exposes Read and Close and nothing else, so the only way
+// to read this file is through the handle that was pinned.
+type ReadCloser struct {
+	f *os.File
+}
+
+// Read reads from the pinned file.
+func (rc *ReadCloser) Read(p []byte) (int, error) { return rc.f.Read(p) }
+
+// Close releases the pinned file handle.
+func (rc *ReadCloser) Close() error { return rc.f.Close() }
+
+// OpenRead opens rel for reading and returns it as an opaque ReadCloser. The
+// caller closes it. Unlike an *os.File, the returned handle exposes no
+// pathname, so a read can never become a pathname reopen.
+func (r *Root) OpenRead(rel string) (*ReadCloser, error) {
+	f, err := r.root.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	return &ReadCloser{f: f}, nil
+}
 
 // WriteHooks are the seams threaded into WriteStreamAtomicWithHooks.  The
 // fields run at the lifecycle points they name:
@@ -568,11 +594,19 @@ type Set []string
 
 // Open resolves path against the set and pins the root that owns it.
 //
-// The owning root is chosen by physical identity, so a path reaching a root
-// through a link, a junction, an 8.3 alias, or a different case on Windows is
-// recognised as being inside it, and a path that leaves a root through one of
-// those is not. Resolution failure on either side rejects the call: an
-// unlocatable path is not a path known to be safe.
+// The owning root is chosen by physical identity, and the containment decision
+// is made alongside each pinned candidate rather than against a resolution
+// taken before any root was pinned. Resolving the target once up front, before
+// the loop, leaves the decision and the retained handle describing different
+// instants: a root pinned later is judged against a target resolution taken
+// earlier, so what was decided and what is held open can disagree. Resolving
+// the target right after each pin means the containment verdict and the open
+// handle describe the same boundary.
+//
+// A path reaching a root through a link, a junction, an 8.3 alias, or a
+// different case on Windows is recognised as being inside it, and a path that
+// leaves a root through one of those is not. Resolution failure on either side
+// rejects the call: an unlocatable path is not a path known to be safe.
 //
 // The caller closes the returned Target.
 func (s Set) Open(path string) (*Target, error) {
@@ -580,7 +614,7 @@ func (s Set) Open(path string) (*Target, error) {
 }
 
 // open is Open with a hook that runs immediately after a root is pinned and
-// before anything is authorized against it.
+// before the target is resolved against it.
 //
 // The hook is a parameter rather than package state so a test can stage the
 // replacement this ordering exists to survive without two parallel tests ever
@@ -589,10 +623,6 @@ func (s Set) open(path string, afterPin func()) (*Target, error) {
 	display, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("rootfs: cannot make %s absolute: %w", path, err)
-	}
-	target, err := pathid.Resolve(display)
-	if err != nil {
-		return nil, fmt.Errorf("rootfs: cannot resolve %s: %w", path, err)
 	}
 	for _, root := range s {
 		if strings.TrimSpace(root) == "" {
@@ -609,6 +639,13 @@ func (s Set) open(path string, afterPin func()) (*Target, error) {
 				continue
 			}
 			return nil, err
+		}
+		// Resolve the target alongside this pin, so the containment decision
+		// and the retained handle describe the same instant.
+		target, err := pathid.Resolve(display)
+		if err != nil {
+			_ = pinned.Close()
+			return nil, fmt.Errorf("rootfs: cannot resolve %s: %w", path, err)
 		}
 		if !rootID.Contains(target) {
 			_ = pinned.Close()

@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -678,6 +681,104 @@ func TestTargetWriteAtomicRefusesAnEscapingParent(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(outside, "written.txt")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("a file was written outside the root: %v", err)
 	}
+}
+
+// The containment decision and the retained handle must describe the same
+// boundary. Resolving the target once, before any root is pinned, and deciding
+// containment against that stale resolution leaves the decision and the open
+// handle describing different instants; resolving alongside each pinned
+// candidate binds the two together.
+func TestSet_OpenResolvesAlongsideEachPin(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	inside := filepath.Join(root, "sub")
+	outside := filepath.Join(base, "outside")
+	writeFile(t, filepath.Join(inside, "f.txt"), "genuine")
+	writeFile(t, filepath.Join(outside, "f.txt"), "SECRET")
+	link := filepath.Join(root, "link")
+	mustLinkDir(t, outside, link)
+
+	// The target is addressed through a link that is repointed inside the root
+	// during the pin window. A resolution taken before any pin saw the outside
+	// spelling and refused; resolving alongside the pin decides against the
+	// state the retained handle actually addresses.
+	swapped := false
+	target, err := Set{root}.open(filepath.Join(link, "f.txt"), func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		if rmErr := os.Remove(link); rmErr != nil {
+			t.Fatalf("Remove link: %v", rmErr)
+		}
+		mustLinkDir(t, inside, link)
+	})
+	if !swapped {
+		t.Fatal("the hook never ran; the pin window was not exercised")
+	}
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer target.Close() //nolint:errcheck // test cleanup
+	data, err := target.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(data) != "genuine" {
+		t.Errorf("Read = %q, want %q", data, "genuine")
+	}
+}
+
+// Finding 3.13: no exported rootfs capability may return an *os.File, whose
+// Name() reveals the pathname it was opened through and would let a read
+// become a pathname reopen that bypasses the pinned root. A behavior test
+// cannot prove this (an unused *os.File-returning method would pass), so the
+// compiled source of every package file is inspected.
+func TestRoot_OpenDoesNotExposePathname(t *testing.T) {
+	fset := token.NewFileSet()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no package source files found")
+	}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		f, parseErr := parser.ParseFile(fset, path, nil, parser.AllErrors)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", path, parseErr)
+		}
+		for _, decl := range f.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || !fn.Name.IsExported() {
+				continue
+			}
+			if fn.Type.Results != nil {
+				for _, r := range fn.Type.Results.List {
+					if isOsFileType(r.Type) {
+						t.Errorf("%s: exported %s returns *os.File", path, fn.Name.Name)
+					}
+				}
+			}
+		}
+	}
+}
+
+// isOsFileType reports whether expr denotes *os.File.
+func isOsFileType(expr ast.Expr) bool {
+	star, ok := expr.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	return ok && ident.Name == "os" && sel.Sel.Name == "File"
 }
 
 func TestRootReadsAndClassifiesEntries(t *testing.T) {
