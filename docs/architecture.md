@@ -127,10 +127,13 @@ summarizer, episode-publication, or commit failure leaves a discoverable
 **Compatibility rule:** records without the explicit fields are legacy records
 from before PR 11 — they were only ever appended after a fully successful
 save, so they normalize to `complete` ordered by `save_seq`. The log is never
-rewritten; new-format state is never inferred from `EpisodePath`. Malformed
-hybrids (an unknown state, a state without an attempt, an attempt without a
-state, or negative counters) are rejected at append time and skipped at
-selection time, so they never influence recovery.
+rewritten; new-format state is never inferred from `EpisodePath`. Reading and
+selection accept fully legacy records or valid explicit records; appending
+accepts only explicit records (a recognized typed `state` with a positive
+`attempt`), so current writers always publish the recovery state and a
+malformed hybrid (an unknown state, a state without an attempt, an attempt
+without a state, or a negative counter) can neither be written nor influence
+recovery.
 
 ### Runtime (`internal/runtime`)
 Owns the mutable service graph behind the harness. `cmd/harness/main.go` creates the UI first, then asks `internal/runtime` to wire and retry the rest of the subsystems after the browser surface is already available.

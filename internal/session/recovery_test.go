@@ -803,6 +803,10 @@ func TestSessionRecovery_AppendRecordRejectsMalformed(t *testing.T) {
 		name string
 		rec  Record
 	}{
+		// A fully legacy-shaped record (state-less, attempt zero) is correct to
+		// READ but must never be WRITTEN: current code always publishes the
+		// explicit recovery state.
+		{"fully legacy shape", Record{ID: "x"}},
 		{"unknown state", Record{ID: "x", Agent: "coder", Attempt: 1, State: "pendnig"}},
 		{"state without attempt", Record{ID: "x", Agent: "coder", State: StatePending}},
 		{"attempt without state", Record{ID: "x", Agent: "coder", Attempt: 5}},

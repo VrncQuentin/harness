@@ -40,12 +40,15 @@ func TestAppendRecordAndReadAll(t *testing.T) {
 		StartedAt:   time.Date(2026, 4, 26, 22, 14, 0, 0, time.UTC),
 		SavedAt:     time.Date(2026, 4, 26, 22, 15, 3, 0, time.UTC),
 		SaveSeq:     1,
+		Attempt:     1,
+		State:       StateComplete,
 		EpisodePath: "episodes/coder/2026-04-26T22-15-03Z.md",
 	}
 	if err := AppendRecord(reader, sessionsLogRel, rec); err != nil {
 		t.Fatalf("AppendRecord: %v", err)
 	}
 	rec.SaveSeq = 2
+	rec.Attempt = 2
 	rec.SavedAt = rec.SavedAt.Add(time.Minute)
 	if err := AppendRecord(reader, sessionsLogRel, rec); err != nil {
 		t.Fatalf("AppendRecord 2: %v", err)
@@ -84,6 +87,8 @@ func TestReadAll_SkipsGarbledLine(t *testing.T) {
 		StartedAt: time.Date(2026, 4, 26, 22, 14, 0, 0, time.UTC),
 		SavedAt:   time.Date(2026, 4, 26, 22, 15, 3, 0, time.UTC),
 		SaveSeq:   1,
+		Attempt:   1,
+		State:     StateComplete,
 	}
 	if err := AppendRecord(reader, sessionsLogRel, good); err != nil {
 		t.Fatalf("AppendRecord: %v", err)

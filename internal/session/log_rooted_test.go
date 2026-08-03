@@ -116,7 +116,7 @@ func TestSessionLog_AppendsThroughPinnedRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reader.Close() })
 
-	rec := Record{ID: "pinned", Agent: "coder", Project: "global"}
+	rec := Record{ID: "pinned", Agent: "coder", Project: "global", Attempt: 1, State: StatePending}
 	if err := AppendRecord(reader, sessionsLogRel, rec); err != nil {
 		t.Fatalf("AppendRecord through a stable alias: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestSessionLog_AppendDoesNotFollowLinkOutOfRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = reader.Close() })
 
-	rec := Record{ID: "inner", Agent: "coder", Project: "global"}
+	rec := Record{ID: "inner", Agent: "coder", Project: "global", Attempt: 1, State: StatePending}
 	err = AppendRecord(reader, sessionsLogRel, rec)
 	if err == nil {
 		t.Fatal("append followed a link out of the root")

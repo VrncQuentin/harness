@@ -12,6 +12,11 @@ import (
 	"time"
 )
 
+// RecordState is the explicit recovery state written by a save attempt. It is
+// typed so malformed states cannot be expressed accidentally; every production
+// append writes one of the two constants.
+type RecordState string
+
 // Record states. A save attempt publishes an explicit state rather than
 // leaving recovery correctness to be inferred from timestamps, empty paths,
 // or physical log order.
@@ -20,11 +25,11 @@ const (
 	// durable and whose recovery state has been published, but whose episode
 	// has not yet been summarized, published, and committed. A pending session
 	// is discoverable and resumable from its sidecar.
-	StatePending = "pending"
+	StatePending RecordState = "pending"
 	// StateComplete marks a save attempt whose episode was published and
 	// committed after the sidecar and pending record for the same attempt.
 	// For one attempt, complete deterministically supersedes pending.
-	StateComplete = "complete"
+	StateComplete RecordState = "complete"
 )
 
 // Record is one line in sessions.jsonl. The schema is
@@ -48,7 +53,7 @@ type Record struct {
 	// State is the explicit recovery state (StatePending or StateComplete).
 	// Its absence marks a legacy pre-PR-11 record, which is normalized as
 	// complete by the documented legacy rule in effectiveAttempt/effectiveState.
-	State string `json:"state,omitempty"`
+	State RecordState `json:"state,omitempty"`
 }
 
 // readMaxLineBytes caps a single sessions.jsonl line at 1 MiB. A line
@@ -153,11 +158,16 @@ func ReadAll(r LogReader, relPath string) ([]Record, error) {
 // resolves somewhere else — because a component of it became a link, or because
 // the repo directory was replaced — would send the harness's own audit trail
 // out of the repository, or let a write land on a file that is not the log.
+//
+// Unlike reading, appending accepts only explicit records: a recognized typed
+// state (pending or complete) with a positive attempt. Legacy state-less
+// records are only ever read, never produced — current writers must always
+// publish the explicit recovery state PR 11 exists to provide.
 func AppendRecord(w LogAppender, relPath string, rec Record) error {
 	if rec.ID == "" {
 		return errors.New("session: append: record has empty id")
 	}
-	if !validRecord(rec) {
+	if !validAppendRecord(rec) {
 		return fmt.Errorf("session: append: malformed record (state %q, attempt %d, save_seq %d)",
 			rec.State, rec.Attempt, rec.SaveSeq)
 	}
@@ -173,13 +183,14 @@ func AppendRecord(w LogAppender, relPath string, rec Record) error {
 	return nil
 }
 
-// validRecord reports whether r is a fully legacy record (no state or attempt
-// fields) or a valid explicit record (a recognized typed state with a positive
-// attempt). Anything else is a malformed hybrid — an unknown state, a state
-// without an attempt, an attempt without a state, or a negative counter — and
-// must never influence recovery selection. A legacy record is one that predates
-// the explicit fields entirely, so it must carry no attempt field; an explicit
-// record is only meaningful with a positive attempt.
+// validRecord reports whether r is acceptable for reading and recovery
+// selection: a fully legacy record (no state or attempt fields) or a valid
+// explicit record (a recognized typed state with a positive attempt). Anything
+// else is a malformed hybrid — an unknown state, a state without an attempt,
+// an attempt without a state, or a negative counter — and must never influence
+// recovery selection. A legacy record is one that predates the explicit fields
+// entirely, so it must carry no attempt field; an explicit record is only
+// meaningful with a positive attempt.
 func validRecord(r Record) bool {
 	if r.SaveSeq < 0 || r.Attempt < 0 {
 		return false
@@ -189,6 +200,23 @@ func validRecord(r Record) bool {
 		return r.Attempt == 0
 	case StatePending, StateComplete:
 		return r.Attempt > 0
+	default:
+		return false
+	}
+}
+
+// validAppendRecord is the append-time validator. It is deliberately stricter
+// than validRecord: a record written by current code must always carry a
+// recognized typed state and a positive attempt, so a state-less record — the
+// exact shape PR 11 removes — can never be appended. Legacy records are only
+// ever read from existing logs, never produced.
+func validAppendRecord(r Record) bool {
+	if r.SaveSeq < 0 || r.Attempt <= 0 {
+		return false
+	}
+	switch r.State {
+	case StatePending, StateComplete:
+		return true
 	default:
 		return false
 	}
@@ -211,7 +239,7 @@ func effectiveAttempt(r Record) int {
 // documented legacy normalization rule: a record with no state field was
 // appended only after the full save (summarize, publish, commit) succeeded,
 // so it is complete. New-format state is never inferred from EpisodePath.
-func effectiveState(r Record) string {
+func effectiveState(r Record) RecordState {
 	if r.State == "" {
 		return StateComplete
 	}
