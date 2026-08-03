@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -640,18 +639,29 @@ func TestShutdown_SingleFlushAcrossRetries(t *testing.T) {
 		t.Fatalf("save invocations after clearing = %d, want exactly 1", got)
 	}
 
-	// Exactly one durable session log record exists.
+	// Exactly one durable save exists: one pending + one complete record for
+	// the same attempt. A second flush would have added another pair.
 	logPath := filepath.Join(root, "sessions.jsonl")
-	b, err := os.ReadFile(logPath)
-	if err != nil {
+	if _, err := os.Stat(logPath); err != nil {
 		t.Fatalf("read session log: %v", err)
 	}
-	lines := strings.Count(strings.TrimSpace(string(b)), "\n") + 1
-	if strings.TrimSpace(string(b)) == "" {
-		lines = 0
+	reader, err := memory.NewDirReader(root)
+	if err != nil {
+		t.Fatalf("open log reader: %v", err)
 	}
-	if lines != 1 {
-		t.Fatalf("session log records = %d, want exactly 1 (a second flush would have duplicated the save)", lines)
+	defer func() { _ = reader.Close() }()
+	records, err := session.ReadAll(reader, "sessions.jsonl")
+	if err != nil {
+		t.Fatalf("parse session log: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("session log records = %d, want exactly 2 (one pending + one complete for the single save; a second flush would have duplicated the save)", len(records))
+	}
+	if records[0].State != session.StatePending || records[1].State != session.StateComplete {
+		t.Fatalf("session log states = %q, %q; want pending then complete", records[0].State, records[1].State)
+	}
+	if records[0].Attempt != records[1].Attempt {
+		t.Fatalf("pending and complete must share one attempt: %d vs %d", records[0].Attempt, records[1].Attempt)
 	}
 }
 

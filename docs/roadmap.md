@@ -77,7 +77,7 @@ M3 stages the project-scoped layout that M3b later formalizes: sessions, episode
 - [x] Complete a session → episode file appears at `projects/global/episodes/<agent>/<timestamp>.md`, committed to git
 - [x] Episode commit message matches format `[agent:x] [type:episode] ...`
 - [x] Start a new session → previous episode content appears in the assembled prompt
-- [x] Complete 10 sessions → all 10 episode files present in git log, `projects/global/sessions.jsonl` has 10 entries
+- [x] Complete 10 sessions → all 10 episode files present in git log, `projects/global/sessions.jsonl` has 20 entries (an explicit `pending` + `complete` record per save since PR 11)
 - [x] Corrupt `projects/global/sessions.jsonl` by appending garbage → harness starts without crashing, logs a warning
 - [x] UI memory browser → lists episodes for active agent, click one to view content
 

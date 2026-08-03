@@ -10,7 +10,12 @@
 //     <agent>/<id>.md (committed to git, single file per commit)
 //   - the raw conversation is written to episodes/
 //     <agent>/<id>.json (working-tree-only, intentionally uncommitted)
-//   - one record per save is appended to sessions.jsonl
+//   - two records per save are appended to sessions.jsonl: an explicit
+//     pending record once the sidecar is durable, and an explicit complete
+//     record once the episode is published and committed, both carrying the
+//     same monotonic attempt identifier. Recovery selects the winning record
+//     per session by attempt then state precedence, never by timestamps,
+//     empty paths, or physical log order (see log.go).
 //
 // The project slug is set via ManagerDeps.ProjectSlug at construction
 // time; paths are computed from the manager's stored value.
@@ -80,6 +85,11 @@ type Session struct {
 	// Persisted into each sessions.jsonl record so the log carries an
 	// ordering fingerprint independent of wall clock skew.
 	saveSeq int
+	// attempt is the last save attempt allocated for this session, including
+	// failed ones. It is the in-memory high-water mark that keeps allocated
+	// attempt identifiers strictly increasing (a failed attempt is never
+	// reused). Restored from the log on Resume.
+	attempt int
 }
 
 // SaveResult is the outcome of a successful Save. Callers use it to
@@ -96,6 +106,9 @@ type SaveResult struct {
 	EpisodeBody string
 	SavedAt     time.Time
 	SaveSeq     int
+	// Attempt is the monotonic save-attempt identifier this save consumed.
+	// It includes the failed attempts that preceded it.
+	Attempt int
 }
 
 // MetricsRecorder is the narrow surface session needs from the metrics
@@ -283,6 +296,10 @@ func (m *Manager) Resume(id string) (*Session, error) {
 		StartedAt:    rec.StartedAt,
 		Conversation: conv,
 		saveSeq:      rec.SaveSeq,
+		// Restore the attempt high-water mark from the winning record so the
+		// next allocation is strictly greater than every record for this
+		// session (including a legacy record's save_seq key).
+		attempt: effectiveAttempt(*rec),
 	}
 	m.sessions[rec.ID] = s
 	m.knownIDs[rec.ID] = struct{}{}
@@ -327,17 +344,27 @@ func (m *Manager) End(id string) {
 	delete(m.sessions, id)
 }
 
-// Save summarizes the live session, writes the .md and .json
-// artifacts, commits the .md (single-file commit), appends a record to
-// sessions.jsonl, and bumps the relevant metrics. The returned
-// SaveResult lets the caller (UI handler) confirm to the browser that
-// the episode landed.
+// Save persists the live session under an explicit, durable recovery-state
+// lifecycle:
+//
+//  1. allocate a monotonic save attempt (before any fallible work);
+//  2. durably publish the raw conversation sidecar;
+//  3. append and fsync an explicit pending record for that attempt;
+//  4. run summarization;
+//  5. publish and commit the episode;
+//  6. append and fsync an explicit complete record for the same attempt.
+//
+// A summarizer, episode-publication, or commit failure leaves a discoverable
+// pending session whose raw sidecar can be resumed; a complete record is only
+// ever appended after the episode is published and committed. The returned
+// SaveResult lets the caller (UI handler) confirm to the browser that the
+// episode landed.
 //
 // Save is serialized by a manager-wide save lock (saveMu): only one save
 // runs at a time across all sessions, so summarization, artifact writes,
-// the git commit, the sessions.jsonl append, and the after-save hook never
+// the git commit, the sessions.jsonl appends, and the after-save hook never
 // interleave. The short manager mutex (mu) is taken only to read the live
-// session and later to bump saveSeq/knownIDs; it is released for the
+// session and later to bump saveSeq/attempt/knownIDs; it is released for the
 // duration of the I/O so Append and Snapshot stay responsive mid-save.
 func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 	m.saveMu.Lock()
@@ -352,12 +379,51 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		m.mu.Unlock()
 		return SaveResult{}, fmt.Errorf("session: save %s: conversation is empty", id)
 	}
+	// Allocate the monotonic save attempt and bump the live session before
+	// any fallible work, so a failed attempt is never reused by a retry: each
+	// retry consumes a fresh, strictly larger attempt.
+	attempt := s.attempt + 1
+	s.attempt = attempt
 	// Snapshot before releasing the lock so the summarizer call sees a
 	// stable copy, and so the caller cannot Append while we are mid-save.
 	snap := cloneSession(s)
 	_, alreadyKnown := m.knownIDs[id]
 	m.mu.Unlock()
 
+	episodePath := episodeMarkdownPath(snap.Agent, snap.ID)
+	sidecarPath := episodeSidecarPath(snap.Agent, snap.ID)
+
+	// 1. Durably publish the raw conversation sidecar first. From this point
+	// the recovery material exists: a summarizer or episode-publication
+	// failure can only leave the session resumable, never undiscoverable.
+	sidecarBytes, err := encodeConversation(snap.Conversation)
+	if err != nil {
+		return SaveResult{}, fmt.Errorf("session: encode sidecar %s: %w", sidecarPath, err)
+	}
+	if err := m.deps.Writer.WriteFile(sidecarPath, sidecarBytes); err != nil {
+		// No pending record: nothing to discover, and nothing to resume from
+		// that was not already recoverable.
+		return SaveResult{}, fmt.Errorf("session: write sidecar %s: %w", sidecarPath, err)
+	}
+
+	// 2. Append and fsync the explicit pending record. The session is now
+	// discoverable and resumable from the sidecar.
+	pendingRec := Record{
+		ID:        snap.ID,
+		Agent:     snap.Agent,
+		Project:   snap.Project,
+		StartedAt: snap.StartedAt,
+		SavedAt:   m.deps.Now().UTC(),
+		SaveSeq:   snap.saveSeq,
+		Attempt:   attempt,
+		State:     StatePending,
+	}
+	if err := AppendRecord(m.deps.Appender, sessionsLogRel, pendingRec); err != nil {
+		return SaveResult{}, fmt.Errorf("session: append pending record: %w", err)
+	}
+
+	// 3. Summarize. On failure the pending record remains and the session is
+	// recovered from the sidecar.
 	summary, err := m.summarizer.Summarize(ctx, snap.Conversation)
 	if err != nil {
 		return SaveResult{}, fmt.Errorf("session: summarize %s: %w", id, err)
@@ -366,21 +432,11 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		return SaveResult{}, fmt.Errorf("session: summarize %s: summarizer returned empty body", id)
 	}
 
-	episodePath := episodeMarkdownPath(snap.Agent, snap.ID)
-	sidecarPath := episodeSidecarPath(snap.Agent, snap.ID)
-
+	// 4. Publish and commit the episode.
 	body := renderEpisodeBody(snap.ID, summary)
 	if err := m.deps.Writer.WriteFile(episodePath, []byte(body)); err != nil {
 		return SaveResult{}, fmt.Errorf("session: write episode %s: %w", episodePath, err)
 	}
-	sidecarBytes, err := encodeConversation(snap.Conversation)
-	if err != nil {
-		return SaveResult{}, fmt.Errorf("session: encode sidecar %s: %w", sidecarPath, err)
-	}
-	if err := m.deps.Writer.WriteFile(sidecarPath, sidecarBytes); err != nil {
-		return SaveResult{}, fmt.Errorf("session: write sidecar %s: %w", sidecarPath, err)
-	}
-
 	commitMsg := git.BuildMessage(
 		map[string]string{"agent": snap.Agent, "type": "episode"},
 		firstLine(summary),
@@ -392,26 +448,29 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		return SaveResult{}, fmt.Errorf("session: commit %s: %w", episodePath, err)
 	}
 
-	now := m.deps.Now().UTC()
+	// 5. Append and fsync the explicit complete record for the same attempt.
+	// The episode is published and committed before this line, so a complete
+	// record always describes a fully durable save.
 	saveSeq := snap.saveSeq + 1
-	rec := Record{
+	completeRec := Record{
 		ID:          snap.ID,
 		Agent:       snap.Agent,
 		Project:     snap.Project,
 		StartedAt:   snap.StartedAt,
-		SavedAt:     now,
+		SavedAt:     m.deps.Now().UTC(),
 		SaveSeq:     saveSeq,
 		EpisodePath: episodePath,
+		Attempt:     attempt,
+		State:       StateComplete,
 	}
-	logPath := sessionsLogRel
-	if err := AppendRecord(m.deps.Appender, logPath, rec); err != nil {
-		return SaveResult{}, fmt.Errorf("session: append log %s: %w", logPath, err)
+	if err := AppendRecord(m.deps.Appender, sessionsLogRel, completeRec); err != nil {
+		return SaveResult{}, fmt.Errorf("session: append complete record: %w", err)
 	}
 
-	// Re-acquire the lock to bump the live session's saveSeq and update
-	// the known-ids set. Doing this after the writes lands avoids a
-	// half-saved state that future calls to Save would mistake for
-	// progress.
+	// Re-acquire the lock to bump the live session's saveSeq and update the
+	// known-ids set. Doing this after the writes land avoids a half-saved
+	// state that future calls to Save would mistake for progress. attempt was
+	// already bumped when it was allocated, so only saveSeq advances here.
 	m.mu.Lock()
 	if live, ok := m.sessions[id]; ok {
 		live.saveSeq = saveSeq
@@ -438,8 +497,9 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		CommitSHA:   sha,
 		Summary:     summary,
 		EpisodeBody: body,
-		SavedAt:     now,
+		SavedAt:     completeRec.SavedAt,
 		SaveSeq:     saveSeq,
+		Attempt:     attempt,
 	}
 
 	if m.deps.AfterSave != nil {
@@ -526,13 +586,22 @@ func (m *Manager) findLatestRecord(id string) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Select the winning record by the explicit recovery state — highest
+	// effective attempt, complete superseding pending for the same attempt —
+	// never by physical log order or wall-clock timestamps. Malformed records
+	// are skipped so they can never supersede valid history.
 	var latest *Record
 	for i := range all {
 		if all[i].ID != id {
 			continue
 		}
-		// Latest record per id wins; iterate to the end to find it.
-		latest = &all[i]
+		if !validRecord(all[i]) {
+			continue
+		}
+		if latest == nil || supersedes(*latest, all[i]) {
+			cp := all[i]
+			latest = &cp
+		}
 	}
 	return latest, nil
 }

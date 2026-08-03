@@ -236,13 +236,19 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 		t.Fatalf("expected .json sidecar to exist: %v", err)
 	}
 
-	// Sessions log has one entry.
+	// Sessions log has a pending and a complete record for the one attempt.
 	records, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(records) != 1 {
-		t.Fatalf("expected 1 log record, got %d", len(records))
+	if len(records) != 2 {
+		t.Fatalf("expected 2 log records (pending + complete), got %d", len(records))
+	}
+	if records[0].State != StatePending || records[1].State != StateComplete {
+		t.Fatalf("log states = %q, %q; want pending then complete", records[0].State, records[1].State)
+	}
+	if records[0].Attempt != records[1].Attempt {
+		t.Fatalf("pending and complete must share one attempt: %d vs %d", records[0].Attempt, records[1].Attempt)
 	}
 
 	// Sidecar round-trips back to the same conversation.
@@ -296,16 +302,20 @@ func TestManager_SaveTwiceIncrementsSeqAndOverwrites(t *testing.T) {
 		t.Errorf("save_seq: want 2, got %d", res.SaveSeq)
 	}
 
-	// Sessions log has two records (append-only).
+	// Sessions log is append-only: pending + complete per save attempt.
 	records, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(records) != 2 {
-		t.Fatalf("expected 2 log records, got %d", len(records))
+	if len(records) != 4 {
+		t.Fatalf("expected 4 log records (pending + complete per attempt), got %d", len(records))
 	}
-	if records[1].SaveSeq != 2 {
-		t.Errorf("second log entry seq: want 2, got %d", records[1].SaveSeq)
+	// The winning complete record per attempt carries the successful save count.
+	if records[1].State != StateComplete || records[1].SaveSeq != 1 || records[1].Attempt != 1 {
+		t.Errorf("first complete record = %+v; want seq 1 on attempt 1", records[1])
+	}
+	if records[3].State != StateComplete || records[3].SaveSeq != 2 || records[3].Attempt != 2 {
+		t.Errorf("second complete record = %+v; want seq 2 on attempt 2", records[3])
 	}
 
 	// Episode markdown was overwritten with the latest summary.
@@ -366,11 +376,16 @@ func TestManager_ConcurrentSavesSerializeSaveSeq(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(records) != 2 {
-		t.Fatalf("log records = %d, want 2", len(records))
+	if len(records) != 4 {
+		t.Fatalf("log records = %d, want 4 (pending + complete per attempt)", len(records))
 	}
-	if records[0].SaveSeq != 1 || records[1].SaveSeq != 2 {
-		t.Fatalf("log save seqs = %d,%d; want 1,2", records[0].SaveSeq, records[1].SaveSeq)
+	// Serialization must allocate distinct, strictly increasing attempts.
+	attempts := []int{records[0].Attempt, records[1].Attempt, records[2].Attempt, records[3].Attempt}
+	if !reflect.DeepEqual(attempts, []int{1, 1, 2, 2}) {
+		t.Fatalf("log attempts = %v, want [1 1 2 2]", attempts)
+	}
+	if records[1].SaveSeq != 1 || records[3].SaveSeq != 2 {
+		t.Fatalf("complete save seqs = %d,%d; want 1,2", records[1].SaveSeq, records[3].SaveSeq)
 	}
 }
 func TestManager_ResumeHydratesConversation(t *testing.T) {
@@ -464,8 +479,8 @@ func TestManager_FlushAllSavesEveryLiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(records) != 2 {
-		t.Fatalf("expected 2 log records, got %d", len(records))
+	if len(records) != 4 {
+		t.Fatalf("expected 4 log records (pending + complete per session), got %d", len(records))
 	}
 }
 

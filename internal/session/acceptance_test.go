@@ -203,7 +203,7 @@ func TestSavedEpisodeVisibleToPromptRecency(t *testing.T) {
 // TestTenSessionsCreateTenEpisodeCommits covers:
 //
 //	"Complete 10 sessions → all 10 episode files present in git log,
-//	 sessions.jsonl has 10 entries"
+//	 sessions.jsonl has 20 entries (pending + complete per save)"
 func TestTenSessionsCreateTenEpisodeCommits(t *testing.T) {
 	scripts := make([][]inference.Token, 0, 10)
 	for i := range 10 {
@@ -243,13 +243,13 @@ func TestTenSessionsCreateTenEpisodeCommits(t *testing.T) {
 		t.Errorf("expected 10 commits, got %d", got)
 	}
 
-	// 10 records in sessions.jsonl.
+	// 20 records in sessions.jsonl (pending + complete per save).
 	records, err := ReadAll(reader, sessionsLogRel)
 	if err != nil {
 		t.Fatalf("ReadAll: %v", err)
 	}
-	if len(records) != 10 {
-		t.Errorf("expected 10 sessions.jsonl records, got %d", len(records))
+	if len(records) != 20 {
+		t.Errorf("expected 20 sessions.jsonl records, got %d", len(records))
 	}
 }
 
@@ -280,8 +280,8 @@ func TestGarbledSessionLogIsTolerated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll on corrupted log: %v", err)
 	}
-	if len(records) != 1 {
-		t.Errorf("expected 1 parseable record, got %d", len(records))
+	if len(records) != 2 {
+		t.Errorf("expected 2 parseable records (pending + complete), got %d", len(records))
 	}
 }
 
