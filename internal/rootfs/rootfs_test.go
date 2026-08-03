@@ -706,18 +706,85 @@ func TestSet_OpenResolvesAlongsideEachPin(t *testing.T) {
 // become a pathname reopen that bypasses the pinned root — or whose Truncate,
 // Seek, and Write could rewrite what the root's opaque handles exist to keep
 // append-only or read-only. A behavior test cannot prove this (an unused
-// *os.File-returning method or a hook parameter would pass), so the compiled
-// source of every package file is inspected: exported function parameters and
-// results, and exported struct fields, must not reference *os.File anywhere.
+// *os.File-returning method, a hook parameter, or an embedded field would
+// pass), so the compiled source of every package file is inspected: exported
+// function parameters and results, exported struct fields including embedded
+// (promoted) fields, exported interfaces and type aliases, and exported
+// variables must not reference os.File anywhere. The surface is walked on the
+// AST rather than with go/types because the default importer cannot resolve
+// the local pathid dependency in module mode, which leaves type identity
+// unreliable here.
 func TestRoot_OpenDoesNotExposePathname(t *testing.T) {
+	if leaks := exportedOsFileLeaks(t, "*.go"); len(leaks) != 0 {
+		for _, l := range leaks {
+			t.Error(l)
+		}
+	}
+}
+
+// TestRoot_OsFileSurfaceGuardDiscriminates proves exportedOsFileLeaks flags
+// every shape that would leak os.File into the exported API, so a clean result
+// on the real package means the surface is actually clean. The shapes include
+// the embedded-field promotion the guard exists to catch.
+func TestRoot_OsFileSurfaceGuardDiscriminates(t *testing.T) {
+	fixtures := []struct{ name, code string }{
+		{"embedded pointer field", `package rootfs
+import "os"
+type Leak struct{ *os.File }`},
+		{"embedded value field", `package rootfs
+import "os"
+type Leak struct{ os.File }`},
+		{"hook parameter", `package rootfs
+import "os"
+type Hooks struct{ OnOpen func(f *os.File) }`},
+		{"return type", `package rootfs
+import "os"
+func OpenThing() *os.File { return nil }`},
+		{"interface method", `package rootfs
+import "os"
+type Reader interface{ Read(f *os.File) error }`},
+		{"type alias", `package rootfs
+import "os"
+type FileAlias = os.File`},
+		{"exported var", `package rootfs
+import "os"
+var Current *os.File`},
+	}
+	for _, tt := range fixtures {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "leak.go"), []byte(tt.code), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if leaks := exportedOsFileLeaks(t, filepath.Join(dir, "*.go")); len(leaks) == 0 {
+				t.Error("guard did not flag the leak shape")
+			}
+		})
+	}
+
+	t.Run("clean surface", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "ok.go"), []byte(`package rootfs
+type Box struct{ s string }`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if leaks := exportedOsFileLeaks(t, filepath.Join(dir, "*.go")); len(leaks) != 0 {
+			t.Errorf("clean surface flagged: %v", leaks)
+		}
+	})
+}
+
+// exportedOsFileLeaks inspects the exported surface of the rootfs package
+// source files matching pattern and returns one diagnostic per place an
+// os.File reference escapes it.
+func exportedOsFileLeaks(t *testing.T, pattern string) []string {
+	t.Helper()
 	fset := token.NewFileSet()
-	files, err := filepath.Glob("*.go")
+	files, err := filepath.Glob(pattern)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) == 0 {
-		t.Fatal("no package source files found")
-	}
+	var leaks []string
 	for _, path := range files {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
@@ -735,55 +802,69 @@ func TestRoot_OpenDoesNotExposePathname(t *testing.T) {
 				if d.Type.Params != nil {
 					for _, p := range d.Type.Params.List {
 						if referencesOsFile(p.Type) {
-							t.Errorf("%s: exported %s takes an *os.File", path, d.Name.Name)
+							leaks = append(leaks, fmt.Sprintf("%s: exported %s takes an *os.File", path, d.Name.Name))
 						}
 					}
 				}
 				if d.Type.Results != nil {
 					for _, r := range d.Type.Results.List {
 						if referencesOsFile(r.Type) {
-							t.Errorf("%s: exported %s returns *os.File", path, d.Name.Name)
+							leaks = append(leaks, fmt.Sprintf("%s: exported %s returns *os.File", path, d.Name.Name))
 						}
 					}
 				}
 			case *ast.GenDecl:
 				for _, spec := range d.Specs {
-					ts, ok := spec.(*ast.TypeSpec)
-					if !ok || !ts.Name.IsExported() {
-						continue
-					}
-					st, ok := ts.Type.(*ast.StructType)
-					if !ok {
-						continue
-					}
-					for _, field := range st.Fields.List {
-						if len(field.Names) == 0 {
-							continue // embedded field, not part of the named surface
-						}
-						if !field.Names[0].IsExported() {
+					switch s := spec.(type) {
+					case *ast.TypeSpec:
+						if !s.Name.IsExported() {
 							continue
 						}
-						if referencesOsFile(field.Type) {
-							t.Errorf("%s: exported type %s exposes *os.File through field %s",
-								path, ts.Name.Name, field.Names[0].Name)
+						if st, ok := s.Type.(*ast.StructType); ok {
+							// Check exported named fields and embedded fields.
+							// An embedded field (no names) promotes its methods
+							// into the exported surface, so it cannot be
+							// skipped.
+							for _, field := range st.Fields.List {
+								if len(field.Names) > 0 && !field.Names[0].IsExported() {
+									continue
+								}
+								if referencesOsFile(field.Type) {
+									leaks = append(leaks, fmt.Sprintf("%s: exported type %s exposes *os.File through a field",
+										path, s.Name.Name))
+								}
+							}
+							continue
+						}
+						// Interfaces, aliases, and other type forms: the whole
+						// type expression is the exported surface.
+						if referencesOsFile(s.Type) {
+							leaks = append(leaks, fmt.Sprintf("%s: exported type %s exposes *os.File",
+								path, s.Name.Name))
+						}
+					case *ast.ValueSpec:
+						if len(s.Names) == 0 || !s.Names[0].IsExported() || s.Type == nil {
+							continue
+						}
+						if referencesOsFile(s.Type) {
+							leaks = append(leaks, fmt.Sprintf("%s: exported variable %s has an *os.File type",
+								path, s.Names[0].Name))
 						}
 					}
 				}
 			}
 		}
 	}
+	return leaks
 }
 
-// referencesOsFile reports whether expr references *os.File anywhere in its
-// type tree, including inside func signatures and struct fields.
+// referencesOsFile reports whether expr references os.File anywhere in its
+// type tree, including inside func signatures, struct fields, pointer or slice
+// elements, and aliases.
 func referencesOsFile(expr ast.Expr) bool {
 	found := false
 	ast.Inspect(expr, func(n ast.Node) bool {
-		star, ok := n.(*ast.StarExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := star.X.(*ast.SelectorExpr)
+		sel, ok := n.(*ast.SelectorExpr)
 		if !ok {
 			return true
 		}
