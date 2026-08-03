@@ -22,7 +22,6 @@ package governor
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -106,12 +105,11 @@ func (g *Governor) spillAnchor() *rootfs.Anchor {
 	if dir == "" {
 		return nil
 	}
-	_ = os.MkdirAll(dir, 0o755)
-	a, err := rootfs.NewAnchor(dir)
+	root, err := rootfs.OpenOrCreate(dir, 0o755)
 	if err != nil {
 		return nil
 	}
-	return a
+	return rootfs.NewAnchorFromRoot(root, dir)
 }
 
 // activeQueryTokens splits a query string into lowercase, alpha-only tokens

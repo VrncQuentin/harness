@@ -4,12 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 const traceRetentionDays = 30
@@ -41,8 +42,8 @@ func (NopTraceSink) Emit(RetrievalTrace) {}
 func (NopTraceSink) Close() error        { return nil }
 
 // DefaultTraceSink is the package-level sink. ScoreEpisodePaths calls it on
-// every candidate when non-nil. The runtime replaces it with an NDJSONSink at
-// startup. Tests may set it temporarily.
+// every candidate when non-nil. cmd/harness/main.go installs an NDJSONSink at
+// startup; tests may set it temporarily.
 var DefaultTraceSink TraceSink
 
 // SetDefaultTraceSink replaces the package-level trace sink.
@@ -58,22 +59,29 @@ func QueryID(query string) string {
 // NDJSONSink writes one JSON object per line to date-bucketed NDJSON files
 // under dir. Files older than retentionDays are pruned on each date rotation.
 // The now func is injectable for tests; nil uses time.Now.
+//
+// The trace directory is pinned for the sink's owned lifetime: construction
+// opens it through rootfs, and every append, enumeration, and retention
+// deletion happens through that pinned handle rather than by pathname. The
+// pinned handle is closed by Close.
 type NDJSONSink struct {
-	dir           string
+	root          *rootfs.Root
 	retentionDays int
 	now           func() time.Time
 
 	mu  sync.Mutex
 	day string
-	f   *os.File
+	f   *rootfs.AppendFile
 }
 
-// NewNDJSONSink returns a sink that writes under dir. It creates dir if absent.
+// NewNDJSONSink returns a sink that writes under dir. It pins the directory,
+// creating it and its missing ancestors through rooted operations if absent.
 func NewNDJSONSink(dir string, now func() time.Time) (*NDJSONSink, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	root, err := rootfs.OpenOrCreate(dir, 0o755)
+	if err != nil {
 		return nil, fmt.Errorf("retrieval: trace dir: %w", err)
 	}
-	s := &NDJSONSink{dir: dir, retentionDays: traceRetentionDays, now: now}
+	s := &NDJSONSink{root: root, retentionDays: traceRetentionDays, now: now}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -92,23 +100,34 @@ func (s *NDJSONSink) Emit(t RetrievalTrace) {
 	if err != nil {
 		return
 	}
-	_, _ = s.f.Write(b)
-	_, _ = s.f.Write([]byte{'\n'})
+	_ = s.f.Write(b)
+	_ = s.f.Write([]byte{'\n'})
 }
 
-// Close flushes and closes the currently open file.
+// Close flushes the open file and releases the pinned trace directory. A
+// failure closing the append file is preserved alongside any failure closing
+// the root, so a shutdown cannot report success after a file close that failed.
 func (s *NDJSONSink) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var errs []error
 	if s.f != nil {
-		err := s.f.Close()
+		if err := s.f.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("retrieval: close trace file: %w", err))
+		}
 		s.f = nil
-		return err
 	}
-	return nil
+	if s.root != nil {
+		if err := s.root.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		s.root = nil
+	}
+	return errors.Join(errs...)
 }
 
-// ensureFile opens (or rotates to) the file for day. Caller holds mu.
+// ensureFile opens (or rotates to) the file for day through the pinned root.
+// Caller holds mu.
 func (s *NDJSONSink) ensureFile(day string) error {
 	if s.f != nil && s.day == day {
 		return nil
@@ -118,8 +137,7 @@ func (s *NDJSONSink) ensureFile(day string) error {
 		s.f = nil
 		s.prune()
 	}
-	p := filepath.Join(s.dir, day+".ndjson")
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := s.root.OpenAppend(day+".ndjson", 0o644)
 	if err != nil {
 		return fmt.Errorf("retrieval: open trace file: %w", err)
 	}
@@ -130,8 +148,17 @@ func (s *NDJSONSink) ensureFile(day string) error {
 
 // prune removes files older than retentionDays. Caller holds mu.
 func (s *NDJSONSink) prune() {
+	s.pruneWithHook(nil)
+}
+
+// pruneWithHook is prune with a hook that runs after a candidate entry is
+// observed and before it is removed, so a test can stage the substitution the
+// identity verification exists to survive. The hook is a parameter rather than
+// package state so parallel tests never see each other's. It is nil on every
+// production path.
+func (s *NDJSONSink) pruneWithHook(beforeRemove func(name string)) {
 	cutoff := s.now().UTC().AddDate(0, 0, -s.retentionDays)
-	entries, err := os.ReadDir(s.dir)
+	entries, err := s.root.ReadDir(".")
 	if err != nil {
 		return
 	}
@@ -144,8 +171,19 @@ func (s *NDJSONSink) prune() {
 		if err != nil {
 			continue
 		}
-		if t.Before(cutoff) {
-			_ = os.Remove(filepath.Join(s.dir, e.Name()))
+		if !t.Before(cutoff) {
+			continue
 		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if beforeRemove != nil {
+			beforeRemove(e.Name())
+		}
+		// Delete through the pinned root, and only the entry that was actually
+		// observed: a stranger that has claimed the name since the listing is
+		// detected by the identity comparison and refused rather than removed.
+		_ = s.root.RemoveVerified(e.Name(), info)
 	}
 }

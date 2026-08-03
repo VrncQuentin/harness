@@ -6,5 +6,6 @@ llama.cpp/
 .sisyphus/
 harness
 harness.exe
+*.exe
 harness.db
 node_modules/

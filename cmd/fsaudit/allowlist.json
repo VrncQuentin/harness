@@ -1,39 +1,44 @@
 {
-  "description": "Direct filesystem calls in production code, classified by migration status. The fsaudit tool compiles the watched-function policy internally — this file only classifies each call, it does not control what gets scanned. migration = will be routed through rootfs in a future PR. permanent = intentional boundary exception, never to be migrated.",
   "permanent": [
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 80,
+      "file": "internal/rootfs/identity.go",
+      "line": 70,
       "fn": "os.OpenRoot",
       "justification": "rootfs security primitive: pins a directory"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 215,
+      "file": "internal/rootfs/write.go",
+      "line": 152,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: WriteStreamAtomic temp identity check"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 387,
+      "file": "internal/rootfs/write.go",
+      "line": 341,
+      "fn": "os.SameFile",
+      "justification": "rootfs security primitive: RemoveVerified identity check"
+    },
+    {
+      "file": "internal/rootfs/identity.go",
+      "line": 155,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: directory identity comparison"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 474,
+      "file": "internal/rootfs/walk.go",
+      "line": 70,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: OpenChildNoFollow identity check"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 621,
+      "file": "internal/rootfs/identity.go",
+      "line": 259,
       "fn": "os.Stat",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 625,
+      "file": "internal/rootfs/identity.go",
+      "line": 263,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
@@ -105,60 +110,9 @@
     },
     {
       "file": "cmd/eval-retrieval/main.go",
-      "line": 57,
+      "line": 93,
       "fn": "os.Open",
       "justification": "eval harness reads operator-named query file; not part of the production binary"
-    }
-  ],
-  "migration": [
-    {
-      "file": "internal/tools/toolout.go",
-      "line": 95,
-      "fn": "os.OpenRoot",
-      "pr": "PR 3",
-      "notes": "toolout spill: route through rootfs.Open rather than direct os.OpenRoot"
-    },
-    {
-      "file": "internal/retrieval/trace.go",
-      "line": 73,
-      "fn": "os.MkdirAll",
-      "pr": "PR 3",
-      "notes": "NDJSONSink: create trace directory"
-    },
-    {
-      "file": "internal/retrieval/trace.go",
-      "line": 122,
-      "fn": "os.OpenFile",
-      "pr": "PR 3",
-      "notes": "NDJSONSink: append to daily trace file"
-    },
-    {
-      "file": "internal/retrieval/trace.go",
-      "line": 134,
-      "fn": "os.ReadDir",
-      "pr": "PR 3",
-      "notes": "NDJSONSink: list trace files for retention pruning"
-    },
-    {
-      "file": "internal/retrieval/trace.go",
-      "line": 148,
-      "fn": "os.Remove",
-      "pr": "PR 3",
-      "notes": "NDJSONSink: delete expired trace files"
-    },
-    {
-      "file": "internal/governor/governor.go",
-      "line": 109,
-      "fn": "os.MkdirAll",
-      "pr": "PR 3",
-      "notes": "toolout spill directory: bootstrap creation before anchor pin"
-    },
-    {
-      "file": "cmd/eval-retrieval/main.go",
-      "line": 112,
-      "fn": "filepath.Glob",
-      "pr": "PR 3",
-      "notes": "eval-retrieval: enumerate episode files through pinned repo instead of filepath.Glob+filepath.Rel"
     }
   ]
 }

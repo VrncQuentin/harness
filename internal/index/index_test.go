@@ -127,7 +127,7 @@ func TestIndex_UpsertManifestFailurePreservesOldIndex(t *testing.T) {
 
 	sentinel := errors.New("injected manifest failure")
 	err = idx.upsertRooted(r, "new", "new-content", [][]float32{{0, 1}},
-		rootfs.WriteHooks{Sync: func(*os.File) error { return sentinel }})
+		rootfs.WriteHooks{Sync: func() error { return sentinel }})
 	if err == nil || !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}
@@ -257,7 +257,7 @@ func TestIndex_UpsertFailurePreservesOtherEntries(t *testing.T) {
 	}
 	sentinel := errors.New("injected manifest failure")
 	err = idx.upsertRooted(r, "b", "new-b", [][]float32{{2, 2}},
-		rootfs.WriteHooks{Sync: func(*os.File) error { return sentinel }})
+		rootfs.WriteHooks{Sync: func() error { return sentinel }})
 	if err == nil || !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}
@@ -769,7 +769,7 @@ func TestIndex_WriteManifestFsyncsBeforeRename(t *testing.T) {
 
 	syncFailed := errors.New("sync before rename failed")
 	err = idx.upsertRooted(r, "new", "new", [][]float32{{0, 1}},
-		rootfs.WriteHooks{Sync: func(*os.File) error { return syncFailed }})
+		rootfs.WriteHooks{Sync: func() error { return syncFailed }})
 	if !errors.Is(err, syncFailed) {
 		t.Fatalf("expected sync-failed error, got %v", err)
 	}
@@ -844,7 +844,7 @@ func TestIndex_WriteManifestCleansUpOwnTemp(t *testing.T) {
 	// disturb the stranger.
 	syncFailed := errors.New("sync failed")
 	err = idx.upsertRooted(r, "third", "third", [][]float32{{1, 1}},
-		rootfs.WriteHooks{Sync: func(*os.File) error { return syncFailed }})
+		rootfs.WriteHooks{Sync: func() error { return syncFailed }})
 	if !errors.Is(err, syncFailed) {
 		t.Fatalf("expected sync failure, got %v", err)
 	}
@@ -928,7 +928,7 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		err1 = idx1.upsertRooted(r1, "a", "a", [][]float32{{1, 0}}, rootfs.WriteHooks{
-			AfterOpen: func(*os.File, string) {
+			AfterOpen: func(string) {
 				close(firstEntered)
 				<-firstRelease
 			},
@@ -943,7 +943,7 @@ func TestIndex_TwoHandlesShareCoordinator(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		err2 = idx2.upsertRootedBeforeLock(r2, "b", "b", [][]float32{{0, 1}}, rootfs.WriteHooks{
-			AfterOpen: func(*os.File, string) { close(secondEntered) },
+			AfterOpen: func(string) { close(secondEntered) },
 		}, func() { close(secondAtLock) })
 	}()
 	<-secondAtLock

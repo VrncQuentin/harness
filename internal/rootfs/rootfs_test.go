@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -14,33 +16,6 @@ import (
 	"sync"
 	"testing"
 )
-
-// mustLinkDir creates a directory link at link pointing at target, preferring a
-// symlink and falling back to a Windows junction. Junctions need no privilege
-// and are traversed exactly like symlinks, so they exercise the same escape on
-// machines where symlink creation is denied.
-func mustLinkDir(t *testing.T, target, link string) {
-	t.Helper()
-	if err := os.Symlink(target, link); err == nil {
-		return
-	} else if runtime.GOOS != "windows" {
-		t.Skipf("symlinks unavailable in this environment: %v", err)
-	}
-	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
-	if err != nil {
-		t.Skipf("cannot create directory link: %v: %s", err, out)
-	}
-}
-
-func writeFile(t *testing.T, path, body string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-}
 
 func TestSetOpenReadsInRootFile(t *testing.T) {
 	root := t.TempDir()
@@ -680,6 +655,459 @@ func TestTargetWriteAtomicRefusesAnEscapingParent(t *testing.T) {
 	}
 }
 
+// The containment decision and the retained handle must describe the same
+// boundary. Resolving the target once, before any root is pinned, and deciding
+// containment against that stale resolution leaves the decision and the open
+// handle describing different instants; resolving alongside each pinned
+// candidate binds the two together.
+func TestSet_OpenResolvesAlongsideEachPin(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "root")
+	inside := filepath.Join(root, "sub")
+	outside := filepath.Join(base, "outside")
+	writeFile(t, filepath.Join(inside, "f.txt"), "genuine")
+	writeFile(t, filepath.Join(outside, "f.txt"), "SECRET")
+	link := filepath.Join(root, "link")
+	mustLinkDir(t, outside, link)
+
+	// The target is addressed through a link that is repointed inside the root
+	// during the pin window. A resolution taken before any pin saw the outside
+	// spelling and refused; resolving alongside the pin decides against the
+	// state the retained handle actually addresses.
+	swapped := false
+	target, err := Set{root}.open(filepath.Join(link, "f.txt"), func() {
+		if swapped {
+			return
+		}
+		swapped = true
+		if rmErr := os.Remove(link); rmErr != nil {
+			t.Fatalf("Remove link: %v", rmErr)
+		}
+		mustLinkDir(t, inside, link)
+	})
+	if !swapped {
+		t.Fatal("the hook never ran; the pin window was not exercised")
+	}
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer target.Close() //nolint:errcheck // test cleanup
+	data, err := target.Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if string(data) != "genuine" {
+		t.Errorf("Read = %q, want %q", data, "genuine")
+	}
+}
+
+// Finding 3.13: no exported rootfs capability may expose an *os.File, whose
+// Name() reveals the pathname it was opened through and would let a read
+// become a pathname reopen that bypasses the pinned root — or whose Truncate,
+// Seek, and Write could rewrite what the root's opaque handles exist to keep
+// append-only or read-only. A behavior test cannot prove this (an unused
+// *os.File-returning method, a hook parameter, or an embedded field would
+// pass), so the compiled source of every package file is inspected: exported
+// function parameters and results, exported struct fields including embedded
+// (promoted) fields, exported interfaces and type aliases, and exported
+// variables must not reference os.File anywhere. The surface is walked on the
+// AST rather than with go/types because the default importer cannot resolve
+// the local pathid dependency in module mode, which leaves type identity
+// unreliable here.
+func TestRoot_OpenDoesNotExposePathname(t *testing.T) {
+	if leaks := exportedOsFileLeaks(t, "*.go"); len(leaks) != 0 {
+		for _, l := range leaks {
+			t.Error(l)
+		}
+	}
+}
+
+// TestRoot_OsFileSurfaceGuardDiscriminates proves exportedOsFileLeaks flags
+// every shape that would leak os.File into the exported API, so a clean result
+// on the real package means the surface is actually clean. The shapes include
+// the embedded-field promotion the guard exists to catch.
+func TestRoot_OsFileSurfaceGuardDiscriminates(t *testing.T) {
+	fixtures := []struct{ name, code string }{
+		{"embedded pointer field", `package rootfs
+import "os"
+type Leak struct{ *os.File }`},
+		{"embedded value field", `package rootfs
+import "os"
+type Leak struct{ os.File }`},
+		{"hook parameter", `package rootfs
+import "os"
+type Hooks struct{ OnOpen func(f *os.File) }`},
+		{"return type", `package rootfs
+import "os"
+func OpenThing() *os.File { return nil }`},
+		{"interface method", `package rootfs
+import "os"
+type Reader interface{ Read(f *os.File) error }`},
+		{"type alias", `package rootfs
+import "os"
+type FileAlias = os.File`},
+		{"exported var", `package rootfs
+import "os"
+var Current *os.File`},
+		{"import alias", `package rootfs
+import filesystem "os"
+type Leak = filesystem.File`},
+		{"local type alias", `package rootfs
+import "os"
+type raw = os.File
+func Leak() *raw { return nil }`},
+		{"inferred var", `package rootfs
+import "os"
+var Leak = os.Stdout`},
+		{"grouped declaration second name", `package rootfs
+import "os"
+var hidden, Leak *os.File`},
+		{"inferred var composite literal", `package rootfs
+import "os"
+var Leak = os.File{}`},
+		{"inferred var from os.Open", `package rootfs
+import "os"
+var Leak, _ = os.Open("f")`},
+		{"grouped struct fields", `package rootfs
+import "os"
+type Leak struct{ hidden, Public *os.File }`},
+		{"exported function value", `package rootfs
+import "os"
+var Leak = os.Open`},
+	}
+	for _, tt := range fixtures {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "leak.go"), []byte(tt.code), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if leaks := exportedOsFileLeaks(t, filepath.Join(dir, "*.go")); len(leaks) == 0 {
+				t.Error("guard did not flag the leak shape")
+			}
+		})
+	}
+
+	// Imports are file-scoped: a later file may reuse a local name for a
+	// different package, and must not be able to shadow an earlier file's
+	// import mapping and hide its leak.
+	t.Run("multi-file import collision", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "a.go"), `package rootfs
+import filesystem "os"
+type Leak = filesystem.File`)
+		writeFile(t, filepath.Join(dir, "b.go"), `package rootfs
+import filesystem "net/http"
+var _ filesystem.Client`)
+		if leaks := exportedOsFileLeaks(t, filepath.Join(dir, "*.go")); len(leaks) == 0 {
+			t.Error("guard missed a leak whose import alias was shadowed by a later file")
+		}
+	})
+
+	t.Run("clean surface", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "ok.go"), []byte(`package rootfs
+type Box struct{ s string }`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if leaks := exportedOsFileLeaks(t, filepath.Join(dir, "*.go")); len(leaks) != 0 {
+			t.Errorf("clean surface flagged: %v", leaks)
+		}
+	})
+}
+
+// exportedOsFileLeaks inspects the exported surface of the rootfs package
+// source files matching pattern and returns one diagnostic per place an
+// os.File reference escapes it.
+//
+// The walk resolves what it can without a type checker: import aliases
+// (filesystem.File), local type aliases (type raw = os.File), every declared
+// name in a grouped declaration, and inferred exported variables by scanning
+// their initializer for os.File-typed values (os.Stdin/Stdout/Stderr, the
+// *os.File-returning os functions, and os.File composite literals). Values it
+// cannot classify are assumed safe; the guard's job is to catch every shape
+// that does reference os.File, and TestRoot_OsFileSurfaceGuardDiscriminates
+// pins that set.
+func exportedOsFileLeaks(t *testing.T, pattern string) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Parse every file first so import aliases and type aliases can be
+	// resolved across the package before any declaration is inspected. Imports
+	// are file-scoped, so each file keeps its own local-name -> package-path
+	// map and each type alias retains the map of the file that defined it.
+	var parsed []*ast.File
+	var paths []string
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		f, parseErr := parser.ParseFile(fset, path, nil, parser.AllErrors)
+		if parseErr != nil {
+			t.Fatalf("parse %s: %v", path, parseErr)
+		}
+		parsed = append(parsed, f)
+		paths = append(paths, path)
+	}
+	ctx := newSurfaceCtx(parsed, paths)
+
+	var leaks []string
+	for i, f := range parsed {
+		path := paths[i]
+		fileImports := ctx.imports[path]
+		for _, decl := range f.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				if !d.Name.IsExported() {
+					continue
+				}
+				if ctx.typeRefsOsFile(fileImports, d.Type) {
+					leaks = append(leaks, fmt.Sprintf("%s: exported %s exposes *os.File", path, d.Name.Name))
+				}
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					switch s := spec.(type) {
+					case *ast.TypeSpec:
+						if !s.Name.IsExported() {
+							continue
+						}
+						if st, ok := s.Type.(*ast.StructType); ok {
+							// Check every field: an embedded field (no names)
+							// promotes its methods, and a grouped field with
+							// any exported name leaks the shared type.
+							for _, field := range st.Fields.List {
+								exported := len(field.Names) == 0
+								for _, n := range field.Names {
+									if n.IsExported() {
+										exported = true
+										break
+									}
+								}
+								if !exported {
+									continue
+								}
+								if ctx.typeRefsOsFile(fileImports, field.Type) {
+									leaks = append(leaks, fmt.Sprintf("%s: exported type %s exposes *os.File through a field",
+										path, s.Name.Name))
+								}
+							}
+							continue
+						}
+						// Interfaces, aliases, and other type forms: the whole
+						// type expression is the exported surface.
+						if ctx.typeRefsOsFile(fileImports, s.Type) {
+							leaks = append(leaks, fmt.Sprintf("%s: exported type %s exposes *os.File",
+								path, s.Name.Name))
+						}
+					case *ast.ValueSpec:
+						// Every declared name in the group shares the type or
+						// initializer, so each one is inspected.
+						if s.Type != nil {
+							if ctx.typeRefsOsFile(fileImports, s.Type) {
+								for _, name := range s.Names {
+									if name.IsExported() {
+										leaks = append(leaks, fmt.Sprintf("%s: exported variable %s has an *os.File type",
+											path, name.Name))
+									}
+								}
+							}
+							continue
+						}
+						if len(s.Values) > 0 {
+							for i, name := range s.Names {
+								if !name.IsExported() {
+									continue
+								}
+								rhs := s.Values[0]
+								if i < len(s.Values) {
+									rhs = s.Values[i]
+								}
+								if ctx.valueRefsOsFile(fileImports, rhs) {
+									leaks = append(leaks, fmt.Sprintf("%s: exported variable %s infers an *os.File value",
+										path, name.Name))
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return leaks
+}
+
+// surfaceCtx resolves the names a package surface references. Imports are
+// file-scoped, so imports is keyed by file path (local import name -> package
+// path). Local type aliases retain the imports of the file that defined them,
+// because resolving the alias's type expression must use that file's scoping,
+// not the file that happens to reference it. Aliases defined with = transfer
+// the aliased type's full surface, so they are the ones resolved; a defined
+// type (type raw os.File) creates a new type with no promoted methods and is
+// left unresolved.
+type surfaceCtx struct {
+	imports map[string]map[string]string
+	aliases map[string]aliasEntry
+}
+
+type aliasEntry struct {
+	expr    ast.Expr
+	imports map[string]string
+}
+
+func newSurfaceCtx(files []*ast.File, paths []string) *surfaceCtx {
+	ctx := &surfaceCtx{
+		imports: map[string]map[string]string{},
+		aliases: map[string]aliasEntry{},
+	}
+	for i, f := range files {
+		imp := map[string]string{}
+		for _, impDecl := range f.Imports {
+			pkgPath := strings.Trim(impDecl.Path.Value, `"`)
+			name := pkgPath
+			if idx := strings.LastIndex(name, "/"); idx >= 0 {
+				name = name[idx+1:]
+			}
+			if impDecl.Name != nil {
+				name = impDecl.Name.Name
+			}
+			imp[name] = pkgPath
+		}
+		ctx.imports[paths[i]] = imp
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok || ts.Assign == token.NoPos {
+					continue
+				}
+				ctx.aliases[ts.Name.Name] = aliasEntry{expr: ts.Type, imports: imp}
+			}
+		}
+	}
+	return ctx
+}
+
+// typeRefsOsFile reports whether a type expression references os.File, through
+// the imports of the file that uses it and through local type aliases (each
+// resolved with the imports of the file that defined it), anywhere in its tree.
+func (c *surfaceCtx) typeRefsOsFile(imports map[string]string, expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		alias, ok := c.aliases[t.Name]
+		if !ok {
+			return false
+		}
+		return c.typeRefsOsFile(alias.imports, alias.expr)
+	case *ast.SelectorExpr:
+		pkgIdent, ok := t.X.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		return imports[pkgIdent.Name] == "os" && t.Sel.Name == "File"
+	case *ast.StarExpr:
+		return c.typeRefsOsFile(imports, t.X)
+	case *ast.ArrayType:
+		return c.typeRefsOsFile(imports, t.Elt)
+	case *ast.MapType:
+		return c.typeRefsOsFile(imports, t.Key) || c.typeRefsOsFile(imports, t.Value)
+	case *ast.ChanType:
+		return c.typeRefsOsFile(imports, t.Value)
+	case *ast.Ellipsis:
+		return c.typeRefsOsFile(imports, t.Elt)
+	case *ast.ParenExpr:
+		return c.typeRefsOsFile(imports, t.X)
+	case *ast.FuncType:
+		if t.Params != nil {
+			for _, field := range t.Params.List {
+				if c.typeRefsOsFile(imports, field.Type) {
+					return true
+				}
+			}
+		}
+		if t.Results != nil {
+			for _, field := range t.Results.List {
+				if c.typeRefsOsFile(imports, field.Type) {
+					return true
+				}
+			}
+		}
+		return false
+	case *ast.StructType:
+		for _, field := range t.Fields.List {
+			if c.typeRefsOsFile(imports, field.Type) {
+				return true
+			}
+		}
+		return false
+	case *ast.InterfaceType:
+		for _, m := range t.Methods.List {
+			if c.typeRefsOsFile(imports, m.Type) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// osFileVars are package-level os values whose type is *os.File.
+var osFileVars = map[string]bool{"Stdin": true, "Stdout": true, "Stderr": true}
+
+// osFileFuncs are os package functions that return *os.File. Referencing one
+// as a value exposes the function itself, whose signature returns *os.File, so
+// both calls and value references are leaks.
+var osFileFuncs = map[string]bool{"Open": true, "OpenFile": true, "Create": true, "NewFile": true}
+
+// valueRefsOsFile reports whether a value expression has an *os.File type. It
+// recognizes the *os.File-typed os package values, the *os.File-returning os
+// functions referenced as values, os.File composite literals (through aliases
+// too), and address-of forms. Function return types and package-level variable
+// references cannot be resolved from the AST alone; such initializers are
+// assumed safe.
+func (c *surfaceCtx) valueRefsOsFile(imports map[string]string, expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.SelectorExpr:
+		pkgIdent, ok := t.X.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		if imports[pkgIdent.Name] != "os" {
+			return false
+		}
+		return osFileVars[t.Sel.Name] || osFileFuncs[t.Sel.Name]
+	case *ast.CallExpr:
+		switch fun := t.Fun.(type) {
+		case *ast.SelectorExpr:
+			pkgIdent, ok := fun.X.(*ast.Ident)
+			if !ok {
+				return false
+			}
+			return imports[pkgIdent.Name] == "os" && osFileFuncs[fun.Sel.Name]
+		case *ast.Ident:
+			// Conversion to a local alias of os.File: raw(x).
+			if alias, ok := c.aliases[fun.Name]; ok {
+				return c.typeRefsOsFile(alias.imports, alias.expr)
+			}
+			return false
+		default:
+			return false
+		}
+	case *ast.CompositeLit:
+		return c.typeRefsOsFile(imports, t.Type)
+	case *ast.UnaryExpr:
+		return t.Op == token.AND && c.valueRefsOsFile(imports, t.X)
+	default:
+		return false
+	}
+}
+
 func TestRootReadsAndClassifiesEntries(t *testing.T) {
 	base := t.TempDir()
 	writeFile(t, filepath.Join(base, "sub", "a.txt"), "body")
@@ -733,8 +1161,8 @@ func TestWriteStreamAtomic_PinSurvivesIntermediateSwap(t *testing.T) {
 	}
 
 	// Write to sub/orig/file.txt through the root — this pins sub/orig.
-	err = root.writeStreamAtomic("sub/orig/file.txt", bytes.NewReader([]byte("real")), 0o644, WriteHooks{
-		AfterOpen: func(f *os.File, tmpRel string) {
+	err = root.writeStreamAtomic("sub/orig/file.txt", bytes.NewReader([]byte("real")), 0o644, writeHooks{
+		afterOpen: func(_ *os.File, _ string) {
 			sub := filepath.Join(dir, "sub")
 			if err := os.Rename(filepath.Join(sub, "orig"), filepath.Join(sub, "swapped")); err != nil {
 				t.Fatal(err)
@@ -798,8 +1226,8 @@ func TestWriteStreamAtomic_DetectsSubstitutedTemp(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	var tmpPath string
-	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, WriteHooks{
-		AfterOpen: func(f *os.File, tmpRel string) {
+	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, writeHooks{
+		afterOpen: func(_ *os.File, tmpRel string) {
 			tmpPath = filepath.Join(dir, tmpRel)
 			if err := os.WriteFile(tmpPath+".new", []byte("impostor"), 0o644); err != nil {
 				t.Fatal(err)
@@ -837,7 +1265,7 @@ func TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure(t *testing.T) {
 	}
 	defer func() { _ = root.Close() }()
 
-	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, WriteHooks{})
+	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, writeHooks{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -894,8 +1322,8 @@ func TestWriteStreamAtomic_SyncBeforeRename(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	syncSentinel := errors.New("sync failed")
-	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, WriteHooks{
-		Sync: func(f *os.File) error { return syncSentinel },
+	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, writeHooks{
+		sync: func(*os.File) error { return syncSentinel },
 	})
 	if err == nil || !errors.Is(err, syncSentinel) {
 		t.Errorf("sync hook error should propagate, got %v", err)

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -181,43 +182,55 @@ func TestAppendSync_LinkedOutOfRootLeavesOutsideUnchanged(t *testing.T) {
 // variant would pass), so the compiled source is inspected.
 func TestAppendSync_NoTruncationCapableAPIExposed(t *testing.T) {
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "rootfs.go", nil, parser.AllErrors)
+	var packageFiles []*ast.File
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
+	}
+	for _, path := range files {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, path, nil, parser.AllErrors)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		packageFiles = append(packageFiles, f)
 	}
 
 	// No os.O_TRUNC may appear in the package's code. A truncation-capable
 	// open is the one spelling that could shorten an append-only log.
-	ast.Inspect(f, func(n ast.Node) bool {
-		sel, ok := n.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "os" && sel.Sel.Name == "O_TRUNC" {
-			t.Error("rootfs references os.O_TRUNC")
-		}
-		return true
-	})
-
-	// The append primitive's open must be O_WRONLY|O_CREATE|O_APPEND and
-	// nothing else. Find the OpenFile call whose flags carry O_APPEND (the
-	// append primitive is the only one) and require the exact set.
 	var appendFlags []string
-	ast.Inspect(f, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
+	for _, f := range packageFiles {
+		ast.Inspect(f, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if ident, ok := sel.X.(*ast.Ident); ok && ident.Name == "os" && sel.Sel.Name == "O_TRUNC" {
+				t.Error("rootfs references os.O_TRUNC")
+			}
 			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "OpenFile" || len(call.Args) < 2 {
+		})
+		// Every append open in the package must be exactly
+		// O_WRONLY|O_CREATE|O_APPEND and nothing else. Find every OpenFile call
+		// whose flags carry O_APPEND and require the exact set on each.
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "OpenFile" || len(call.Args) < 2 {
+				return true
+			}
+			flags := collectOSFlags(call.Args[1])
+			if slices.Contains(flags, "O_APPEND") {
+				appendFlags = flags
+			}
 			return true
-		}
-		flags := collectOSFlags(call.Args[1])
-		if slices.Contains(flags, "O_APPEND") {
-			appendFlags = flags
-		}
-		return true
-	})
+		})
+	}
 	if appendFlags == nil {
 		t.Fatal("no append open found in rootfs")
 	}

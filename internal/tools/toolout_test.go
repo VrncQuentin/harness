@@ -184,10 +184,9 @@ func TestRead_TooloutRefusesLinkedLeaf(t *testing.T) {
 		mustLinkDir(t, outside, link)
 		defer func() { _ = os.Remove(link) }()
 
-		f, err := openToolout(dir, TooloutScheme+id)
+		data, err := openToolout(dir, TooloutScheme+id)
 		if err == nil {
-			_ = f.Close()
-			t.Fatal("a leaf resolving outside the spill directory was accepted")
+			t.Fatalf("a leaf resolving outside the spill directory was accepted (read %q)", data)
 		}
 		// os.Root supplies the refusal; the wording is its own.
 		if !strings.Contains(err.Error(), "escapes") {
@@ -489,7 +488,7 @@ func TestRead_TooloutRootPinnedBeforeTargetOpen(t *testing.T) {
 	defer func() { _ = os.Remove(root) }()
 
 	swapped := false
-	tooloutSwapHook = func() {
+	data, err := readTooloutFromRoot(root, TooloutScheme+id, func() {
 		if swapped {
 			return
 		}
@@ -500,12 +499,7 @@ func TestRead_TooloutRootPinnedBeforeTargetOpen(t *testing.T) {
 			t.Fatalf("Remove root link: %v", err)
 		}
 		mustLinkDir(t, evilDir, root)
-	}
-	t.Cleanup(func() { tooloutSwapHook = nil })
-
-	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, TooloutDir: root}
-	res := (&readTool{}).Execute(context.Background(), ci,
-		map[string]any{"locator": TooloutScheme + id})
+	})
 
 	if !swapped {
 		t.Fatal("the hook never ran; the ordering was not exercised")
@@ -513,8 +507,11 @@ func TestRead_TooloutRootPinnedBeforeTargetOpen(t *testing.T) {
 	// The directory handle still refers to the original directory, so the read
 	// either serves the genuine spill or fails. What it must never do is follow
 	// the name to the attacker's replacement.
-	if strings.Contains(res.Content, secret) {
-		t.Errorf("a repointed root disclosed content from outside the pinned directory:\n%s", res.Content)
+	if strings.Contains(string(data), secret) {
+		t.Errorf("a repointed root disclosed content from outside the pinned directory: %q", data)
+	}
+	if err == nil && !strings.Contains(string(data), "the genuine spill") {
+		t.Errorf("the pinned read should serve the genuine spill, got %q", data)
 	}
 }
 
@@ -538,7 +535,7 @@ func TestRead_TooloutSameNameDirectoryReplacement(t *testing.T) {
 
 	moved := filepath.Join(base, "moved-aside")
 	swapped := false
-	tooloutSwapHook = func() {
+	data, err := readTooloutFromRoot(root, TooloutScheme+id, func() {
 		if swapped {
 			return
 		}
@@ -551,20 +548,15 @@ func TestRead_TooloutSameNameDirectoryReplacement(t *testing.T) {
 		if err := os.Rename(evil, root); err != nil {
 			t.Fatalf("Rename evil into place: %v", err)
 		}
-	}
-	t.Cleanup(func() { tooloutSwapHook = nil })
-
-	ci := CallInfo{SandboxRoots: []string{t.TempDir()}, TooloutDir: root}
-	res := (&readTool{}).Execute(context.Background(), ci,
-		map[string]any{"locator": TooloutScheme + id})
+	})
 
 	if !swapped {
 		t.Fatal("the hook never ran; the replacement was not staged")
 	}
-	if strings.Contains(res.Content, secret) {
-		t.Errorf("same-name replacement disclosed the attacker's file:\n%s", res.Content)
+	if strings.Contains(string(data), secret) {
+		t.Errorf("same-name replacement disclosed the attacker's file: %q", data)
 	}
-	if res.Error != "" && strings.Contains(res.Error, secret) {
-		t.Errorf("secret leaked through the error path: %s", res.Error)
+	if err != nil && strings.Contains(err.Error(), secret) {
+		t.Errorf("secret leaked through the error path: %s", err.Error())
 	}
 }
