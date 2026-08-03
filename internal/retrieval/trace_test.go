@@ -189,7 +189,7 @@ func TestNDJSONSinkCloseTwice(t *testing.T) {
 	}
 }
 
-// Finding 3.3: the sink must pin its trace directory for its owned lifetime.
+// The sink must pin its trace directory for its owned lifetime.
 // After construction, re-pointing the configured name at another directory
 // must not redirect appends: the row lands in the directory the handle was
 // pinned on, never the replacement.
@@ -233,7 +233,7 @@ func TestNDJSONSink_TraceDirectoryIsPinned(t *testing.T) {
 	}
 }
 
-// Finding 3.4: retention must not delete a stranger that claims a previously
+// Retention must not delete a stranger that claims a previously
 // observed name. The sink observes an old trace entry during its listing; a
 // stranger then takes the name over (here via a hard link to a file it cares
 // about). Deletion is refused because the name no longer identifies the entry

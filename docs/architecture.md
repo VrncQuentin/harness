@@ -104,7 +104,7 @@ Owns conversation lifecycle for the browser chat/task surface, the optional Open
 - **On end:** call summarizer (Qwen) → write episode file → trigger git commit
 - **Persistence:** append-only `sessions.jsonl` in the active project memory repo (default `~/.harness/projects/global/` for the global project)
 
-#### Explicit session recovery state (PR 11)
+#### Explicit session recovery state
 
 A save is an explicit, durable recovery transaction rather than a correctness
 signal inferred from timestamps, empty paths, or physical log order. One save
@@ -125,15 +125,15 @@ summarizer, episode-publication, or commit failure leaves a discoverable
 `pending` session whose raw sidecar can be resumed.
 
 **Compatibility rule:** records without the explicit fields are legacy records
-from before PR 11 — they were only ever appended after a fully successful
-save, so they normalize to `complete` ordered by `save_seq`. The log is never
-rewritten; new-format state is never inferred from `EpisodePath`. Reading and
-selection accept fully legacy records or valid explicit records; appending
-accepts only explicit records (a recognized typed `state` with a positive
-`attempt`), so current writers always publish the recovery state and a
-malformed hybrid (an unknown state, a state without an attempt, an attempt
-without a state, or a negative counter) can neither be written nor influence
-recovery.
+from before the explicit-state format — they were only ever appended after a
+fully successful save, so they normalize to `complete` ordered by `save_seq`.
+The log is never rewritten; new-format state is never inferred from
+`EpisodePath`. Reading and selection accept fully legacy records or valid
+explicit records; appending accepts only explicit records (a recognized typed
+`state` with a positive `attempt`), so current writers always publish the
+recovery state and a malformed hybrid (an unknown state, a state without an
+attempt, an attempt without a state, or a negative counter) can neither be
+written nor influence recovery.
 
 ### Runtime (`internal/runtime`)
 Owns the mutable service graph behind the harness. `cmd/harness/main.go` creates the UI first, then asks `internal/runtime` to wire and retry the rest of the subsystems after the browser surface is already available.
@@ -144,7 +144,7 @@ Responsibilities:
 - Adapt package boundaries for the UI: chat/task runners, memory APIs, project health checks, approval routing, and session persistence.
 - Keep runtime state behind locks because UI handlers, process events, metrics, and retry callbacks run concurrently.
 
-#### Immutable UI dependency snapshots (PR 8)
+#### Immutable UI dependency snapshots
 
 The UI never reads individual live getters. Each runtime generation owns one
 immutable `ui.ServiceDeps` snapshot — memory repo path/store, agent registry,
@@ -186,12 +186,12 @@ Lifetime protocol:
   and usable for real rooted operations after a reload, until the release runs.
 
 This replaces the eliminated `memoryHandles`, `genGate`, and
-`memoryAPISnapshot` mechanisms (retained in `docs/pr403-findings.md`); the
+`memoryAPISnapshot` mechanisms; the
 API request-generation lease (`AcquireRequestGeneration`) is unchanged, and
 the API server alone keeps a dynamic assembler because API requests
 legitimately use the current generation.
 
-#### Explicit applied runtime state (PR 9)
+#### Explicit applied runtime state
 
 `Runtime` owns one explicit applied-state record (`appliedState`) containing
 the facts needed to compare, publish, and roll back the live system: the
@@ -245,7 +245,7 @@ that has loaded one agent and is preparing cannot be overwritten by a
 concurrent active-agent save, or vice versa; the live config, the recorded
 applied config, and the store always agree.
 
-#### Project-edit transaction (PR 10)
+#### Project-edit transaction
 
 `/projects/edit` never constructs and executes `project.Workflow` directly.
 `Runtime.EditProject` is the single Runtime-owned project-update surface for
@@ -282,7 +282,7 @@ from a successful no-op: `LiveApplied=false` plus `Err=nil` means "nothing
 needed changing", while a non-nil `Err` means the apply could not commit and
 the installed generation and recorded applied state are untouched.
 
-#### Shutdown lifecycle and ownership protocol (PR 10)
+#### Shutdown lifecycle and ownership protocol
 
 `Runtime.Shutdown` is the one cohesive shutdown lifecycle, serialized with the
 apply transaction so a shutdown cannot interleave with a config apply or a

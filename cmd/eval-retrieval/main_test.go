@@ -50,8 +50,8 @@ func (stubEmbedder) Embed(_ context.Context, chunks []string) ([][]float32, erro
 	return vecs, nil
 }
 
-// Finding 3.6: eval-retrieval must enumerate episodes through a pinned repo
-// reader, producing stable repo-relative forward-slash paths, rather than
+// eval-retrieval must enumerate episodes through a pinned repo reader,
+// producing stable repo-relative forward-slash paths, rather than
 // filepath.Glob + filepath.Rel on an operator-supplied root. The test drives
 // evaluate — the exact function run() executes — and asserts the paths it
 // returns, so reverting enumeration to pathname globs changes the result.

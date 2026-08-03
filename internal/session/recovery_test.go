@@ -152,7 +152,7 @@ func startSession(t *testing.T, mgr *Manager) *Session {
 	return s
 }
 
-// TestSessionRecovery_ExplicitRecordState is finding 11.1: session state must
+// TestSessionRecovery_ExplicitRecordState: session state must
 // be decided by the explicit record state, never inferred from wall-clock
 // timestamps, an empty EpisodePath, or physical log order. Here the complete
 // record has an empty EpisodePath and an earlier SavedAt while the pending
@@ -177,7 +177,7 @@ func TestSessionRecovery_ExplicitRecordState(t *testing.T) {
 	}
 }
 
-// TestSessionRecovery_PendingAfterSidecarDurable is finding 11.2: a pending
+// TestSessionRecovery_PendingAfterSidecarDurable: a pending
 // state must only become visible once the raw sidecar is durable, so a session
 // found pending is always resumable from its sidecar. Save publishes the
 // sidecar before appending pending. The probe appender proves the ordering at
@@ -234,7 +234,7 @@ func TestSessionRecovery_PendingAfterSidecarDurable(t *testing.T) {
 	}
 }
 
-// TestSessionRecovery_CompleteAfterCommit is finding 11.3: a complete record
+// TestSessionRecovery_CompleteAfterCommit: a complete record
 // must only be emitted after the episode is published and committed. A commit
 // failure leaves only pending; a successful save emits complete only after the
 // sidecar and episode writes and the commit all ran.
@@ -293,7 +293,7 @@ func TestSessionRecovery_CompleteAfterCommit(t *testing.T) {
 	})
 }
 
-// TestSessionRecovery_MonotonicSaveSequence is finding 11.4: save attempts are
+// TestSessionRecovery_MonotonicSaveSequence: save attempts are
 // monotonically allocated and never reused, counting failed attempts too. Each
 // sub-test fails one step of the save lifecycle and proves the consumed attempt
 // is skipped by the retry — including failures that occur before any recovery
@@ -397,7 +397,7 @@ func TestSessionRecovery_MonotonicSaveSequence(t *testing.T) {
 	})
 }
 
-// TestSessionRecovery_CompleteSupersedesPending is finding 11.5: for one
+// TestSessionRecovery_CompleteSupersedesPending: for one
 // attempt, complete deterministically supersedes pending regardless of which
 // record appears last in the log or carries the later timestamp.
 func TestSessionRecovery_CompleteSupersedesPending(t *testing.T) {
@@ -443,7 +443,7 @@ func TestSessionRecovery_CompleteSupersedesPending(t *testing.T) {
 	}
 }
 
-// TestSessionRecovery_NoWallClockOrdering is finding 11.6: recovery must not
+// TestSessionRecovery_NoWallClockOrdering: recovery must not
 // use wall-clock ordering. A higher attempt supersedes a lower one even when
 // its timestamp is earlier or equal, and regardless of log position.
 func TestSessionRecovery_NoWallClockOrdering(t *testing.T) {
@@ -478,7 +478,7 @@ func TestSessionRecovery_NoWallClockOrdering(t *testing.T) {
 	}
 }
 
-// TestSessionRecovery_BackwardCompatible is finding 11.7: existing log records
+// TestSessionRecovery_BackwardCompatible: existing log records
 // without the new attempt/state fields remain readable through the documented
 // legacy normalization rule — they are complete, ordered by save_seq — and the
 // logs are never rewritten.
@@ -546,7 +546,7 @@ func TestSessionRecovery_BackwardCompatible(t *testing.T) {
 	}
 }
 
-// TestSessionRecovery_FirstSaveDiscoverable is finding 11.8: a summarizer
+// TestSessionRecovery_FirstSaveDiscoverable: a summarizer
 // failure during the very first save must not make the session undiscoverable.
 // The pending record keeps it visible and the raw sidecar is resumable.
 func TestSessionRecovery_FirstSaveDiscoverable(t *testing.T) {
