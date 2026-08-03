@@ -19,8 +19,9 @@
 - **Project memory repository.** One plain git repo per project, default
   `~/.harness/projects/<slug>/`. A user-provided git directory is used as-is; a
   non-git directory is initialized with go-git; an omitted directory creates the
-  default and initializes it with go-git. All access is through go-git — no git
-  binary required.
+  default and initializes it with go-git. No git binary is required. Repository
+  *file I/O* goes through rooted `rootfs` handles; *git operations* (init,
+  commit, workspace ops) go through the go-git wrapper.
 - **Operational state versus semantic memory versus derived indexes.**
   - *Operational/session evidence:* `sessions.jsonl`, conversation sidecars,
     and SQLite (`harness.db` holds config, metrics, and the projects table — no

@@ -125,7 +125,7 @@ docs/
 - **Every listener binds `127.0.0.1`, never `0.0.0.0`.** Neither server has an authentication layer, and the UI exposes state-changing routes (`/config`, `/shutdown`, `/task/send`). The origin check stops cross-origin browsers but not a non-browser client that omits the `Origin` header, so the bind address is the security boundary. `TestStart_BindsLoopbackOnly` enforces this — do not weaken it without adding authentication first.
 - **The UI server starts first, always.** It must be up before anything else is attempted. Config loading, memory repo validation, llama-server startup, embedder startup — all of this happens after the UI is serving. If anything fails, it is displayed in the UI as a setup error. The user should never need a terminal to diagnose or fix a problem.
 - There is no CLI. No subcommands. Project memory repos are created and managed through the `/projects` page: an existing git directory is used as-is, a non-git directory is initialized with `go-git`, and an omitted directory defaults to `~/.harness/projects/<slug>/`.
-- All persistent state (config + metrics + projects) lives in `harness.db` (SQLite, under `~/.harness/`). The schema is a single squashed migration; schema changes edit `migrations/0001_init` in place until first release (delete `harness.db` after editing it — `db.Open` fails fast on a version mismatch).
+- Operational SQLite state (config + metrics + projects) lives in `harness.db` (SQLite, under `~/.harness/`). The schema is a single squashed migration; schema changes edit `migrations/0001_init` in place until first release (delete `harness.db` after editing it — `db.Open` fails fast on a version mismatch).
 - `harness.db` is not committed to git. It is machine-local.
 
 ### UI

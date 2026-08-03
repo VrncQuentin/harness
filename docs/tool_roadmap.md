@@ -127,10 +127,11 @@ own persistent proposal/decision workflow rather than claiming to reuse this boo
 
 Read-only CI poller over the GitHub Checks API with exponential backoff under the loop's
 cancellation context, returning JSON only — `green`, `red` (with failing check names), or
-`timed_out`; it does not fetch logs or attach B3 handles. Two guards
-keep a blocking tool honest inside an agent loop: a configurable wait ceiling so it
-cannot outlive the task, and an expected-blocking flag in its schema so loop watchdogs
-distinguish a legitimate long wait from a hung tool. It closes the tier-3 workflow as the
+`timed_out`; it does not fetch logs or attach B3 handles. A configurable wait ceiling keeps
+it from outliving the task. Its schema also marks the tool `x-expected-blocking`, but that
+flag is currently inert metadata — the agent loop does not read it and no blocking
+watchdog consumes it. Planned work: actually consume the flag so loop watchdogs distinguish
+a legitimate long wait from a hung tool. It closes the tier-3 workflow as the
 only non-proposal step in it: `gh_pr_create` (proposal) → `gh_pr_wait` → `gh_pr_merge`
 (proposal). Behavior details live in [tools.md](tools.md).
 
