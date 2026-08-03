@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -103,20 +104,26 @@ func (s *NDJSONSink) Emit(t RetrievalTrace) {
 	_ = s.f.Write([]byte{'\n'})
 }
 
-// Close flushes the open file and releases the pinned trace directory.
+// Close flushes the open file and releases the pinned trace directory. A
+// failure closing the append file is preserved alongside any failure closing
+// the root, so a shutdown cannot report success after a file close that failed.
 func (s *NDJSONSink) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var errs []error
 	if s.f != nil {
-		_ = s.f.Close()
+		if err := s.f.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("retrieval: close trace file: %w", err))
+		}
 		s.f = nil
 	}
 	if s.root != nil {
-		err := s.root.Close()
+		if err := s.root.Close(); err != nil {
+			errs = append(errs, err)
+		}
 		s.root = nil
-		return err
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // ensureFile opens (or rotates to) the file for day through the pinned root.

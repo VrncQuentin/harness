@@ -444,9 +444,10 @@ Responsibilities:
   existence check to race against. A failed `CreateExclusive` leaves its partial
   file: cleaning up means removing a *name*, which by then may belong to someone
   else's file.
-- `OpenWrite` does not truncate. Truncation is a separate step the caller takes
-  after it has compared the open handles, because O_TRUNC destroys the file
-  before anyone can look at it.
+- `AppendSync` and `AppendFile` open with `O_WRONLY|O_CREATE|O_APPEND` and
+  nothing else — no O_TRUNC, no O_RDWR, no seek, no caller-supplied flags — so
+  no spelling in the package can shorten an append-only log. `AppendSync`
+  fsyncs before success; `AppendFile` is the buffered day-handle form.
 - `Root.SameDir` compares two open directories as filesystem objects. It settles
   the directories only: it says nothing about the files inside them, nor about
   one being inside the other.

@@ -80,9 +80,19 @@ func run() error {
 		return fmt.Errorf("repo, embedder, and queries are required")
 	}
 
-	f, err := os.Open(*queriesFile)
+	queries, err := loadQueries(*queriesFile)
 	if err != nil {
-		return fmt.Errorf("open queries: %w", err)
+		return err
+	}
+	_, err = evaluate(*repoPath, queries, *k, embedder.NewClient(*embedderURL, http.DefaultClient))
+	return err
+}
+
+// loadQueries reads the NDJSON query+relevant file.
+func loadQueries(path string) ([]queryRecord, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open queries: %w", err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -95,38 +105,46 @@ func run() error {
 		}
 		var q queryRecord
 		if err := json.Unmarshal(line, &q); err != nil {
-			return fmt.Errorf("parse query line: %w", err)
+			return nil, fmt.Errorf("parse query line: %w", err)
 		}
 		queries = append(queries, q)
 	}
 	if err := sc.Err(); err != nil {
-		return fmt.Errorf("read queries: %w", err)
+		return nil, fmt.Errorf("read queries: %w", err)
 	}
 	if len(queries) == 0 {
-		return fmt.Errorf("no queries found in %s", *queriesFile)
+		return nil, fmt.Errorf("no queries found in %s", path)
 	}
+	return queries, nil
+}
 
-	repoDirReader, err := memory.NewDirReader(*repoPath)
+// evaluate opens the repo through the pinned reader, enumerates episodes
+// through it, and scores every query. It is the production scoring path,
+// split from run() so tests can drive the same code with a stub embedder:
+// reverting enumeration to pathname globs changes what evaluate does. It
+// returns the repo-relative paths it scored so a test can assert exactly what
+// was enumerated.
+func evaluate(repoPath string, queries []queryRecord, k int, emb embedder.Client) ([]string, error) {
+	repoDirReader, err := memory.NewDirReader(repoPath)
 	if err != nil {
-		return fmt.Errorf("open repo: %w", err)
+		return nil, fmt.Errorf("open repo: %w", err)
 	}
 	defer func() { _ = repoDirReader.Close() }()
-	indexDir := memoryops.EpisodeIndexDir(*repoPath)
+	indexDir := memoryops.EpisodeIndexDir(repoPath)
 	if err := repoDirReader.MkdirAll("index/_episodes"); err != nil {
-		return fmt.Errorf("mkdir index: %w", err)
+		return nil, fmt.Errorf("mkdir index: %w", err)
 	}
 	indexAnchor, err := repoDirReader.SubAnchor("index/_episodes")
 	if err != nil {
-		return fmt.Errorf("index anchor: %w", err)
+		return nil, fmt.Errorf("index anchor: %w", err)
 	}
 	episodeIndex, err := memoryops.NewEpisodeIndex(indexAnchor, indexDir, repoDirReader.Identity())
 	if err != nil {
 		_ = indexAnchor.Close()
-		return fmt.Errorf("open episode index: %w", err)
+		return nil, fmt.Errorf("open episode index: %w", err)
 	}
 	defer func() { _ = episodeIndex.Close() }()
 
-	emb := embedder.NewClient(*embedderURL, http.DefaultClient)
 	scorer := &memoryops.EpisodeScorer{
 		Embedder: emb,
 		Config:   config.Defaults().Prompt,
@@ -139,10 +157,10 @@ func run() error {
 	// forward-slash paths — the same shape the scorer and the index expect.
 	paths, err := episodePaths(repoDirReader)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(paths) == 0 {
-		return fmt.Errorf("no episodes found in %s", *repoPath)
+		return nil, fmt.Errorf("no episodes found in %s", repoPath)
 	}
 
 	ctx := context.Background()
@@ -178,7 +196,7 @@ func run() error {
 
 		// Recall@K: fraction of relevant docs found in top K.
 		found := 0
-		cutoff := *k
+		cutoff := k
 		if cutoff > len(ranked) {
 			cutoff = len(ranked)
 		}
@@ -192,16 +210,16 @@ func run() error {
 			recallAtK = float64(found) / float64(len(q.Relevant))
 		}
 
-		fmt.Printf("query %d: mrr=%.4f recall@%d=%.4f  %q\n", i+1, mrr, *k, recallAtK, q.Query)
+		fmt.Printf("query %d: mrr=%.4f recall@%d=%.4f  %q\n", i+1, mrr, k, recallAtK, q.Query)
 		sumMRR += mrr
 		sumRecall += recallAtK
 		evaluated++
 	}
 
 	if evaluated == 0 {
-		return fmt.Errorf("no queries could be evaluated")
+		return nil, fmt.Errorf("no queries could be evaluated")
 	}
 	n := float64(evaluated)
-	fmt.Printf("\nmean MRR=%.4f  mean Recall@%d=%.4f  (n=%d)\n", sumMRR/n, *k, sumRecall/n, evaluated)
-	return nil
+	fmt.Printf("\nmean MRR=%.4f  mean Recall@%d=%.4f  (n=%d)\n", sumMRR/n, k, sumRecall/n, evaluated)
+	return paths, nil
 }

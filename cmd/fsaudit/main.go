@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -85,14 +86,24 @@ func (e *AllowlistError) Error() string {
 
 // ---------- allowlist parsing and validation ----------
 
-// parseAllowlist decodes an allowlist, rejecting any unknown field. The schema
-// intentionally has no migration category, so a stray "migration", "pr", or
-// "notes" key fails the parse rather than being silently ignored.
+// parseAllowlist decodes an allowlist, rejecting any unknown field and any
+// trailing JSON value after the allowlist itself. The schema intentionally has
+// no migration category, so a stray "migration", "pr", or "notes" key fails
+// the parse rather than being silently ignored.
 func parseAllowlist(data []byte) (allowlist, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	var al allowlist
 	if err := dec.Decode(&al); err != nil {
+		return al, err
+	}
+	// A second decode must hit EOF. A valid allowlist followed by another JSON
+	// object would otherwise be accepted without examining the extra value.
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return al, fmt.Errorf("allowlist: unexpected trailing JSON value")
+		}
 		return al, err
 	}
 	return al, nil

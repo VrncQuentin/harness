@@ -701,11 +701,14 @@ func TestSet_OpenResolvesAlongsideEachPin(t *testing.T) {
 	}
 }
 
-// Finding 3.13: no exported rootfs capability may return an *os.File, whose
+// Finding 3.13: no exported rootfs capability may expose an *os.File, whose
 // Name() reveals the pathname it was opened through and would let a read
-// become a pathname reopen that bypasses the pinned root. A behavior test
-// cannot prove this (an unused *os.File-returning method would pass), so the
-// compiled source of every package file is inspected.
+// become a pathname reopen that bypasses the pinned root — or whose Truncate,
+// Seek, and Write could rewrite what the root's opaque handles exist to keep
+// append-only or read-only. A behavior test cannot prove this (an unused
+// *os.File-returning method or a hook parameter would pass), so the compiled
+// source of every package file is inspected: exported function parameters and
+// results, and exported struct fields, must not reference *os.File anywhere.
 func TestRoot_OpenDoesNotExposePathname(t *testing.T) {
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
@@ -724,14 +727,46 @@ func TestRoot_OpenDoesNotExposePathname(t *testing.T) {
 			t.Fatalf("parse %s: %v", path, parseErr)
 		}
 		for _, decl := range f.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || !fn.Name.IsExported() {
-				continue
-			}
-			if fn.Type.Results != nil {
-				for _, r := range fn.Type.Results.List {
-					if isOsFileType(r.Type) {
-						t.Errorf("%s: exported %s returns *os.File", path, fn.Name.Name)
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				if !d.Name.IsExported() {
+					continue
+				}
+				if d.Type.Params != nil {
+					for _, p := range d.Type.Params.List {
+						if referencesOsFile(p.Type) {
+							t.Errorf("%s: exported %s takes an *os.File", path, d.Name.Name)
+						}
+					}
+				}
+				if d.Type.Results != nil {
+					for _, r := range d.Type.Results.List {
+						if referencesOsFile(r.Type) {
+							t.Errorf("%s: exported %s returns *os.File", path, d.Name.Name)
+						}
+					}
+				}
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					ts, ok := spec.(*ast.TypeSpec)
+					if !ok || !ts.Name.IsExported() {
+						continue
+					}
+					st, ok := ts.Type.(*ast.StructType)
+					if !ok {
+						continue
+					}
+					for _, field := range st.Fields.List {
+						if len(field.Names) == 0 {
+							continue // embedded field, not part of the named surface
+						}
+						if !field.Names[0].IsExported() {
+							continue
+						}
+						if referencesOsFile(field.Type) {
+							t.Errorf("%s: exported type %s exposes *os.File through field %s",
+								path, ts.Name.Name, field.Names[0].Name)
+						}
 					}
 				}
 			}
@@ -739,18 +774,26 @@ func TestRoot_OpenDoesNotExposePathname(t *testing.T) {
 	}
 }
 
-// isOsFileType reports whether expr denotes *os.File.
-func isOsFileType(expr ast.Expr) bool {
-	star, ok := expr.(*ast.StarExpr)
-	if !ok {
-		return false
-	}
-	sel, ok := star.X.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	ident, ok := sel.X.(*ast.Ident)
-	return ok && ident.Name == "os" && sel.Sel.Name == "File"
+// referencesOsFile reports whether expr references *os.File anywhere in its
+// type tree, including inside func signatures and struct fields.
+func referencesOsFile(expr ast.Expr) bool {
+	found := false
+	ast.Inspect(expr, func(n ast.Node) bool {
+		star, ok := n.(*ast.StarExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := star.X.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if ok && ident.Name == "os" && sel.Sel.Name == "File" {
+			found = true
+		}
+		return true
+	})
+	return found
 }
 
 func TestRootReadsAndClassifiesEntries(t *testing.T) {
@@ -806,8 +849,8 @@ func TestWriteStreamAtomic_PinSurvivesIntermediateSwap(t *testing.T) {
 	}
 
 	// Write to sub/orig/file.txt through the root — this pins sub/orig.
-	err = root.writeStreamAtomic("sub/orig/file.txt", bytes.NewReader([]byte("real")), 0o644, WriteHooks{
-		AfterOpen: func(f *os.File, tmpRel string) {
+	err = root.writeStreamAtomic("sub/orig/file.txt", bytes.NewReader([]byte("real")), 0o644, writeHooks{
+		afterOpen: func(_ *os.File, _ string) {
 			sub := filepath.Join(dir, "sub")
 			if err := os.Rename(filepath.Join(sub, "orig"), filepath.Join(sub, "swapped")); err != nil {
 				t.Fatal(err)
@@ -871,8 +914,8 @@ func TestWriteStreamAtomic_DetectsSubstitutedTemp(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	var tmpPath string
-	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, WriteHooks{
-		AfterOpen: func(f *os.File, tmpRel string) {
+	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, writeHooks{
+		afterOpen: func(_ *os.File, tmpRel string) {
 			tmpPath = filepath.Join(dir, tmpRel)
 			if err := os.WriteFile(tmpPath+".new", []byte("impostor"), 0o644); err != nil {
 				t.Fatal(err)
@@ -910,7 +953,7 @@ func TestWriteStreamAtomic_DoesNotCleanUpTempOnFailure(t *testing.T) {
 	}
 	defer func() { _ = root.Close() }()
 
-	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, WriteHooks{})
+	err = root.writeStreamAtomic("file.txt", &failingReader{data: "hello", failAfter: 3, err: errors.New("injected")}, 0o644, writeHooks{})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -967,8 +1010,8 @@ func TestWriteStreamAtomic_SyncBeforeRename(t *testing.T) {
 	defer func() { _ = root.Close() }()
 
 	syncSentinel := errors.New("sync failed")
-	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, WriteHooks{
-		Sync: func(f *os.File) error { return syncSentinel },
+	err = root.writeStreamAtomic("file.txt", bytes.NewReader([]byte("hello")), 0o644, writeHooks{
+		sync: func(*os.File) error { return syncSentinel },
 	})
 	if err == nil || !errors.Is(err, syncSentinel) {
 		t.Errorf("sync hook error should propagate, got %v", err)

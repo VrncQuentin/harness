@@ -115,6 +115,8 @@ func TestParseAllowlist_RejectsMigrationFields(t *testing.T) {
 		{"migration object", `{"permanent": [], "migration": {}}`},
 		{"pr field on permanent entry", `{"permanent": [{"file":"x.go","line":1,"fn":"os.Stat","pr":"PR 3","justification":"x"}]}`},
 		{"notes field", `{"permanent": [{"file":"x.go","line":1,"fn":"os.Stat","notes":"later","justification":"x"}]}`},
+		{"trailing migration object", `{"permanent": []} {"migration": [{"file":"x.go","line":1,"fn":"os.Stat"}]}`},
+		{"trailing permanent object", `{"permanent": []} {"permanent": []}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

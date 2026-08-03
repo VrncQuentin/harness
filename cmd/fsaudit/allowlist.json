@@ -8,13 +8,13 @@
     },
     {
       "file": "internal/rootfs/write.go",
-      "line": 117,
+      "line": 152,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: WriteStreamAtomic temp identity check"
     },
     {
       "file": "internal/rootfs/write.go",
-      "line": 306,
+      "line": 341,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: RemoveVerified identity check"
     },
@@ -110,7 +110,7 @@
     },
     {
       "file": "cmd/eval-retrieval/main.go",
-      "line": 83,
+      "line": 93,
       "fn": "os.Open",
       "justification": "eval harness reads operator-named query file; not part of the production binary"
     }
