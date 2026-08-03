@@ -287,9 +287,9 @@ the installed generation and recorded applied state are untouched.
 `Runtime.Shutdown` is the one cohesive shutdown lifecycle, serialized with the
 apply transaction so a shutdown cannot interleave with a config apply or a
 project edit. It replaces the split coordination between `cmd/harness/main.go`
-and `Runtime.Stop`: `main` calls `rt.Shutdown(rootCancel, 10s)` and nothing
-else, and `Runtime.Stop` is retained only as the no-root-cancel compatibility
-wrapper for tests. The lifecycle is explicit:
+and a no-root-cancel stop wrapper: `main` calls `rt.Shutdown(rootCancel, 10s)`
+and nothing else; tests drive the same lifecycle without a root cancel. The
+lifecycle is explicit:
 
 1. **stop admissions** — the request queue closes its intake
    (`Queue.CloseAdmissions`), so new UI/API chat or task work is refused before

@@ -164,10 +164,10 @@ func (rt *Runtime) applyConfigLocked(
 	// state changed) locally. Nothing is published and no process is touched
 	// until commit; a failed candidate is discarded wholesale and the
 	// installed generation and recorded applied state stay as they were.
-	var tx *applyTx
+	var candidate *memoryCandidate
 	if rebuild {
-		tx = rt.prepareApply(ctx, uiServer, metricsStore, loaded, runningModel, buildAPI)
-		if tx == nil {
+		candidate = rt.prepareApply(ctx, uiServer, metricsStore, loaded, runningModel, buildAPI)
+		if candidate == nil {
 			if rt.leaveApply != nil {
 				rt.leaveApply()
 			}
@@ -200,7 +200,7 @@ func (rt *Runtime) applyConfigLocked(
 	}
 
 	rt.mu.Lock()
-	result := rt.commitApply(tx, &newApplied, oldApplied, modelChanged, embedderChanged, endpointChanged, apiPortChanged, oldCfg, uiServer)
+	result := rt.commitApply(candidate, &newApplied, oldApplied, modelChanged, embedderChanged, endpointChanged, apiPortChanged, oldCfg, uiServer)
 	rt.mu.Unlock()
 
 	// Retirement of the previous API server runs outside rt.mu: Stop can wait

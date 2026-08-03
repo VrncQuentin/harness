@@ -78,7 +78,7 @@ func TestNewStoresInitialConfig(t *testing.T) {
 	cfg.Agent.Active = "coder"
 
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	if got := rt.getActiveAgent(); got != "coder" {
 		t.Fatalf("active agent = %q, want coder", got)
@@ -111,7 +111,7 @@ func TestEffectiveModelForUsesActiveProjectOverrides(t *testing.T) {
 	projectGPU := 9
 	projectParallel := 3
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		"demo": {
 			Slug:           "demo",
@@ -145,7 +145,7 @@ func TestPromptConfigForUsesRunningModelCtx(t *testing.T) {
 
 	projectCtx := 4096
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		"demo": {
 			Slug:           "demo",
@@ -299,7 +299,7 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mem.Close() })
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.started = true
 	rt.globalMem = mem
 	rt.activeMem = mem
@@ -344,7 +344,7 @@ func TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange(t *testing.T
 	if !result.LiveApplied {
 		t.Fatal("retry did not report live apply after rebuilding missing memory services")
 	}
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	if rt.sessionManager() == nil || rt.taskRunner == nil || rt.assembler == nil {
 		t.Fatalf("memory/API graph was not rebuilt: session=%T task=%T assembler=%T", rt.sessionManager(), rt.taskRunner, rt.assembler)
 	}
@@ -365,7 +365,7 @@ func TestApplyConfigRetriesMissingAPIServerWithoutConfigChange(t *testing.T) {
 
 	rt := New(cfg, store, LogRings{})
 	rt.started = true
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
@@ -420,7 +420,7 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			tc.mutate(&loaded)
 
 			rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
-			t.Cleanup(func() { rt.Stop() })
+			t.Cleanup(func() { stopRuntime(t, rt) })
 			rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 				project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 			}}
@@ -475,7 +475,7 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 		summary:   "saved partial task",
 	}
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.started = true
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
@@ -546,7 +546,7 @@ func TestStartMemoryAndAPIInvalidRepoDoesNotBindAPI(t *testing.T) {
 	cfg.API.Port = port
 
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.reqQueue = queue.New(1, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -855,7 +855,7 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	// The first call (the task turn) blocks on cancellation after one token;
 	// later calls (the shutdown session flush) complete with a summary and
 	// Done, so a retained session can be saved by a later shutdown attempt.
@@ -908,7 +908,7 @@ func TestRecordTaskEventsPairsApprovalAuditNumbers(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
 	defer func() { _ = gitRepo.Close() }()
 	if mgr == nil {
@@ -967,7 +967,7 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.inferClient = &capturingInferenceClient{tokens: []inference.Token{{Content: "ok"}, {Done: true}}}
 
 	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
@@ -1024,7 +1024,7 @@ func TestTaskRunnerWiresHTTPClientIntoToolContext(t *testing.T) {
 	}}
 
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.inferClient = client
 
 	probe := &httpClientProbeTool{}
@@ -1078,7 +1078,7 @@ func TestTaskRunnerDoesNotUseMemoryRepoAsSandboxFallback(t *testing.T) {
 	}}
 
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.inferClient = client
 	rt.projectStore = &runtimeProjectStoreStub{
 		projects: map[string]project.Project{
@@ -1166,7 +1166,7 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 	defer q.Stop()
 
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.globalMem = mem
 	rt.activeMem = mem
 	rt.agentReg = reg
@@ -1226,7 +1226,7 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, nil, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	dr, err := memory.NewDirReader(root)
 	if err != nil {
 		t.Fatal(err)
@@ -1607,7 +1607,7 @@ func TestReloadReleasesPreviousHandles(t *testing.T) {
 
 	uiServer := ui.NewServer(0)
 	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	// Now reload to newRoot. After success, oldRoot should be removable.
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
@@ -1650,7 +1650,7 @@ func TestCandidateFailureReleasesAllCandidateHandles(t *testing.T) {
 
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
 	rt.started = true
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
@@ -1699,7 +1699,7 @@ func TestCandidateIdentityMismatchFailsClosed(t *testing.T) {
 
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
 	rt.started = true
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: stable},
 	}}
@@ -1762,7 +1762,7 @@ func TestCandidateIdentityMismatchSameNameReplacementFailsClosed(t *testing.T) {
 
 	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
 	rt.started = true
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: activeRoot},
 	}}
@@ -1808,7 +1808,7 @@ func TestFailedReloadPreservesReadableGeneration(t *testing.T) {
 
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
 	rt.started = true
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.globalMem = mem
 	rt.activeMem = mem
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
@@ -1865,7 +1865,7 @@ func TestGenerationReaderOwnershipRetiredOnStop(t *testing.T) {
 	rt.gen = &generation{readers: []memory.Repo{reader}}
 	rt.gen.acquire()
 
-	rt.Stop()
+	stopRuntime(t, rt)
 
 	if _, err := reader.Read("rules.md"); err == nil {
 		t.Error("generation reader Read should fail after Runtime.Stop closed it")
@@ -1888,11 +1888,11 @@ func TestStopIsIdempotent(t *testing.T) {
 	defer func() { _ = gitRepo.Close() }()
 	rt.setSessionManager(mgr)
 
-	rt.Stop()
+	stopRuntime(t, rt)
 	if rt.sessionManager() != nil {
 		t.Error("SessionManager should return nil after Stop")
 	}
-	rt.Stop()
+	stopRuntime(t, rt)
 }
 
 func TestGenLeaseSurvivesReload(t *testing.T) {
@@ -1921,7 +1921,7 @@ func TestGenLeaseSurvivesReload(t *testing.T) {
 	if !rt.startMemoryAndAPI(context.Background(), uiServer, nil, &rt.cfg) {
 		t.Fatal("initial start failed")
 	}
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	asm, rec, _, release := rt.AcquireRequestGeneration()
 
@@ -1993,7 +1993,7 @@ func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
 
 	uiServer := ui.NewServer(0)
 	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	asm, rec, _, release := rt.AcquireRequestGeneration()
 	defer release()
@@ -2057,7 +2057,7 @@ func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
 
 	uiServer := ui.NewServer(0)
 	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	_, _, _, release := rt.AcquireRequestGeneration()
 
@@ -2087,7 +2087,7 @@ func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
 	}
 
 	release()
-	rt.Stop()
+	stopRuntime(t, rt)
 	// After release + Stop, oldRoot must be removable even on Windows.
 	if err := os.RemoveAll(oldRoot); err != nil {
 		t.Fatalf("old root not removable after release and Stop: %v", err)
@@ -2121,7 +2121,7 @@ func TestSnapshot_OldReferencesRemainValidAfterReload(t *testing.T) {
 
 	uiServer := ui.NewServer(0)
 	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	// The held-lease phase runs inside a closure so every assertion path
 	// releases exactly once via the deferred release.
@@ -2154,7 +2154,7 @@ func TestSnapshot_OldReferencesRemainValidAfterReload(t *testing.T) {
 
 		// Runtime.Stop must not close resources protected by an outstanding
 		// snapshot lease.
-		rt.Stop()
+		stopRuntime(t, rt)
 		if _, err := memStore.Read("known.txt"); err != nil {
 			t.Fatalf("held snapshot read failed after Stop: %v", err)
 		}
@@ -2192,7 +2192,7 @@ func TestSnapshot_RetryOnlyStartupWiresProvider(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 
 	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
@@ -2346,7 +2346,7 @@ func TestSnapshot_RunnerReadsAndRecordsInOriginalProject(t *testing.T) {
 
 	uiServer := ui.NewServer(0)
 	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	snap, release := rt.AcquireUISnapshot()
 	defer release()
@@ -2486,7 +2486,7 @@ func TestSnapshot_ActiveAgentResolvedPerAcquisition(t *testing.T) {
 		t.Fatalf("ui server start: %v", err)
 	}
 	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	// Startup has no active agent.
 	snap, release := rt.AcquireUISnapshot()
@@ -2570,7 +2570,7 @@ func TestStopWithInFlightLease(t *testing.T) {
 	asm, _, _, release := rt.AcquireRequestGeneration()
 
 	// Stop while the lease is held.
-	rt.Stop()
+	stopRuntime(t, rt)
 
 	// The lease protects the captured generation. Assemble must
 	// still work — the generation's readers are pinned.
@@ -2592,5 +2592,5 @@ func TestStopWithInFlightLease(t *testing.T) {
 	release()
 
 	// Second Stop is a no-op.
-	rt.Stop()
+	stopRuntime(t, rt)
 }

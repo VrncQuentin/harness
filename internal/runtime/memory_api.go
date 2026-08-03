@@ -109,24 +109,6 @@ func (c *memoryCandidate) close() {
 	}
 }
 
-// applyTx is a locally owned apply transaction. It owns a prepared memory
-// candidate (including its API server, if any) that commit will install. A
-// transaction that is not committed must be closed as one object: close stops
-// the API server it started and closes every candidate handle. commitApply
-// transfers ownership of the candidate's resources to the runtime, after which
-// the caller must not call close.
-type applyTx struct {
-	candidate *memoryCandidate
-}
-
-func (tx *applyTx) close() {
-	if tx == nil || tx.candidate == nil {
-		return
-	}
-	tx.candidate.close()
-	tx.candidate = nil
-}
-
 func closeReaders(readers ...memory.Repo) {
 	closed := map[*memory.DirReader]bool{}
 	for _, r := range readers {
@@ -146,14 +128,14 @@ func (rt *Runtime) startMemoryAndAPI(ctx context.Context, uiServer *ui.Server, m
 	apiPortChanged := rt.apiPortChangeFromLive(candidateCfg)
 	buildAPI := candidateCfg.API.Enabled && apiPortChanged
 
-	tx := rt.prepareApply(ctx, uiServer, metricsStore, candidateCfg, runningModel, buildAPI)
-	if tx == nil {
+	candidate := rt.prepareApply(ctx, uiServer, metricsStore, candidateCfg, runningModel, buildAPI)
+	if candidate == nil {
 		return false
 	}
 
-	rt.installGeneration(tx.candidate)
-	rt.transferAPIServer(tx.candidate, apiPortChanged)
-	rt.activateAPIServer(tx.candidate.apiServer)
+	rt.installGeneration(candidate)
+	rt.transferAPIServer(candidate, apiPortChanged)
+	rt.activateAPIServer(candidate.apiServer)
 
 	applied := newAppliedState(candidateCfg, runningModel, runningModel)
 	rt.applied = &applied
@@ -184,25 +166,25 @@ func (rt *Runtime) apiPortChangeFromLive(candidateCfg *config.Config) bool {
 }
 
 // prepareApply builds a candidate for cfg and binds its API listener when the
-// port/enabled state changed. The transaction is locally owned and unpublished:
+// port/enabled state changed. The candidate is locally owned and unpublished:
 // nothing in the runtime is mutated, no process is touched, and the bound
 // listener accepts no requests until commitApply installs the candidate and
 // activates it (Serve). A failed preparation is discarded wholesale via
-// tx.close; the installed generation and recorded applied state are untouched.
-func (rt *Runtime) prepareApply(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, runningModel config.ModelConfig, buildAPI bool) *applyTx {
+// candidate.close; the installed generation and recorded applied state are
+// untouched.
+func (rt *Runtime) prepareApply(ctx context.Context, uiServer *ui.Server, metricsStore metrics.Store, cfg *config.Config, runningModel config.ModelConfig, buildAPI bool) *memoryCandidate {
 	candidate := rt.buildCandidate(uiServer, metricsStore, cfg, buildAPI, runningModel)
 	if candidate == nil {
 		return nil
 	}
-	tx := &applyTx{candidate: candidate}
 	if candidate.apiServer != nil {
 		if err := candidate.apiServer.Bind(ctx); err != nil {
 			uiServer.AddStartupError(fmt.Errorf("api server: %w", err))
-			tx.close()
+			candidate.close()
 			return nil
 		}
 	}
-	return tx
+	return candidate
 }
 
 // installGeneration swaps the live generation for the candidate's and retires
@@ -313,16 +295,16 @@ func (rt *Runtime) drainRetiredAPI() bool {
 // commitApply installs a prepared apply under rt.mu: the generation and applied
 // state swap atomically, process reconfigurations are issued from the new
 // applied state (never re-derived from the stores), and the previous API
-// server is retired under the timeout ownership protocol. tx is nil when no
-// memory/API rebuild is needed. The commit is structured to be infallible so
+// server is retired under the timeout ownership protocol. candidate is nil when
+// no memory/API rebuild is needed. The commit is structured to be infallible so
 // the installed applied state is always coherent with the live processes.
-func (rt *Runtime) commitApply(tx *applyTx, newApplied *appliedState, oldApplied *appliedState, modelChanged, embedderChanged, endpointChanged, apiPortChanged bool, oldCfg config.Config, uiServer *ui.Server) ui.ApplyResult {
+func (rt *Runtime) commitApply(candidate *memoryCandidate, newApplied *appliedState, oldApplied *appliedState, modelChanged, embedderChanged, endpointChanged, apiPortChanged bool, oldCfg config.Config, uiServer *ui.Server) ui.ApplyResult {
 	var result ui.ApplyResult
 
-	if tx != nil {
-		rt.installGeneration(tx.candidate)
-		rt.transferAPIServer(tx.candidate, apiPortChanged)
-		rt.activateAPIServer(tx.candidate.apiServer)
+	if candidate != nil {
+		rt.installGeneration(candidate)
+		rt.transferAPIServer(candidate, apiPortChanged)
+		rt.activateAPIServer(candidate.apiServer)
 		result.LiveApplied = true
 	}
 
