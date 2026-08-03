@@ -207,16 +207,14 @@ func TestRepoTransaction_CommitInsideSessionDoesNotReacquire(t *testing.T) {
 	defer func() { _ = repo.Close() }()
 	writeRepoFile(t, repo, "a.txt", "one\n")
 
+	var sha string
 	err = repo.WithMutation(func(m *Mutation) error {
-		_, cerr := m.Commit("first", []string{"a.txt"})
+		var cerr error
+		sha, cerr = m.Commit("first", []string{"a.txt"})
 		return cerr
 	})
 	if err != nil {
 		t.Fatalf("commit inside transaction: %v", err)
-	}
-	sha, err := repo.HeadSHA()
-	if err != nil {
-		t.Fatal(err)
 	}
 	if sha == "" {
 		t.Fatal("no commit was created inside the transaction")

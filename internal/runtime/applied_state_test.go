@@ -260,7 +260,7 @@ func TestAppliedState_FailedCandidateDiscarded(t *testing.T) {
 	rt, _ := appliedRuntimeForTest(t, &cfg, nil)
 	oldGen := rt.gen
 	oldApplied := rt.applied
-	oldSession := rt.SessionManager()
+	oldSession := rt.sessionManager()
 	oldMem := rt.activeMem
 	if oldGen == nil || oldApplied == nil || oldSession == nil {
 		t.Fatal("initial generation/applied/session missing")
@@ -291,7 +291,7 @@ func TestAppliedState_FailedCandidateDiscarded(t *testing.T) {
 	if rt.applied != oldApplied {
 		t.Fatal("recorded applied state was replaced by a failed candidate")
 	}
-	if rt.SessionManager() != oldSession {
+	if rt.sessionManager() != oldSession {
 		t.Fatal("session manager was replaced by a failed candidate")
 	}
 	if rt.activeMem != oldMem {
@@ -752,7 +752,7 @@ func TestAppliedState_ProjectOverrideDeletion(t *testing.T) {
 	}}
 
 	rt, projects := appliedRuntimeForTest(t, &cfg, projects)
-	oldMgr := rt.SessionManager()
+	oldMgr := rt.sessionManager()
 	if rt.applied == nil || rt.applied.runningModel.ModelPath != modelB {
 		t.Fatalf("initial applied running model = %+v, want the override model B", rt.applied)
 	}
@@ -792,7 +792,7 @@ func TestAppliedState_ProjectOverrideDeletion(t *testing.T) {
 		t.Fatalf("llama binary = %q, want global %q", bin, cfg.Model.Binary)
 	}
 	// The override deletion is a process-only change: no generation rebuild.
-	if rt.SessionManager() != oldMgr {
+	if rt.sessionManager() != oldMgr {
 		t.Fatal("override deletion caused a generation rebuild when only the process needed retargeting")
 	}
 }

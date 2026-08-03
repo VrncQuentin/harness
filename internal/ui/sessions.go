@@ -34,23 +34,17 @@ type SessionStore interface {
 // SessionSaveResult is the small slice of the manager's SaveResult the
 // UI surfaces back to the browser.
 type SessionSaveResult struct {
-	ID          string    `json:"id"`
-	EpisodePath string    `json:"episode_path"`
-	Summary     string    `json:"summary"`
-	SavedAt     time.Time `json:"saved_at"`
-	SaveSeq     int       `json:"save_seq"`
+	SaveSeq int `json:"save_seq"`
 }
 
 // SessionRecord is one saved-session entry rendered by the resume picker.
 // It mirrors the session package record shape minus fields the UI does not
 // display.
 type SessionRecord struct {
-	ID          string    `json:"id"`
-	Agent       string    `json:"agent"`
-	StartedAt   time.Time `json:"started_at"`
-	SavedAt     time.Time `json:"saved_at"`
-	SaveSeq     int       `json:"save_seq"`
-	EpisodePath string    `json:"episode_path"`
+	ID      string    `json:"id"`
+	Agent   string    `json:"agent"`
+	SavedAt time.Time `json:"saved_at"`
+	SaveSeq int       `json:"save_seq"`
 }
 
 // chatSaveView is the template data for the chat-save-fragment partial.
@@ -98,7 +92,7 @@ func (s *Server) handleChatSave(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.chatTmpl.ExecuteTemplate(w, "chat-save-fragment", chatSaveView{
-		SessionID: res.ID,
+		SessionID: id,
 		SaveSeq:   res.SaveSeq,
 	}); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)

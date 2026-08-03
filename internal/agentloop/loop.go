@@ -183,16 +183,6 @@ func (e *Engine) WithMetrics(rec MetricsRecorder) *Engine {
 	return e
 }
 
-// WithApprovalTimeout sets how long the loop waits for approval event delivery
-// and a user decision. Non-positive values restore the default.
-func (e *Engine) WithApprovalTimeout(d time.Duration) *Engine {
-	if d <= 0 {
-		d = defaultApprovalTimeout
-	}
-	e.approvalTimeout = d
-	return e
-}
-
 // ApplyApproval delivers the user's decision for the approval event
 // identified by approvalID. Returns an error when the id is unknown
 // (already answered, timed out, or never emitted).

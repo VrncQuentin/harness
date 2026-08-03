@@ -169,7 +169,7 @@ func (rt *Runtime) emitShutdownHook(step string) {
 // whether this attempt's flush is not cleanly finished — still running past
 // the drain context or completed with an error.
 func (rt *Runtime) shutdownFlush(ctx context.Context) bool {
-	mgr := rt.SessionManager()
+	mgr := rt.sessionManager()
 	if mgr == nil {
 		return false
 	}

@@ -681,9 +681,9 @@ func (rt *Runtime) setSessionManager(mgr *session.Manager) {
 	rt.sessionMu.Unlock()
 }
 
-// SessionManager exposes the live session manager for in-package use and
+// sessionManager exposes the live session manager for in-package use and
 // tests. Returns nil when the repo has not been validated yet.
-func (rt *Runtime) SessionManager() *session.Manager {
+func (rt *Runtime) sessionManager() *session.Manager {
 	rt.sessionMu.RLock()
 	defer rt.sessionMu.RUnlock()
 	return rt.sessionMg
@@ -695,7 +695,7 @@ func (rt *Runtime) SessionManager() *session.Manager {
 // live config through summarizerPromptFn without deadlocking.
 func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context) {
 	tasks := rt.taskRunner
-	mgr := rt.SessionManager()
+	mgr := rt.sessionManager()
 	if tasks == nil && mgr == nil {
 		return
 	}
@@ -724,7 +724,7 @@ func (rt *Runtime) memoryAPIUnavailable() bool {
 		rt.agentReg == nil ||
 		rt.assembler == nil ||
 		rt.taskRunner == nil ||
-		rt.SessionManager() == nil ||
+		rt.sessionManager() == nil ||
 		(rt.cfg.API.Enabled && rt.apiServer == nil)
 }
 

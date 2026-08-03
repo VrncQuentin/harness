@@ -42,9 +42,6 @@ func (s *stubSessionStore) Save(_ context.Context, id string) (SessionSaveResult
 	if s.saveErr != nil {
 		return SessionSaveResult{}, s.saveErr
 	}
-	if s.saveRes.ID == "" {
-		s.saveRes.ID = id
-	}
 	return s.saveRes, nil
 }
 
@@ -214,7 +211,6 @@ func TestHandleChatSessionResume_ConversationLostWithFragmentRequest(t *testing.
 func TestHandleChatSave_ReturnsHTML(t *testing.T) {
 	store := &stubSessionStore{
 		saveRes: SessionSaveResult{
-			ID:      "abc",
 			SaveSeq: 1,
 		},
 	}

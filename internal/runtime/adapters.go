@@ -295,11 +295,7 @@ func (ad *uiSessionStoreAdapter) Save(ctx context.Context, id string) (ui.Sessio
 		return ui.SessionSaveResult{}, err
 	}
 	return ui.SessionSaveResult{
-		ID:          res.ID,
-		EpisodePath: res.EpisodePath,
-		Summary:     res.Summary,
-		SavedAt:     res.SavedAt,
-		SaveSeq:     res.SaveSeq,
+		SaveSeq: res.SaveSeq,
 	}, nil
 }
 
@@ -318,12 +314,10 @@ func (ad *uiSessionStoreAdapter) Records(agent string) ([]ui.SessionRecord, erro
 	out := make([]ui.SessionRecord, 0, len(recs))
 	for _, r := range recs {
 		out = append(out, ui.SessionRecord{
-			ID:          r.ID,
-			Agent:       r.Agent,
-			StartedAt:   r.StartedAt,
-			SavedAt:     r.SavedAt,
-			SaveSeq:     r.SaveSeq,
-			EpisodePath: r.EpisodePath,
+			ID:      r.ID,
+			Agent:   r.Agent,
+			SavedAt: r.SavedAt,
+			SaveSeq: r.SaveSeq,
 		})
 	}
 	return out, nil
