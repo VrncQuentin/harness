@@ -193,10 +193,11 @@ type traceRecorder struct {
 	rows []retrieval.RetrievalTrace
 }
 
-func (r *traceRecorder) Emit(row retrieval.RetrievalTrace) {
+func (r *traceRecorder) Emit(row retrieval.RetrievalTrace) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.rows = append(r.rows, row)
+	return nil
 }
 
 func (r *traceRecorder) Close() error { return nil }

@@ -80,8 +80,11 @@ type RetrievalTrace struct {
 	Timestamp      time.Time `json:"timestamp"`
 }
 
-// TraceSink receives D3 trace rows. Emit reports whether the row was durably
-// written; a non-nil error means the row was not recorded.
+// TraceSink receives D3 trace rows. Emit reports whether the row was appended
+// successfully; a non-nil error means the row was not recorded. Note that
+// "appended successfully" is not "durably written": NDJSONSink uses
+// rootfs.AppendFile, which performs no per-write fsync, so a crash shortly after
+// Emit may still lose the row.
 type TraceSink interface {
 	Emit(RetrievalTrace) error
 	Close() error
