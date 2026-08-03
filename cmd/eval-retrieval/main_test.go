@@ -604,8 +604,19 @@ func TestBaseline_RunsCommittedFixtureEndToEnd(t *testing.T) {
 		t.Fatalf("fixture must have >= 10 queries")
 	}
 
+	// A searcher returning results for every fixture episode so the queries
+	// genuinely evaluate; an empty production index would be unscoreable.
+	var results []index.Result
+	for _, q := range queries {
+		for _, rel := range q.Relevant {
+			source := strings.TrimSuffix(rel, ".md")
+			results = append(results, index.Result{SHA: source, Score: 0.5})
+		}
+	}
+	searcher := &testSearcher{results: results}
+
 	resultsDir := t.TempDir()
-	paths, err := evaluate(root, queries, stubEmbedder{}, evalOptions{K: 3, Baseline: true, ResultsDir: resultsDir, ProjectSlug: "global"})
+	paths, err := evaluateWithSearcher(root, queries, stubEmbedder{}, searcher, evalOptions{K: 3, Baseline: true, ResultsDir: resultsDir, ProjectSlug: "global"})
 	if err != nil {
 		t.Fatalf("evaluate baseline: %v", err)
 	}
