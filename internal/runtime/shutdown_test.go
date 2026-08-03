@@ -242,7 +242,7 @@ func TestShutdown_DrainTimeoutDoesNotCloseInUse(t *testing.T) {
 		release()
 		t.Fatalf("held snapshot read = %q, %v", b, err)
 	}
-	if _, err := rt.activeMem.Read("rules.md"); err != nil {
+	if _, err := rt.gen.activeMem.Read("rules.md"); err != nil {
 		release()
 		t.Fatalf("retained generation reader failed after timed-out shutdown: %v", err)
 	}
@@ -482,9 +482,7 @@ func newGenerationedManagerForTest(t *testing.T, cfg *config.Config, client infe
 	}}
 	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, client)
 	t.Cleanup(func() { _ = gitRepo.Close() })
-	rt.setSessionManager(mgr)
-	rt.gen = &generation{readers: []memory.Repo{rt.activeMem}}
-	rt.gen.acquire()
+	rt.gen.sessionMgr = mgr
 	return rt, mgr, root
 }
 
@@ -529,7 +527,7 @@ func TestShutdown_SessionFlushBounded(t *testing.T) {
 
 	// Ownership is retained: the session manager and generation stay for a
 	// later Shutdown retry.
-	if rt.sessionManager() != mgr {
+	if rt.gen == nil || rt.gen.sessionMgr != mgr {
 		t.Fatal("session manager ownership dropped while its save was still in flight")
 	}
 	rt.mu.Lock()
@@ -576,7 +574,7 @@ func TestShutdown_RetryAfterFlushFailureUsesRetainedReader(t *testing.T) {
 	}
 
 	// The retained reader is still open and performs a real operation.
-	if b, err := rt.activeMem.Read("known.txt"); err != nil || string(b) != "retained" {
+	if b, err := rt.gen.activeMem.Read("known.txt"); err != nil || string(b) != "retained" {
 		t.Fatalf("retained reader read = %q, %v", b, err)
 	}
 

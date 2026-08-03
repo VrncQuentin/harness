@@ -169,13 +169,16 @@ and `ApplyConfig`, so a retry-only startup still wires generation-backed
 handlers.
 
 Lifetime protocol:
-- **Publication:** the candidate and its snapshot are built locally, bound to
-  the candidate generation, and installed by swapping the live generation
-  under the same lock acquisition uses. The old publisher lease is retired
-  next; old readers and handles close only after the last acquired snapshot on
-  the old generation is released. Acquisition and publication share the lock,
-  so a handler cannot select an old snapshot after its generation was retired
-  and its readers closed (no load-before-increment window).
+- **Publication:** the candidate and its snapshot are built locally, bound to the
+  candidate generation, and installed by swapping the live generation under the
+  same lock acquisition uses. Each generation is the sole owner of its readers,
+  task runner, assembler, session manager, and handles from construction — the
+  runtime keeps no duplicate references, so retirement never has to transfer
+  readers into an old generation after the fact. The old publisher lease is
+  retired next; old readers and handles close only after the last acquired
+  snapshot on the old generation is released. Acquisition and publication share
+  the lock, so a handler cannot select an old snapshot after its generation was
+  retired and its readers closed (no load-before-increment window).
 - **Handlers:** synchronous handlers release via `defer`. `/chat/send` and
   `/task/send` acquire before reading the runner or session store and transfer
   the release to the detached goroutine, which releases after the entire

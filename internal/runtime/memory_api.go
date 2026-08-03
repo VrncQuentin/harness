@@ -189,37 +189,30 @@ func (rt *Runtime) prepareApply(ctx context.Context, uiServer *ui.Server, metric
 
 // installGeneration swaps the live generation for the candidate's and retires
 // the old publisher lease under the same lock acquisition uses, so a UI
-// handler cannot select an old snapshot after its generation was retired. Old
-// readers close only after the last acquired snapshot on the old generation is
-// released. Caller must hold rt.mu.
+// handler cannot select an old snapshot after its generation was retired. The
+// candidate's resources become the new generation's at construction; the old
+// generation already owns its own readers and handles, which close only after
+// the last acquired snapshot on the old generation is released. Caller must
+// hold rt.mu.
 func (rt *Runtime) installGeneration(c *memoryCandidate) {
-	oldGlobal := rt.globalMem
-	oldActive := rt.activeMem
-
 	// Bind the candidate's complete UI snapshot to its generation before
 	// anything observes it, and take the publisher lease up front.
 	newGen := &generation{
+		globalMem:  c.globalMem,
+		activeMem:  c.activeMem,
+		agentReg:   c.agentReg,
 		assembler:  c.assembler,
 		sessionMgr: c.sessionMgr,
+		taskRunner: c.taskRunner,
 		handles:    c.handles,
 		uiSnap:     c.serviceDeps,
 	}
 	newGen.acquire()
 
-	rt.globalMem = c.globalMem
-	rt.activeMem = c.activeMem
-	rt.agentReg = c.agentReg
-	rt.assembler = c.assembler
-	rt.setSessionManager(c.sessionMgr)
-	rt.taskRunner = c.taskRunner
-
 	oldGen := rt.gen
 	rt.gen = newGen
 	if oldGen != nil {
-		oldGen.readers = []memory.Repo{oldGlobal, oldActive}
 		oldGen.release()
-	} else {
-		closeReaders(oldGlobal, oldActive)
 	}
 }
 
@@ -654,30 +647,18 @@ func (rt *Runtime) summarizerPromptFn() session.SummarizerPromptFunc {
 	}
 }
 
-// setSessionManager swaps the live manager under its dedicated mutex
-// so callers off the main reload path (chat handler, shutdown) can read
-// without contending with config reloads.
-func (rt *Runtime) setSessionManager(mgr *session.Manager) {
-	rt.sessionMu.Lock()
-	rt.sessionMg = mgr
-	rt.sessionMu.Unlock()
-}
-
-// sessionManager exposes the live session manager for in-package use and
-// tests. Returns nil when the repo has not been validated yet.
-func (rt *Runtime) sessionManager() *session.Manager {
-	rt.sessionMu.RLock()
-	defer rt.sessionMu.RUnlock()
-	return rt.sessionMg
-}
-
 // quiesceMemoryAndAPI cancels active task loops and flushes live sessions before
 // a memory/API rebuild drops the current adapters. Caller must hold rt.mu on
 // entry; the method releases it while waiting so session summarization can read
 // live config through summarizerPromptFn without deadlocking.
 func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context) {
-	tasks := rt.taskRunner
-	mgr := rt.sessionManager()
+	g := rt.gen
+	var tasks *taskRunnerAdapter
+	var mgr *session.Manager
+	if g != nil {
+		tasks = g.taskRunner
+		mgr = g.sessionMgr
+	}
 	if tasks == nil && mgr == nil {
 		return
 	}
@@ -701,12 +682,14 @@ func (rt *Runtime) quiesceMemoryAndAPI(ctx context.Context) {
 }
 
 func (rt *Runtime) memoryAPIUnavailable() bool {
-	return rt.globalMem == nil ||
-		rt.activeMem == nil ||
-		rt.agentReg == nil ||
-		rt.assembler == nil ||
-		rt.taskRunner == nil ||
-		rt.sessionManager() == nil ||
+	g := rt.gen
+	return g == nil ||
+		g.globalMem == nil ||
+		g.activeMem == nil ||
+		g.agentReg == nil ||
+		g.assembler == nil ||
+		g.taskRunner == nil ||
+		g.sessionMgr == nil ||
 		(rt.cfg.API.Enabled && rt.apiServer == nil)
 }
 

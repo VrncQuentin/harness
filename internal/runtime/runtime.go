@@ -22,16 +22,22 @@ import (
 	"github.com/VrncQuentin/harness/internal/ui"
 )
 
-// generation owns the concrete resources of one reload cycle: readers,
-// assembler, session manager, and the immutable UI dependency snapshot. The
-// publisher holds one lease for as long as the generation is installed;
-// operations acquire an additional lease before using any generation resource
-// and release it after. When the lease count reaches zero, the generation's
-// readers and owned handles are closed.
+// generation owns the concrete resources of one reload cycle: the readers,
+// task runner, assembler, session manager, agent registry, owned handles, and
+// the immutable UI dependency snapshot. Ownership is assigned at construction —
+// the candidate's resources become the generation's — so retirement never has
+// to transfer readers into an old generation after the fact. The publisher
+// holds one lease for as long as the generation is installed; operations
+// acquire an additional lease before using any generation resource and release
+// it after. When the lease count reaches zero, the generation's readers and
+// owned handles are closed.
 type generation struct {
-	readers    []memory.Repo
+	globalMem  memory.Repo
+	activeMem  memory.Repo
+	agentReg   *agent.DiskRegistry
 	assembler  *prompt.DiskAssembler
 	sessionMgr *session.Manager
+	taskRunner *taskRunnerAdapter
 	handles    []io.Closer
 	// uiSnap is the complete set of generation-bound UI dependencies. It is
 	// captured once when the generation is published and handed out (with a
@@ -45,7 +51,7 @@ func (g *generation) acquire() { g.leases.Add(1) }
 
 func (g *generation) release() {
 	if g.leases.Add(-1) == 0 {
-		closeReaders(g.readers...)
+		closeReaders(g.globalMem, g.activeMem)
 		for _, h := range g.handles {
 			_ = h.Close()
 		}
@@ -84,16 +90,8 @@ type Runtime struct {
 	reqQueue *queue.Queue
 	started  bool
 
-	globalMem  memory.Repo
-	activeMem  memory.Repo
-	agentReg   *agent.DiskRegistry
-	assembler  *prompt.DiskAssembler
-	apiServer  *api.Server
-	sessionMu  sync.RWMutex
-	sessionMg  *session.Manager
-	taskRunner *taskRunnerAdapter
-	gen        *generation
-
+	apiServer *api.Server
+	gen       *generation
 	// applyMu serializes ApplyConfig end-to-end: validation, preparation,
 	// quiesce, commit, and retirement are one transaction, so two concurrent
 	// applies cannot interleave their decisions or their process changes.
