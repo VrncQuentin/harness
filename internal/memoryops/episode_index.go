@@ -223,7 +223,8 @@ func (e *EpisodeIndex) verified() (*rootfs.Root, error) {
 	return r, nil
 }
 
-// Current returns the shared concrete handle for migration and test helpers.
+// Current returns the live shared concrete handle, used by the runtime to
+// search through the active generation's episode index and by rebuild helpers.
 func (e *EpisodeIndex) Current() *index.Index {
 	e.mu.Lock()
 	defer e.mu.Unlock()

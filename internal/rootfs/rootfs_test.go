@@ -701,7 +701,7 @@ func TestSet_OpenResolvesAlongsideEachPin(t *testing.T) {
 	}
 }
 
-// Finding 3.13: no exported rootfs capability may expose an *os.File, whose
+// No exported rootfs capability may expose an *os.File, whose
 // Name() reveals the pathname it was opened through and would let a read
 // become a pathname reopen that bypasses the pinned root — or whose Truncate,
 // Seek, and Write could rewrite what the root's opaque handles exist to keep

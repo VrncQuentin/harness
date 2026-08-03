@@ -685,7 +685,7 @@ func TestSearchRooted_TruncatedVectorsReturnsError(t *testing.T) {
 	}
 }
 
-// TestIndex_WriteManifestDoesNotRemoveStranger verifies finding 5.4:
+// TestIndex_WriteManifestDoesNotRemoveStranger verifies that
 // a post-rename os.Remove + retry fallback would delete a stranger's
 // replacement that took over the destination name in the failure window.
 // The failure is injected at the actual rename operation, so any error
@@ -741,7 +741,7 @@ func TestIndex_WriteManifestDoesNotRemoveStranger(t *testing.T) {
 	}
 }
 
-// TestIndex_WriteManifestFsyncsBeforeRename verifies finding 5.6:
+// TestIndex_WriteManifestFsyncsBeforeRename verifies that
 // manifest publication must fsync before the rename, so a crash never
 // leaves a half-written manifest at the destination path.  The failure is
 // injected at the real Sync operation inside WriteStreamAtomic; if the
@@ -792,7 +792,7 @@ func TestIndex_WriteManifestFsyncsBeforeRename(t *testing.T) {
 	}
 }
 
-// TestIndex_WriteManifestCleansUpOwnTemp verifies finding 5.7:
+// TestIndex_WriteManifestCleansUpOwnTemp verifies that
 // temp-file cleanup deletes by name after a rename may have consumed the
 // temp entry.  The real lifecycle must never remove an entry it did not
 // create: a stranger that claims the exact consumed temp name survives, and

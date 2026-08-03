@@ -59,8 +59,8 @@ func writeOutsideLog(t *testing.T, dir string, id string) {
 	}
 }
 
-// TestSessionLog_ReadsThroughPinnedRoot is the finding 7.1 discriminator:
-// ReadAll must read sessions.jsonl through the pinned root, not by pathname.
+// TestSessionLog_ReadsThroughPinnedRoot: ReadAll must read sessions.jsonl
+// through the pinned root, not by pathname.
 // A sessions.jsonl name inside the repo that links out of it must not hand the
 // outside log's records to the caller — a pathname open would follow the link
 // and return them.
@@ -92,8 +92,8 @@ func TestSessionLog_ReadsThroughPinnedRoot(t *testing.T) {
 	}
 }
 
-// TestSessionLog_AppendsThroughPinnedRoot is the finding 7.2 discriminator:
-// AppendRecord must append through the pinned root, not by pathname. A reader
+// TestSessionLog_AppendsThroughPinnedRoot: AppendRecord must append through
+// the pinned root, not by pathname. A reader
 // opened through a stable alias keeps writing to the directory it pinned even
 // after the alias spelling is repointed at another directory — and a repointed
 // spelling fails closed instead of silently appending into the replacement.
@@ -140,8 +140,8 @@ func TestSessionLog_AppendsThroughPinnedRoot(t *testing.T) {
 	}
 }
 
-// TestSessionLog_AppendDoesNotFollowLinkOutOfRoot is the finding 7.3
-// discriminator: an append must not open sessions.jsonl by pathname, so a
+// TestSessionLog_AppendDoesNotFollowLinkOutOfRoot: an append must not open
+// sessions.jsonl by pathname, so a
 // sessions.jsonl name that links out of the repo is refused and the outside
 // file is left unchanged.
 func TestSessionLog_AppendDoesNotFollowLinkOutOfRoot(t *testing.T) {
@@ -192,8 +192,8 @@ func (w *countingWriter) WriteFile(relPath string, data []byte) error {
 	return w.real.WriteFile(relPath, data)
 }
 
-// TestSessionLog_SidecarPublishedThroughPinnedRoot is the finding 7.4
-// discriminator: sidecar publication goes through the pinned memory writer
+// TestSessionLog_SidecarPublishedThroughPinnedRoot: sidecar publication goes
+// through the pinned memory writer
 // (m.deps.Writer.WriteFile), so when the sidecar's episode directory is a
 // link out of the repo the sidecar write itself must fail closed and write
 // nothing outside. Under PR 11 the sidecar is the first artifact Save
@@ -264,8 +264,8 @@ func TestSessionLog_SidecarPublishedThroughPinnedRoot(t *testing.T) {
 	}
 }
 
-// stubLogReader returns canned bytes or a canned error so the 7.5 discriminator
-// can stage real read failures without touching the filesystem.
+// stubLogReader returns canned bytes or a canned error so a test can stage
+// real read failures without touching the filesystem.
 type stubLogReader struct {
 	data []byte
 	err  error
@@ -273,8 +273,8 @@ type stubLogReader struct {
 
 func (s stubLogReader) Read(string) ([]byte, error) { return s.data, s.err }
 
-// TestSessionLog_ReadAllOnlyErrNotExistMeansNoSessions is the finding 7.5
-// discriminator: only fs.ErrNotExist means "no sessions". A permission,
+// TestSessionLog_ReadAllOnlyErrNotExistMeansNoSessions: only fs.ErrNotExist
+// means "no sessions". A permission,
 // containment, or I/O failure must propagate, not be treated as an empty log.
 func TestSessionLog_ReadAllOnlyErrNotExistMeansNoSessions(t *testing.T) {
 	// fs.ErrNotExist is the one error that means no sessions.

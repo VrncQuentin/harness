@@ -681,9 +681,8 @@ func (rt *Runtime) setSessionManager(mgr *session.Manager) {
 	rt.sessionMu.Unlock()
 }
 
-// SessionManager exposes the live session manager for test code and
-// external callers (cmd/harness shutdown). Returns nil when the repo
-// has not been validated yet.
+// SessionManager exposes the live session manager for in-package use and
+// tests. Returns nil when the repo has not been validated yet.
 func (rt *Runtime) SessionManager() *session.Manager {
 	rt.sessionMu.RLock()
 	defer rt.sessionMu.RUnlock()

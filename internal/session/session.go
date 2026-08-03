@@ -511,9 +511,9 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 	return result, nil
 }
 
-// FlushAll saves every live session under the given ctx. Used by
-// runtime.Stop on harness Quit. Errors per-session are logged via the
-// returned error joiner; one bad save does not stop the rest.
+// FlushAll saves every live session under the given ctx. Used by the runtime
+// shutdown flush and the memory/API rebuild path. Errors per-session are
+// logged via the returned error joiner; one bad save does not stop the rest.
 func (m *Manager) FlushAll(ctx context.Context) error {
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.sessions))
