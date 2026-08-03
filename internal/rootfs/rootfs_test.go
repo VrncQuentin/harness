@@ -749,6 +749,25 @@ type FileAlias = os.File`},
 		{"exported var", `package rootfs
 import "os"
 var Current *os.File`},
+		{"import alias", `package rootfs
+import filesystem "os"
+type Leak = filesystem.File`},
+		{"local type alias", `package rootfs
+import "os"
+type raw = os.File
+func Leak() *raw { return nil }`},
+		{"inferred var", `package rootfs
+import "os"
+var Leak = os.Stdout`},
+		{"grouped declaration second name", `package rootfs
+import "os"
+var hidden, Leak *os.File`},
+		{"inferred var composite literal", `package rootfs
+import "os"
+var Leak = os.File{}`},
+		{"inferred var from os.Open", `package rootfs
+import "os"
+var Leak, _ = os.Open("f")`},
 	}
 	for _, tt := range fixtures {
 		t.Run(tt.name, func(t *testing.T) {
@@ -777,6 +796,15 @@ type Box struct{ s string }`), 0o644); err != nil {
 // exportedOsFileLeaks inspects the exported surface of the rootfs package
 // source files matching pattern and returns one diagnostic per place an
 // os.File reference escapes it.
+//
+// The walk resolves what it can without a type checker: import aliases
+// (filesystem.File), local type aliases (type raw = os.File), every declared
+// name in a grouped declaration, and inferred exported variables by scanning
+// their initializer for os.File-typed values (os.Stdin/Stdout/Stderr, the
+// *os.File-returning os functions, and os.File composite literals). Values it
+// cannot classify are assumed safe; the guard's job is to catch every shape
+// that does reference os.File, and TestRoot_OsFileSurfaceGuardDiscriminates
+// pins that set.
 func exportedOsFileLeaks(t *testing.T, pattern string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -784,7 +812,10 @@ func exportedOsFileLeaks(t *testing.T, pattern string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var leaks []string
+
+	// Parse every file first so import aliases and type aliases can be
+	// resolved across the package before any declaration is inspected.
+	var parsed []*ast.File
 	for _, path := range files {
 		if strings.HasSuffix(path, "_test.go") {
 			continue
@@ -793,25 +824,21 @@ func exportedOsFileLeaks(t *testing.T, pattern string) []string {
 		if parseErr != nil {
 			t.Fatalf("parse %s: %v", path, parseErr)
 		}
+		parsed = append(parsed, f)
+	}
+	ctx := newSurfaceCtx(parsed)
+
+	var leaks []string
+	for _, f := range parsed {
+		path := fset.Position(f.Pos()).Filename
 		for _, decl := range f.Decls {
 			switch d := decl.(type) {
 			case *ast.FuncDecl:
 				if !d.Name.IsExported() {
 					continue
 				}
-				if d.Type.Params != nil {
-					for _, p := range d.Type.Params.List {
-						if referencesOsFile(p.Type) {
-							leaks = append(leaks, fmt.Sprintf("%s: exported %s takes an *os.File", path, d.Name.Name))
-						}
-					}
-				}
-				if d.Type.Results != nil {
-					for _, r := range d.Type.Results.List {
-						if referencesOsFile(r.Type) {
-							leaks = append(leaks, fmt.Sprintf("%s: exported %s returns *os.File", path, d.Name.Name))
-						}
-					}
+				if ctx.typeRefsOsFile(d.Type) {
+					leaks = append(leaks, fmt.Sprintf("%s: exported %s exposes *os.File", path, d.Name.Name))
 				}
 			case *ast.GenDecl:
 				for _, spec := range d.Specs {
@@ -829,7 +856,7 @@ func exportedOsFileLeaks(t *testing.T, pattern string) []string {
 								if len(field.Names) > 0 && !field.Names[0].IsExported() {
 									continue
 								}
-								if referencesOsFile(field.Type) {
+								if ctx.typeRefsOsFile(field.Type) {
 									leaks = append(leaks, fmt.Sprintf("%s: exported type %s exposes *os.File through a field",
 										path, s.Name.Name))
 								}
@@ -838,17 +865,38 @@ func exportedOsFileLeaks(t *testing.T, pattern string) []string {
 						}
 						// Interfaces, aliases, and other type forms: the whole
 						// type expression is the exported surface.
-						if referencesOsFile(s.Type) {
+						if ctx.typeRefsOsFile(s.Type) {
 							leaks = append(leaks, fmt.Sprintf("%s: exported type %s exposes *os.File",
 								path, s.Name.Name))
 						}
 					case *ast.ValueSpec:
-						if len(s.Names) == 0 || !s.Names[0].IsExported() || s.Type == nil {
+						// Every declared name in the group shares the type or
+						// initializer, so each one is inspected.
+						if s.Type != nil {
+							if ctx.typeRefsOsFile(s.Type) {
+								for _, name := range s.Names {
+									if name.IsExported() {
+										leaks = append(leaks, fmt.Sprintf("%s: exported variable %s has an *os.File type",
+											path, name.Name))
+									}
+								}
+							}
 							continue
 						}
-						if referencesOsFile(s.Type) {
-							leaks = append(leaks, fmt.Sprintf("%s: exported variable %s has an *os.File type",
-								path, s.Names[0].Name))
+						if len(s.Values) > 0 {
+							for i, name := range s.Names {
+								if !name.IsExported() {
+									continue
+								}
+								rhs := s.Values[0]
+								if i < len(s.Values) {
+									rhs = s.Values[i]
+								}
+								if ctx.valueRefsOsFile(rhs) {
+									leaks = append(leaks, fmt.Sprintf("%s: exported variable %s infers an *os.File value",
+										path, name.Name))
+								}
+							}
 						}
 					}
 				}
@@ -858,23 +906,156 @@ func exportedOsFileLeaks(t *testing.T, pattern string) []string {
 	return leaks
 }
 
-// referencesOsFile reports whether expr references os.File anywhere in its
-// type tree, including inside func signatures, struct fields, pointer or slice
-// elements, and aliases.
-func referencesOsFile(expr ast.Expr) bool {
-	found := false
-	ast.Inspect(expr, func(n ast.Node) bool {
-		sel, ok := n.(*ast.SelectorExpr)
+// surfaceCtx resolves the names a package surface references: import aliases
+// (local import name -> package path) and local type aliases (name -> type
+// expression). Aliases defined with = transfer the aliased type's full
+// surface, so they are the ones resolved; a defined type (type raw os.File)
+// creates a new type with no promoted methods and is left unresolved.
+type surfaceCtx struct {
+	imports map[string]string
+	aliases map[string]ast.Expr
+}
+
+func newSurfaceCtx(files []*ast.File) *surfaceCtx {
+	ctx := &surfaceCtx{
+		imports: map[string]string{},
+		aliases: map[string]ast.Expr{},
+	}
+	for _, f := range files {
+		for _, imp := range f.Imports {
+			pkgPath := strings.Trim(imp.Path.Value, `"`)
+			name := pkgPath
+			if i := strings.LastIndex(name, "/"); i >= 0 {
+				name = name[i+1:]
+			}
+			if imp.Name != nil {
+				name = imp.Name.Name
+			}
+			ctx.imports[name] = pkgPath
+		}
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				ts, ok := spec.(*ast.TypeSpec)
+				if !ok || ts.Assign == token.NoPos {
+					continue
+				}
+				ctx.aliases[ts.Name.Name] = ts.Type
+			}
+		}
+	}
+	return ctx
+}
+
+// typeRefsOsFile reports whether a type expression references os.File, through
+// import aliases and local type aliases, anywhere in its tree.
+func (c *surfaceCtx) typeRefsOsFile(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		alias, ok := c.aliases[t.Name]
 		if !ok {
-			return true
+			return false
 		}
-		ident, ok := sel.X.(*ast.Ident)
-		if ok && ident.Name == "os" && sel.Sel.Name == "File" {
-			found = true
+		return c.typeRefsOsFile(alias)
+	case *ast.SelectorExpr:
+		pkgIdent, ok := t.X.(*ast.Ident)
+		if !ok {
+			return false
 		}
-		return true
-	})
-	return found
+		return c.imports[pkgIdent.Name] == "os" && t.Sel.Name == "File"
+	case *ast.StarExpr:
+		return c.typeRefsOsFile(t.X)
+	case *ast.ArrayType:
+		return c.typeRefsOsFile(t.Elt)
+	case *ast.MapType:
+		return c.typeRefsOsFile(t.Key) || c.typeRefsOsFile(t.Value)
+	case *ast.ChanType:
+		return c.typeRefsOsFile(t.Value)
+	case *ast.Ellipsis:
+		return c.typeRefsOsFile(t.Elt)
+	case *ast.ParenExpr:
+		return c.typeRefsOsFile(t.X)
+	case *ast.FuncType:
+		if t.Params != nil {
+			for _, field := range t.Params.List {
+				if c.typeRefsOsFile(field.Type) {
+					return true
+				}
+			}
+		}
+		if t.Results != nil {
+			for _, field := range t.Results.List {
+				if c.typeRefsOsFile(field.Type) {
+					return true
+				}
+			}
+		}
+		return false
+	case *ast.StructType:
+		for _, field := range t.Fields.List {
+			if c.typeRefsOsFile(field.Type) {
+				return true
+			}
+		}
+		return false
+	case *ast.InterfaceType:
+		for _, m := range t.Methods.List {
+			if c.typeRefsOsFile(m.Type) {
+				return true
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+// osFileVars are package-level os values whose type is *os.File.
+var osFileVars = map[string]bool{"Stdin": true, "Stdout": true, "Stderr": true}
+
+// osFileFuncs are os package functions that return *os.File.
+var osFileFuncs = map[string]bool{"Open": true, "OpenFile": true, "Create": true, "NewFile": true}
+
+// valueRefsOsFile reports whether a value expression has an *os.File type.
+// It recognizes the *os.File-typed os package values and functions, os.File
+// composite literals (through aliases too), and address-of forms. Function
+// return types and package-level variable references cannot be resolved from
+// the AST alone; such initializers are assumed safe.
+func (c *surfaceCtx) valueRefsOsFile(expr ast.Expr) bool {
+	switch t := expr.(type) {
+	case *ast.SelectorExpr:
+		pkgIdent, ok := t.X.(*ast.Ident)
+		if !ok {
+			return false
+		}
+		return c.imports[pkgIdent.Name] == "os" && osFileVars[t.Sel.Name]
+	case *ast.CallExpr:
+		switch fun := t.Fun.(type) {
+		case *ast.SelectorExpr:
+			pkgIdent, ok := fun.X.(*ast.Ident)
+			if !ok {
+				return false
+			}
+			return c.imports[pkgIdent.Name] == "os" && osFileFuncs[fun.Sel.Name]
+		case *ast.Ident:
+			// Conversion to a local alias of os.File: raw(x).
+			if alias, ok := c.aliases[fun.Name]; ok {
+				return c.typeRefsOsFile(alias)
+			}
+			return false
+		default:
+			return false
+		}
+	case *ast.CompositeLit:
+		return c.typeRefsOsFile(t.Type)
+	case *ast.UnaryExpr:
+		return t.Op == token.AND && c.valueRefsOsFile(t.X)
+	default:
+		return false
+	}
 }
 
 func TestRootReadsAndClassifiesEntries(t *testing.T) {
