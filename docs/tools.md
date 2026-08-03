@@ -16,12 +16,17 @@ interface: a unique `ID`, a JSON Schema for its parameters (`Schema`), an
 registers every built-in tool and fails startup if a descriptor has no
 implementation.
 
-**Descriptors** are the single source of truth for built-in enablement and
+**Descriptors** are the source of built-in *default* enablement and default
 approval posture. Each `Descriptor` carries `ID`, `DefaultEnabled`,
 `DefaultApproval` (`allow` or `ask` — there is no descriptor-level "deny"; deny
-comes from config or the evaluator), and `DefaultApprovalSource`. Callers
-derive config and policy behavior from `BuiltinDescriptors()` instead of
-duplicating tool IDs.
+comes from config or the evaluator), and `DefaultApprovalSource`.
+`config.Defaults()` seeds each enable toggle from `BuiltinDefaultEnabled`, and
+the approvals `DefaultLayer()` is generated from `BuiltinDescriptors()` — so
+the defaults track the tool inventory without a second hand-maintained copy.
+They are not the sole source of tool IDs in policy: `config.ToolEnabled`,
+`config.Defaults`, `tools.RegisterBuiltins`, and the runtime's user-config
+deny-rule list all still enumerate the 20 ids explicitly (the checklist below
+documents each of those touch points).
 
 **`CallInfo`** is the typed context handed to every tool: active project slug,
 sandbox roots, the C2 memory-repo check, the toolout spill directory, session
@@ -240,9 +245,12 @@ The sandbox has four distinct layers; none is a generic OS sandbox.
     active query and emitting signatures for the rest.
   - **B2 — tool-output folder:** per-tool content caps with head/tail elision
     for high-volume tools (`exec`, `go_test`, `go_lint`, `git_diff`, `git_log`).
-  - **B3 — tee-on-failure:** writes the full unfiltered output of a failed call
+  - **B3 — tee-on-failure:** spills the full unfiltered output of a failed call
     to `~/.harness/cache/toolout/` and injects a compact `toolout:<id>` handle
-    into the conversation. B3 is side-effectful and deliberately outside the
+    into the conversation. The spill content is `FullOutput` when the tool
+    preserved one, else `Error`; it spills only when that content is at least
+    4096 bytes (`b3Threshold`) — short failures stay inline and receive no
+    toolout handle. B3 is side-effectful and deliberately outside the
     B5 token gate: the spill file is already written when the gate would
     inspect it, so discarding the value would orphan the file and drop the only
     route back to otherwise-unreachable output.
