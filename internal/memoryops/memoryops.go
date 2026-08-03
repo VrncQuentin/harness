@@ -110,7 +110,7 @@ type EpisodeScorer struct {
 	Index    *EpisodeIndex
 }
 
-func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, query string, episodePaths []string) (map[string]RetrievalScore, error) {
+func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, tc retrieval.TraceContext, query string, episodePaths []string) (map[string]RetrievalScore, error) {
 	out := make(map[string]RetrievalScore, len(episodePaths))
 	for _, p := range episodePaths {
 		out[p] = RetrievalScore{}
@@ -129,6 +129,7 @@ func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, query string, episode
 		ctx,
 		s.Embedder,
 		s.Index,
+		tc,
 		query,
 		episodePaths,
 		s.Config.SemanticWeight,

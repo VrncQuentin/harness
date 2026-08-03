@@ -26,13 +26,14 @@ import (
 	"github.com/VrncQuentin/harness/internal/parser"
 	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/prompt"
+	"github.com/VrncQuentin/harness/internal/retrieval"
 	"github.com/VrncQuentin/harness/internal/session"
 	"github.com/VrncQuentin/harness/internal/tools"
 	"github.com/VrncQuentin/harness/internal/ui"
 )
 
 type episodeScoreService interface {
-	ScoreEpisodes(ctx context.Context, query string, episodePaths []string) (map[string]memoryops.RetrievalScore, error)
+	ScoreEpisodes(ctx context.Context, tc retrieval.TraceContext, query string, episodePaths []string) (map[string]memoryops.RetrievalScore, error)
 }
 
 type uiRetrievalScorerAdapter struct {
@@ -47,7 +48,7 @@ func (a *uiRetrievalScorerAdapter) ScoreEpisodes(ctx context.Context, query stri
 	if a == nil || a.scorer == nil {
 		return out, nil
 	}
-	scores, err := a.scorer.ScoreEpisodes(ctx, query, episodePaths)
+	scores, err := a.scorer.ScoreEpisodes(ctx, retrieval.TraceContext{}, query, episodePaths)
 	if err != nil {
 		return out, err
 	}

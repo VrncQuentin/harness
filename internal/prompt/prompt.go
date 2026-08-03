@@ -364,7 +364,11 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 		for i := range out {
 			paths[i] = out[i].path
 		}
-		scores, scored, err := retrieval.ScoreEpisodePaths(ctx, a.emb, a.idx, query, paths, a.cfg.SemanticWeight, a.cfg.RecencyWeight)
+		slug := a.projectSlug
+		if slug == "" {
+			slug = project.GlobalSlug
+		}
+		scores, scored, err := retrieval.ScoreEpisodePaths(ctx, a.emb, a.idx, retrieval.TraceContext{ProjectSlug: slug, TopK: a.cfg.RecencyN}, query, paths, a.cfg.SemanticWeight, a.cfg.RecencyWeight)
 		if err == nil && scored {
 			for i := range out {
 				out[i].score = scores[out[i].path]

@@ -34,8 +34,8 @@ func TestQueryIDDeterminism(t *testing.T) {
 	if a != b {
 		t.Fatalf("QueryID not deterministic: %q vs %q", a, b)
 	}
-	if len(a) != 8 {
-		t.Fatalf("QueryID length: want 8, got %d", len(a))
+	if len(a) != 64 {
+		t.Fatalf("QueryID length: want full SHA-256 (64 hex chars), got %d", len(a))
 	}
 }
 
@@ -62,10 +62,13 @@ func TestNDJSONSinkWritesRow(t *testing.T) {
 	}
 
 	sink.Emit(RetrievalTrace{
-		QueryID:      "ab12ef34",
-		EpisodePath:  "episodes/agent/2025-01-01.md",
-		BlendedScore: 0.75,
-		Ts:           now,
+		Version:     TraceSchemaVersion,
+		RecordType:  RecordTypeCandidate,
+		ProjectSlug: "global",
+		QueryID:     "ab12ef34",
+		Candidate:   "episodes/agent/2025-01-01.md",
+		Score:       0.75,
+		Timestamp:   now,
 	})
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -85,8 +88,17 @@ func TestNDJSONSinkWritesRow(t *testing.T) {
 	if row.QueryID != "ab12ef34" {
 		t.Errorf("QueryID: want ab12ef34, got %s", row.QueryID)
 	}
-	if row.BlendedScore != 0.75 {
-		t.Errorf("BlendedScore: want 0.75, got %f", row.BlendedScore)
+	if row.Score != 0.75 {
+		t.Errorf("Score: want 0.75, got %f", row.Score)
+	}
+	if row.Version != TraceSchemaVersion {
+		t.Errorf("Version: want %d, got %d", TraceSchemaVersion, row.Version)
+	}
+	if row.RecordType != RecordTypeCandidate {
+		t.Errorf("RecordType: want %s, got %s", RecordTypeCandidate, row.RecordType)
+	}
+	if row.ProjectSlug != "global" {
+		t.Errorf("ProjectSlug: want global, got %s", row.ProjectSlug)
 	}
 }
 
@@ -99,7 +111,7 @@ func TestNDJSONSinkMultipleRowsSameDay(t *testing.T) {
 	}
 
 	for i := range 3 {
-		sink.Emit(RetrievalTrace{QueryID: "q", Rank: i, Ts: now})
+		sink.Emit(RetrievalTrace{QueryID: "q", Rank: i, Timestamp: now})
 	}
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -132,8 +144,8 @@ func TestNDJSONSinkDayRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNDJSONSink: %v", err)
 	}
-	sink.Emit(RetrievalTrace{QueryID: "d1", Ts: day1})
-	sink.Emit(RetrievalTrace{QueryID: "d2", Ts: day2})
+	sink.Emit(RetrievalTrace{QueryID: "d1", Timestamp: day1})
+	sink.Emit(RetrievalTrace{QueryID: "d2", Timestamp: day2})
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -162,8 +174,8 @@ func TestNDJSONSinkPrunesOldFiles(t *testing.T) {
 	}
 	// Emit on a new day so rotation triggers pruning.
 	newDay := time.Date(2020, 2, 16, 0, 0, 0, 0, time.UTC)
-	sink.Emit(RetrievalTrace{QueryID: "new", Ts: now})
-	sink.Emit(RetrievalTrace{QueryID: "new2", Ts: newDay})
+	sink.Emit(RetrievalTrace{QueryID: "new", Timestamp: now})
+	sink.Emit(RetrievalTrace{QueryID: "new2", Timestamp: newDay})
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -180,7 +192,7 @@ func TestNDJSONSinkCloseTwice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNDJSONSink: %v", err)
 	}
-	sink.Emit(RetrievalTrace{QueryID: "x", Ts: now})
+	sink.Emit(RetrievalTrace{QueryID: "x", Timestamp: now})
 	if err := sink.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
@@ -220,7 +232,7 @@ func TestNDJSONSink_TraceDirectoryIsPinned(t *testing.T) {
 	}
 	mustLinkDir(t, evil, trace)
 
-	sink.Emit(RetrievalTrace{QueryID: "abc", Ts: now})
+	sink.Emit(RetrievalTrace{QueryID: "abc", Timestamp: now})
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -249,7 +261,7 @@ func TestNDJSONSink_RetentionDeletesOnlyOwnFiles(t *testing.T) {
 	defer func() { _ = sink.Close() }()
 
 	// The sink creates the old-day file itself, so the observed name is its own.
-	sink.Emit(RetrievalTrace{QueryID: "old", Ts: old})
+	sink.Emit(RetrievalTrace{QueryID: "old", Timestamp: old})
 
 	// A stranger's file outside the tree, and a hard link that claims the old
 	// trace entry between enumeration and removal.

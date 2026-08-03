@@ -22,6 +22,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/queue"
 	"github.com/VrncQuentin/harness/internal/reqid"
+	"github.com/VrncQuentin/harness/internal/retrieval"
 	"github.com/VrncQuentin/harness/internal/session"
 	"github.com/VrncQuentin/harness/internal/tools"
 	"github.com/VrncQuentin/harness/internal/ui"
@@ -486,7 +487,7 @@ func (ad *taskRunnerAdapter) memoryQueryFn() func(context.Context, string, int) 
 		if len(paths) == 0 {
 			return nil, nil
 		}
-		scores, err := ad.memScorer.ScoreEpisodes(ctx, query, paths)
+		scores, err := ad.memScorer.ScoreEpisodes(ctx, retrieval.TraceContext{ProjectSlug: ad.slug, TopK: k}, query, paths)
 		if err != nil {
 			return nil, fmt.Errorf("memory_query: score: %w", err)
 		}

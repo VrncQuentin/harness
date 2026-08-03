@@ -15,18 +15,63 @@ import (
 
 const traceRetentionDays = 30
 
-// RetrievalTrace is one D3 trace row: one record per episode candidate per
-// query call. query_id is a hash of the query text so no raw queries land in
-// trace files. Emission happens inside ScoreEpisodePaths so the assembler path
-// is measured as well as explicit memory_query calls.
+// TraceSchemaVersion is the schema version carried by every trace row. Trace
+// consumers must reject rows whose version they do not recognize rather than
+// guess at the fields.
+const TraceSchemaVersion = 1
+
+// Record types for RetrievalTrace.RecordType. Every retrieval invocation emits
+// exactly one "call" record; a scoreable invocation additionally emits one
+// "candidate" record per scored episode.
+const (
+	RecordTypeCall      = "call"
+	RecordTypeCandidate = "candidate"
+)
+
+// Call-row outcomes for RetrievalTrace.Outcome. unscoreable covers blank
+// queries, unavailable dependencies, and empty result sets; error covers
+// embed/search failures; scored means at least one candidate received a score.
+const (
+	OutcomeScored      = "scored"
+	OutcomeUnscoreable = "unscoreable"
+	OutcomeError       = "error"
+)
+
+// TraceContext carries the identity and requested top-K of one retrieval
+// invocation. Callers pass it to ScoreEpisodePaths so every emitted row is
+// namespaced by project and Returned has one unambiguous meaning. A zero-value
+// TraceContext (empty ProjectSlug) disables emission.
+type TraceContext struct {
+	// ProjectSlug namespaces project-relative episode paths so identical
+	// relative paths in different projects never collide.
+	ProjectSlug string
+	// TopK is the caller's requested top-K. A candidate is Returned when its
+	// final rank is within TopK; TopK <= 0 means unlimited (every scored
+	// candidate is returned).
+	TopK int
+}
+
+// RetrievalTrace is one versioned D3 trace row. Every retrieval invocation
+// emits one "call" record carrying the outcome; a scoreable invocation with
+// candidates additionally emits one "candidate" record per episode. query_id is
+// a full SHA-256 hex of the query text so no raw queries land in trace files.
+// Emission happens inside ScoreEpisodePaths so the assembler path is measured
+// as well as explicit memory_query calls.
 type RetrievalTrace struct {
-	QueryID       string    `json:"query_id"`
-	EpisodePath   string    `json:"episode_path"`
-	SemanticScore float64   `json:"semantic_score"`
-	RecencyScore  float64   `json:"recency_score"`
-	BlendedScore  float64   `json:"blended_score"`
-	Rank          int       `json:"rank"`
-	Ts            time.Time `json:"ts"`
+	Version        int       `json:"version"`
+	RecordType     string    `json:"record_type"`
+	ProjectSlug    string    `json:"project_slug"`
+	QueryID        string    `json:"query_id"`
+	Candidate      string    `json:"candidate"`
+	Semantic       float64   `json:"semantic"`
+	Recency        float64   `json:"recency"`
+	SemanticWeight float64   `json:"semantic_weight"`
+	RecencyWeight  float64   `json:"recency_weight"`
+	Score          float64   `json:"score"`
+	Rank           int       `json:"rank"`
+	Returned       bool      `json:"returned"`
+	Outcome        string    `json:"outcome"`
+	Timestamp      time.Time `json:"timestamp"`
 }
 
 // TraceSink receives D3 trace rows.
@@ -49,11 +94,12 @@ var DefaultTraceSink TraceSink
 // SetDefaultTraceSink replaces the package-level trace sink.
 func SetDefaultTraceSink(s TraceSink) { DefaultTraceSink = s }
 
-// QueryID returns an 8-hex-char prefix of SHA-256(query) so no raw query text
-// lands in trace rows.
+// QueryID returns the full SHA-256 hex of query so no raw query text lands in
+// trace rows and equal queries in different projects are still identifiable
+// without the raw text.
 func QueryID(query string) string {
 	h := sha256.Sum256([]byte(query))
-	return hex.EncodeToString(h[:])[:8]
+	return hex.EncodeToString(h[:])
 }
 
 // NDJSONSink writes one JSON object per line to date-bucketed NDJSON files
@@ -92,7 +138,7 @@ func NewNDJSONSink(dir string, now func() time.Time) (*NDJSONSink, error) {
 func (s *NDJSONSink) Emit(t RetrievalTrace) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	day := t.Ts.UTC().Format("2006-01-02")
+	day := t.Timestamp.UTC().Format("2006-01-02")
 	if err := s.ensureFile(day); err != nil {
 		return
 	}

@@ -195,14 +195,19 @@ threshold) runs before fact promotion; there is no dedup on episodes or notes.
   assembler and `memory_query` both reach it through the same scoring path.
 - **Deduplication.** Embedding-cosine comparison against existing `facts.md`
   lines before fact promotion, above the configured promotion threshold.
-- **Trace/evaluation status.** A trace sink records one row per scored episode
-  per retrieval call (query-id, semantic/recency scores, weights, final score,
-  rank) to date-bucketed NDJSON with 30-day retention, with deletion restricted
-  to identity-verified entries. Present limitations: sink construction failures
-  are silently ignored, emission errors are discarded, shutdown never closes the
-  sink, candidate rows lack project identity/weights/selected state/final rank
-  (the rank field is path-order position), and empty/unscoreable/error calls
-  emit nothing. These are documented closure items in
+- **Trace/evaluation status.** Every retrieval invocation emits one versioned
+  call record (`record_type: "call"`, `outcome: scored | unscoreable | error`)
+  to date-bucketed NDJSON with 30-day retention, with deletion restricted to
+  identity-verified entries; a scoreable invocation additionally emits one
+  `candidate` record per scored episode carrying project slug, full SHA-256
+  query ID, semantic/recency scores, the configured weights, the final blended
+  score, a one-based final post-sort rank, and whether the candidate was
+  selected into the caller's requested top-K. Emission happens inside
+  `ScoreEpisodePaths`, so the prompt-assembler path is measured as well as
+  explicit `memory_query` calls; both callers pass a `TraceContext` carrying
+  the active project slug and requested top-K. Present limitations: sink
+  construction failures are silently ignored, emission errors are discarded,
+  and shutdown never closes the sink. These are documented closure items in
   [memory_roadmap.md](memory_roadmap.md).
 
 ## 8. Durability, recovery, and shutdown-retention invariants
