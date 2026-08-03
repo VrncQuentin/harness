@@ -22,16 +22,6 @@ type Anchor struct {
 	path string
 }
 
-// NewAnchor pins the directory at path and captures its identity by
-// retaining an open handle.  The caller closes the Anchor when done.
-func NewAnchor(path string) (*Anchor, error) {
-	r, err := Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("rootfs: cannot open anchor %s: %w", path, err)
-	}
-	return &Anchor{root: r, path: path}, nil
-}
-
 // NewAnchorFromRoot wraps an already-open Root as an Anchor without opening
 // the pathname a second time. Ownership of root transfers to the returned
 // Anchor: the caller closes the Anchor, never root.

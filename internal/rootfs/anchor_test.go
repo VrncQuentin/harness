@@ -35,10 +35,11 @@ func junctionOrSkip(t *testing.T, target, link string) {
 
 func mustNewAnchor(t *testing.T, path string) *Anchor {
 	t.Helper()
-	a, err := NewAnchor(path)
+	pinned, _, err := OpenIdentified(path)
 	if err != nil {
-		t.Fatalf("NewAnchor(%s): %v", path, err)
+		t.Fatalf("OpenIdentified(%s): %v", path, err)
 	}
+	a := NewAnchorFromRoot(pinned, path)
 	t.Cleanup(func() { _ = a.Close() })
 	return a
 }
@@ -212,7 +213,7 @@ func TestAnchor_RePointedJunctionFailsClosed(t *testing.T) {
 }
 
 func TestAnchor_DoesNotExist(t *testing.T) {
-	_, err := NewAnchor(filepath.Join(t.TempDir(), "nonexistent"))
+	_, _, err := OpenIdentified(filepath.Join(t.TempDir(), "nonexistent"))
 	if err == nil {
 		t.Error("nonexistent path should fail construction")
 	}
@@ -278,10 +279,11 @@ func TestAnchor_IdentityFailureFailsClosed(t *testing.T) {
 
 func TestAnchor_ExplicitCloseReleasesHandle(t *testing.T) {
 	dir := t.TempDir()
-	a, err := NewAnchor(dir)
+	pinned, _, err := OpenIdentified(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	a := NewAnchorFromRoot(pinned, dir)
 	if err := a.Close(); err != nil {
 		t.Fatal("Close should succeed:", err)
 	}

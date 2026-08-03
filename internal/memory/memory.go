@@ -108,17 +108,6 @@ func (r *DirReader) Close() error { return r.anchor.Close() }
 // spelling never silently identifies the replacement.
 func (r *DirReader) Identity() pathid.ID { return r.identity }
 
-// SameDirReader reports whether r and other are anchored to the same
-// filesystem directory. The comparison uses os.SameFile on the two
-// pinned handles — no pathname re-resolution is involved.
-//
-// This is the handle-level comparison for two readers. Comparing a reader
-// against a git repository handle uses SameRepo, which compares this reader's
-// retained pinned handle with the repository's retained boundary.
-func (r *DirReader) SameDirReader(other *DirReader) (bool, error) {
-	return r.anchor.SameAnchor(other.anchor)
-}
-
 // SameRepo reports whether this reader and the git repository handle are
 // anchored to the same physical directory. Both sides compare their retained
 // pinned handles via os.SameFile, so a directory replaced at the same

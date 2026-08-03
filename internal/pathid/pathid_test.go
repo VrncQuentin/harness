@@ -366,31 +366,6 @@ func TestResolveGivesLinkAndTargetOneIdentity(t *testing.T) {
 	}
 }
 
-func TestLockKey(t *testing.T) {
-	base := t.TempDir()
-	target := filepath.Join(base, "repo")
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	link := filepath.Join(base, "alias")
-	mustLinkDir(t, target, link)
-
-	viaTarget, err := LockKey(target)
-	if err != nil {
-		t.Fatalf("LockKey(target): %v", err)
-	}
-	viaLink, err := LockKey(link)
-	if err != nil {
-		t.Fatalf("LockKey(link): %v", err)
-	}
-	if viaTarget != viaLink {
-		t.Errorf("alias keyed a second lock for one repository:\n  target: %s\n  link:   %s", viaTarget, viaLink)
-	}
-	if _, err := LockKey(filepath.Join(base, "bad\x00name")); err == nil {
-		t.Error("LockKey accepted a path it could not resolve")
-	}
-}
-
 // Two spellings of one not-yet-created file are the same identity but not the
 // same struct: Resolve re-appends the missing tail in the caller's case. Key is
 // the map key; the ID is not.

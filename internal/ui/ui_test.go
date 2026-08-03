@@ -1777,8 +1777,8 @@ func TestHandleStatus_LayoutPromptHiddenWhenNoRepoConfigured(t *testing.T) {
 func TestHandleStatus_LayoutPromptHiddenWhenLayoutComplete(t *testing.T) {
 	s := NewServer(3000)
 	root := t.TempDir()
-	if err := memory.CreateMissingProjectRepo(root, true); err != nil {
-		t.Fatalf("CreateMissingProjectRepo: %v", err)
+	if err := memory.CreateMissing(root, memory.ExpectedProjectRepoLayout(true)); err != nil {
+		t.Fatalf("CreateMissing: %v", err)
 	}
 	setMemoryRepoPathForTest(s, root)
 
@@ -1916,8 +1916,8 @@ func TestHandleMemoryScaffold_CreatesMissingItems(t *testing.T) {
 func TestHandleMemoryScaffold_NoMissingItemsRedirectsCleanly(t *testing.T) {
 	s := NewServer(3000)
 	root := t.TempDir()
-	if err := memory.CreateMissingProjectRepo(root, true); err != nil {
-		t.Fatalf("CreateMissingProjectRepo: %v", err)
+	if err := memory.CreateMissing(root, memory.ExpectedProjectRepoLayout(true)); err != nil {
+		t.Fatalf("CreateMissing: %v", err)
 	}
 	setMemoryRepoPathForTest(s, root)
 
