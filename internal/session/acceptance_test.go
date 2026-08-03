@@ -203,7 +203,7 @@ func TestSavedEpisodeVisibleToPromptRecency(t *testing.T) {
 // TestTenSessionsCreateTenEpisodeCommits covers:
 //
 //	"Complete 10 sessions → all 10 episode files present in git log,
-//	 sessions.jsonl has 10 entries"
+//	 sessions.jsonl has 20 entries (pending + complete per save)"
 func TestTenSessionsCreateTenEpisodeCommits(t *testing.T) {
 	scripts := make([][]inference.Token, 0, 10)
 	for i := range 10 {

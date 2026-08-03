@@ -74,6 +74,31 @@ func (c *scriptedCommitter) Commit(msg string, files []string) (string, error) {
 	return c.real.Commit(msg, files)
 }
 
+// sidecarProbeAppender verifies, inside each log append, that the raw sidecar
+// is already readable before the append is allowed to land. Save appends
+// pending before running summarization, so a reorder that wrote pending ahead
+// of the sidecar would make the first append read a missing sidecar and fail
+// the save — this proves sidecar-before-pending ordering at the actual append
+// boundary rather than after Save returns.
+type sidecarProbeAppender struct {
+	real    LogAppender
+	reader  FileReader
+	sidecar string
+	probes  int
+}
+
+func (a *sidecarProbeAppender) AppendFile(relPath string, data []byte) error {
+	body, err := a.reader.Read(a.sidecar)
+	if err != nil {
+		return fmt.Errorf("sidecar not readable at append boundary: %w", err)
+	}
+	if len(body) == 0 {
+		return errors.New("sidecar empty at append boundary")
+	}
+	a.probes++
+	return a.real.AppendFile(relPath, data)
+}
+
 // newRecoveryRepo scaffolds a memory repo and returns its rooted reader plus
 // the opened git repo.
 func newRecoveryRepo(t *testing.T) (*memory.DirReader, *git.Repo) {
@@ -155,16 +180,27 @@ func TestSessionRecovery_ExplicitRecordState(t *testing.T) {
 // TestSessionRecovery_PendingAfterSidecarDurable is finding 11.2: a pending
 // state must only become visible once the raw sidecar is durable, so a session
 // found pending is always resumable from its sidecar. Save publishes the
-// sidecar before appending pending, so when the summarizer fails after the
-// pending record lands, the sidecar must already be readable and decodable.
+// sidecar before appending pending. The probe appender proves the ordering at
+// the pending append boundary itself — the sidecar must already be readable
+// before the append is allowed to land — so reordering production to append
+// pending before writing the sidecar would fail this test.
 func TestSessionRecovery_PendingAfterSidecarDurable(t *testing.T) {
 	fi := newFakeInference([]inference.Token{{Err: errors.New("summarizer down")}})
 	reader, repo := newRecoveryRepo(t)
-	mgr := recoveryManager(t, fi, reader, repo, nil, nil, nil)
+	probe := &sidecarProbeAppender{real: reader, reader: reader}
+	mgr := recoveryManager(t, fi, reader, repo, nil, probe, nil)
 	s := startSession(t, mgr)
+	probe.sidecar = "episodes/coder/" + s.ID + ".json"
 
 	if _, err := mgr.Save(context.Background(), s.ID); err == nil {
 		t.Fatal("save with a failing summarizer must fail")
+	}
+
+	// The probe runs inside the append: had the pending record been appended
+	// before the sidecar write, the append would have read a missing sidecar
+	// and failed the save here.
+	if probe.probes == 0 {
+		t.Fatal("the append boundary probe never ran")
 	}
 
 	records, err := ReadAll(reader, sessionsLogRel)
@@ -258,46 +294,107 @@ func TestSessionRecovery_CompleteAfterCommit(t *testing.T) {
 }
 
 // TestSessionRecovery_MonotonicSaveSequence is finding 11.4: save attempts are
-// monotonically allocated and never reused, counting failed attempts too. A
-// summarizer failure consumes attempt 2; the retry must not go back to 1.
+// monotonically allocated and never reused, counting failed attempts too. Each
+// sub-test fails one step of the save lifecycle and proves the consumed attempt
+// is skipped by the retry — including failures that occur before any recovery
+// record is published, so a reorder that moved allocation after the fallible
+// work would keep these failures green.
 func TestSessionRecovery_MonotonicSaveSequence(t *testing.T) {
-	fi := newFakeInference(
-		summaryTokens("first"),
-		[]inference.Token{{Err: errors.New("summarizer down")}},
-		summaryTokens("third"),
-	)
-	reader, repo := newRecoveryRepo(t)
-	mgr := recoveryManager(t, fi, reader, repo, nil, nil, nil)
-	s := startSession(t, mgr)
+	t.Run("summarizer failure consumes an attempt", func(t *testing.T) {
+		fi := newFakeInference(
+			summaryTokens("first"),
+			[]inference.Token{{Err: errors.New("summarizer down")}},
+			summaryTokens("third"),
+		)
+		reader, repo := newRecoveryRepo(t)
+		mgr := recoveryManager(t, fi, reader, repo, nil, nil, nil)
+		s := startSession(t, mgr)
 
-	res1, err := mgr.Save(context.Background(), s.ID)
-	if err != nil {
-		t.Fatalf("save 1: %v", err)
-	}
-	if _, err := mgr.Save(context.Background(), s.ID); err == nil {
-		t.Fatal("save 2 with a failing summarizer must fail")
-	}
-	res3, err := mgr.Save(context.Background(), s.ID)
-	if err != nil {
-		t.Fatalf("save 3: %v", err)
-	}
-	if res1.Attempt != 1 || res3.Attempt != 3 {
-		t.Fatalf("result attempts = %d, %d; want 1 then 3", res1.Attempt, res3.Attempt)
-	}
+		res1, err := mgr.Save(context.Background(), s.ID)
+		if err != nil {
+			t.Fatalf("save 1: %v", err)
+		}
+		if _, err := mgr.Save(context.Background(), s.ID); err == nil {
+			t.Fatal("save 2 with a failing summarizer must fail")
+		}
+		res3, err := mgr.Save(context.Background(), s.ID)
+		if err != nil {
+			t.Fatalf("save 3: %v", err)
+		}
+		if res1.Attempt != 1 || res3.Attempt != 3 {
+			t.Fatalf("result attempts = %d, %d; want 1 then 3", res1.Attempt, res3.Attempt)
+		}
 
-	records, err := ReadAll(reader, sessionsLogRel)
-	if err != nil {
-		t.Fatalf("ReadAll: %v", err)
-	}
-	attempts := make([]int, len(records))
-	for i, r := range records {
-		attempts[i] = r.Attempt
-	}
-	// pending+complete for attempts 1 and 3, pending only for the failed 2.
-	want := []int{1, 1, 2, 3, 3}
-	if !reflect.DeepEqual(attempts, want) {
-		t.Fatalf("allocated attempts = %v, want %v (strictly increasing; failed attempt 2 consumed and never reused)", attempts, want)
-	}
+		records, err := ReadAll(reader, sessionsLogRel)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		attempts := make([]int, len(records))
+		for i, r := range records {
+			attempts[i] = r.Attempt
+		}
+		// pending+complete for attempts 1 and 3, pending only for the failed 2.
+		want := []int{1, 1, 2, 3, 3}
+		if !reflect.DeepEqual(attempts, want) {
+			t.Fatalf("allocated attempts = %v, want %v (strictly increasing; failed attempt 2 consumed and never reused)", attempts, want)
+		}
+	})
+
+	// The next two sub-tests fail the save before any recovery record is
+	// published. If allocation happened after the sidecar/pending work, the
+	// retry would restart at attempt 1 and these would pass unchanged; they
+	// discriminate that allocation precedes all fallible work.
+	t.Run("sidecar write failure consumes an attempt", func(t *testing.T) {
+		reader, repo := newRecoveryRepo(t)
+		ww := &scriptedWriter{real: reader, fail: 1, err: errors.New("sidecar write boom")}
+		fi := newFakeInference(summaryTokens("retry"))
+		mgr := recoveryManager(t, fi, reader, repo, ww, nil, nil)
+		s := startSession(t, mgr)
+
+		if _, err := mgr.Save(context.Background(), s.ID); err == nil {
+			t.Fatal("save with a failing sidecar write must fail")
+		}
+		res, err := mgr.Save(context.Background(), s.ID)
+		if err != nil {
+			t.Fatalf("retry after sidecar failure: %v", err)
+		}
+		if res.Attempt != 2 {
+			t.Fatalf("attempt after a consumed sidecar failure = %d, want 2", res.Attempt)
+		}
+		records, err := ReadAll(reader, sessionsLogRel)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if len(records) != 2 || records[1].Attempt != 2 {
+			t.Fatalf("log after retry = %+v, want only the successful attempt 2 pair", records)
+		}
+	})
+
+	t.Run("pending append failure consumes an attempt", func(t *testing.T) {
+		reader, repo := newRecoveryRepo(t)
+		aa := &scriptedAppender{real: reader, fail: 1, err: errors.New("pending append boom")}
+		fi := newFakeInference(summaryTokens("retry"))
+		mgr := recoveryManager(t, fi, reader, repo, nil, aa, nil)
+		s := startSession(t, mgr)
+
+		if _, err := mgr.Save(context.Background(), s.ID); err == nil {
+			t.Fatal("save with a failing pending append must fail")
+		}
+		res, err := mgr.Save(context.Background(), s.ID)
+		if err != nil {
+			t.Fatalf("retry after pending-append failure: %v", err)
+		}
+		if res.Attempt != 2 {
+			t.Fatalf("attempt after a consumed pending-append failure = %d, want 2", res.Attempt)
+		}
+		records, err := ReadAll(reader, sessionsLogRel)
+		if err != nil {
+			t.Fatalf("ReadAll: %v", err)
+		}
+		if len(records) != 2 || records[1].Attempt != 2 {
+			t.Fatalf("log after retry = %+v, want only the successful attempt 2 pair", records)
+		}
+	})
 }
 
 // TestSessionRecovery_CompleteSupersedesPending is finding 11.5: for one
@@ -647,5 +744,76 @@ func TestSessionRecovery_ConcurrentSavesDistinctAttempts(t *testing.T) {
 		if p.State != StatePending || c.State != StateComplete || p.Attempt != c.Attempt || p.Attempt != i+1 {
 			t.Fatalf("log pair %d = %+v / %+v, want pending+complete on attempt %d", i, p, c, i+1)
 		}
+	}
+}
+
+// TestSessionRecovery_MalformedRecordsExcluded pins the P1 invariant: only
+// fully legacy records and valid explicit records participate in recovery
+// selection. Malformed hybrids — an unknown state, a state without an attempt,
+// an attempt without a state, or negative counters — must be skipped so a
+// high-attempt bogus record can never supersede valid history.
+func TestSessionRecovery_MalformedRecordsExcluded(t *testing.T) {
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	records := []Record{
+		{ID: "s1", Agent: "coder", SaveSeq: 1, Attempt: 1, State: StateComplete, SavedAt: now},
+		// Unknown state with a huge attempt must not supersede valid history.
+		{ID: "s1", Agent: "coder", SaveSeq: 0, Attempt: 99, State: "pendnig", SavedAt: now.Add(time.Hour)},
+		// State without an attempt.
+		{ID: "s1", Agent: "coder", SaveSeq: 0, Attempt: 0, State: StatePending, SavedAt: now.Add(2 * time.Hour)},
+		// Attempt without a state.
+		{ID: "s1", Agent: "coder", SaveSeq: 1, Attempt: 5, State: "", SavedAt: now.Add(3 * time.Hour)},
+		// Negative counters.
+		{ID: "s1", Agent: "coder", SaveSeq: -1, Attempt: 0, State: "", SavedAt: now.Add(4 * time.Hour)},
+		{ID: "s1", Agent: "coder", SaveSeq: 1, Attempt: -2, State: StateComplete, SavedAt: now.Add(5 * time.Hour)},
+	}
+	got := LatestPerID(records)
+	if len(got) != 1 {
+		t.Fatalf("winners = %+v, want exactly the valid complete record", got)
+	}
+	if got[0].State != StateComplete || got[0].Attempt != 1 {
+		t.Fatalf("winner = %+v, want the valid complete attempt-1 record", got[0])
+	}
+
+	t.Run("ReadAll skips malformed lines", func(t *testing.T) {
+		reader, _ := newRecoveryRepo(t)
+		logData := strings.Join([]string{
+			`{"id":"s1","agent":"coder","save_seq":1,"attempt":1,"state":"complete"}`,
+			`{"id":"s2","agent":"coder","save_seq":0,"attempt":99,"state":"pendnig"}`,
+		}, "\n") + "\n"
+		if err := reader.WriteFile(sessionsLogRel, []byte(logData)); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ReadAll(reader, sessionsLogRel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 1 || got[0].ID != "s1" {
+			t.Fatalf("ReadAll = %+v, want only the valid s1 record", got)
+		}
+	})
+}
+
+// TestSessionRecovery_AppendRecordRejectsMalformed pins the P1 invariant that
+// the writer enforces the explicit schema: malformed hybrids are refused at
+// append time, so the harness can never produce a record that recovery would
+// have to skip.
+func TestSessionRecovery_AppendRecordRejectsMalformed(t *testing.T) {
+	reader, _ := newRecoveryRepo(t)
+	cases := []struct {
+		name string
+		rec  Record
+	}{
+		{"unknown state", Record{ID: "x", Agent: "coder", Attempt: 1, State: "pendnig"}},
+		{"state without attempt", Record{ID: "x", Agent: "coder", State: StatePending}},
+		{"attempt without state", Record{ID: "x", Agent: "coder", Attempt: 5}},
+		{"negative attempt", Record{ID: "x", Agent: "coder", Attempt: -1, State: StateComplete}},
+		{"negative save_seq", Record{ID: "x", Agent: "coder", SaveSeq: -1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := AppendRecord(reader, sessionsLogRel, tc.rec); err == nil {
+				t.Fatalf("AppendRecord accepted malformed record %+v", tc.rec)
+			}
+		})
 	}
 }
