@@ -2,9 +2,10 @@
 
 Milestone position: **this document is the M10 design record**, between M9 (Layout V2,
 shipped) and M11 (Pipeline DSL, planned). M10.1, M10.2, and M10.4 have shipped. M10.3
-code has landed, but its MR0 acceptance gate remains open: trace-sink failures are silent,
-the sink is never closed, the trace and evaluation contracts are incomplete, and no
-ten-query baseline has been recorded.
+implementation has landed — versioned trace and labeled-query schemas, call/candidate
+rows with final rank/weights/`Returned` state, surfaced sink failures, and a three-signal
+evaluator with machine-readable baseline mode — but its MR0 acceptance gate remains open
+until a real ten-query baseline is recorded against user-owned project data.
 M11 binds tool calls against this surface, so the M10.3 closure work is part of making
 the surface observable rather than a reason to rename tools again.
 
@@ -61,7 +62,7 @@ belong to another roadmap.
 
 | Tool | Class | Status | Remaining work |
 |---|---|---|---|
-| `memory_query` | native | S / R | Retrieval entry point is shipped. Its production trace/evaluation contract remains MR0 closure work — see D3. Richer return records are [X]: they require the memory data model. |
+| `memory_query` | native | S / R | Retrieval entry point is shipped, including its versioned trace contract. The recorded real baseline remains MR0 closure work — see D3. Richer return records are [X]: they require the memory data model. |
 | `memory_propose` | native | X | Write path through M12's persistent memory proposal/decision gate. It does not reuse the manual-action `Result.Proposal` boolean. |
 
 ---
@@ -235,7 +236,7 @@ under the current one-milestone-at-a-time policy.
 
 | # | Pass | Status | Notes |
 |---|---|---|---|
-| D3 | Retrieval quality harness | R | Binary, startup sink wiring, and trace types exist, but sink error/close handling, separate versioned trace and label schemas, and the ten-query baseline are still required. |
+| D3 | Retrieval quality harness | R | Implementation landed: versioned trace and labeled-query schemas, surfaced sink failures, shutdown closure, and a three-signal evaluator with machine-readable baseline mode. The recorded ten-query baseline against real project data remains. |
 | D1 | Failure aggregator | Deferred | Groups recurring failures across runs into evidence-backed issues, surfaced to a human. No auto-apply. |
 | D2 | Replay-as-regression | X | Requires run material in a queryable store — depends on what the memory roadmap decides to persist. Not "already held" anywhere today. |
 | D4 | Invariant CI checks | Deferred | Scope-predicate completeness, allowlist deny-by-default. Plain Go tests. Supersede-chain acyclicity joins when supersede chains exist [X]. |
@@ -243,16 +244,20 @@ under the current one-milestone-at-a-time policy.
 ### D3 / MR0 closure contract [R]
 
 Retrieval today is a two-signal weighted blend:
-`semantic_weight * similarity + recency_weight * exp_decay`. Startup already installs the
-trace sink when construction succeeds. MR0 is not complete until construction/emission
-failures are surfaced, shutdown closes the sink, and each artifact has its own versioned
-contract: runtime/tests/docs share the trace schema, while evaluator/tests/docs share the
-separate labeled-query schema.
+`semantic_weight * similarity + recency_weight * exp_decay`. Startup installs the
+trace sink and surfaces construction failures as startup errors; emission errors are
+logged, and graceful shutdown closes the sink once the runtime confirms completion.
+Each artifact has its own versioned contract: runtime/tests/docs share the trace schema,
+while evaluator/tests/docs share the separate labeled-query schema, and the machine-readable
+result document carries its own independent version. What remains for MR0 to pass is the
+recorded real baseline (at least ten genuinely evaluated real labeled queries against
+user-owned project data).
 
 ```
 {
   version,
   record_type,           // "call" | "candidate"
+  invocation_id,         // fresh opaque id per call; shared by call + candidates
   project_slug,
   query_id,              // full SHA-256 hex; never the raw query
   candidate_id,          // project-relative episode path on candidate rows
@@ -284,10 +289,12 @@ The canonical labeled set is one NDJSON file per project at
 ```
 
 The evaluator reports Precision@3 and Recall@3 for semantic-only, recency-only, and the
-configured blend; MRR may be reported as an additional diagnostic. It rejects fewer than
-ten valid labeled rows for the MR0 baseline mode and writes a machine-readable result
-under `~/.harness/eval/retrieval/results/`. The full acceptance gate is specified once in
-memory_roadmap.md MR0.
+configured blend; MRR may be reported as an additional diagnostic (examining the complete
+ranking, not only top-K). It rejects fewer than ten genuinely evaluated labeled rows for
+the MR0 baseline mode (a scoring failure or an unscoreable label is an error) and writes a
+machine-readable result under `~/.harness/eval/retrieval/results/`, carrying its own
+result-schema version and the configured blend weights. The full acceptance gate is
+specified once in memory_roadmap.md MR0.
 
 D3 is the evaluation method the memory roadmap is gated on.
 
@@ -310,9 +317,12 @@ implementation checkboxes do not imply those observations happened.
 
 **M10.3 — retrieval instrumentation (implementation landed; MR0 closure pending)**
 `memory_query`, trace types at `ScoreEpisodePaths`, startup sink installation, and the D3
-binary have landed. Sink error/close handling, separate versioned trace and label schemas,
-evaluator alignment, a ten-query labeled set, and a recorded baseline remain required.
-This phase **is** memory_roadmap.md's MR0 gate and is not accepted until those items pass.
+binary have landed, along with surfaced sink construction/emission failures, shutdown
+closure, separate versioned trace and label schemas, and the three-signal evaluator with
+machine-readable baseline mode. What remains required is the recorded baseline: at least
+ten genuinely evaluated real labeled queries against user-owned project data, observed and
+saved. This phase **is** memory_roadmap.md's MR0 gate and is not accepted until that
+baseline run is observed.
 
 **M10.4 — external VC**
 `git_push`, `gh_pr_create`, and `gh_pr_merge` as manual-action proposals, plus
