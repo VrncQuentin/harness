@@ -104,6 +104,34 @@ Owns conversation lifecycle for the browser chat/task surface, the optional Open
 - **On end:** call summarizer (Qwen) → write episode file → trigger git commit
 - **Persistence:** append-only `sessions.jsonl` in the active project memory repo (default `~/.harness/projects/global/` for the global project)
 
+#### Explicit session recovery state (PR 11)
+
+A save is an explicit, durable recovery transaction rather than a correctness
+signal inferred from timestamps, empty paths, or physical log order. One save
+attempt runs under the manager-wide save lock:
+
+1. allocate a monotonic attempt identifier before any fallible work;
+2. durably publish the raw conversation sidecar through the rooted writer;
+3. append and fsync an explicit `pending` record for that attempt;
+4. summarize;
+5. publish and commit the episode;
+6. append and fsync an explicit `complete` record for the same attempt.
+
+Recovery selects the winning record per session by the attempt identifier
+first, then state precedence: for one attempt, `complete` deterministically
+supersedes `pending`. Wall-clock timestamps, empty paths, and physical log
+order never decide correctness; timestamps remain display/sort-only. A
+summarizer, episode-publication, or commit failure leaves a discoverable
+`pending` session whose raw sidecar can be resumed.
+
+**Compatibility rule:** records without the explicit fields are legacy records
+from before PR 11 — they were only ever appended after a fully successful
+save, so they normalize to `complete` ordered by `save_seq`. The log is never
+rewritten; new-format state is never inferred from `EpisodePath`. Malformed
+hybrids (an unknown state, a state without an attempt, an attempt without a
+state, or negative counters) are rejected at append time and skipped at
+selection time, so they never influence recovery.
+
 ### Runtime (`internal/runtime`)
 Owns the mutable service graph behind the harness. `cmd/harness/main.go` creates the UI first, then asks `internal/runtime` to wire and retry the rest of the subsystems after the browser surface is already available.
 
