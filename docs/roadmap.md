@@ -293,7 +293,7 @@ are deferred beyond M7.
 
 ## M9 — Layout V2
 
-**Goal:** move from one configured memory repo to a harness home with one git-backed memory repo per project, while keeping the harness global/resident and preserving SQLite for config, metrics, and runtime state. The shipped layout is documented in [architecture.md](architecture.md#harness-home-and-memory-repo-layout).
+**Goal:** move from one configured memory repo to a harness home with one git-backed memory repo per project, while keeping the harness global/resident and preserving SQLite for config, metrics, and runtime state. The shipped layout is documented in [memory.md](memory.md#2-canonical-repository-layout).
 
 Depends on M3b (projects table, active project slug, attached directories), M5 (project-scoped indexes), and M8 (startup validation and reliable packaging).
 
