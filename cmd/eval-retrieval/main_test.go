@@ -183,6 +183,16 @@ func (s *testSearcher) Search(_ []float32, _ int) ([]index.Result, error) {
 	return s.results, s.err
 }
 
+// errSearcher always fails, used to prove baseline mode surfaces scoring errors.
+type errSearcher struct{ err error }
+
+func (s *errSearcher) Search(_ []float32, _ int) ([]index.Result, error) { return nil, s.err }
+
+// okSearcher returns no results without error.
+type okSearcher struct{}
+
+func (okSearcher) Search(_ []float32, _ int) ([]index.Result, error) { return nil, nil }
+
 // testEmbedder returns a fixed non-empty vector so scoring runs.
 type testEmbedder struct{}
 
@@ -335,8 +345,50 @@ func TestMetrics_Ties(t *testing.T) {
 	}
 }
 
+// TestMetrics_MRRUsesCompleteRanking: MRR must examine the whole ranking, not
+// only the top-K. A relevant hit at rank 4 yields MRR 1/4 even though Precision
+// and Recall are computed at K=3.
+func TestMetrics_MRRUsesCompleteRanking(t *testing.T) {
+	paths := []string{
+		"episodes/coder/2024-01-01.md",
+		"episodes/coder/2024-01-02.md",
+		"episodes/coder/2024-01-03.md",
+		"episodes/coder/2024-01-04.md",
+	}
+	searcher := &testSearcher{results: []index.Result{
+		{SHA: "episodes/coder/2024-01-01", Score: 0.1},
+		{SHA: "episodes/coder/2024-01-02", Score: 0.2},
+		{SHA: "episodes/coder/2024-01-03", Score: 0.3},
+		{SHA: "episodes/coder/2024-01-04", Score: 0.4}, // rank 1
+	}}
+	// The only relevant episode is the top semantic hit (2024-01-04, rank 1).
+	q := queryRecord{Version: LabeledQuerySchemaVersion, Query: "q", Relevant: []string{"episodes/coder/2024-01-04.md"}}
+	report, err := scoreQuery(context.Background(), testEmbedder{}, searcher, q, paths, evalOpts())
+	if err != nil {
+		t.Fatalf("scoreQuery: %v", err)
+	}
+	if !nearly(report.Semantic.MRR, 1.0) {
+		t.Errorf("semantic MRR for top hit = %v, want 1", report.Semantic.MRR)
+	}
+
+	// A relevant hit below K must still contribute MRR: relevant is the lowest
+	// semantic hit (rank 4), so MRR is 1/4 even though it is not in top-3.
+	q2 := queryRecord{Version: LabeledQuerySchemaVersion, Query: "q", Relevant: []string{"episodes/coder/2024-01-01.md"}}
+	report2, err := scoreQuery(context.Background(), testEmbedder{}, searcher, q2, paths, evalOpts())
+	if err != nil {
+		t.Fatalf("scoreQuery: %v", err)
+	}
+	if !nearly(report2.Semantic.MRR, 0.25) {
+		t.Errorf("semantic MRR for rank-4 hit = %v, want 0.25 (must inspect the complete ranking, not top-K)", report2.Semantic.MRR)
+	}
+	if !nearly(report2.Semantic.Precision, 0) {
+		t.Errorf("semantic Precision@3 for rank-4 hit = %v, want 0", report2.Semantic.Precision)
+	}
+}
+
 // TestBaseline_RejectsFewerThanTen: baseline mode must reject fewer than ten
-// valid rows rather than producing a baseline from an underpowered set.
+// genuinely evaluated queries rather than producing a baseline from an
+// underpowered set. The gate counts evaluations, not input rows.
 func TestBaseline_RejectsFewerThanTen(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "episodes", "coder", "2024-01-01.md"), "one")
@@ -346,10 +398,44 @@ func TestBaseline_RejectsFewerThanTen(t *testing.T) {
 	}
 	_, err := evaluate(root, queries, stubEmbedder{}, evalOptions{K: 3, Baseline: true, ResultsDir: t.TempDir()})
 	if err == nil {
-		t.Fatal("baseline mode accepted fewer than ten queries")
+		t.Fatal("baseline mode accepted fewer than ten evaluated queries")
 	}
-	if !strings.Contains(err.Error(), "at least 10 valid queries") {
-		t.Errorf("baseline error should name the minimum: %v", err)
+	if !strings.Contains(err.Error(), "at least 10 genuinely evaluated queries") {
+		t.Errorf("baseline error should name the evaluated minimum: %v", err)
+	}
+}
+
+// TestBaseline_FailsWhenLabelsFailToScore: baseline mode must fail when a
+// scoring error or an unscoreable label occurs, rather than silently skipping
+// it and still writing a baseline from whatever evaluated.
+func TestBaseline_FailsWhenLabelsFailToScore(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "episodes", "coder", "2024-01-01.md"), "one")
+	queries := make([]queryRecord, 10)
+	for i := range queries {
+		queries[i] = queryRecord{Version: LabeledQuerySchemaVersion, Query: "q", Relevant: nil}
+	}
+	// A searcher that fails: baseline must return the error, not skip.
+	bad := &errSearcher{err: os.ErrPermission}
+	_, err := evaluateWithSearcher(root, queries, stubEmbedder{}, bad, evalOptions{K: 3, Baseline: true, ResultsDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("baseline mode must fail when scoring errors occur")
+	}
+	if !strings.Contains(err.Error(), os.ErrPermission.Error()) {
+		t.Errorf("baseline error should wrap the scoring failure: %v", err)
+	}
+
+	// A blank label is unscoreable: baseline must fail rather than count it.
+	blank := make([]queryRecord, 10)
+	for i := range blank {
+		blank[i] = queryRecord{Version: LabeledQuerySchemaVersion, Query: "  ", Relevant: nil}
+	}
+	_, err = evaluateWithSearcher(root, blank, stubEmbedder{}, &okSearcher{}, evalOptions{K: 3, Baseline: true, ResultsDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("baseline mode must fail on an unscoreable (blank) label")
+	}
+	if !strings.Contains(err.Error(), "blank query") {
+		t.Errorf("baseline error should name the blank query: %v", err)
 	}
 }
 
@@ -373,7 +459,7 @@ func TestBaseline_WritesMachineReadableResult(t *testing.T) {
 		queries[i] = queryRecord{Version: LabeledQuerySchemaVersion, Query: "q", Relevant: []string{"episodes/coder/2024-01-01.md"}}
 	}
 	resultsDir := t.TempDir()
-	if _, err := evaluate(root, queries, stubEmbedder{}, evalOptions{K: 3, Baseline: true, ResultsDir: resultsDir, ProjectSlug: "global"}); err != nil {
+	if _, err := evaluate(root, queries, stubEmbedder{}, evalOptions{K: 3, Baseline: true, ResultsDir: resultsDir, ProjectSlug: "global", SemanticWeight: 0.5, RecencyWeight: 0.5}); err != nil {
 		t.Fatalf("evaluate baseline: %v", err)
 	}
 
@@ -392,8 +478,8 @@ func TestBaseline_WritesMachineReadableResult(t *testing.T) {
 	if err := json.Unmarshal(body, &report); err != nil {
 		t.Fatalf("baseline is not valid JSON: %v", err)
 	}
-	if report.SchemaVersion != LabeledQuerySchemaVersion {
-		t.Errorf("baseline schema_version = %d, want %d", report.SchemaVersion, LabeledQuerySchemaVersion)
+	if report.SchemaVersion != ResultSchemaVersion {
+		t.Errorf("baseline schema_version = %d, want result schema %d (independent of the labeled-query schema)", report.SchemaVersion, ResultSchemaVersion)
 	}
 	if report.ProjectSlug != "global" {
 		t.Errorf("baseline project_slug = %q, want global", report.ProjectSlug)
@@ -403,6 +489,10 @@ func TestBaseline_WritesMachineReadableResult(t *testing.T) {
 	}
 	if report.QueryCount != 10 {
 		t.Errorf("baseline query_count = %d, want 10", report.QueryCount)
+	}
+	// The blend weights must be recorded so the blend metrics are reproducible.
+	if !nearly(report.SemanticWeight, 0.5) || !nearly(report.RecencyWeight, 0.5) {
+		t.Errorf("baseline weights = %f/%f, want the configured 0.5/0.5", report.SemanticWeight, report.RecencyWeight)
 	}
 	// Every mode must be present and carry three numeric fields.
 	for _, m := range []modeMetrics{report.Modes.Semantic, report.Modes.Recency, report.Modes.Blend} {
@@ -421,16 +511,12 @@ func TestScoreQuery_ErrorPropagation(t *testing.T) {
 	}
 }
 
-// scoreQuery with an empty query is an unscoreable invocation: it returns zero
-// metrics without calling the embedder.
+// scoreQuery with an empty query is an unscoreable label: it reports an error
+// so baseline mode can distinguish it from a genuinely evaluated query.
 func TestScoreQuery_EmptyQueryIsUnscoreable(t *testing.T) {
 	q := queryRecord{Version: LabeledQuerySchemaVersion, Query: "  ", Relevant: nil}
-	report, err := scoreQuery(context.Background(), testEmbedder{}, &testSearcher{}, q, evalPaths, evalOpts())
-	if err != nil {
-		t.Fatalf("scoreQuery: %v", err)
-	}
-	if report.Semantic.Precision != 0 || report.Recency.Precision != 0 || report.Blend.Precision != 0 {
-		t.Errorf("unscoreable query must yield zero precision: %+v", report)
+	if _, err := scoreQuery(context.Background(), testEmbedder{}, &testSearcher{}, q, evalPaths, evalOpts()); err == nil {
+		t.Fatal("scoreQuery must report an unscoreable (blank) label as an error")
 	}
 }
 
