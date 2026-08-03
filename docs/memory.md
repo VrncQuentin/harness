@@ -198,25 +198,31 @@ threshold) runs before fact promotion; there is no dedup on episodes or notes.
 - **Trace/evaluation status.** Every retrieval invocation emits one versioned
   call record (`record_type: "call"`, `outcome: scored | unscoreable | error`)
   to date-bucketed NDJSON with 30-day retention, with deletion restricted to
-  identity-verified entries; a scoreable invocation additionally emits one
-  `candidate` record per scored episode carrying project slug, full SHA-256
+  identity-verified entries — including empty, unavailable, unscoreable, and
+  failed invocations. A scoreable invocation additionally emits one
+  `candidate` record per scored episode carrying a per-call `invocation_id`
+  (shared by the call and its candidates), project slug, full SHA-256
   query ID, semantic/recency scores, the configured weights, the final blended
   score, a one-based final post-sort rank, and whether the candidate was
   selected into the caller's requested top-K. Emission happens inside
   `ScoreEpisodePaths`, so the prompt-assembler path is measured as well as
   explicit `memory_query` calls; both callers pass a `TraceContext` carrying
-  the active project slug and requested top-K. The sink is installed by
+  the active project slug and requested top-K, and reach the choke point even
+  when no episodes exist or the index is unavailable. The sink is installed by
   production startup after the harness home is known; a construction failure is
   surfaced as a startup error, an emission failure is logged (never silently
   discarded), and the sink is closed during graceful shutdown once the runtime
-  confirms shutdown completion. A timed-out shutdown retains the sink with the
-  generation it could still emit through. `cmd/eval-retrieval` is the developer
-  evaluation harness: it consumes a separate versioned labeled-query schema
-  (`{"version":1,"query":"...","relevant":[...]}`; a row with an unsupported
-  version is rejected), evaluates semantic-only, recency-only, and the
-  configured blend over the same labels with Precision@K and Recall@K, and in
-  baseline mode rejects fewer than ten rows and writes a machine-readable
-  result under `~/.harness/eval/retrieval/results/`.
+  confirms shutdown completion. A timed-out shutdown retains the sink (with the
+  generation a still-running detached flush could emit through) until process
+  exit. `cmd/eval-retrieval` is the developer evaluation harness: it consumes
+  a separate versioned labeled-query schema (`{"version":1,"query":"...","relevant":[...]}`;
+  a row with an unsupported version is rejected), evaluates semantic-only,
+  recency-only, and the configured blend over the same labels with Precision@K
+  and Recall@K plus MRR over the complete ranking, and in baseline mode fails on
+  scoring errors or unscoreable labels, requires at least ten genuinely
+  evaluated queries, and writes a machine-readable result (with its own
+  result-schema version and the configured blend weights) under
+  `~/.harness/eval/retrieval/results/`.
 
 ## 8. Durability, recovery, and shutdown-retention invariants
 
