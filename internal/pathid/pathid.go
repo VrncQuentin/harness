@@ -213,19 +213,3 @@ func SameOrWithin(path string, roots []string) (bool, error) {
 	}
 	return false, nil
 }
-
-// LockKey returns the comparison key of path's physical identity, for keying a
-// mutation lock on the location rather than on the spelling.
-//
-// It exists so a caller never composes resolution and key derivation itself.
-// Composed by hand the two steps invite the failure this package exists to
-// prevent: skip the resolution and a junction alias keys a second, separate
-// lock for a repository that is already locked, and the two writers exclude
-// nothing.
-func LockKey(path string) (string, error) {
-	id, err := Resolve(path)
-	if err != nil {
-		return "", err
-	}
-	return id.Key(), nil
-}

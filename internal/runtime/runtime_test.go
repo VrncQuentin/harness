@@ -1289,7 +1289,7 @@ func seedRuntimeProjectRepoAt(t *testing.T, root string) {
 		t.Fatalf("git init: %v", err)
 	}
 	defer func() { _ = repo.Close() }()
-	if err := memory.CreateMissingProjectRepo(root, true); err != nil {
+	if err := memory.CreateMissing(root, memory.ExpectedProjectRepoLayout(true)); err != nil {
 		t.Fatalf("scaffold project repo: %v", err)
 	}
 	if _, err := repo.Commit(gitw.BuildMessage(map[string]string{"type": "scaffold"}, "initialize project memory repo"), memory.ProjectRepoScaffoldFiles(true)); err != nil {

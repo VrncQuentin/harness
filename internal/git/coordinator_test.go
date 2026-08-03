@@ -136,10 +136,11 @@ func TestRepo_SameAnchorDetectsSameNameReplacement(t *testing.T) {
 	t.Cleanup(func() { _ = repo.Close() })
 
 	// Sanity: a fresh anchor on the same directory is the same boundary.
-	orig, err := rootfs.NewAnchor(dir)
+	pinned, _, err := rootfs.OpenIdentified(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	orig := rootfs.NewAnchorFromRoot(pinned, dir)
 	same, err := repo.SameAnchor(orig)
 	if err != nil {
 		t.Fatal(err)
@@ -180,10 +181,11 @@ func TestRepo_SameAnchorDetectsSameNameReplacement(t *testing.T) {
 		t.Fatal("same-name replacement must yield an equal pathid identity, or this test no longer discriminates")
 	}
 
-	swapped, err := rootfs.NewAnchor(dir)
+	swappedRoot, _, err := rootfs.OpenIdentified(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
+	swapped := rootfs.NewAnchorFromRoot(swappedRoot, dir)
 	defer func() { _ = swapped.Close() }()
 	same, err = repo.SameAnchor(swapped)
 	if err != nil {

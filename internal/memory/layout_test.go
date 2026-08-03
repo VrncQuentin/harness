@@ -151,17 +151,6 @@ func TestProjectScaffoldServiceCreateMissing(t *testing.T) {
 		t.Fatalf("CreateMissing complete repo created %d entries, want 0", created)
 	}
 }
-func TestCreateMissingProjectRepoWritesGitkeep(t *testing.T) {
-	root := t.TempDir()
-	if err := CreateMissingProjectRepo(root, true); err != nil {
-		t.Fatalf("CreateMissingProjectRepo: %v", err)
-	}
-	for _, rel := range []string{"agents/.gitkeep", "episodes/.gitkeep", "index/.gitkeep", "index/_episodes/.gitkeep", "artifacts/.gitkeep"} {
-		if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
-			t.Fatalf("missing %s: %v", rel, err)
-		}
-	}
-}
 
 // The scaffolder addresses layout entries by validated repo-relative paths
 // through the pinned root, never by joining an absolute layout-directory path

@@ -82,14 +82,10 @@ func missingProjectRepoItemsRooted(pinned *rootfs.Root, global bool) ([]LayoutIt
 	return missing, nil
 }
 
-// CreateMissingProjectRepo creates missing project memory repo entries under root.
-func CreateMissingProjectRepo(root string, global bool) error {
-	return CreateMissing(root, ExpectedProjectRepoLayout(global))
-}
-
-// ProjectRepoScaffoldFiles returns every file created by CreateMissingProjectRepo,
-// including .gitkeep files for scaffolded directories. Callers use this list
-// for the initial scaffold commit so fresh repos can be backed up and recloned.
+// ProjectRepoScaffoldFiles returns every file created when scaffolding a
+// project memory repo, including .gitkeep files for scaffolded directories.
+// Callers use this list for the initial scaffold commit so fresh repos can be
+// backed up and recloned.
 func ProjectRepoScaffoldFiles(global bool) []string {
 	items := ExpectedProjectRepoLayout(global)
 	files := make([]string, 0, len(items))
