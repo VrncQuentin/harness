@@ -2,6 +2,7 @@ package retrieval
 
 import (
 	"context"
+	"log/slog"
 	"math"
 	"path"
 	"sort"
@@ -169,12 +170,16 @@ func emitCandidates(tc TraceContext, invocationID, query string, oldestFirst []s
 
 // emitRow writes one trace row when tracing is enabled. A row is emitted only
 // when a sink is installed and the invocation carries a project slug, so
-// display-only callers that pass a zero-value TraceContext emit nothing.
+// display-only callers that pass a zero-value TraceContext emit nothing. An
+// emission failure is surfaced through the log path; it never fails the
+// retrieval itself.
 func emitRow(tc TraceContext, row RetrievalTrace) {
 	if DefaultTraceSink == nil || tc.ProjectSlug == "" {
 		return
 	}
-	DefaultTraceSink.Emit(row)
+	if err := DefaultTraceSink.Emit(row); err != nil {
+		slog.Error("retrieval: trace emission failed", "err", err)
+	}
 }
 
 // Decay returns an exponential recency score where distanceFromNewest=0

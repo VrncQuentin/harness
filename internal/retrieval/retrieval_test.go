@@ -125,8 +125,11 @@ type recordingSink struct {
 	rows []RetrievalTrace
 }
 
-func (s *recordingSink) Emit(t RetrievalTrace) { s.rows = append(s.rows, t) }
-func (s *recordingSink) Close() error          { return nil }
+func (s *recordingSink) Emit(t RetrievalTrace) error {
+	s.rows = append(s.rows, t)
+	return nil
+}
+func (s *recordingSink) Close() error { return nil }
 
 // withTraceSink installs a recording sink as the package default for the test
 // and restores the previous sink afterwards.
