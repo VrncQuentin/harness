@@ -17,7 +17,20 @@ A local AI inference harness. Double-clickable binary, always-on, browser-based 
 - **Language:** Go
 - **Target OS:** Windows native, Linux (GTK-based systray)
 
-Read the architecture doc before writing any code. It defines component boundaries, package names, and key design decisions that must be respected.
+Read `docs/architecture.md` before writing any code. It is the architectural index: it
+defines the component map, startup sequence, cross-cutting invariants, and key design
+decisions that must be respected, and links to the detailed current references. When
+your change touches packages, tools, memory, filesystem security, or the runtime
+lifecycle, read the corresponding reference too:
+
+- `docs/packages.md` — package boundaries, ownership, dependency direction
+- `docs/tools.md` — tool registry, approvals, sandbox, provenance
+- `docs/memory.md` — memory layout, session lifecycle, indexing
+- `docs/filesystem-security.md` — pathid/rootfs primitives and threat model
+- `docs/runtime-lifecycle.md` — generation ownership, apply transaction, shutdown
+
+Each current fact has one canonical home; do not duplicate normative descriptions into
+roadmap documents or the architecture overview.
 
 ---
 
@@ -66,9 +79,14 @@ assets/             ← embedded templates, CSS, htmx
 migrations/         ← embedded SQL schema (single squashed migration)
 scripts/            ← format.ps1, git hooks + installer
 docs/
-  architecture.md   ← component boundaries and design decisions
+  architecture.md   ← component map, startup sequence, invariants, links to references
+  packages.md       ← package boundaries by layer
+  tools.md          ← tool system current reference
+  memory.md         ← memory system current reference
+  filesystem-security.md ← filesystem threat model + pathid/rootfs primitives
+  runtime-lifecycle.md  ← runtime composition, apply transaction, shutdown
   roadmap.md        ← milestones and acceptance tests
-  tool_roadmap.md   ← tool surface specification
+  tool_roadmap.md   ← remaining tool surface work
   memory_roadmap.md ← memory layer plan
   DSL.md            ← pipeline DSL specification (planned)
   dsl_roadmap.md    ← pipeline DSL milestones

@@ -169,14 +169,39 @@ holds to deliberately.
 
 ## Documentation
 
+### Current references
+
+Documents describing what `main` implements now. Each fact has one canonical home;
+other documents link rather than duplicate.
+
 | Document | Contents |
 | --- | --- |
-| [docs/architecture.md](docs/architecture.md) | Component map, boundaries, design decisions |
+| [docs/architecture.md](docs/architecture.md) | System overview, component/data-flow map, startup sequence, cross-cutting invariants, and index to the detailed references |
+| [docs/packages.md](docs/packages.md) | Package boundaries by architectural layer: ownership, non-ownership, dependency direction |
+| [docs/tools.md](docs/tools.md) | Tool system: registry, inventory, execution flow, approvals, sandbox, provenance |
+| [docs/memory.md](docs/memory.md) | Memory system: layout, read path, session lifecycle, promotion, indexing |
+| [docs/filesystem-security.md](docs/filesystem-security.md) | Filesystem security model: pathid/rootfs primitives, threat model, audit enforcement |
+| [docs/runtime-lifecycle.md](docs/runtime-lifecycle.md) | Runtime lifecycle: generation ownership, apply transaction, shutdown protocol |
+
+### Roadmaps
+
+Planned deltas, acceptance criteria, and open decisions. Milestone/history language in
+these documents is part of planning, not a description of current behavior.
+
+| Document | Contents |
+| --- | --- |
 | [docs/roadmap.md](docs/roadmap.md) | Milestones and acceptance tests |
-| [docs/tool_roadmap.md](docs/tool_roadmap.md) | Tool surface specification |
-| [docs/memory_roadmap.md](docs/memory_roadmap.md) | Memory layer plan |
-| [docs/DSL.md](docs/DSL.md) | Pipeline DSL specification (planned) |
+| [docs/tool_roadmap.md](docs/tool_roadmap.md) | Remaining tool work, decisions, acceptance criteria |
+| [docs/memory_roadmap.md](docs/memory_roadmap.md) | Memory M12/MR work, evidence gates, acceptance criteria |
 | [docs/dsl_roadmap.md](docs/dsl_roadmap.md) | Pipeline DSL milestones |
+
+### Planned specifications
+
+Detailed contracts for functionality that is not implemented yet.
+
+| Document | Contents |
+| --- | --- |
+| [docs/DSL.md](docs/DSL.md) | Pipeline DSL specification (planned) |
 
 ## License
 

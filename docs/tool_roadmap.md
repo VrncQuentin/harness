@@ -11,6 +11,13 @@ the surface observable rather than a reason to rename tools again.
 This supersedes the standing deferral of file edit/patch (deferred at M4 and again
 beyond M7 in roadmap.md): `edit` lands in M10.1.
 
+> The **current tool surface** — the registry, descriptors, every built-in tool, the
+> approval mechanism, the sandbox, output provenance, and the checklist for adding a
+> tool — is documented in [tools.md](tools.md). This roadmap records only the remaining
+> planned work, implementation decisions that still constrain future work, and
+> acceptance criteria. Where a claim about present behavior appears here, the
+> canonical statement lives in tools.md.
+
 Every claim is tagged:
 
 - **[P]** Present — true of the repo today.
@@ -43,50 +50,21 @@ Three classes. The prefix encodes capability, not language.
 - **`<toolchain>_*`** — wrappers over an external toolchain: `go_*`, `git_*`, `gh_*`.
   Deterministic but not parser-backed; output shape is toolchain-specific, so the
   toolchain belongs in the name.
-- **unprefixed** — native operations: raw-text, process, retrieval, memory. `web_search`
-  [P] already fits this class unchanged.
+- **unprefixed** — native operations: raw-text, process, retrieval, memory.
 
 Adding a language to `ast_*` means adding a front-end, not tools. Adding a toolchain
 means adding tools, because the output shape differs.
 
----
+The current inventory (all ids in `BuiltinDescriptors`) is in [tools.md](tools.md);
+the table below lists only the tool surface items that are still planned, repairing, or
+belong to another roadmap.
 
-## Reconciliation with the pre-M10 surface
-
-The pre-M10 tools were `file_read`, `file_list`, `file_write`, `shell_exec`, and
-`web_search`. Their shipped disposition is:
-
-| Existing | Disposition |
-|---|---|
-| `file_read` | **Replaced by `read`** — adds locator addressing and range reads. |
-| `file_write` | **Replaced by `edit`** — adds hash anchoring and verify-after-mutate. Whole-file write remains as a mode for new-file creation. |
-| `shell_exec` | **Replaced by `exec`** — argv migration, see below. |
-| `file_list` | **Retained.** Directory listing is not `ast_map`'s job. |
-| `web_search` | **Retained**, unprefixed native class. |
-
-Each replacement removed its predecessor in the same milestone phase — there are no
-long-lived aliases and no dual surface for the model to choose between.
-
----
-
-## A. Agent-facing tools
-
-Deny-by-default applies to the tool list itself, not only to command argv. The surface is
-bounded per capability class — see the admission rule at the end of this section.
-
-| Tool | Class | Status | Purpose |
+| Tool | Class | Status | Remaining work |
 |---|---|---|---|
-| `ast_map` | ast (Go) | S | Structural outline of a file. The shipped front-end uses `go/parser` in single-file mode; cross-package type resolution remains a later tier. |
-| `ast_find` | ast (Go) | S | Symbol- and content-anchored locate. Returns stable locators + content hashes. Never bare line numbers. |
-| `go_test` | toolchain | S | `go test -json` wrapper. Failures-only by default; full NDJSON teed to disk. |
-| `go_lint` | toolchain | S | Wraps the `golangci-lint` binary (v2): `run --output.json.path=stdout`, parses the JSON report, and groups issues by linter then file. Binary presence is a toolchain precondition — see below. |
-| `read` | native | S | Range- and locator-addressed read. Returns raw bytes; skeletonization is applied downstream by B1. |
-| `edit` | native | S | Hash-anchored line operations; whole-file mode for new files. Rejects when the anchor hash does not match. Verify-after-mutate is mandatory, not a flag. |
-| `exec` | native | S | Structured command execution — see the approval contract below. |
-| `file_list` | native | P | Directory listing. Unchanged. |
-| `web_search` | native | P | Unchanged. |
 | `memory_query` | native | S / R | Retrieval entry point is shipped. Its production trace/evaluation contract remains MR0 closure work — see D3. Richer return records are [X]: they require the memory data model. |
 | `memory_propose` | native | X | Write path through M12's persistent memory proposal/decision gate. It does not reuse the manual-action `Result.Proposal` boolean. |
+
+---
 
 ### `exec` and the approval contract [S]
 
@@ -147,34 +125,30 @@ own persistent proposal/decision workflow rather than claiming to reuse this boo
 
 #### `gh_pr_wait` [S]
 
-Blocks until the given PR's CI reaches a terminal state, then returns
-`{green, red, timed_out}`; red carries the failing check names and log handles
-(B3-style locators) so the model can react without scraping. Read-only — tier-1
-treatment, no gate — but network-using (Checks API polled with backoff under the loop's
-cancellation context), so it is disclosed like `web_search`. Two guards keep a blocking
-tool honest inside an agent loop: a configurable wait ceiling so it cannot outlive the
-task, and an expected-blocking flag in its schema so loop watchdogs distinguish a
-legitimate long wait from a hung tool. It closes the tier-3 workflow as the only
-non-proposal step in it: `gh_pr_create` (proposal) → `gh_pr_wait` → `gh_pr_merge`
-(proposal).
+Read-only CI poller over the GitHub Checks API with exponential backoff under the loop's
+cancellation context; red carries the failing check names and log handles. Two guards
+keep a blocking tool honest inside an agent loop: a configurable wait ceiling so it
+cannot outlive the task, and an expected-blocking flag in its schema so loop watchdogs
+distinguish a legitimate long wait from a hung tool. It closes the tier-3 workflow as the
+only non-proposal step in it: `gh_pr_create` (proposal) → `gh_pr_wait` → `gh_pr_merge`
+(proposal). Behavior details live in [tools.md](tools.md).
 
 ### Repo scoping [S]
 
 Memory repositories are also git — **one per project, paths in the projects table,
-optionally user-supplied** [P]. And there are already two go-git consumers with disjoint
-scopes: `internal/git` [P] exists today with the *memory repos* as its charter (init,
-open, commit specific files, `harness/harness@local` fallback identity), driven by the
-session lifecycle. The agent-facing `git_*` tools are the second consumer, scoped to
-workspace repos only. A `git_*` tool that can resolve into a memory repo would let the
-agent write memory outside the lifecycle path, silently voiding the audit direction the
-memory roadmap is heading toward.
+optionally user-supplied**. There are two go-git consumers with disjoint scopes:
+`internal/git` exists today with the *memory repos* as its charter (init, open, commit
+specific files, harness fallback identity), driven by the session lifecycle. The
+agent-facing `git_*` tools are the second consumer, scoped to workspace repos only. A
+`git_*` tool that can resolve into a memory repo would let the agent write memory outside
+the lifecycle path, silently voiding the audit direction the memory roadmap is heading
+toward.
 
 Therefore scoping is a **predicate evaluated at call time, not a config path list**: a
 `git_*` call is rejected if its resolved repository root is the memory repo of any
-project row. The comparison hooks exist [P]: `project.ValidateMemoryRepoPath` and the
-workflow's `SameProjectRepoPath`. Workspace targets are the active project's sandbox
-roots — already a list enforced by the tool sandbox [P], so `git_*` tools take an
-explicit root argument rather than assuming a singular workspace.
+project row. Workspace targets are the active project's sandbox roots — already a list
+enforced by the tool sandbox, so `git_*` tools take an explicit root argument rather than
+assuming a singular workspace.
 
 Package shape: `internal/git` remains the single go-git wrapper and grows the workspace
 operations; the scope predicate lives at the tool boundary in `internal/tools`, not in
@@ -212,21 +186,18 @@ execution and context assembly. The run-limit / loop-detection concept currently
 name (**watchdog** proposed); DSL.md is amended when M11 touches it. One name, one
 component, in both documents.
 
-Not model-callable. These fire on results the model never sees raw.
+Not model-callable. These fire on results the model never sees raw. The shipped
+transforms (B1, B2, B3, B5) are documented in [tools.md](tools.md); the table below
+lists only the deferred or contracted ones.
 
 | # | Transform | Notes |
 |---|---|---|
-| B1 | Query-aware skeletonizer | Full bodies for spans relevant to the active task, signatures elsewhere. Consumes `read` output and the parser front-end. The active query is an input an external proxy structurally cannot have. Query-aware from the start. |
-| B2 | Tool-output folder | Per-tool output compression for the tools in section A. One folder per toolchain tool, not a dispatcher. |
-| B3 | Tee-on-failure | Full unfiltered output to disk on non-zero exit; context receives the compressed form plus a retrieval handle (stable locator). Tools pass the complete output through `Result.FullOutput` when their inline text is bounded — capturing at the inline cap would tee the same excerpt the model already has. |
 | B4 | Observation mask | Deferred; stale-output masking needs real long-running task data before admission. |
-| B5 | Token gate | Recount after each **context-reshaping** transform (B1, B2) with the **same counter used for budgeting**, auto-revert when one increased the count. **B3 is exempt:** it is side-effectful, so discarding its returned result does not undo the transform — the spill file is already written — and only drops the locator, orphaning the file. Its handle is frequently longer than the short inline failure it accompanies, so gating it reverted precisely the spills worth keeping; retaining the bounded locator is required for the output to be reachable at all. Correct against the present rune-quarter heuristic [P] because both sides use the same counter; swapping in a real tokenizer via the existing `WithTokenizer` hook is a separate accuracy improvement, not a B5 prerequisite. |
 | B6 | MCP result normalizer | Deferred — no MCP servers admitted. If admitted, results enter this same chain. No bypass path. |
 
 Shipped package homes are `internal/governor` for B1/B2/B3/B5,
 `internal/parser` for language front-ends, `internal/git` for go-git operations, and
-`internal/tools` for the callable surface including GitHub proposals/polling. B4 and B6
-remain deferred.
+`internal/tools` for the callable surface including GitHub proposals/polling.
 
 ---
 
@@ -235,8 +206,8 @@ remain deferred.
 Everything in this section presumes origin-aware retrieval records, stable record IDs,
 append-only proposal/decision events, and supersede relations — **which do not exist**.
 Memory today is markdown + `vectors.bin`/`manifest.json` in per-project git repos, with
-SQLite holding config/metrics/projects [P]. Semantic writers are session summaries and UI
-promotion; session logs/sidecars and indexes are supporting or derived writes.
+SQLite holding config/metrics/projects. The current memory system is documented in
+[memory.md](memory.md).
 
 These are therefore target contracts for the memory roadmap, recorded here so the tool
 layer doesn't contradict them:
@@ -269,7 +240,7 @@ under the current one-milestone-at-a-time policy.
 
 ### D3 / MR0 closure contract [R]
 
-Retrieval today [P] is a two-signal weighted blend:
+Retrieval today is a two-signal weighted blend:
 `semantic_weight * similarity + recency_weight * exp_decay`. Startup already installs the
 trace sink when construction succeeds. MR0 is not complete until construction/emission
 failures are surfaced, shutdown closes the sink, and each artifact has its own versioned
@@ -383,7 +354,7 @@ Constraints: linked worktrees are partial and live in an experimental
 `x/plumbing/worktree` package, so parallel runs use separate clones as a deliberate
 choice rather than a library limit; revision resolution exists but verify which syntaxes
 resolve before depending on them; global git config is read-only (author identity already
-falls back to a stable harness identity in `internal/git` [P]); no gc.
+falls back to a stable harness identity in `internal/git`); no gc.
 
 **GitHub reads via REST API over `net/http`.** `gh_pr_wait` uses the Checks API without
 requiring the `gh` binary. The proposal-only create/merge tools may render a `gh` command
