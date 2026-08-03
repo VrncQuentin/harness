@@ -119,6 +119,17 @@ func ReadAll(r LogReader, relPath string) ([]Record, error) {
 			)
 			continue
 		}
+		if !validRecord(rec) {
+			slog.Warn("session: skipping malformed recovery record",
+				"path", relPath,
+				"line", line,
+				"id", rec.ID,
+				"state", rec.State,
+				"attempt", rec.Attempt,
+				"save_seq", rec.SaveSeq,
+			)
+			continue
+		}
 		out = append(out, rec)
 	}
 	if err := scanner.Err(); err != nil {
@@ -146,6 +157,10 @@ func AppendRecord(w LogAppender, relPath string, rec Record) error {
 	if rec.ID == "" {
 		return errors.New("session: append: record has empty id")
 	}
+	if !validRecord(rec) {
+		return fmt.Errorf("session: append: malformed record (state %q, attempt %d, save_seq %d)",
+			rec.State, rec.Attempt, rec.SaveSeq)
+	}
 	body, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("session: marshal record: %w", err)
@@ -158,18 +173,35 @@ func AppendRecord(w LogAppender, relPath string, rec Record) error {
 	return nil
 }
 
+// validRecord reports whether r is a fully legacy record (no state or attempt
+// fields) or a valid explicit record (a recognized typed state with a positive
+// attempt). Anything else is a malformed hybrid — an unknown state, a state
+// without an attempt, an attempt without a state, or a negative counter — and
+// must never influence recovery selection. A legacy record is one that predates
+// the explicit fields entirely, so it must carry no attempt field; an explicit
+// record is only meaningful with a positive attempt.
+func validRecord(r Record) bool {
+	if r.SaveSeq < 0 || r.Attempt < 0 {
+		return false
+	}
+	switch r.State {
+	case "":
+		return r.Attempt == 0
+	case StatePending, StateComplete:
+		return r.Attempt > 0
+	default:
+		return false
+	}
+}
+
 // effectiveAttempt returns the monotonic attempt key used for recovery
 // selection. New-format records carry an explicit Attempt; legacy records —
 // those without a state field — predate PR 11 and were only ever appended
-// after a fully successful save, so they order by save_seq. Records that
-// carry a state but no attempt are treated as legacy rather than guessing
-// from other fields. The logs themselves are never rewritten; this rule only
-// interprets records that are already on disk.
+// after a fully successful save, so they order by save_seq. Only records that
+// pass validRecord reach this function; the logs themselves are never
+// rewritten, this rule only interprets records that are already on disk.
 func effectiveAttempt(r Record) int {
 	if r.State == "" {
-		return r.SaveSeq
-	}
-	if r.Attempt == 0 {
 		return r.SaveSeq
 	}
 	return r.Attempt
@@ -206,8 +238,11 @@ func supersedes(cur, r Record) bool {
 // The winner is selected by explicit recovery state — highest effective
 // attempt, with complete superseding pending for the same attempt — never by
 // wall-clock timestamp, EpisodePath, or physical log order (see supersedes).
-// The returned slice preserves the order of first-seen ids so callers can
-// sort it themselves without losing the original log progression.
+// Malformed records are skipped so they can never supersede valid history;
+// callers that read the log get them pre-filtered by ReadAll, and this check
+// keeps hand-built slices safe too. The returned slice preserves the order of
+// first-seen ids so callers can sort it themselves without losing the original
+// log progression.
 func LatestPerID(records []Record) []Record {
 	if len(records) == 0 {
 		return nil
@@ -215,6 +250,9 @@ func LatestPerID(records []Record) []Record {
 	winners := make(map[string]int, len(records))
 	order := make([]string, 0, len(records))
 	for i, r := range records {
+		if !validRecord(r) {
+			continue
+		}
 		idx, ok := winners[r.ID]
 		if !ok {
 			winners[r.ID] = i

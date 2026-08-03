@@ -10,7 +10,12 @@
 //     <agent>/<id>.md (committed to git, single file per commit)
 //   - the raw conversation is written to episodes/
 //     <agent>/<id>.json (working-tree-only, intentionally uncommitted)
-//   - one record per save is appended to sessions.jsonl
+//   - two records per save are appended to sessions.jsonl: an explicit
+//     pending record once the sidecar is durable, and an explicit complete
+//     record once the episode is published and committed, both carrying the
+//     same monotonic attempt identifier. Recovery selects the winning record
+//     per session by attempt then state precedence, never by timestamps,
+//     empty paths, or physical log order (see log.go).
 //
 // The project slug is set via ManagerDeps.ProjectSlug at construction
 // time; paths are computed from the manager's stored value.
@@ -583,10 +588,14 @@ func (m *Manager) findLatestRecord(id string) (*Record, error) {
 	}
 	// Select the winning record by the explicit recovery state — highest
 	// effective attempt, complete superseding pending for the same attempt —
-	// never by physical log order or wall-clock timestamps.
+	// never by physical log order or wall-clock timestamps. Malformed records
+	// are skipped so they can never supersede valid history.
 	var latest *Record
 	for i := range all {
 		if all[i].ID != id {
+			continue
+		}
+		if !validRecord(all[i]) {
 			continue
 		}
 		if latest == nil || supersedes(*latest, all[i]) {
