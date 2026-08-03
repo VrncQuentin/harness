@@ -85,14 +85,13 @@ func run() error {
 	var harnessDB *db.DB
 	var cfgStore config.Store
 	var metricsStore metrics.Store
+	var traceSink *retrieval.NDJSONSink
 	if harnessHome != "" {
 		if err := home.Ensure(harnessHome); err != nil {
 			uiServer.AddStartupError(err)
 		} else {
 			slog.Info("harness starting", "binDir", binDir, "home", harnessHome)
-			if sink, err := retrieval.NewNDJSONSink(filepath.Join(harnessHome, "logs", "retrieval"), nil); err == nil {
-				retrieval.SetDefaultTraceSink(sink)
-			}
+			traceSink = installTraceSink(uiServer, harnessHome)
 			harnessDB, cfgStore, metricsStore = harnessruntime.OpenDB(uiServer, dbPath, func(slug string) (string, error) {
 				return home.ProjectRepoPath(harnessHome, slug)
 			})
@@ -151,7 +150,12 @@ func run() error {
 		// One cohesive shutdown lifecycle owned by the runtime: stop
 		// admissions, cancel the root/task contexts, bounded drains, stop
 		// API/queue/process components, release only resources proven idle.
-		rt.Shutdown(rootCancel, 10*time.Second)
+		result := rt.Shutdown(rootCancel, 10*time.Second)
+		// Close the retrieval trace sink only after a completed shutdown. A
+		// timed-out shutdown retains ownership of the generation (readers,
+		// session manager, task runner), so a later shutdown retry may still
+		// emit trace rows through them; closing the sink early would drop them.
+		closeTraceSinkOnCompleted(traceSink, result.Completed)
 		if harnessDB != nil {
 			_ = harnessDB.Close()
 		}
@@ -159,6 +163,37 @@ func run() error {
 
 	tray.Run(uiURL, onQuit)
 	return nil
+}
+
+// installTraceSink constructs and installs the production retrieval trace
+// sink under harnessHome/logs/retrieval. A construction failure is surfaced as
+// a startup error and no sink is installed, so a trace-directory problem never
+// silently disables retrieval tracing. The returned sink is owned by run() and
+// closed during graceful shutdown.
+func installTraceSink(uiServer *ui.Server, harnessHome string) *retrieval.NDJSONSink {
+	sink, err := retrieval.NewNDJSONSink(filepath.Join(harnessHome, "logs", "retrieval"), nil)
+	if err != nil {
+		uiServer.AddStartupError(fmt.Errorf("retrieval trace sink: %w", err))
+		return nil
+	}
+	retrieval.SetDefaultTraceSink(sink)
+	return sink
+}
+
+// closeTraceSinkOnCompleted closes the retrieval trace sink when a shutdown is
+// confirmed complete. A timed-out shutdown retains ownership of the generation
+// (its readers, session manager, and task runner stay open for a later retry),
+// so the sink stays open and installed: a retry may still emit trace rows
+// through the retained generation. Idempotent: closing a nil or already-closed
+// sink is a no-op.
+func closeTraceSinkOnCompleted(traceSink *retrieval.NDJSONSink, completed bool) {
+	if traceSink == nil || !completed {
+		return
+	}
+	if err := traceSink.Close(); err != nil {
+		slog.Error("close retrieval trace sink", "err", err)
+	}
+	retrieval.SetDefaultTraceSink(nil)
 }
 
 func configureLogging() (*logbuf.Ring, *logbuf.Ring, *logbuf.Ring) {

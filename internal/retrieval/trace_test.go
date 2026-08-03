@@ -47,7 +47,9 @@ func TestQueryIDDistinct(t *testing.T) {
 
 func TestNopTraceSinkEmitAndClose(t *testing.T) {
 	var s NopTraceSink
-	s.Emit(RetrievalTrace{QueryID: "abc"})
+	if err := s.Emit(RetrievalTrace{QueryID: "abc"}); err != nil {
+		t.Fatalf("NopTraceSink.Emit: %v", err)
+	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("NopTraceSink.Close: %v", err)
 	}
@@ -61,7 +63,7 @@ func TestNDJSONSinkWritesRow(t *testing.T) {
 		t.Fatalf("NewNDJSONSink: %v", err)
 	}
 
-	sink.Emit(RetrievalTrace{
+	if err := sink.Emit(RetrievalTrace{
 		Version:     TraceSchemaVersion,
 		RecordType:  RecordTypeCandidate,
 		ProjectSlug: "global",
@@ -69,7 +71,9 @@ func TestNDJSONSinkWritesRow(t *testing.T) {
 		Candidate:   "episodes/agent/2025-01-01.md",
 		Score:       0.75,
 		Timestamp:   now,
-	})
+	}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -111,7 +115,9 @@ func TestNDJSONSinkMultipleRowsSameDay(t *testing.T) {
 	}
 
 	for i := range 3 {
-		sink.Emit(RetrievalTrace{QueryID: "q", Rank: i, Timestamp: now})
+		if err := sink.Emit(RetrievalTrace{QueryID: "q", Rank: i, Timestamp: now}); err != nil {
+			t.Fatalf("Emit %d: %v", i, err)
+		}
 	}
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -144,8 +150,12 @@ func TestNDJSONSinkDayRotation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNDJSONSink: %v", err)
 	}
-	sink.Emit(RetrievalTrace{QueryID: "d1", Timestamp: day1})
-	sink.Emit(RetrievalTrace{QueryID: "d2", Timestamp: day2})
+	if err := sink.Emit(RetrievalTrace{QueryID: "d1", Timestamp: day1}); err != nil {
+		t.Fatalf("Emit day1: %v", err)
+	}
+	if err := sink.Emit(RetrievalTrace{QueryID: "d2", Timestamp: day2}); err != nil {
+		t.Fatalf("Emit day2: %v", err)
+	}
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -174,8 +184,12 @@ func TestNDJSONSinkPrunesOldFiles(t *testing.T) {
 	}
 	// Emit on a new day so rotation triggers pruning.
 	newDay := time.Date(2020, 2, 16, 0, 0, 0, 0, time.UTC)
-	sink.Emit(RetrievalTrace{QueryID: "new", Timestamp: now})
-	sink.Emit(RetrievalTrace{QueryID: "new2", Timestamp: newDay})
+	if err := sink.Emit(RetrievalTrace{QueryID: "new", Timestamp: now}); err != nil {
+		t.Fatalf("Emit new: %v", err)
+	}
+	if err := sink.Emit(RetrievalTrace{QueryID: "new2", Timestamp: newDay}); err != nil {
+		t.Fatalf("Emit new2: %v", err)
+	}
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -192,12 +206,51 @@ func TestNDJSONSinkCloseTwice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewNDJSONSink: %v", err)
 	}
-	sink.Emit(RetrievalTrace{QueryID: "x", Timestamp: now})
+	if err := sink.Emit(RetrievalTrace{QueryID: "x", Timestamp: now}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
 	if err := sink.Close(); err != nil {
 		t.Fatalf("first Close: %v", err)
 	}
 	if err := sink.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// Emit after Close must report an error rather than writing through a
+// released handle: shutdown closes the sink, and any late emission must be
+// observable, never a nil-dereference or a silent drop.
+func TestNDJSONSinkEmitAfterCloseReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	sink, err := NewNDJSONSink(dir, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("NewNDJSONSink: %v", err)
+	}
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := sink.Emit(RetrievalTrace{QueryID: "late", Timestamp: now}); err == nil {
+		t.Fatal("Emit after Close must report an error, not write silently")
+	}
+}
+
+// A file-open failure must be surfaced by Emit, not silently discarded: when
+// the day's file cannot be created (here a directory already claims the
+// name), the row is lost and Emit must say so.
+func TestNDJSONSinkEmitSurfacesOpenFailure(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	if err := os.Mkdir(filepath.Join(dir, "2025-06-01.ndjson"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sink, err := NewNDJSONSink(dir, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("NewNDJSONSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+	if err := sink.Emit(RetrievalTrace{QueryID: "x", Timestamp: now}); err == nil {
+		t.Fatal("Emit must surface the file-open failure, not discard it")
 	}
 }
 
@@ -232,7 +285,9 @@ func TestNDJSONSink_TraceDirectoryIsPinned(t *testing.T) {
 	}
 	mustLinkDir(t, evil, trace)
 
-	sink.Emit(RetrievalTrace{QueryID: "abc", Timestamp: now})
+	if err := sink.Emit(RetrievalTrace{QueryID: "abc", Timestamp: now}); err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
 	if err := sink.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -261,7 +316,9 @@ func TestNDJSONSink_RetentionDeletesOnlyOwnFiles(t *testing.T) {
 	defer func() { _ = sink.Close() }()
 
 	// The sink creates the old-day file itself, so the observed name is its own.
-	sink.Emit(RetrievalTrace{QueryID: "old", Timestamp: old})
+	if err := sink.Emit(RetrievalTrace{QueryID: "old", Timestamp: old}); err != nil {
+		t.Fatalf("Emit old: %v", err)
+	}
 
 	// A stranger's file outside the tree, and a hard link that claims the old
 	// trace entry between enumeration and removal.
@@ -272,7 +329,7 @@ func TestNDJSONSink_RetentionDeletesOnlyOwnFiles(t *testing.T) {
 	oldTrace := filepath.Join(dir, "2020-01-01.ndjson")
 
 	substituted := false
-	sink.pruneWithHook(func(name string) {
+	if err := sink.pruneWithHook(func(name string) {
 		if name != "2020-01-01.ndjson" || substituted {
 			return
 		}
@@ -283,7 +340,9 @@ func TestNDJSONSink_RetentionDeletesOnlyOwnFiles(t *testing.T) {
 		if err := os.Link(stranger, oldTrace); err != nil {
 			t.Fatalf("link stranger over observed name: %v", err)
 		}
-	})
+	}); err == nil {
+		t.Fatal("prune must report that the claimed entry was refused removal")
+	}
 
 	if !substituted {
 		t.Fatal("the hook never ran; the substitution was not staged")
@@ -310,7 +369,9 @@ func TestNDJSONSink_RetentionDeletesOnlyOwnFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(control, "2020-01-01.ndjson"), []byte("own\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	csink.pruneWithHook(nil)
+	if err := csink.pruneWithHook(nil); err != nil {
+		t.Fatalf("prune of the sink's own entry: %v", err)
+	}
 	if _, err := os.Stat(filepath.Join(control, "2020-01-01.ndjson")); err == nil {
 		t.Error("the sink's own expired entry should have been pruned")
 	}

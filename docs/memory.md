@@ -205,10 +205,12 @@ threshold) runs before fact promotion; there is no dedup on episodes or notes.
   selected into the caller's requested top-K. Emission happens inside
   `ScoreEpisodePaths`, so the prompt-assembler path is measured as well as
   explicit `memory_query` calls; both callers pass a `TraceContext` carrying
-  the active project slug and requested top-K. Present limitations: sink
-  construction failures are silently ignored, emission errors are discarded,
-  and shutdown never closes the sink. These are documented closure items in
-  [memory_roadmap.md](memory_roadmap.md).
+  the active project slug and requested top-K. The sink is installed by
+  production startup after the harness home is known; a construction failure is
+  surfaced as a startup error, an emission failure is logged (never silently
+  discarded), and the sink is closed during graceful shutdown once the runtime
+  confirms shutdown completion. A timed-out shutdown retains the sink with the
+  generation it could still emit through.
 
 ## 8. Durability, recovery, and shutdown-retention invariants
 
