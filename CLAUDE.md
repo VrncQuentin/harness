@@ -164,20 +164,10 @@ Windows builds need no external development libraries.
 
 ## Startup sequence
 
-```
-1. Acquire single-instance lock → if already held, exit silently
-2. Start UI server (port 3000) → always succeeds, browser opens if not already open
-3. Open harness.db → surface error in UI if the database cannot be opened or migrated
-4. Load config row → if the user has never saved, show the first-run CTA and stop here
-5. Validate project memory repos → surface error in UI if missing or not a git repo
-6. Start llama-server process → surface error in UI if binary missing or startup fails
-7. Start embedder sidecar → surface error in UI if binary missing or startup fails
-8. Begin health check loops for llama-server and embedder
-9. Start API server if enabled in config
-10. Hand off to systray.Run()
-```
+The canonical startup sequence is documented in [docs/architecture.md](docs/architecture.md#startup-sequence). The rules to respect:
 
-Steps 3–9 can fail independently. The UI reflects the state of each. A "Retry" button re-runs steps 3–9 without restarting the binary.
+- The UI server starts first and always succeeds. Config loading, memory repo validation, llama-server startup, embedder startup — all of this happens after the UI is serving. If anything fails, it is displayed in the UI as a setup error.
+- Steps 3–9 can fail independently. The UI reflects the state of each. A "Retry" button re-runs steps 3–9 without restarting the binary.
 
 ---
 
@@ -195,20 +185,10 @@ Schema lives in [internal/config/config.go](internal/config/config.go). The Go s
 
 ## Project memory repos
 
-One plain git repo per project under `~/.harness/projects/<slug>/` (or a user-provided directory), read and written via `go-git` — no git binary required. The `global` project is simply the project that is active by default; it behaves like any other. Prompt memory (`rules.md`, `user.md`, `facts.md`, agent notes, episodes) is always read from the **active** project's repo; the global repo's `agents/` directory additionally serves as the fallback *definition* library (`persona.md`, `rules.md` only — notes never fall back).
+One plain git repo per project under `~/.harness/projects/<slug>/` (or a user-provided directory) — no git binary required. Repository *file I/O* goes through rooted `rootfs` handles; *git operations* (init, commit, workspace ops) go through the go-git wrapper. The `global` project is simply the project that is active by default; it behaves like any other. Prompt memory (`rules.md`, `user.md`, `facts.md`, agent notes, episodes) is always read from the **active** project's repo; the global repo's `agents/` directory additionally serves as the fallback *definition* library (`persona.md`, `rules.md` only — notes never fall back).
 
-Per-repo structure:
-```
-~/.harness/projects/<slug>/    ← git repo, one per project
-  rules.md                     ← project rules
-  user.md                      ← facts about the user (this project)
-  facts.md                     ← promoted facts (this project)
-  agents/<name>/{persona.md, rules.md, notes.md}
-  sessions.jsonl               ← append-only session log
-  episodes/<agent>/<timestamp>.md
-  index/_episodes/{vectors.bin, manifest.json}
-  artifacts/
-```
+The canonical per-repo layout and memory-system reference live in
+[docs/memory.md](docs/memory.md); do not duplicate the layout tree here.
 
 ## Current milestone
 

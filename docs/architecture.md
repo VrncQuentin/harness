@@ -138,10 +138,13 @@ local change.
   is always on; the OpenAI-compatible API server is opt-in.
 - **No CLI.** There are no subcommands; project memory repos are created and
   managed through the `/projects` page.
-- **All persistent state lives in `harness.db`** (SQLite, single squashed
-  migration, under `~/.harness/`), and `harness.db` is never committed to git.
-- **One git-backed memory repo per project**, read and written via go-git — no
-  git binary required.
+- **Operational SQLite state lives in `harness.db`** (config, metrics,
+  projects; single squashed migration, under `~/.harness/`), and `harness.db`
+  is never committed to git. Semantic memory, sessions, episodes, sidecars,
+  and indexes persist separately in the git-backed project memory repos.
+- **One git-backed memory repo per project** — no git binary required.
+  Repository *file I/O* goes through rooted `rootfs` handles; *git operations*
+  (init, commit, workspace ops) go through the go-git wrapper.
 - **`sessions.jsonl` is append-only.** It is never rewritten or truncated.
 - **Structured `[key:value]` tags in commit messages** keep memory-repo history
   readable without a separate metadata store for commit intent.
@@ -262,8 +265,9 @@ used as-is, provided non-git directories are initialized with go-git, and
 omitted directories create `~/.harness/projects/<slug>/` with go-git. No cwd
 inference and no terminal-only setup path.
 
-**Append-only sessions.jsonl.** Never mutate, only append. Trivial crash
-recovery and a full audit log.
+**Append-only sessions.jsonl.** Never mutate, only append. It is the session
+save/recovery-state log — each line records an explicit `pending`/`complete`
+save attempt — not a general-purpose audit log.
 
 **Commit message tags.** Structured `[key:value]` tags keep memory-repo history
 readable and auditable without a separate metadata store. Episode discovery

@@ -171,14 +171,18 @@ threshold) runs before fact promotion; there is no dedup on episodes or notes.
 ## 7. Indexing and retrieval
 
 - **After-save embedding.** `memoryops.AfterSaveEmbed` indexes the rendered
-  episode body (the exact bytes written to disk), chunks it by paragraph, hashes
-  each chunk by SHA-256, embeds through the embedder, and upserts into the
-  episode index — all inside one repository transaction with the commit.
+  episode body (the exact bytes written to disk). It computes **one SHA-256
+  over the complete rendered episode body**, splits the body into paragraph
+  chunks, embeds every chunk through the embedder, and upserts the chunk
+  vectors into the episode index under that single source/body hash — all
+  inside one repository transaction with the commit.
 - **Episode index.** `index/_episodes/vectors.bin` + `manifest.json`, managed by
   `memoryops.EpisodeIndex` over `internal/index`. Flat cosine scan for the
   current corpus sizes.
-- **Content hashes and idempotence.** Upsert starts from committed on-disk
-  state and skips chunks whose content hash is already present; empty hashes
+- **Content hashes and idempotence.** The manifest stores one entry per episode
+  source carrying that whole-body hash. Idempotence is per *source*, not per
+  chunk: upsert starts from the committed on-disk state and skips the entire
+  episode when its source and whole-body hash are already present; empty hashes
   never match. Episode indexes use the repo-relative source path as the index
   entry SHA.
 - **Rebuild.** Walking the episode files and re-embedding any hash missing from

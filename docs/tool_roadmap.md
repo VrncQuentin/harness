@@ -126,7 +126,8 @@ own persistent proposal/decision workflow rather than claiming to reuse this boo
 #### `gh_pr_wait` [S]
 
 Read-only CI poller over the GitHub Checks API with exponential backoff under the loop's
-cancellation context; red carries the failing check names and log handles. Two guards
+cancellation context, returning JSON only — `green`, `red` (with failing check names), or
+`timed_out`; it does not fetch logs or attach B3 handles. Two guards
 keep a blocking tool honest inside an agent loop: a configurable wait ceiling so it
 cannot outlive the task, and an expected-blocking flag in its schema so loop watchdogs
 distinguish a legitimate long wait from a hung tool. It closes the tier-3 workflow as the

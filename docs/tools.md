@@ -46,12 +46,12 @@ never stored, never persisted, and never rendered.
    executes, applies the governor transforms, emits a tool-result event with its
    origin, and injects the result as a `tool` message.
 4. **Approval evaluation.** The loop consults the layered evaluator (see
-   section 5). An `Ask` decision pauses the loop until the UI applies an
+   section 4). An `Ask` decision pauses the loop until the UI applies an
    allow/reject/always decision, bounded by an approval timeout; duplicate or
    late responses are rejected.
 5. **Execution.** The tool runs with cancellation propagated via context.
 6. **Output bounding and governor.** The governor applies B1/B2/B3/B5
-   transforms between execution and context injection (see section 7).
+   transforms between execution and context injection (see section 6).
 7. **Result/session/audit propagation.** Loop events — text, tool calls, tool
    results with origin, and approval events — stream to the UI and are
    persisted by the task adapter: tool calls/results as `assistant`/`tool`
@@ -113,7 +113,9 @@ the repository-wide memory-repository write lock).
   dependency. Both time out at 3 minutes.
 - **`git_status` / `git_diff` / `git_log`** — read-only workspace-repo
   inspection. `git_diff` pins the worktree through `rootfs` for content and
-  caps inline output at 64 KB.
+  caps inline output at 64 KiB by slicing the byte string; a UTF-8 boundary
+  can be split at the cut, the remainder is discarded, and no `FullOutput` is
+  set.
 - **`git_commit` / `git_branch` / `git_checkout`** — local git writes carrying
   the C2 scope check (rejected if the resolved repo path is inside a project
   memory repo) and ref-SHA recording for reflog-based undo. They execute
@@ -131,10 +133,15 @@ the repository-wide memory-repository write lock).
   outside the harness. The boolean is metadata, not a persisted approval state
   machine. `git_push` still runs the C2 scope check.
 - **`gh_pr_wait`** — read-only CI poller over the GitHub Checks API with
-  exponential backoff (10 s → 60 s) under the loop's cancellation context,
-  returning `green`/`red`/`timed_out`; red carries failing check names and B3
-  log handles. It reads `GITHUB_TOKEN` at call time, has an expected-blocking
-  flag and a configurable wait ceiling, and is disclosed like `web_search`.
+  exponential backoff (10 s → 60 s) under the loop's cancellation context. It
+  returns JSON only: `{"state":"green"}`, `{"state":"timed_out"}`, or
+  `{"state":"red","failed":[...]}` where `failed` lists the failing check
+  names. It does not fetch logs, does not produce B3 spill handles, and does
+  not add the network-use disclosure text that `web_search` emits — red is
+  returned as successful `Content`, so the B3 tee cannot attach to it
+  implicitly. It reads `GITHUB_TOKEN` at call time, has an expected-blocking
+  flag and a configurable wait ceiling, and is disclosed by the agent-loop
+  watchdog because it legitimately blocks.
 
 ## 4. Approval mechanism
 
@@ -143,9 +150,19 @@ layers:
 
 1. **Built-in defaults** — generated from `tools.BuiltinDescriptors()`, so the
    default posture tracks the tool inventory automatically.
-2. **User config layer** — for each tool disabled in config, a `Denied` rule
-   with source `"user: <id> disabled in config"` is appended, so disabling is
-   enforced at the approval layer too.
+2. **User config layer** — the runtime appends an explicit `Denied` rule with
+   source `"user: <id> disabled in config"` for each disabled tool that has a
+   configurable enable toggle beyond the built-in read-only set (the
+   mutation, subprocess, network, and proposal tools: `edit`, `exec`,
+   `go_test`, `go_lint`, `git_commit`, `git_branch`, `git_checkout`,
+   `web_search`, `memory_query`, `git_push`, `gh_pr_create`, `gh_pr_merge`,
+   `gh_pr_wait`). The built-in read-only tools (`read`, `file_list`,
+   `ast_map`, `ast_find`, `git_status`, `git_diff`, `git_log`) never receive a
+   user-layer deny rule: disabling them is enforced by the agent loop's
+   `ToolEnabled` filtering before approval evaluation, so they never reach the
+   evaluator at all. The two enforcement paths are separate — enablement
+   filtering gates whether a tool is offered and dispatched; the approval layer
+   gates tools that pass enablement.
 3. **Session remembered rules** — appended as the user applies decisions
    during a session; evaluated last. A fresh evaluator is built per task
    engine, so "always" rules never leak across sessions.
@@ -204,9 +221,11 @@ The sandbox has four distinct layers; none is a generic OS sandbox.
   set it), `inference` for model-generated content. The loop propagates origin
   onto tool-result events. Origin is metadata and never bypasses approvals,
   sandboxing, or verification.
-- **In-tool bounding.** `exec`, `go_test`, and `git_diff` cap inline text (64
-  KB, rune-safe) and carry the full untruncated output in `Result.FullOutput`
+- **In-tool bounding.** `exec` and `go_test` cap inline text (64 KiB) with
+  rune-safe cuts and carry the full untruncated output in `Result.FullOutput`
   when the inline text is only an excerpt, so the governor can preserve it.
+  `git_diff` is the exception: it slices the byte string at 64 KiB — which can
+  split a UTF-8 boundary — discards the remainder, and sets no `FullOutput`.
 - **Governor transforms** run between execution and context injection:
   - **B1 — query-aware skeletonizer:** reduces `read` output for
     parser-supported files, keeping full bodies for spans relevant to the
@@ -235,9 +254,11 @@ The sandbox has four distinct layers; none is a generic OS sandbox.
 3. **Registration.** Add the implementation to the `builtins` map in
    `RegisterBuiltins`; a descriptor without an implementation fails startup.
 4. **Config.** Add an `XEnabled bool` to `LoopConfig`, a case in `ToolEnabled`,
-   and a `BuiltinDefaultEnabled("<id>")` default in `Defaults()`. Add the
-   corresponding `Denied` rule to the user-config approval layer so disabling
-   is enforced at the approval layer too.
+   and a `BuiltinDefaultEnabled("<id>")` default in `Defaults()`. If the tool
+   belongs to the configurable (non-built-in-read-only) set, also add the
+   explicit `Denied` rule to the runtime's user-config approval layer so
+   disabling is enforced at the approval layer too; built-in read-only tools
+   rely on enablement filtering alone.
 5. **Approvals.** Nothing extra beyond the descriptor — `DefaultLayer()`
    derives automatically. If the tool must never auto-allow (like `exec`), the
    conservative rule is hardcoded in the evaluator.

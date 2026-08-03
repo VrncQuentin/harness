@@ -121,10 +121,10 @@ transaction phases are explicit:
 
 - **prepare** — the candidate and its API server are built locally and left
   unpublished; the API listener is bound (reserving its port) but does not
-  accept requests until commit, so a request on the candidate's port can never
-  run against a generation that is not the one it was prepared for. A failed
-  candidate is discarded wholesale, leaving the installed generation and
-  recorded applied state untouched.
+  accept requests until commit, so no request can be served before the
+  generation it was prepared alongside is installed. A failed candidate is
+  discarded wholesale, leaving the installed generation and recorded applied
+  state untouched.
 - **quiesce** — task loops are cancelled and sessions flushed when a rebuild
   will drop the old generation. These waits run *without* the runtime lock so
   session summarization can read live config without deadlocking; the lock is
@@ -190,13 +190,21 @@ Inside the transaction:
 ## 8. API-server publication and retained retirement
 
 The runtime's live API pointer is runtime-owned, not generation-bound. A
-candidate builds its API server bound to the candidate generation; prepare
-binds the listener (port reserved, no serving); commit transfers the previous
-server to pending-retirement, activates the new listener, and moves servers
-whose shutdown did not confirm termination into a retained slot. The terminal
-drain used by shutdown re-attempts pending and previously-retained servers;
-unconfirmed servers keep their slot, and the runtime only clears the live
-pointer when the current server confirms termination.
+candidate prepares its API server alongside the candidate — the listener is
+bound (reserving the port) during prepare but never serves until commit — but
+the server is **not** bound to the candidate generation. It is wired to the
+dynamic runtime adapter (`apiAssemblerAdapter` over the live runtime) plus
+`WithGenLease(rt.AcquireRequestGeneration)`, so each served request dynamically
+acquires the then-current installed generation. The safety invariant is that it
+cannot serve before commit, never that it is pinned to the generation it was
+prepared with.
+
+Publication: commit transfers the previous server to pending-retirement,
+activates the new listener, and moves servers whose shutdown did not confirm
+termination into a retained slot. The terminal drain used by shutdown
+re-attempts pending and previously-retained servers; unconfirmed servers keep
+their slot, and the runtime only clears the live pointer when the current
+server confirms termination.
 
 ## 9. Shutdown
 
@@ -233,8 +241,9 @@ retains ownership and a later `Shutdown` retries: the queue stays owned, and
 the session manager and task runner stay owned together with the complete
 generation they are bound to — its readers and handles stay open so a retry can
 save through them. API ownership is preserved to termination for every class of
-server: active, pending-retired, and previously timed-out. A stopped queue is
-never called after a failed bounded drain.
+server: active, pending-retired, and previously timed-out. After a failed
+bounded `Wait`, the queue is never stopped or cleared; a later `Shutdown`
+retries the retained lifecycle instead.
 
 Only a fully completed attempt releases and clears ownership: the generation is
 dropped, the readers close, and `started`/`applied`/`queue` are cleared.

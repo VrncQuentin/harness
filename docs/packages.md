@@ -9,6 +9,12 @@ package owns, what it deliberately does not own, its dependency direction, and
 why the boundary exists. Packages are grouped by architectural layer, not
 alphabetically, because the layer tells you the intended dependency direction.
 
+**"Dependency direction" below means direct Go imports as reported by
+`go list`** — a package listed as "consumed by" X is imported directly by X,
+not merely used transitively or conceptually. Ownership and responsibility
+statements are conceptual; when a conceptual relationship is not also a direct
+import, it is labeled as such.
+
 ## Reading the layers
 
 | Layer | Role | Packages |
@@ -35,7 +41,8 @@ exceptions are deliberate and noted in place.
   physically is and nothing else. See
   [filesystem-security.md](filesystem-security.md).
 - **Dependency direction:** none — it is a leaf. `rootfs`, `coord`, `git`,
-  `index`, `memory`, `tools`, and `config`/`detect` consume it.
+  `index`, `memory`, `memoryops`, `tools`, and `config` (model discovery)
+  consume it directly.
 - **Why the boundary exists:** every component that enforces containment or
   identity (tool sandbox, C2 memory-repo lock, git write lock) must reach the
   same answer. A shared leaf prevents each component from re-implementing
@@ -48,8 +55,8 @@ exceptions are deliberate and noted in place.
   and verified removal.
 - **Does not own:** identity resolution (that is `pathid`'s job) or subprocess
   sandboxing.
-- **Dependency direction:** depends on `pathid`; consumed by `git`, `memory`,
-  `index`, `tools`, `governor`, and `runtime`.
+- **Dependency direction:** depends on `pathid`; consumed by `git`, `governor`,
+  `index`, `memory`, `memoryops`, `retrieval`, and `tools`.
 - **Why the boundary exists:** it is the other half of the pathid pair —
   pathid decides where a path is; rootfs acts on that place through a handle
   rather than a name. See [filesystem-security.md](filesystem-security.md).
@@ -72,7 +79,7 @@ exceptions are deliberate and noted in place.
   directory skeleton (`projects/`, `logs/`, `cache/`).
 - **Does not own:** any per-project layout or repository state — see `memory`.
 - **Dependency direction:** depends on `project` (slug validation); consumed
-  by `main` and `runtime`.
+  by `runtime` and `cmd/harness`.
 
 ### Small shared-policy and hidden-state packages: reqid, tokens, vector, summarizerprompt
 
@@ -83,12 +90,14 @@ state has exactly one home:
   handlers, queue dispatch, prompt assembly, and logs correlate one request
   without adding request-id parameters to every package API. Leaf; consumed by
   `api`, `prompt`, and `runtime`.
-- **`tokens`** — token-count estimation. Leaf; consumed by `prompt`, `memory`,
-  and `governor` (the B5 token gate uses the same counter as budgeting).
+- **`tokens`** — token-count estimation. Leaf; consumed by `governor`,
+  `prompt`, and `ui` (the B5 token gate and prompt budgeting use the same
+  counter).
 - **`vector`** — vector math for the index. Leaf; consumed by `index` and
   `memoryops`.
 - **`summarizerprompt`** — the default episode-summarizer system prompt. Leaf;
-  consumed by `config` to seed the configurable default.
+  consumed by `config` (to seed the configurable default) and `session` (the
+  summarizer's fallback prompt).
 
 None of these should grow domain logic; when their one job moves into a larger
 package, the small package dissolves rather than absorbing features.
@@ -98,7 +107,7 @@ package, the small package dissolves rather than absorbing features.
 - **Owns:** shared `*http.Client` construction (timeouts, dial settings) used
   by every outbound HTTP consumer.
 - **Does not own:** any specific endpoint, auth, or retry policy.
-- **Dependency direction:** leaf; consumed by `inference`, `embedder`, `proc`,
+- **Dependency direction:** leaf; consumed by `embedder`, `inference`, `proc`,
   and `runtime`.
 
 ---
@@ -111,10 +120,12 @@ package, the small package dissolves rather than absorbing features.
   the single source of truth for what a config row is. No SQL.
 - **Does not own:** persistence (`db` owns the SQLite `config` table) or any
   live service-graph state.
-- **Dependency direction:** depends on `project`, `summarizerprompt`, and
-  `tools` — tool-enablement defaults come from `tools.BuiltinDefaultEnabled`,
-  so config deliberately depends on the execution layer for that one fact.
-  Consumed by `db`, `prompt`, `memoryops`, `agentloop`, `ui`, and `runtime`.
+- **Dependency direction:** depends on `pathid` (model-discovery path
+  canonicalization), `project`, `summarizerprompt`, and `tools` —
+  tool-enablement defaults come from `tools.BuiltinDefaultEnabled`, so config
+  deliberately depends on the execution layer for that one fact. Consumed by
+  `db`, `prompt`, `memoryops`, `agentloop`, `ui`, `runtime`, `cmd/harness`, and
+  `cmd/eval-retrieval`.
 - **Why the boundary exists:** config stays flat typed state plus validation;
   it never owns SQL or decides how subsystems are wired.
 
@@ -128,7 +139,8 @@ package, the small package dissolves rather than absorbing features.
   `memory.ProjectRepoManager` implements it.
 - **Dependency direction:** a leaf among domain packages — it imports no
   internal packages. That is what lets `config`, `db`, `home`, `memory`,
-  `session`, `prompt`, `ui`, and `runtime` depend on it without cycles.
+  `session`, `prompt`, `ui`, `runtime`, and `cmd/harness` depend on it without
+  cycles.
 - **Why the boundary exists:** `project` owns the *contract* (what a project
   is and how edits to it are sequenced); `memory` owns the *plumbing* (how a
   project's git repo is scaffolded and moved). `project` never imports
@@ -141,8 +153,8 @@ package, the small package dissolves rather than absorbing features.
   is the concrete implementation of the `config.Store`, `metrics.Store`, and
   project-store surfaces.
 - **Does not own:** domain rules — it persists what the domain packages define.
-- **Dependency direction:** depends on `config`, `project`, and `metrics`;
-  consumed by `main` and `runtime`.
+- **Dependency direction:** depends on `config`, `metrics`, `project`, and the
+  embedded `migrations` schema; consumed by `runtime` and `cmd/harness`.
 
 ### git
 
@@ -152,7 +164,7 @@ package, the small package dissolves rather than absorbing features.
 - **Does not own:** tool-level scope policy (that lives in `tools`), memory
   semantics, or the projects table.
 - **Dependency direction:** depends on `rootfs`, `pathid`, and `coord`;
-  consumed by `memory`, `tools`, and `runtime`.
+  consumed by `memory`, `memoryops`, `session`, `tools`, and `runtime`.
 - **Why the boundary exists:** keeping the wrapper policy-free means the memory
   writer and the `git_*` tools can share it without importing each other.
 
@@ -164,8 +176,8 @@ package, the small package dissolves rather than absorbing features.
 - **Does not own:** project domain rules (that is `project`'s), session
   lifecycle (that is `session`'s), or the vector index format (`index`).
 - **Dependency direction:** depends on `git`, `rootfs`, `pathid`, `coord`, and
-  `project`; consumed by `session`, `prompt`, `agent`, `memoryops`, `ui`, and
-  `runtime`.
+  `project`; consumed by `session`, `prompt`, `agent`, `memoryops`, `ui`,
+  `runtime`, and `cmd/eval-retrieval`.
 - **Why the boundary exists:** `memory` is the repository *infrastructure*
   layer. Keeping it separate from `project` (contracts) and `session`
   (lifecycle) is what keeps all three acyclic. See
@@ -201,8 +213,9 @@ package, the small package dissolves rather than absorbing features.
   trace types and sink.
 - **Does not own:** the embedder client, the index, or episode storage;
   `memory_query` reaches it through `memoryops.EpisodeScorer`.
-- **Dependency direction:** depends on `index` (via interface); consumed by
-  `prompt` and `memoryops`.
+- **Dependency direction:** depends on `index` (via interface) and `rootfs`
+  (the trace sink pins its directory); consumed by `prompt`, `memoryops`, and
+  `cmd/harness` (the trace sink is installed at startup).
 - **Why the boundary exists:** retrieval stays pure and testable; embedding
   and index access are injected. `index` stores vectors, `retrieval` scores,
   and `memoryops` orchestrates the two for episodes — three different jobs in
@@ -215,8 +228,8 @@ package, the small package dissolves rather than absorbing features.
 - **Does not own:** the index format (`index`), the scoring math (`retrieval`),
   the repository plumbing (`memory`), or session saving (`session`).
 - **Dependency direction:** depends on `config`, `coord`, `embedder`, `git`,
-  `index`, `memory`, `retrieval`, `session`, and `vector`; consumed by `runtime`
-  and `ui`.
+  `index`, `memory`, `pathid`, `retrieval`, `rootfs`, `session`, and `vector`;
+  consumed by `runtime` and `cmd/eval-retrieval`.
 - **Why the boundary exists:** it is the orchestration layer that turns "save
   an episode" into "embed, upsert into the index, commit under the
   coordinator". See [memory.md](memory.md).
@@ -224,8 +237,8 @@ package, the small package dissolves rather than absorbing features.
 ### metrics
 
 - **Owns:** the typed metrics API and recorder. No persistence.
-- **Dependency direction:** leaf; `db` implements its store, `runtime` and `ui`
-  consume the API.
+- **Dependency direction:** leaf; `db` implements its store, and `runtime`,
+  `ui`, and `cmd/harness` consume the API.
 
 ### agent
 
@@ -249,7 +262,7 @@ package, the small package dissolves rather than absorbing features.
   or any prompt/memory logic.
 - **Dependency direction:** both depend on `httpclient`. `inference` is
   consumed by `queue`, `session`, `prompt`, `api`, `agentloop`, and `runtime`;
-  `embedder` by `prompt`, `memoryops`, and `runtime`.
+  `embedder` by `prompt`, `memoryops`, `runtime`, and `cmd/eval-retrieval`.
 - **Why the boundary exists:** swapping llama-server for another backend
   touches `inference` only.
 
@@ -259,8 +272,8 @@ package, the small package dissolves rather than absorbing features.
   and terminal resolution of accepted requests.
 - **Does not own:** durable recording (`session` owns that) or model
   management.
-- **Dependency direction:** depends on `inference`; consumed by `api`,
-  `agentloop`, and `runtime`.
+- **Dependency direction:** depends on `inference`; consumed by `api` and
+  `runtime`.
 
 ### proc
 
@@ -276,7 +289,7 @@ package, the small package dissolves rather than absorbing features.
   (`retrieval` does), or the request queue.
 - **Dependency direction:** depends on `agent`, `config`, `embedder`, `index`,
   `inference`, `memory`, `project`, `reqid`, `retrieval`, and `tokens`;
-  consumed by `runtime` and `api`.
+  consumed by `runtime`.
 - **Why the boundary exists:** prompt assembly is the only place layer
   ordering and budget rules live; keeping it out of memory/session avoids
   duplicating the rule set. See [memory.md](memory.md).
@@ -285,7 +298,8 @@ package, the small package dissolves rather than absorbing features.
 
 - **Owns:** language front-ends behind `ast_*`: the `FrontEnd` contract,
   extension→front-end resolution, and the Go single-file front-end.
-- **Dependency direction:** leaf; consumed by `tools` and `governor`.
+- **Dependency direction:** leaf; consumed by `governor`, `runtime`, and
+  `tools`.
 - **Why the boundary exists:** `ast_*` tool declarations are generated from the
   registry at construction, so adding a language means adding a front-end, not
   tools.
@@ -321,7 +335,7 @@ package, the small package dissolves rather than absorbing features.
   skeletonizer, B2 output folder, B3 tee-on-failure, B5 token gate.
 - **Does not own:** tool execution or the loop.
 - **Dependency direction:** depends on `parser`, `rootfs`, `tools`, and
-  `tokens`; consumed by `agentloop` and `runtime`.
+  `tokens`; consumed by `runtime`.
 - **Why the boundary exists:** transforms are not model-callable and are
   invisible to the agent as tools; they belong in their own package rather than
   inside `tools`. See [tools.md](tools.md).
@@ -354,7 +368,7 @@ package, the small package dissolves rather than absorbing features.
 ### logbuf
 
 - **Owns:** in-memory ring buffers for harness and process logs. Leaf; consumed
-  by `ui` and `runtime`.
+  by `ui`, `runtime`, and `cmd/harness`.
 
 ### ui
 
@@ -362,36 +376,41 @@ package, the small package dissolves rather than absorbing features.
   htmx/SSE streaming, embedded assets, and the `ServiceDeps` snapshot contract.
 - **Does not own:** domain logic; it adapts package boundaries through the
   runtime.
-- **Dependency direction:** depends on `config`, `logbuf`, `memory`, `metrics`,
-  `project`, and `tokens`; consumed by `runtime` and `main`.
+- **Dependency direction:** depends on `assets` (embedded templates/CSS/htmx),
+  `config`, `logbuf`, `memory`, `metrics`, `project`, and `tokens`; consumed by
+  `runtime` and `cmd/harness`.
 
 ### tray
 
 - **Owns:** the system tray, single-instance enforcement, and the Quit path.
-  Leaf; consumed by `main`.
+- **Dependency direction:** depends on `assets` (the embedded tray icon);
+  consumed by `cmd/harness`.
 
 ### runtime
 
 - **Owns:** the composition and lifecycle root. See
   [runtime-lifecycle.md](runtime-lifecycle.md).
-- **Dependency direction:** depends on every layer; consumed by `main`.
+- **Dependency direction:** depends on every layer; consumed by `cmd/harness`.
 - **Why the boundary exists:** `runtime` is the single place the service graph
   is built, re-applied, and torn down. Keeping that composition in one package
   means no other package wires subsystems together.
 
 ### Commands
 
-- `cmd/harness` — main entry point; wires the runtime, UI server, db, tray,
-  and shutdown.
+- `cmd/harness` — main entry point. It composes the top of the graph: imports
+  `runtime`, `ui`, `tray`, `db`, `home`, `logbuf`, `metrics`, `project`,
+  `config`, and `retrieval`, wires the runtime's callbacks, and owns the
+  startup and quit paths.
 - `cmd/eval-retrieval` — developer-side retrieval eval harness, not part of the
-  shipped binary.
+  shipped binary. Imports `config`, `embedder`, `memory`, and `memoryops`.
 - `cmd/fsaudit` — direct-filesystem-call audit; fails CI when an
-  un-allowlisted `os`/`path/filepath` call appears. See
-  [filesystem-security.md](filesystem-security.md).
+  un-allowlisted `os`/`path/filepath` call appears. Leaf (imports nothing
+  internal). See [filesystem-security.md](filesystem-security.md).
 
 ### Embedded assets and migrations
 
-- `assets/` — UI templates/CSS/htmx compiled into the binary via `embed.FS`.
+- `assets/` — embedded UI templates/CSS/htmx and the tray icon, served via
+  `embed.FS`; consumed by `ui` and `tray`.
 - `migrations/` — the single squashed SQL schema, embedded and applied by
   `db`.
 
@@ -425,10 +444,10 @@ package, the small package dissolves rather than absorbing features.
   `internal/agent` share no privileges; one is execution machinery, the other a
   domain registry. Subpackage status grants nothing — boundaries are enforced
   by imports, not by directory nesting.
-- **Dependency exceptions are deliberate.** `config` imports `tools` (for
-  tool-enablement defaults) and `summarizerprompt` (for the summarizer
-  default); these cross-layer edges exist so seed values have a single source
-  of truth.
+- **Dependency exceptions are deliberate.** `config` imports `pathid` (model
+  discovery), `tools` (tool-enablement defaults), and `summarizerprompt` (the
+  summarizer default); these cross-layer edges exist so seed values have a
+  single source of truth.
 - **Planned packages are not current.** `internal/pipeline` and the
   `internal/dsl` front-end are planned for the pipeline DSL; they are not part
   of the current layout and are not described here.
