@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -79,17 +80,21 @@ type RetrievalTrace struct {
 	Timestamp      time.Time `json:"timestamp"`
 }
 
-// TraceSink receives D3 trace rows.
+// TraceSink receives D3 trace rows. Emit reports whether the row was appended
+// successfully; a non-nil error means the row was not recorded. Note that
+// "appended successfully" is not "durably written": NDJSONSink uses
+// rootfs.AppendFile, which performs no per-write fsync, so a crash shortly after
+// Emit may still lose the row.
 type TraceSink interface {
-	Emit(RetrievalTrace)
+	Emit(RetrievalTrace) error
 	Close() error
 }
 
 // NopTraceSink discards all rows. Safe as the nil-value substitute.
 type NopTraceSink struct{}
 
-func (NopTraceSink) Emit(RetrievalTrace) {}
-func (NopTraceSink) Close() error        { return nil }
+func (NopTraceSink) Emit(RetrievalTrace) error { return nil }
+func (NopTraceSink) Close() error              { return nil }
 
 // DefaultTraceSink is the package-level sink. ScoreEpisodePaths calls it on
 // every candidate when non-nil. cmd/harness/main.go installs an NDJSONSink at
@@ -151,20 +156,32 @@ func NewNDJSONSink(dir string, now func() time.Time) (*NDJSONSink, error) {
 	return s, nil
 }
 
-// Emit writes t as a JSON line to the current day's file.
-func (s *NDJSONSink) Emit(t RetrievalTrace) {
+// Emit writes t as a JSON line to the current day's file. A non-nil error is
+// returned when the row could not be recorded (file creation, JSON encoding, or
+// the append itself failed). Rotation and retention failures that do not lose
+// the current row are surfaced through the log path inside the sink. After
+// Close, Emit reports an error rather than writing through a released handle.
+func (s *NDJSONSink) Emit(t RetrievalTrace) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.root == nil {
+		return fmt.Errorf("retrieval: trace sink is closed")
+	}
 	day := t.Timestamp.UTC().Format("2006-01-02")
 	if err := s.ensureFile(day); err != nil {
-		return
+		return err
 	}
 	b, err := json.Marshal(t)
 	if err != nil {
-		return
+		return fmt.Errorf("retrieval: encode trace row: %w", err)
 	}
-	_ = s.f.Write(b)
-	_ = s.f.Write([]byte{'\n'})
+	if err := s.f.Write(b); err != nil {
+		return fmt.Errorf("retrieval: append trace row: %w", err)
+	}
+	if err := s.f.Write([]byte{'\n'}); err != nil {
+		return fmt.Errorf("retrieval: append trace newline: %w", err)
+	}
+	return nil
 }
 
 // Close flushes the open file and releases the pinned trace directory. A
@@ -190,15 +207,22 @@ func (s *NDJSONSink) Close() error {
 }
 
 // ensureFile opens (or rotates to) the file for day through the pinned root.
+// A rotation close failure or a retention failure does not lose the current
+// row, so it is surfaced through the log path rather than returned; a failure
+// to open the new file is returned because the row cannot be recorded.
 // Caller holds mu.
 func (s *NDJSONSink) ensureFile(day string) error {
 	if s.f != nil && s.day == day {
 		return nil
 	}
 	if s.f != nil {
-		_ = s.f.Close()
+		if err := s.f.Close(); err != nil {
+			slog.Error("retrieval: close rotated trace file", "day", s.day, "err", err)
+		}
 		s.f = nil
-		s.prune()
+		if err := s.prune(); err != nil {
+			slog.Error("retrieval: prune trace files", "err", err)
+		}
 	}
 	f, err := s.root.OpenAppend(day+".ndjson", 0o644)
 	if err != nil {
@@ -209,9 +233,10 @@ func (s *NDJSONSink) ensureFile(day string) error {
 	return nil
 }
 
-// prune removes files older than retentionDays. Caller holds mu.
-func (s *NDJSONSink) prune() {
-	s.pruneWithHook(nil)
+// prune removes files older than retentionDays and returns any failure that
+// left an expired entry in place. Caller holds mu.
+func (s *NDJSONSink) prune() error {
+	return s.pruneWithHook(nil)
 }
 
 // pruneWithHook is prune with a hook that runs after a candidate entry is
@@ -219,12 +244,13 @@ func (s *NDJSONSink) prune() {
 // identity verification exists to survive. The hook is a parameter rather than
 // package state so parallel tests never see each other's. It is nil on every
 // production path.
-func (s *NDJSONSink) pruneWithHook(beforeRemove func(name string)) {
+func (s *NDJSONSink) pruneWithHook(beforeRemove func(name string)) error {
 	cutoff := s.now().UTC().AddDate(0, 0, -s.retentionDays)
 	entries, err := s.root.ReadDir(".")
 	if err != nil {
-		return
+		return fmt.Errorf("retrieval: list trace files: %w", err)
 	}
+	var errs []error
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".ndjson") {
 			continue
@@ -239,6 +265,7 @@ func (s *NDJSONSink) pruneWithHook(beforeRemove func(name string)) {
 		}
 		info, err := e.Info()
 		if err != nil {
+			errs = append(errs, fmt.Errorf("retrieval: stat trace file %s: %w", e.Name(), err))
 			continue
 		}
 		if beforeRemove != nil {
@@ -247,6 +274,9 @@ func (s *NDJSONSink) pruneWithHook(beforeRemove func(name string)) {
 		// Delete through the pinned root, and only the entry that was actually
 		// observed: a stranger that has claimed the name since the listing is
 		// detected by the identity comparison and refused rather than removed.
-		_ = s.root.RemoveVerified(e.Name(), info)
+		if err := s.root.RemoveVerified(e.Name(), info); err != nil {
+			errs = append(errs, fmt.Errorf("retrieval: remove trace file %s: %w", e.Name(), err))
+		}
 	}
+	return errors.Join(errs...)
 }

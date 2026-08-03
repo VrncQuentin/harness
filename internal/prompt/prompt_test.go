@@ -1117,8 +1117,9 @@ type recordingTraceSink struct {
 	rows []retrieval.RetrievalTrace
 }
 
-func (s *recordingTraceSink) Emit(row retrieval.RetrievalTrace) {
+func (s *recordingTraceSink) Emit(row retrieval.RetrievalTrace) error {
 	s.rows = append(s.rows, row)
+	return nil
 }
 
 func (s *recordingTraceSink) Close() error { return nil }
