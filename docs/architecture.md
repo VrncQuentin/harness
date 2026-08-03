@@ -214,7 +214,7 @@ transaction phases are explicit:
   unpublished; the API listener is bound (reserving its port) but does not
   accept requests until commit, so a request on the candidate's port can never
   run against a generation that is not the one it was prepared for. A failed
-  candidate is discarded wholesale (`applyTx.close`), leaving the installed
+  candidate is discarded wholesale (`candidate.close`), leaving the installed
   generation and recorded applied state untouched.
 - **quiesce** — task loops are cancelled and sessions flushed when a rebuild
   will drop the old generation; these waits run without `rt.mu` so session
@@ -229,8 +229,8 @@ transaction phases are explicit:
   same lock acquisition uses, and the previous API server is retired under
   the timeout ownership protocol: a server whose shutdown does not confirm
   termination within the timeout keeps a retained slot (`rt.retiredAPI`)
-  until a later Stop confirms it, so the runtime never clears or replaces the
-  pointer to a still-serving component.
+  until a later Shutdown confirms it, so the runtime never clears or replaces
+  the pointer to a still-serving component.
 
 `project.llama_on_switch=keep` records the actually-running model separately
 from the newly preferred model; llama-server is never reconfigured during a
@@ -289,10 +289,9 @@ the installed generation and recorded applied state are untouched.
 
 `Runtime.Shutdown` is the one cohesive shutdown lifecycle, serialized with the
 apply transaction so a shutdown cannot interleave with a config apply or a
-project edit. It replaces the split coordination between `cmd/harness/main.go`
-and a no-root-cancel stop wrapper: `main` calls `rt.Shutdown(rootCancel, 10s)`
-and nothing else; tests drive the same lifecycle without a root cancel. The
-lifecycle is explicit:
+project edit. `main` calls `rt.Shutdown(rootCancel, 10s)` and nothing else;
+tests drive the same lifecycle without a root cancel. The lifecycle is
+explicit:
 
 1. **stop admissions** — the request queue closes its intake
    (`Queue.CloseAdmissions`), so new UI/API chat or task work is refused before
@@ -534,10 +533,10 @@ allowlist contains no migration entries, only permanent boundary exceptions.
 | Case / 8.3 alias (Windows) | `pathid.Canonical` resolves to a single physical name; containment checked against the canonical form | implemented |
 | Same-name directory replacement | `OpenIdentified` verifies the pinned handle against the physical identity with `os.SameFile`; a replacement fails the comparison | implemented |
 | Rename of original directory | Operations through the pinned handle continue to address the original directory; `OpenIdentified` fails closed on the renamed name | implemented |
-| Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere. The one deliberate exception is `AppendSync` for append-only logs: appending necessarily writes in place, so a hard-linked `sessions.jsonl` entry is written through. That limitation is inherent to append and documented, not solved by rewriting the log (PR 7) | implemented |
-| In-process concurrent writers | One repository-wide mutation coordinator per physical repository identity (`internal/coord`), shared by git mutations, index publication, and project-repo scaffolding and moves; index publication and the following git commit run inside one repository transaction held across both (PR 5b4), and project-repo scaffold writes and their commit, and a project-repo move's copy and its commit, each run inside one transaction held across both (PR 6) | implemented |
+| Hard-link leaf writes | `WriteStreamAtomic` publishes by rename — a rename replaces the directory entry and leaves the linked inode alone. Truncating in place would write through the link into a file elsewhere. The one deliberate exception is `AppendSync` for append-only logs: appending necessarily writes in place, so a hard-linked `sessions.jsonl` entry is written through. That limitation is inherent to append and documented, not solved by rewriting the log | implemented |
+| In-process concurrent writers | One repository-wide mutation coordinator per physical repository identity (`internal/coord`), shared by git mutations, index publication, and project-repo scaffolding and moves; index publication and the following git commit run inside one repository transaction held across both, and project-repo scaffold writes and their commit, and a project-repo move's copy and its commit, each run inside one transaction held across both | implemented |
 | Check/use races on intermediate directories | `OpenChildNoFollow` opens the child, Lstats the entry through the parent, rejects links, and compares the entry with the opened handle via `os.SameFile` — what is opened and what is checked are the same object | implemented |
-| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles (PR 4, PR 5a); index uses vector-first copy-on-write publication (PR 5b1); DirReader identity via PR 2c, compared against the git repository's retained identity at runtime construction (PR 5b4); index rooted identity via PR 5b2; repository-wide mutation coordinator spanning git commits and index publication via PR 5b4; project-repo scaffolding, validation, destination creation, and file enumeration route through pinned roots, scaffold/move writes are bound to the retained git boundary with `os.SameFile` and run inside the repository transaction (PR 6); the session log is read and appended through the same generation-owned pinned reader, with only `fs.ErrNotExist` meaning "no sessions" and a rooted append primitive that cannot truncate (PR 7) | implemented |
+| Memory repo reads/writes through pathname | Read and write operations use pinned `os.Root` handles; index uses vector-first copy-on-write publication; DirReader identity is bound at construction and compared against the git repository's retained identity at runtime construction; the episode index is rooted with a verified identity; a repository-wide mutation coordinator spans git commits and index publication; project-repo scaffolding, validation, destination creation, and file enumeration route through pinned roots, scaffold/move writes are bound to the retained git boundary with `os.SameFile` and run inside the repository transaction; the session log is read and appended through the same generation-owned pinned reader, with only `fs.ErrNotExist` meaning "no sessions" and a rooted append primitive that cannot truncate | implemented |
 
 #### Out of scope
 

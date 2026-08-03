@@ -257,7 +257,7 @@ func (rt *Runtime) drainPendingRetired() {
 	rt.mu.Unlock()
 }
 
-// drainRetiredAPI is the terminal drain, used by Stop, Shutdown, and tests:
+// drainRetiredAPI is the terminal drain, used by Shutdown and tests:
 // it stops anything still pending from the last commit and re-attempts servers
 // whose earlier shutdown timed out. A server that still refuses to terminate
 // keeps its slot; ownership is retained. It returns true when every server

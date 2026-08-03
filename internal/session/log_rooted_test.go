@@ -196,9 +196,9 @@ func (w *countingWriter) WriteFile(relPath string, data []byte) error {
 // through the pinned memory writer
 // (m.deps.Writer.WriteFile), so when the sidecar's episode directory is a
 // link out of the repo the sidecar write itself must fail closed and write
-// nothing outside. Under PR 11 the sidecar is the first artifact Save
-// publishes, so a link installed ahead of Save is exactly the write that hits
-// it; a failed sidecar must also emit no pending recovery record.
+// nothing outside. The sidecar is the first artifact Save publishes, so a
+// link installed ahead of Save is exactly the write that hits it; a failed
+// sidecar must also emit no pending recovery record.
 func TestSessionLog_SidecarPublishedThroughPinnedRoot(t *testing.T) {
 	fi := newFakeInference(summaryTokens("sidecar summary"))
 	root, repo := scaffoldMemoryRepo(t, "coder")
