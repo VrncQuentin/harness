@@ -19,6 +19,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/pathid"
 	"github.com/VrncQuentin/harness/internal/project"
+	"github.com/VrncQuentin/harness/internal/retrieval"
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
@@ -1108,5 +1109,60 @@ func TestAssemble_BlendedRecencyUsesExponentialDecay(t *testing.T) {
 	}
 	if strings.Contains(sys, "01.md") {
 		t.Errorf("oldest episode 01 should be dropped; got:\n%s", sys)
+	}
+}
+
+// recordingTraceSink captures emitted retrieval trace rows for tests.
+type recordingTraceSink struct {
+	rows []retrieval.RetrievalTrace
+}
+
+func (s *recordingTraceSink) Emit(row retrieval.RetrievalTrace) {
+	s.rows = append(s.rows, row)
+}
+
+func (s *recordingTraceSink) Close() error { return nil }
+
+// TestAssemble_EmptyEpisodesStillEmitsUnscoreableCallRow: the prompt assembler
+// must reach the shared retrieval choke point even when the active project has
+// no episodes, so an empty project still records an unscoreable call row rather
+// than silently bypassing the trace contract.
+func TestAssemble_EmptyEpisodesStillEmitsUnscoreableCallRow(t *testing.T) {
+	mem := writeRepo(t, map[string]string{
+		"rules.md":                "r",
+		"agents/coder/persona.md": "p",
+	})
+	// A non-nil embedder/index so blended retrieval is configured; the empty
+	// episode set is what forces the unscoreable path.
+	stub := &stubEmbedder{vectors: [][]float32{{1, 0}}}
+	idxDir := t.TempDir()
+	root, rootErr := rootfs.Open(idxDir)
+	if rootErr != nil {
+		t.Fatal(rootErr)
+	}
+	defer func() { _ = root.Close() }()
+	idx, idxErr := index.CreateRooted(root, idxDir, 2, idxRepoID(t, idxDir))
+	if idxErr != nil {
+		t.Fatal(idxErr)
+	}
+	asm := newAssembler(t, mem, baseCfg()).WithProjectSlug("global").WithBlendedRetrieval(&indexSearcherAdapter{idx: idx, dir: idxDir}, stub)
+
+	rec := &recordingTraceSink{}
+	prev := retrieval.DefaultTraceSink
+	retrieval.SetDefaultTraceSink(rec)
+	defer retrieval.SetDefaultTraceSink(prev)
+
+	_, _, err := asm.Assemble(context.Background(), "coder", nil)
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if len(rec.rows) != 1 {
+		t.Fatalf("empty-episode assembly emitted %d trace rows, want exactly one unscoreable call row", len(rec.rows))
+	}
+	if rec.rows[0].RecordType != retrieval.RecordTypeCall || rec.rows[0].Outcome != retrieval.OutcomeUnscoreable {
+		t.Fatalf("empty-episode call row = %+v, want an unscoreable call row", rec.rows[0])
+	}
+	if rec.rows[0].ProjectSlug != "global" {
+		t.Errorf("call row project_slug = %q, want global", rec.rows[0].ProjectSlug)
 	}
 }

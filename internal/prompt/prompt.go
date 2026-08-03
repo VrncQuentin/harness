@@ -357,27 +357,28 @@ func (a *DiskAssembler) loadEpisodes(ctx context.Context, agentName string, quer
 		})
 	}
 
-	// Blended retrieval: semantic similarity + recency.
+	// Blended retrieval: semantic similarity + recency. The choke point is
+	// reached even when no episodes were loaded, so an empty project still
+	// emits an unscoreable call row (the shared retrieval contract records
+	// empty and missing-index outcomes, not just scored ones).
 	blended := false
-	if len(out) > 0 {
-		paths := make([]string, len(out))
+	epPaths := make([]string, len(out))
+	for i := range out {
+		epPaths[i] = out[i].path
+	}
+	slug := a.projectSlug
+	if slug == "" {
+		slug = project.GlobalSlug
+	}
+	scores, scored, err := retrieval.ScoreEpisodePaths(ctx, a.emb, a.idx, retrieval.TraceContext{ProjectSlug: slug, TopK: a.cfg.RecencyN}, query, epPaths, a.cfg.SemanticWeight, a.cfg.RecencyWeight)
+	if err == nil && scored {
 		for i := range out {
-			paths[i] = out[i].path
+			out[i].score = scores[out[i].path]
 		}
-		slug := a.projectSlug
-		if slug == "" {
-			slug = project.GlobalSlug
-		}
-		scores, scored, err := retrieval.ScoreEpisodePaths(ctx, a.emb, a.idx, retrieval.TraceContext{ProjectSlug: slug, TopK: a.cfg.RecencyN}, query, paths, a.cfg.SemanticWeight, a.cfg.RecencyWeight)
-		if err == nil && scored {
-			for i := range out {
-				out[i].score = scores[out[i].path]
-			}
-			sort.SliceStable(out, func(i, j int) bool {
-				return out[i].score > out[j].score
-			})
-			blended = true
-		}
+		sort.SliceStable(out, func(i, j int) bool {
+			return out[i].score > out[j].score
+		})
+		blended = true
 	}
 
 	if n := a.cfg.RecencyN; n > 0 && len(out) > n {

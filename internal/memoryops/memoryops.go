@@ -115,20 +115,26 @@ func (s *EpisodeScorer) ScoreEpisodes(ctx context.Context, tc retrieval.TraceCon
 	for _, p := range episodePaths {
 		out[p] = RetrievalScore{}
 	}
-	if s.Index == nil {
-		return out, nil
-	}
 
-	for _, p := range episodePaths {
-		id := retrieval.EpisodeID(p)
-		score := out[p]
-		score.Indexed = s.Index.Contains(id)
-		out[p] = score
+	// Always reach the shared scoring choke point so a missing index or an
+	// empty episode set still emits an unscoreable call row when tracing is
+	// enabled. A nil index is passed as a nil EpisodeSearcher (not a typed
+	// nil *EpisodeIndex, which would satisfy the interface and panic), and
+	// ScoreEpisodePaths records the unavailable outcome.
+	var searcher retrieval.EpisodeSearcher
+	if s.Index != nil {
+		searcher = s.Index
+		for _, p := range episodePaths {
+			id := retrieval.EpisodeID(p)
+			score := out[p]
+			score.Indexed = s.Index.Contains(id)
+			out[p] = score
+		}
 	}
 	scores, scored, err := retrieval.ScoreEpisodePaths(
 		ctx,
 		s.Embedder,
-		s.Index,
+		searcher,
 		tc,
 		query,
 		episodePaths,

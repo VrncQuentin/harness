@@ -72,26 +72,29 @@ func BlendEpisodeScores(episodePaths []string, semantic map[string]float64, sema
 // one candidate row per scored episode with its final post-sort rank, the
 // configured weights, and whether it falls within the caller's requested top-K.
 func ScoreEpisodePaths(ctx context.Context, embedder EpisodeEmbedder, searcher EpisodeSearcher, tc TraceContext, query string, episodePaths []string, semanticWeight, recencyWeight float64) (map[string]float64, bool, error) {
+	// One invocation ID per call, shared by the call row and every candidate
+	// row, so candidates are associable with their invocation.
+	invocationID := NewInvocationID()
 	if strings.TrimSpace(query) == "" || embedder == nil || searcher == nil || len(episodePaths) == 0 {
-		emitCall(tc, query, semanticWeight, recencyWeight, OutcomeUnscoreable)
+		emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeUnscoreable)
 		return map[string]float64{}, false, nil
 	}
 	vecs, err := embedder.Embed(ctx, []string{query})
 	if err != nil {
-		emitCall(tc, query, semanticWeight, recencyWeight, OutcomeError)
+		emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeError)
 		return nil, false, err
 	}
 	if len(vecs) == 0 || len(vecs[0]) == 0 {
-		emitCall(tc, query, semanticWeight, recencyWeight, OutcomeUnscoreable)
+		emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeUnscoreable)
 		return map[string]float64{}, false, nil
 	}
 	results, err := searcher.Search(vecs[0], len(episodePaths)*2)
 	if err != nil {
-		emitCall(tc, query, semanticWeight, recencyWeight, OutcomeError)
+		emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeError)
 		return nil, false, err
 	}
 	if len(results) == 0 {
-		emitCall(tc, query, semanticWeight, recencyWeight, OutcomeUnscoreable)
+		emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeUnscoreable)
 		return map[string]float64{}, false, nil
 	}
 	oldestFirst := append([]string(nil), episodePaths...)
@@ -99,18 +102,19 @@ func ScoreEpisodePaths(ctx context.Context, embedder EpisodeEmbedder, searcher E
 	semanticScores := BestSemanticScores(results)
 	blended := BlendEpisodeScores(oldestFirst, semanticScores, semanticWeight, recencyWeight)
 
-	emitCall(tc, query, semanticWeight, recencyWeight, OutcomeScored)
-	emitCandidates(tc, query, oldestFirst, semanticScores, blended, semanticWeight, recencyWeight)
+	emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeScored)
+	emitCandidates(tc, invocationID, query, oldestFirst, semanticScores, blended, semanticWeight, recencyWeight)
 	return blended, true, nil
 }
 
 // emitCall writes the one call row for an invocation when tracing is enabled.
 // The outcome names the invocation's result: scored (retrieval ran, possibly
 // finding nothing), unscoreable (inputs could not produce scores), or error.
-func emitCall(tc TraceContext, query string, semanticWeight, recencyWeight float64, outcome string) {
+func emitCall(tc TraceContext, invocationID, query string, semanticWeight, recencyWeight float64, outcome string) {
 	emitRow(tc, RetrievalTrace{
 		Version:        TraceSchemaVersion,
 		RecordType:     RecordTypeCall,
+		InvocationID:   invocationID,
 		ProjectSlug:    tc.ProjectSlug,
 		QueryID:        QueryID(query),
 		SemanticWeight: semanticWeight,
@@ -123,7 +127,7 @@ func emitCall(tc TraceContext, query string, semanticWeight, recencyWeight float
 // emitCandidates writes one candidate row per scored episode, in final
 // post-sort rank order (one-based rank by blended score descending). Recency
 // is the raw exp_decay value for the episode's age, independent of rank.
-func emitCandidates(tc TraceContext, query string, oldestFirst []string, semantic map[string]float64, blended map[string]float64, semanticWeight, recencyWeight float64) {
+func emitCandidates(tc TraceContext, invocationID, query string, oldestFirst []string, semantic map[string]float64, blended map[string]float64, semanticWeight, recencyWeight float64) {
 	n := float64(len(oldestFirst))
 	recency := make(map[string]float64, len(oldestFirst))
 	for i, p := range oldestFirst {
@@ -135,14 +139,19 @@ func emitCandidates(tc TraceContext, query string, oldestFirst []string, semanti
 	now := time.Now()
 	for i, p := range ranked {
 		id := EpisodeID(p)
-		sem := semantic[id]
-		if sem == 0 {
+		sem, ok := semantic[id]
+		if !ok {
+			// Mirror BlendEpisodeScores: the basename fallback applies only
+			// when the full-path key is absent, never when a legitimate
+			// full-path zero exists. A comma-ok lookup keeps the recorded
+			// Semantic consistent with the components used to compute Score.
 			sem = semantic[path.Base(id)]
 		}
 		rank := i + 1
 		emitRow(tc, RetrievalTrace{
 			Version:        TraceSchemaVersion,
 			RecordType:     RecordTypeCandidate,
+			InvocationID:   invocationID,
 			ProjectSlug:    tc.ProjectSlug,
 			QueryID:        qid,
 			Candidate:      p,

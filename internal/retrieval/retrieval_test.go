@@ -450,3 +450,114 @@ func TestScoreEpisodePathsNoTraceWithoutProject(t *testing.T) {
 		t.Fatalf("zero-value TraceContext must not emit, got %d rows", len(rec.rows))
 	}
 }
+
+// TestScoreEpisodePathsInvocationIDAssociatesCallAndCandidates: one fresh
+// invocation ID must be shared by the call row and every candidate row of the
+// same invocation, so candidates are associable with their call even when the
+// same query repeats or concurrent emissions interleave.
+func TestScoreEpisodePathsInvocationIDAssociatesCallAndCandidates(t *testing.T) {
+	rec := withTraceSink(t)
+	paths := []string{"episodes/coder/a.md", "episodes/coder/b.md"}
+	searcher := &scoreSearcher{results: []index.Result{
+		{SHA: "episodes/coder/a", Score: 0.9},
+		{SHA: "episodes/coder/b", Score: 0.1},
+	}}
+	_, _, err := ScoreEpisodePaths(context.Background(), scoreEmbedder{vec: []float32{1}}, searcher, TraceContext{ProjectSlug: "global"}, "needle", paths, 1, 0)
+	if err != nil {
+		t.Fatalf("ScoreEpisodePaths: %v", err)
+	}
+
+	var callID string
+	var candidateIDs []string
+	for _, r := range rec.rows {
+		if r.InvocationID == "" {
+			t.Error("row has an empty invocation_id")
+		}
+		switch r.RecordType {
+		case RecordTypeCall:
+			callID = r.InvocationID
+		case RecordTypeCandidate:
+			candidateIDs = append(candidateIDs, r.InvocationID)
+		}
+	}
+	if callID == "" || len(candidateIDs) != 2 {
+		t.Fatalf("call id %q candidates %v", callID, candidateIDs)
+	}
+	for _, cid := range candidateIDs {
+		if cid != callID {
+			t.Errorf("candidate invocation_id %q differs from call %q", cid, callID)
+		}
+	}
+}
+
+// TestScoreEpisodePathsInvocationIDDistinctPerCall: two separate invocations
+// of the same query must mint distinct invocation IDs, even though the query
+// hash is identical.
+func TestScoreEpisodePathsInvocationIDDistinctPerCall(t *testing.T) {
+	rec := withTraceSink(t)
+	paths := []string{"episodes/coder/a.md"}
+	searcher := &scoreSearcher{results: []index.Result{{SHA: "episodes/coder/a", Score: 0.9}}}
+	emb := scoreEmbedder{vec: []float32{1}}
+	for range 2 {
+		if _, _, err := ScoreEpisodePaths(context.Background(), emb, searcher, TraceContext{ProjectSlug: "global"}, "same query", paths, 1, 0); err != nil {
+			t.Fatalf("ScoreEpisodePaths: %v", err)
+		}
+	}
+	var callRows []RetrievalTrace
+	for _, r := range rec.rows {
+		if r.RecordType == RecordTypeCall {
+			callRows = append(callRows, r)
+		}
+	}
+	if len(callRows) != 2 {
+		t.Fatalf("want 2 call rows, got %d", len(callRows))
+	}
+	if callRows[0].InvocationID == "" || callRows[0].InvocationID == callRows[1].InvocationID {
+		t.Fatalf("distinct invocations must mint distinct ids: %q vs %q", callRows[0].InvocationID, callRows[1].InvocationID)
+	}
+	// The query hash is the same, which is exactly why the invocation ID is
+	// needed to disambiguate the two calls.
+	if callRows[0].QueryID != callRows[1].QueryID {
+		t.Fatalf("expected identical QueryID across identical queries: %q vs %q", callRows[0].QueryID, callRows[1].QueryID)
+	}
+}
+
+// TestScoreEpisodePathsSemanticFallbackCommaOK: a legitimate full-path zero
+// semantic score must not fall back to a legacy basename entry; the recorded
+// Semantic must match the zero actually used to compute the blend. The search
+// results carry a basename "shared" entry with 0.5 alongside the full-path
+// zero, so reverting the comma-ok lookup to a value-zero check would record
+// 0.5 here and fail.
+func TestScoreEpisodePathsSemanticFallbackCommaOK(t *testing.T) {
+	rec := withTraceSink(t)
+	paths := []string{"episodes/coder/shared.md"}
+	searcher := &scoreSearcher{results: []index.Result{
+		{SHA: "episodes/coder/shared", Score: 0},
+		{SHA: "shared", Score: 0.5},
+	}}
+	// BlendEpisodeScores uses comma-ok: the full-path key is present with a
+	// legitimate zero, so the blend used 0*1 + 0*recency = 0 and the trace
+	// must record Semantic 0, not the basename 0.5.
+	_, scored, err := ScoreEpisodePaths(context.Background(), scoreEmbedder{vec: []float32{1}}, searcher, TraceContext{ProjectSlug: "global"}, "needle", paths, 1, 0)
+	if err != nil {
+		t.Fatalf("ScoreEpisodePaths: %v", err)
+	}
+	if !scored {
+		t.Fatal("scored = false, want true")
+	}
+	var candidate RetrievalTrace
+	for _, r := range rec.rows {
+		if r.RecordType == RecordTypeCandidate {
+			candidate = r
+		}
+	}
+	if candidate.Candidate == "" {
+		t.Fatal("no candidate row emitted")
+	}
+	if !nearly(candidate.Semantic, 0) {
+		t.Errorf("Semantic = %v, want 0 (a present full-path zero must not fall back to a basename entry)", candidate.Semantic)
+	}
+	if !nearly(candidate.Score, 0) {
+		t.Errorf("Score = %v, want 0", candidate.Score)
+	}
+}

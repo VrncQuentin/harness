@@ -1,6 +1,7 @@
 package retrieval
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -54,12 +55,16 @@ type TraceContext struct {
 // RetrievalTrace is one versioned D3 trace row. Every retrieval invocation
 // emits one "call" record carrying the outcome; a scoreable invocation with
 // candidates additionally emits one "candidate" record per episode. query_id is
-// a full SHA-256 hex of the query text so no raw queries land in trace files.
-// Emission happens inside ScoreEpisodePaths so the assembler path is measured
-// as well as explicit memory_query calls.
+// a full SHA-256 hex of the query text so no raw queries land in trace files;
+// invocation_id is a fresh opaque identifier minted per call, shared by the
+// call record and every candidate record so the two are associated even when
+// identical queries repeat or concurrent emissions interleave. Emission happens
+// inside ScoreEpisodePaths so the assembler path is measured as well as explicit
+// memory_query calls.
 type RetrievalTrace struct {
 	Version        int       `json:"version"`
 	RecordType     string    `json:"record_type"`
+	InvocationID   string    `json:"invocation_id"`
 	ProjectSlug    string    `json:"project_slug"`
 	QueryID        string    `json:"query_id"`
 	Candidate      string    `json:"candidate"`
@@ -100,6 +105,18 @@ func SetDefaultTraceSink(s TraceSink) { DefaultTraceSink = s }
 func QueryID(query string) string {
 	h := sha256.Sum256([]byte(query))
 	return hex.EncodeToString(h[:])
+}
+
+// NewInvocationID mints a fresh opaque identifier for one retrieval call. It is
+// shared by the call record and every candidate record so a trace consumer can
+// associate candidates with their invocation even when the same query repeats
+// within a project or concurrent emissions interleave.
+func NewInvocationID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("inv-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // NDJSONSink writes one JSON object per line to date-bucketed NDJSON files
