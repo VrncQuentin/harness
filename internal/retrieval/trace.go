@@ -5,11 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 const traceRetentionDays = 30
@@ -56,24 +56,30 @@ func QueryID(query string) string {
 }
 
 // NDJSONSink writes one JSON object per line to date-bucketed NDJSON files
-// under dir. Files older than retentionDays are pruned on each date rotation.
-// The now func is injectable for tests; nil uses time.Now.
+// under dir. Files older than retentionDays are pruned when the emitted day
+// changes. The now func is injectable for tests; nil uses time.Now.
+//
+// The trace directory is pinned for the sink's owned lifetime: construction
+// opens it through rootfs, and every append, enumeration, and retention
+// deletion happens through that pinned handle rather than by pathname. The
+// pinned handle is closed by Close.
 type NDJSONSink struct {
-	dir           string
+	root          *rootfs.Root
 	retentionDays int
 	now           func() time.Time
 
 	mu  sync.Mutex
 	day string
-	f   *os.File
 }
 
-// NewNDJSONSink returns a sink that writes under dir. It creates dir if absent.
+// NewNDJSONSink returns a sink that writes under dir. It pins the directory,
+// creating it and its missing ancestors through rooted operations if absent.
 func NewNDJSONSink(dir string, now func() time.Time) (*NDJSONSink, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	root, err := rootfs.OpenOrCreate(dir, 0o755)
+	if err != nil {
 		return nil, fmt.Errorf("retrieval: trace dir: %w", err)
 	}
-	s := &NDJSONSink{dir: dir, retentionDays: traceRetentionDays, now: now}
+	s := &NDJSONSink{root: root, retentionDays: traceRetentionDays, now: now}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -85,53 +91,45 @@ func (s *NDJSONSink) Emit(t RetrievalTrace) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	day := t.Ts.UTC().Format("2006-01-02")
-	if err := s.ensureFile(day); err != nil {
-		return
+	if day != s.day {
+		s.day = day
+		s.prune()
 	}
 	b, err := json.Marshal(t)
 	if err != nil {
 		return
 	}
-	_, _ = s.f.Write(b)
-	_, _ = s.f.Write([]byte{'\n'})
+	line := append(b, '\n')
+	if err := s.root.AppendSync(day+".ndjson", line, 0o644); err != nil {
+		return
+	}
 }
 
-// Close flushes and closes the currently open file.
+// Close releases the pinned trace directory.
 func (s *NDJSONSink) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.f != nil {
-		err := s.f.Close()
-		s.f = nil
+	if s.root != nil {
+		err := s.root.Close()
+		s.root = nil
 		return err
 	}
 	return nil
 }
 
-// ensureFile opens (or rotates to) the file for day. Caller holds mu.
-func (s *NDJSONSink) ensureFile(day string) error {
-	if s.f != nil && s.day == day {
-		return nil
-	}
-	if s.f != nil {
-		_ = s.f.Close()
-		s.f = nil
-		s.prune()
-	}
-	p := filepath.Join(s.dir, day+".ndjson")
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("retrieval: open trace file: %w", err)
-	}
-	s.f = f
-	s.day = day
-	return nil
-}
-
 // prune removes files older than retentionDays. Caller holds mu.
 func (s *NDJSONSink) prune() {
+	s.pruneWithHook(nil)
+}
+
+// pruneWithHook is prune with a hook that runs after a candidate entry is
+// observed and before it is removed, so a test can stage the substitution the
+// identity verification exists to survive. The hook is a parameter rather than
+// package state so parallel tests never see each other's. It is nil on every
+// production path.
+func (s *NDJSONSink) pruneWithHook(beforeRemove func(name string)) {
 	cutoff := s.now().UTC().AddDate(0, 0, -s.retentionDays)
-	entries, err := os.ReadDir(s.dir)
+	entries, err := s.root.ReadDir(".")
 	if err != nil {
 		return
 	}
@@ -144,8 +142,19 @@ func (s *NDJSONSink) prune() {
 		if err != nil {
 			continue
 		}
-		if t.Before(cutoff) {
-			_ = os.Remove(filepath.Join(s.dir, e.Name()))
+		if !t.Before(cutoff) {
+			continue
 		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if beforeRemove != nil {
+			beforeRemove(e.Name())
+		}
+		// Delete through the pinned root, and only the entry that was actually
+		// observed: a stranger that has claimed the name since the listing is
+		// detected by the identity comparison and refused rather than removed.
+		_ = s.root.RemoveVerified(e.Name(), info)
 	}
 }

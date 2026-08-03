@@ -4,10 +4,29 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
+
+// mustLinkDir creates a directory link at link pointing at target, preferring a
+// symlink and falling back to a Windows junction. Junctions need no privilege
+// and are traversed exactly like symlinks, so they exercise the same escape on
+// machines where symlink creation is denied.
+func mustLinkDir(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err == nil {
+		return
+	} else if runtime.GOOS != "windows" {
+		t.Skipf("symlinks unavailable in this environment: %v", err)
+	}
+	out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		t.Skipf("cannot create directory link: %v: %s", err, out)
+	}
+}
 
 func TestQueryIDDeterminism(t *testing.T) {
 	a := QueryID("what is the capital of France")
@@ -167,5 +186,120 @@ func TestNDJSONSinkCloseTwice(t *testing.T) {
 	}
 	if err := sink.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
+	}
+}
+
+// Finding 3.3: the sink must pin its trace directory for its owned lifetime.
+// After construction, re-pointing the configured name at another directory
+// must not redirect appends: the row lands in the directory the handle was
+// pinned on, never the replacement.
+func TestNDJSONSink_TraceDirectoryIsPinned(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	evil := filepath.Join(base, "evil")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(evil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	trace := filepath.Join(base, "trace")
+	mustLinkDir(t, real, trace)
+	defer func() { _ = os.Remove(trace) }()
+
+	now := time.Date(2025, 7, 1, 0, 0, 0, 0, time.UTC)
+	sink, err := NewNDJSONSink(trace, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("NewNDJSONSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	// Re-point the configured directory after the sink pinned it.
+	if err := os.Remove(trace); err != nil {
+		t.Fatal(err)
+	}
+	mustLinkDir(t, evil, trace)
+
+	sink.Emit(RetrievalTrace{QueryID: "abc", Ts: now})
+	if err := sink.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(real, "2025-07-01.ndjson")); err != nil {
+		t.Errorf("trace row missing from the pinned directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(evil, "2025-07-01.ndjson")); err == nil {
+		t.Error("trace row written into the repointed directory")
+	}
+}
+
+// Finding 3.4: retention must not delete a stranger that claims a previously
+// observed name. The sink observes an old trace entry during its listing; a
+// stranger then takes the name over (here via a hard link to a file it cares
+// about). Deletion is refused because the name no longer identifies the entry
+// the listing observed, so the stranger's data survives on every name.
+func TestNDJSONSink_RetentionDeletesOnlyOwnFiles(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2020, 2, 15, 0, 0, 0, 0, time.UTC)
+	sink, err := NewNDJSONSink(dir, func() time.Time { return newer })
+	if err != nil {
+		t.Fatalf("NewNDJSONSink: %v", err)
+	}
+	defer func() { _ = sink.Close() }()
+
+	// The sink creates the old-day file itself, so the observed name is its own.
+	sink.Emit(RetrievalTrace{QueryID: "old", Ts: old})
+
+	// A stranger's file outside the tree, and a hard link that claims the old
+	// trace entry between enumeration and removal.
+	stranger := filepath.Join(dir, "stranger.bin")
+	if err := os.WriteFile(stranger, []byte("stranger-data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldTrace := filepath.Join(dir, "2020-01-01.ndjson")
+
+	substituted := false
+	sink.pruneWithHook(func(name string) {
+		if name != "2020-01-01.ndjson" || substituted {
+			return
+		}
+		substituted = true
+		if err := os.Remove(oldTrace); err != nil {
+			t.Fatalf("remove observed entry: %v", err)
+		}
+		if err := os.Link(stranger, oldTrace); err != nil {
+			t.Fatalf("link stranger over observed name: %v", err)
+		}
+	})
+
+	if !substituted {
+		t.Fatal("the hook never ran; the substitution was not staged")
+	}
+	// The stranger's original name must survive (its inode was not deleted).
+	if _, err := os.Stat(stranger); err != nil {
+		t.Errorf("stranger file was removed: %v", err)
+	}
+	// The claimed name must survive too: it now identifies the stranger's file,
+	// and the observed entry was a different one.
+	if _, err := os.Stat(oldTrace); err != nil {
+		t.Errorf("the claimed name was removed despite no longer identifying the observed entry: %v", err)
+	}
+
+	// Control: a prune with no substitution still deletes the sink's own old
+	// entry, so the identity check is what protects strangers, not a refusal to
+	// prune altogether.
+	control := t.TempDir()
+	csink, err := NewNDJSONSink(control, func() time.Time { return newer })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = csink.Close() }()
+	if err := os.WriteFile(filepath.Join(control, "2020-01-01.ndjson"), []byte("own\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	csink.pruneWithHook(nil)
+	if _, err := os.Stat(filepath.Join(control, "2020-01-01.ndjson")); err == nil {
+		t.Error("the sink's own expired entry should have been pruned")
 	}
 }

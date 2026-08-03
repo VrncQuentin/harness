@@ -3,8 +3,9 @@ package tools
 import (
 	"errors"
 	"fmt"
-	"os"
 	"strings"
+
+	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
 // TooloutScheme prefixes the handles the governor's tee-on-failure emits for
@@ -52,8 +53,9 @@ func resolveToolout(dir, locator string) (string, error) {
 	return id, nil
 }
 
-// openToolout opens the file a toolout handle addresses, resolving it relative
-// to an open handle on the spill directory rather than by pathname.
+// openToolout returns the contents of the file a toolout handle addresses,
+// resolved relative to an open handle on the spill directory rather than by
+// pathname.
 //
 // os.Root holds the directory open and resolves each component against that
 // handle, so containment is an ancestry relationship rather than a comparison
@@ -81,10 +83,22 @@ func resolveToolout(dir, locator string) (string, error) {
 // leaf at all" would have to Lstat the leaf through the root and refuse it
 // explicitly, and would have to say so in a test.
 //
-// This is the one read that happens outside every sandbox root, so it cannot
-// use the sandbox's rooted access in internal/rootfs; it opens its own root on
-// the spill directory instead.
-func openToolout(dir, locator string) (*os.File, error) {
+// The content is returned as bytes rather than as an *os.File: a file handle's
+// Name() reveals the pathname it was opened through, which is exactly what the
+// root exists to keep out of the hands of a caller, and nothing downstream
+// needs more than the bytes. This is the one read that happens outside every
+// sandbox root, so it cannot use the sandbox's rooted access in the caller; it
+// opens its own root on the spill directory instead.
+func openToolout(dir, locator string) ([]byte, error) {
+	return readTooloutFromRoot(dir, locator, nil)
+}
+
+// readTooloutFromRoot is openToolout with a hook that runs in the window
+// between pinning the spill root and reading the target, so a test can stage
+// the replacement the ordering exists to survive. The hook is a parameter
+// rather than package state so two parallel tests never see each other's. It
+// is nil on every production path.
+func readTooloutFromRoot(dir, locator string, afterPin func()) ([]byte, error) {
 	id, err := resolveToolout(dir, locator)
 	if err != nil {
 		return nil, err
@@ -92,35 +106,22 @@ func openToolout(dir, locator string) (*os.File, error) {
 
 	// %v rather than %w keeps a missing spill directory from being reported as
 	// a missing spill file.
-	root, err := os.OpenRoot(dir)
+	root, err := rootfs.Open(dir)
 	if err != nil {
 		return nil, fmt.Errorf("tools: toolout directory unavailable: %v", err)
 	}
 	defer root.Close() //nolint:errcheck // read-only handle
 
-	if tooloutSwapHook != nil {
-		tooloutSwapHook()
+	if afterPin != nil {
+		afterPin()
 	}
 
-	f, err := root.Open(id)
+	data, err := root.ReadFile(id)
 	if err != nil {
 		return nil, err
 	}
-	return f, nil
+	return data, nil
 }
-
-// tooloutSwapHook runs between pinning the spill root and opening the target.
-// It is nil in production.
-//
-// It exists because the ordering it guards is only observable when the spill
-// directory is replaced in exactly that window, which cannot be staged from
-// outside the function. Without it the ordering could be argued from reading
-// the code but not demonstrated, and an argument is what the previous version
-// of this comment offered while the code did something weaker.
-//
-// It is package-level mutable state, so the tests that set it must not call
-// t.Parallel: two of them running at once would each see the other's hook.
-var tooloutSwapHook func()
 
 // tooloutIDMaxLen bounds the accepted id length. B3 emits 16 hex characters;
 // the allowance leaves room for a wider digest without accepting arbitrary

@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/VrncQuentin/harness/internal/config"
 	"github.com/VrncQuentin/harness/internal/embedder"
@@ -33,6 +34,31 @@ import (
 type queryRecord struct {
 	Query    string   `json:"query"`
 	Relevant []string `json:"relevant"`
+}
+
+// episodePaths returns the repo-relative forward-slash paths of every episode
+// file under the pinned repo reader. The walk resolves each component through
+// the anchored handle — the historical episodes/<agent>/<file>.md shape, no
+// pathname is ever re-resolved outside the pinned tree, and a link leaving the
+// tree fails the walk closed.
+func episodePaths(repo *memory.DirReader) ([]string, error) {
+	entries, err := repo.Walk("episodes")
+	if err != nil {
+		return nil, fmt.Errorf("walk episodes: %w", err)
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Dir || !strings.HasSuffix(e.Path, ".md") {
+			continue
+		}
+		// Preserve the historical depth-two shape episodes/<agent>/<file>.md.
+		if len(strings.Split(e.Path, "/")) != 3 {
+			continue
+		}
+		paths = append(paths, e.Path)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func main() {
@@ -107,25 +133,17 @@ func run() error {
 		Index:    episodeIndex,
 	}
 
-	// Glob all episode paths from the repo directory.
-	pattern := filepath.Join(*repoPath, "episodes", "*", "*.md")
-	absPaths, err := filepath.Glob(pattern)
+	// Enumerate episode files through the pinned repo reader rather than by
+	// pathname. The walk resolves every component against the anchored handle,
+	// refuses links that leave the tree, and returns stable repo-relative
+	// forward-slash paths — the same shape the scorer and the index expect.
+	paths, err := episodePaths(repoDirReader)
 	if err != nil {
-		return fmt.Errorf("glob episodes: %w", err)
+		return err
 	}
-	if len(absPaths) == 0 {
+	if len(paths) == 0 {
 		return fmt.Errorf("no episodes found in %s", *repoPath)
 	}
-	// Convert to repo-relative paths for scoring (scorer expects repo-relative).
-	paths := make([]string, len(absPaths))
-	for i, p := range absPaths {
-		rel, err := filepath.Rel(*repoPath, p)
-		if err != nil {
-			return err
-		}
-		paths[i] = filepath.ToSlash(rel)
-	}
-	sort.Strings(paths)
 
 	ctx := context.Background()
 	var sumMRR, sumRecall float64

@@ -84,6 +84,61 @@ func Open(path string) (*Root, error) {
 	return &Root{root: r}, nil
 }
 
+// OpenOrCreate pins the directory at path, creating it and any missing
+// ancestors first when they do not exist.
+//
+// The creation is itself rooted: the deepest existing ancestor is pinned and
+// the missing tail is created through that handle, so no pathname is ever
+// handed to a direct os.MkdirAll. The directory must still be under some
+// existing directory — the harness home skeleton, which internal/home creates
+// at startup — so the ancestor search is bounded and fails closed.
+//
+// The caller closes the result. The returned Root is pinned on the created
+// (or already-present) directory itself.
+func OpenOrCreate(path string, perm fs.FileMode) (*Root, error) {
+	path = filepath.Clean(path)
+	pinned, err := Open(path)
+	if err == nil {
+		return pinned, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, fmt.Errorf("rootfs: open root %s: %w", path, err)
+	}
+
+	// Find the deepest existing ancestor by probing opens. An open of a path
+	// with a missing component fails with fs.ErrNotExist, so the first open
+	// that succeeds is the nearest ancestor we can pin.
+	ancestor := filepath.Dir(path)
+	for {
+		existing, openErr := Open(ancestor)
+		if openErr == nil {
+			defer func() { _ = existing.Close() }()
+			rel, relErr := filepath.Rel(ancestor, path)
+			if relErr != nil {
+				return nil, fmt.Errorf("rootfs: %s relative to %s: %w", path, ancestor, relErr)
+			}
+			if rel != "." {
+				if mkErr := existing.MkdirAll(filepath.FromSlash(rel), perm); mkErr != nil {
+					return nil, fmt.Errorf("rootfs: create %s: %w", path, mkErr)
+				}
+			}
+			child, childErr := existing.OpenChild(filepath.FromSlash(rel))
+			if childErr != nil {
+				return nil, fmt.Errorf("rootfs: open %s: %w", path, childErr)
+			}
+			return child, nil
+		}
+		if !errors.Is(openErr, fs.ErrNotExist) {
+			return nil, fmt.Errorf("rootfs: open ancestor %s: %w", ancestor, openErr)
+		}
+		next := filepath.Dir(ancestor)
+		if next == ancestor {
+			return nil, fmt.Errorf("rootfs: no existing ancestor for %s: %w", path, err)
+		}
+		ancestor = next
+	}
+}
+
 // Close releases the directory handle.
 func (r *Root) Close() error { return r.root.Close() }
 
@@ -258,6 +313,34 @@ func (r *Root) ReadDir(rel string) ([]os.DirEntry, error) {
 
 // RemoveAll removes rel and any children it contains.
 func (r *Root) RemoveAll(rel string) error { return r.root.RemoveAll(rel) }
+
+// RemoveVerified removes rel only if the entry there still refers to the same
+// filesystem object as observed.
+//
+// observed must be the FileInfo of the entry captured earlier through this
+// same root — for example the FileInfo of a directory entry returned by
+// ReadDir. Between the observation and the removal the name may have been
+// claimed by a different file (a replacement, a hard link, a re-pointed
+// alias); removing by name in that case would delete a stranger's object.
+// The entry is re-read through the pinned root and compared with os.SameFile,
+// so a name that no longer identifies what was observed is refused rather
+// than removed.
+//
+// The comparison narrows the window but does not close it: an entry swapped
+// between this re-read and the remove is still removed. That residual window
+// is inherent to any remove-by-name operation in portable Go; the verification
+// here is what turns a retention sweep that would delete any old-named entry
+// into one that only deletes the entry it actually observed.
+func (r *Root) RemoveVerified(rel string, observed fs.FileInfo) error {
+	now, err := r.root.Lstat(rel)
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(observed, now) {
+		return fmt.Errorf("rootfs: %s changed since it was observed; refusing to remove", rel)
+	}
+	return r.root.Remove(rel)
+}
 
 // CreateExclusive creates rel, failing with fs.ErrExist if anything already
 // holds the name. Creation and the claim on the name are one O_EXCL step, so

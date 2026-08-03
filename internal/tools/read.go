@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 	"os"
 	"unicode/utf8"
@@ -116,18 +115,12 @@ func readToolout(c CallInfo, locator string, offset int) Result {
 	if offset < 0 {
 		return Result{Error: fmt.Sprintf("read: offset %d is negative", offset)}
 	}
-	f, err := openToolout(c.TooloutDir, locator)
+	data, err := openToolout(c.TooloutDir, locator)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Result{Error: fmt.Sprintf("read: %s no longer exists — spilled output is cached, not permanent", locator)}
 		}
 		return Result{Error: "read: " + err.Error()}
-	}
-	defer f.Close() //nolint:errcheck // read-only handle
-
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return Result{Error: fmt.Sprintf("read: %s: %v", locator, err)}
 	}
 
 	if offset > len(data) {
