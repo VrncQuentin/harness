@@ -380,6 +380,13 @@ func scoreQuery(ctx context.Context, emb retrieval.EpisodeEmbedder, searcher ret
 	if err != nil {
 		return modesReport{}, err
 	}
+	// An empty index result is unscoreable, matching ScoreEpisodePaths, which
+	// explicitly treats zero search results as an unscoreable outcome. Ten
+	// nonblank queries against an empty index must not be reported as a
+	// genuinely evaluated baseline.
+	if len(results) == 0 {
+		return modesReport{}, fmt.Errorf("semantic search returned no results for %q", q.Query)
+	}
 
 	oldestFirst := append([]string(nil), paths...)
 	sort.Strings(oldestFirst)

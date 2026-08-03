@@ -71,7 +71,14 @@ func TestEvalRetrieval_PinnedRepo(t *testing.T) {
 		writeFile(t, filepath.Join(root, "episodes", "top.md"), "not an episode")
 
 		queries := []queryRecord{{Version: LabeledQuerySchemaVersion, Query: "q", Relevant: []string{"episodes/coder/2024-01-01.md"}}}
-		paths, err := evaluate(root, queries, stubEmbedder{}, evalOptions{K: 3})
+		// A searcher returning results so scoring is genuinely evaluated; the
+		// subject under test is the pinned enumeration, not scoring.
+		searcher := &testSearcher{results: []index.Result{
+			{SHA: "episodes/coder/2024-01-01", Score: 0.9},
+			{SHA: "episodes/coder/2024-01-02", Score: 0.5},
+			{SHA: "episodes/architect/2024-01-03", Score: 0.1},
+		}}
+		paths, err := evaluateWithSearcher(root, queries, stubEmbedder{}, searcher, evalOptions{K: 3})
 		if err != nil {
 			t.Fatalf("evaluate: %v", err)
 		}
@@ -98,7 +105,8 @@ func TestEvalRetrieval_PinnedRepo(t *testing.T) {
 		linkDir(t, filepath.Join(base, "outside", "episodes"), filepath.Join(base, "repo", "episodes", "linked"))
 
 		queries := []queryRecord{{Version: LabeledQuerySchemaVersion, Query: "q", Relevant: []string{"episodes/coder/2024-01-01.md"}}}
-		paths, err := evaluate(filepath.Join(base, "repo"), queries, stubEmbedder{}, evalOptions{K: 3})
+		searcher := &testSearcher{results: []index.Result{{SHA: "episodes/coder/2024-01-01", Score: 0.9}}}
+		paths, err := evaluateWithSearcher(filepath.Join(base, "repo"), queries, stubEmbedder{}, searcher, evalOptions{K: 3})
 		for _, p := range paths {
 			if p == "episodes/linked/leak.md" {
 				t.Fatalf("outside file was enumerated through the link: %v", paths)
@@ -396,7 +404,10 @@ func TestBaseline_RejectsFewerThanTen(t *testing.T) {
 	for i := range queries {
 		queries[i] = queryRecord{Version: LabeledQuerySchemaVersion, Query: "q", Relevant: nil}
 	}
-	_, err := evaluate(root, queries, stubEmbedder{}, evalOptions{K: 3, Baseline: true, ResultsDir: t.TempDir()})
+	// A searcher returning results so all nine genuinely evaluate; the ten-row
+	// evaluated gate is what must trip, not an empty-index unscoreable.
+	searcher := &testSearcher{results: []index.Result{{SHA: "episodes/coder/2024-01-01", Score: 0.9}}}
+	_, err := evaluateWithSearcher(root, queries, stubEmbedder{}, searcher, evalOptions{K: 3, Baseline: true, ResultsDir: t.TempDir()})
 	if err == nil {
 		t.Fatal("baseline mode accepted fewer than ten evaluated queries")
 	}
@@ -439,6 +450,27 @@ func TestBaseline_FailsWhenLabelsFailToScore(t *testing.T) {
 	}
 }
 
+// TestBaseline_RejectsEmptySemanticIndex: ten nonblank queries against an
+// index that returns no results must not be reported as a genuinely evaluated
+// baseline. ScoreEpisodePaths treats zero search results as unscoreable, and
+// the evaluator must match.
+func TestBaseline_RejectsEmptySemanticIndex(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "episodes", "coder", "2024-01-01.md"), "one")
+	queries := make([]queryRecord, 10)
+	for i := range queries {
+		queries[i] = queryRecord{Version: LabeledQuerySchemaVersion, Query: "nonblank", Relevant: nil}
+	}
+	// okSearcher returns no results: an empty semantic index.
+	_, err := evaluateWithSearcher(root, queries, stubEmbedder{}, &okSearcher{}, evalOptions{K: 3, Baseline: true, ResultsDir: t.TempDir()})
+	if err == nil {
+		t.Fatal("baseline mode must reject a query whose semantic search returns no results")
+	}
+	if !strings.Contains(err.Error(), "returned no results") {
+		t.Errorf("baseline error should name the empty search: %v", err)
+	}
+}
+
 // TestBaseline_WritesMachineReadableResult: baseline mode writes the aggregate
 // metrics as a stable machine-readable document under the results directory.
 func TestBaseline_WritesMachineReadableResult(t *testing.T) {
@@ -458,8 +490,15 @@ func TestBaseline_WritesMachineReadableResult(t *testing.T) {
 	for i := range queries {
 		queries[i] = queryRecord{Version: LabeledQuerySchemaVersion, Query: "q", Relevant: []string{"episodes/coder/2024-01-01.md"}}
 	}
+	// A searcher returning results so every query genuinely evaluates; the
+	// ten queries against an empty production index would now be unscoreable.
+	searcher := &testSearcher{results: []index.Result{
+		{SHA: "episodes/coder/2024-01-01", Score: 0.9},
+		{SHA: "episodes/coder/2024-01-02", Score: 0.5},
+		{SHA: "episodes/coder/2024-01-03", Score: 0.1},
+	}}
 	resultsDir := t.TempDir()
-	if _, err := evaluate(root, queries, stubEmbedder{}, evalOptions{K: 3, Baseline: true, ResultsDir: resultsDir, ProjectSlug: "global", SemanticWeight: 0.5, RecencyWeight: 0.5}); err != nil {
+	if _, err := evaluateWithSearcher(root, queries, stubEmbedder{}, searcher, evalOptions{K: 3, Baseline: true, ResultsDir: resultsDir, ProjectSlug: "global", SemanticWeight: 0.5, RecencyWeight: 0.5}); err != nil {
 		t.Fatalf("evaluate baseline: %v", err)
 	}
 
