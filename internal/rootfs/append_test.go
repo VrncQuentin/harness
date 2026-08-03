@@ -212,9 +212,9 @@ func TestAppendSync_NoTruncationCapableAPIExposed(t *testing.T) {
 			}
 			return true
 		})
-		// The append primitive's open must be O_WRONLY|O_CREATE|O_APPEND and
-		// nothing else. Find the OpenFile call whose flags carry O_APPEND (the
-		// append primitive is the only one) and require the exact set.
+		// Every append open in the package must be exactly
+		// O_WRONLY|O_CREATE|O_APPEND and nothing else. Find every OpenFile call
+		// whose flags carry O_APPEND and require the exact set on each.
 		ast.Inspect(f, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
 			if !ok {

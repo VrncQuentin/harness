@@ -41,8 +41,8 @@ func (NopTraceSink) Emit(RetrievalTrace) {}
 func (NopTraceSink) Close() error        { return nil }
 
 // DefaultTraceSink is the package-level sink. ScoreEpisodePaths calls it on
-// every candidate when non-nil. The runtime replaces it with an NDJSONSink at
-// startup. Tests may set it temporarily.
+// every candidate when non-nil. cmd/harness/main.go installs an NDJSONSink at
+// startup; tests may set it temporarily.
 var DefaultTraceSink TraceSink
 
 // SetDefaultTraceSink replaces the package-level trace sink.
@@ -56,8 +56,8 @@ func QueryID(query string) string {
 }
 
 // NDJSONSink writes one JSON object per line to date-bucketed NDJSON files
-// under dir. Files older than retentionDays are pruned when the emitted day
-// changes. The now func is injectable for tests; nil uses time.Now.
+// under dir. Files older than retentionDays are pruned on each date rotation.
+// The now func is injectable for tests; nil uses time.Now.
 //
 // The trace directory is pinned for the sink's owned lifetime: construction
 // opens it through rootfs, and every append, enumeration, and retention
@@ -70,6 +70,7 @@ type NDJSONSink struct {
 
 	mu  sync.Mutex
 	day string
+	f   *rootfs.AppendFile
 }
 
 // NewNDJSONSink returns a sink that writes under dir. It pins the directory,
@@ -91,29 +92,50 @@ func (s *NDJSONSink) Emit(t RetrievalTrace) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	day := t.Ts.UTC().Format("2006-01-02")
-	if day != s.day {
-		s.day = day
-		s.prune()
+	if err := s.ensureFile(day); err != nil {
+		return
 	}
 	b, err := json.Marshal(t)
 	if err != nil {
 		return
 	}
-	line := append(b, '\n')
-	if err := s.root.AppendSync(day+".ndjson", line, 0o644); err != nil {
-		return
-	}
+	_ = s.f.Write(b)
+	_ = s.f.Write([]byte{'\n'})
 }
 
-// Close releases the pinned trace directory.
+// Close flushes the open file and releases the pinned trace directory.
 func (s *NDJSONSink) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.f != nil {
+		_ = s.f.Close()
+		s.f = nil
+	}
 	if s.root != nil {
 		err := s.root.Close()
 		s.root = nil
 		return err
 	}
+	return nil
+}
+
+// ensureFile opens (or rotates to) the file for day through the pinned root.
+// Caller holds mu.
+func (s *NDJSONSink) ensureFile(day string) error {
+	if s.f != nil && s.day == day {
+		return nil
+	}
+	if s.f != nil {
+		_ = s.f.Close()
+		s.f = nil
+		s.prune()
+	}
+	f, err := s.root.OpenAppend(day+".ndjson", 0o644)
+	if err != nil {
+		return fmt.Errorf("retrieval: open trace file: %w", err)
+	}
+	s.f = f
+	s.day = day
 	return nil
 }
 

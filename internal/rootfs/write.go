@@ -245,6 +245,39 @@ func (r *Root) appendSync(rel string, data []byte, perm fs.FileMode, hooks appen
 	return f.Close()
 }
 
+// AppendFile is an append-only handle over a file opened through a pinned
+// root.
+//
+// It hides the underlying *os.File: a file handle's Name() reveals the
+// pathname it was opened through, which is exactly what the root exists to
+// keep out of a caller's hands. The open is fixed to O_WRONLY|O_CREATE|O_APPEND
+// and nothing else, so a caller can append and nothing more — no truncate, no
+// seek, no rewrite. Unlike AppendSync there is no per-write fsync; callers that
+// need each record durable before success use AppendSync instead.
+type AppendFile struct {
+	f *os.File
+}
+
+// Write appends data to the file.
+func (a *AppendFile) Write(data []byte) error {
+	_, err := a.f.Write(data)
+	return err
+}
+
+// Close releases the file handle.
+func (a *AppendFile) Close() error { return a.f.Close() }
+
+// OpenAppend opens rel for appending through the pinned root, creating it if
+// absent, and returns it as an opaque AppendFile. The caller closes it. The
+// open carries O_WRONLY|O_CREATE|O_APPEND and nothing else.
+func (r *Root) OpenAppend(rel string, perm fs.FileMode) (*AppendFile, error) {
+	f, err := r.root.OpenFile(rel, os.O_WRONLY|os.O_CREATE|os.O_APPEND, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &AppendFile{f: f}, nil
+}
+
 // RemoveAll removes rel and any children it contains.
 func (r *Root) RemoveAll(rel string) error { return r.root.RemoveAll(rel) }
 

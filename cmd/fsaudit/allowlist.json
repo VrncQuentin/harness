@@ -14,7 +14,7 @@
     },
     {
       "file": "internal/rootfs/write.go",
-      "line": 273,
+      "line": 306,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: RemoveVerified identity check"
     },
