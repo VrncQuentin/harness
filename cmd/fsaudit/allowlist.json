@@ -1,44 +1,44 @@
 {
   "permanent": [
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 80,
+      "file": "internal/rootfs/identity.go",
+      "line": 70,
       "fn": "os.OpenRoot",
       "justification": "rootfs security primitive: pins a directory"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 296,
+      "file": "internal/rootfs/write.go",
+      "line": 117,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: WriteStreamAtomic temp identity check"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 365,
+      "file": "internal/rootfs/write.go",
+      "line": 273,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: RemoveVerified identity check"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 496,
+      "file": "internal/rootfs/identity.go",
+      "line": 155,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: directory identity comparison"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 583,
+      "file": "internal/rootfs/walk.go",
+      "line": 70,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: OpenChildNoFollow identity check"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 741,
+      "file": "internal/rootfs/identity.go",
+      "line": 259,
       "fn": "os.Stat",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
     {
-      "file": "internal/rootfs/rootfs.go",
-      "line": 745,
+      "file": "internal/rootfs/identity.go",
+      "line": 263,
       "fn": "os.SameFile",
       "justification": "rootfs security primitive: identity verification via matches()"
     },
