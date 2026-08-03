@@ -152,9 +152,11 @@ func run() error {
 		// API/queue/process components, release only resources proven idle.
 		result := rt.Shutdown(rootCancel, 10*time.Second)
 		// Close the retrieval trace sink only after a completed shutdown. A
-		// timed-out shutdown retains ownership of the generation (readers,
-		// session manager, task runner), so a later shutdown retry may still
-		// emit trace rows through them; closing the sink early would drop them.
+		// timed-out shutdown retains the generation (readers, session manager,
+		// task runner); a still-running detached session flush can emit trace
+		// rows through them, so closing the sink early would drop them. The
+		// tray lifecycle then exits the process, and the OS flushes the sink's
+		// still-open file on exit.
 		closeTraceSinkOnCompleted(traceSink, result.Completed)
 		if harnessDB != nil {
 			_ = harnessDB.Close()
@@ -181,13 +183,20 @@ func installTraceSink(uiServer *ui.Server, harnessHome string) *retrieval.NDJSON
 }
 
 // closeTraceSinkOnCompleted closes the retrieval trace sink when a shutdown is
-// confirmed complete. A timed-out shutdown retains ownership of the generation
-// (its readers, session manager, and task runner stay open for a later retry),
-// so the sink stays open and installed: a retry may still emit trace rows
-// through the retained generation. Idempotent: closing a nil or already-closed
-// sink is a no-op.
+// confirmed complete. A timed-out shutdown retains the sink: the runtime keeps
+// the generation (its readers, session manager, and task runner) open because a
+// still-running detached session flush may emit trace rows through them, and
+// closing the sink early would drop those rows. In the tray lifecycle the
+// process exits right after this, and the OS flushes the still-open file; the
+// retention here is about not dropping in-flight emission during the exit
+// window, not about a later in-process retry. Idempotent: closing a nil or
+// already-closed sink is a no-op.
 func closeTraceSinkOnCompleted(traceSink *retrieval.NDJSONSink, completed bool) {
-	if traceSink == nil || !completed {
+	if traceSink == nil {
+		return
+	}
+	if !completed {
+		slog.Warn("retrieval trace sink retained: shutdown incomplete; the sink stays open so in-flight emission is not dropped before process exit")
 		return
 	}
 	if err := traceSink.Close(); err != nil {
