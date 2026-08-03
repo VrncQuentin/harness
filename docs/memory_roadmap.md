@@ -37,10 +37,16 @@ decision is recorded. **No memory schema work starts before MR0 reports.**
 **Prerequisite for everything else. No memory schema work starts before this reports.**
 
 MR0 **is** tool_roadmap.md's M10.3 closure gate. `memory_query`, trace types, the NDJSON
-sink, startup installation, and `cmd/eval-retrieval` exist. Sink construction failures are
-silently ignored, emission errors are discarded, and shutdown never closes the sink; the
-trace rows and evaluator also lack the fields, comparisons, and baseline artifact required
-below. The main roadmap must keep M10.3 unchecked until this section passes.
+sink, startup installation, and `cmd/eval-retrieval` exist. The implementation has landed:
+sink construction failures are surfaced as startup errors, emission errors are logged
+(never silently discarded), and graceful shutdown closes the sink once the runtime confirms
+completion; every invocation emits a call row (including empty, unavailable, unscoreable,
+and failed outcomes), scoreable candidates emit versioned candidate rows with final
+rank/weights/`Returned` state, and the evaluator runs three-signal Precision@K/Recall@K
+over a versioned labeled-query schema with a machine-readable baseline mode. What remains
+for this gate to pass is the observed real baseline: a run against at least ten real labeled
+queries for a user-owned project, recorded as the machine-readable baseline artifact. The
+main roadmap keeps M10.3 unchecked until that baseline run is observed.
 
 MR0 lives in `internal/retrieval`, `internal/memoryops`, and runtime wiring. It changes no
 authoritative memory schema. The evaluator remains a developer-side binary and is not a
@@ -52,6 +58,7 @@ Harness CLI.
 type RetrievalTrace struct {
     Version        int       // schema version
     RecordType     string    // "call" | "candidate"
+    InvocationID   string    // fresh opaque id per call; shared by call + candidates
     ProjectSlug    string    // namespaces project-relative paths
     QueryID        string    // full SHA-256 hex; never raw query text
     Candidate      string    // project-relative episode path; candidate rows only
@@ -71,7 +78,9 @@ Every invocation emits one call row. A scoreable invocation with candidates addi
 emits one candidate row per candidate. Blank queries, missing embedders/indexes, empty
 results, and scoring errors still emit a call outcome so evaluation does not silently
 discard the failure modes it is meant to expose. Raw queries, raw errors, and episode
-content never enter trace files.
+content never enter trace files. `invocation_id` is minted fresh per call and shared by the
+call row and every candidate row, so candidates are associable with their invocation even
+when the same query repeats within a project or concurrent emissions interleave.
 
 Emission remains at `ScoreEpisodePaths`, the shared choke point for prompt assembly and
 `memory_query`. Both callers pass a `TraceContext` containing the active `project_slug`
@@ -102,9 +111,13 @@ RFC3339 text is not.
 
 The binary replays each query against the selected project repo and reports Precision@3
 and Recall@3 for semantic-only, recency-only, and the configured blend. MRR may remain as
-an additional diagnostic, not as a substitute. Baseline mode rejects fewer than ten valid
-rows and writes a machine-readable result under
-`~/.harness/eval/retrieval/results/<project-slug>-<timestamp>.json`.
+an additional diagnostic, not as a substitute; MRR examines the complete ranking, not only
+the top-K. Baseline mode rejects fewer than ten genuinely evaluated rows (a scoring failure
+or an unscoreable label is an error, not a silently skipped query) and writes a
+machine-readable result under
+`~/.harness/eval/retrieval/results/<project-slug>-<timestamp>.json`. The result document
+carries its own schema version (independent of the labeled-query input schema) and records
+the configured semantic/recency weights so the blend metrics are reproducible.
 
 A shareable starter label set with ten queries lives at
 `cmd/eval-retrieval/testdata/labels.global.ndjson` and is exercised by the evaluator
