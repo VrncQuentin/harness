@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -46,14 +47,16 @@ type entry struct {
 	Line          int    `json:"line"`
 	Col           int    `json:"col,omitempty"`
 	Fn            string `json:"fn"`
-	Justification string `json:"justification,omitempty"`
-	PR            string `json:"pr,omitempty"`
-	Notes         string `json:"notes,omitempty"`
+	Justification string `json:"justification"`
 }
 
+// allowlist classifies every direct filesystem call in production code.
+// The migration category is gone by design: the configured-tree migration is
+// complete, so every remaining call must be a narrow permanent boundary
+// exception. The JSON schema carries no migration field, and the decoder
+// rejects unknown fields, so a migration entry cannot be repopulated later.
 type allowlist struct {
 	Perm []entry `json:"permanent"`
-	Migr []entry `json:"migration"`
 }
 
 type sourceCall struct {
@@ -80,24 +83,32 @@ func (e *AllowlistError) Error() string {
 	return fmt.Sprintf("%s:%d %s: %s", e.Entry.File, e.Entry.Line, e.Entry.Fn, e.Msg)
 }
 
-// ---------- validateAllowlist ----------
+// ---------- allowlist parsing and validation ----------
+
+// parseAllowlist decodes an allowlist, rejecting any unknown field. The schema
+// intentionally has no migration category, so a stray "migration", "pr", or
+// "notes" key fails the parse rather than being silently ignored.
+func parseAllowlist(data []byte) (allowlist, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var al allowlist
+	if err := dec.Decode(&al); err != nil {
+		return al, err
+	}
+	return al, nil
+}
 
 func ValidateAllowlist(al allowlist) []error {
 	var errs []error
-	all := append([]entry(nil), al.Perm...)
-	all = append(all, al.Migr...)
 	seen := map[string]bool{}
-	for _, e := range all {
+	for _, e := range al.Perm {
 		k := entryKey(e.File, e.Line, e.Col, e.Fn)
 		if seen[k] {
 			errs = append(errs, &AllowlistError{Entry: e, Msg: "duplicate entry"})
 		}
 		seen[k] = true
-		if e.Justification == "" && e.PR == "" {
-			errs = append(errs, &AllowlistError{Entry: e, Msg: "must have justification or pr"})
-		}
-		if e.Justification != "" && e.PR != "" {
-			errs = append(errs, &AllowlistError{Entry: e, Msg: "cannot have both justification and pr"})
+		if e.Justification == "" {
+			errs = append(errs, &AllowlistError{Entry: e, Msg: "permanent exception requires a justification"})
 		}
 	}
 	return errs
@@ -112,7 +123,6 @@ func Audit(root string, al allowlist) Report {
 	}
 
 	allEntries := append([]entry(nil), al.Perm...)
-	allEntries = append(allEntries, al.Migr...)
 
 	remaining := map[string]int{}
 	for _, e := range allEntries {
@@ -228,6 +238,11 @@ func collectSourceCalls(root string) (calls []sourceCall, blocked []sourceCall, 
 				if ok {
 					add(c)
 					inCallPos[node.Fun.Pos()] = true
+					if c.Fn == "os.OpenRoot" && !ctx.inRootFS {
+						// Creating a root is the core primitive of the
+						// boundary; it must be centralized in internal/rootfs.
+						block(sourceCall{File: c.File, Line: c.Line, Col: c.Col, Fn: "os.OpenRoot outside internal/rootfs"})
+					}
 				}
 
 			case *ast.SelectorExpr:
@@ -438,8 +453,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "fsaudit: cannot read allowlist: %v\n", err)
 		os.Exit(1)
 	}
-	var al allowlist
-	if err := json.Unmarshal(data, &al); err != nil {
+	al, err := parseAllowlist(data)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "fsaudit: cannot parse allowlist: %v\n", err)
 		os.Exit(1)
 	}
@@ -468,6 +483,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  - extracting a watched function as a value\n")
 		fmt.Fprintf(os.Stderr, "  - os.Root type reference outside internal/rootfs\n")
 		fmt.Fprintf(os.Stderr, "  - os.Root reference inside internal/rootfs (only Root.root is permitted)\n")
+		fmt.Fprintf(os.Stderr, "  - os.OpenRoot call outside internal/rootfs\n")
 		fmt.Fprintf(os.Stderr, "\n")
 		exit = true
 	}
@@ -475,7 +491,7 @@ func main() {
 	if len(report.Stale) > 0 {
 		fmt.Fprintf(os.Stderr, "fsaudit: %d stale allowlist entry(ies):\n\n", len(report.Stale))
 		for _, e := range report.Stale {
-			fmt.Fprintf(os.Stderr, "  %s %s:%d %s\n", classify(e), e.File, e.Line, e.Fn)
+			fmt.Fprintf(os.Stderr, "  %s:%d %s\n", e.File, e.Line, e.Fn)
 		}
 		fmt.Fprintf(os.Stderr, "\n")
 		exit = true
@@ -492,21 +508,15 @@ func main() {
 		for fn, n := range counts {
 			fmt.Fprintf(os.Stderr, "  %d × %s\n", n, fn)
 		}
-		fmt.Fprintf(os.Stderr, "\nAdd to cmd/fsaudit/allowlist.json:\n")
-		fmt.Fprintf(os.Stderr, "  - permanent entry if this is an intentional boundary exception\n")
-		fmt.Fprintf(os.Stderr, "  - migration entry if this will be routed through rootfs in a future PR\n")
+		fmt.Fprintf(os.Stderr, "\nThe configured-tree migration is complete. Every remaining direct call\n")
+		fmt.Fprintf(os.Stderr, "must be a narrow, justified permanent boundary exception. Add it to\n")
+		fmt.Fprintf(os.Stderr, "cmd/fsaudit/allowlist.json under \"permanent\" with a justification, or\n")
+		fmt.Fprintf(os.Stderr, "route the operation through internal/rootfs instead.\n")
 		exit = true
 	}
 
 	if exit {
 		os.Exit(1)
 	}
-	fmt.Println("fsaudit: all direct filesystem calls are accounted for in the allowlist")
-}
-
-func classify(e entry) string {
-	if e.PR != "" {
-		return "migration"
-	}
-	return "permanent"
+	fmt.Println("fsaudit: all direct filesystem calls are permanent boundary exceptions")
 }

@@ -18,15 +18,7 @@ func writeFile(t *testing.T, dir, name, content string) {
 }
 
 func makeAllowlist(entries []entry) allowlist {
-	var al allowlist
-	for _, e := range entries {
-		if e.Justification != "" {
-			al.Perm = append(al.Perm, e)
-		} else {
-			al.Migr = append(al.Migr, e)
-		}
-	}
-	return al
+	return allowlist{Perm: entries}
 }
 
 // auditFixture creates a temp dir with a single .go file and runs Audit.
@@ -61,28 +53,19 @@ func countBlocked(r Report, fn string) int {
 
 // ---------- ValidateAllowlist ----------
 
-func TestValidateAllowlist_RejectsNeitherJustificationNorPR(t *testing.T) {
+func TestValidateAllowlist_RejectsEmptyJustification(t *testing.T) {
 	errs := ValidateAllowlist(makeAllowlist([]entry{
 		{File: "x.go", Line: 1, Fn: "os.Stat"},
 	}))
 	if len(errs) == 0 {
-		t.Error("entry with neither justification nor pr should be rejected")
-	}
-}
-
-func TestValidateAllowlist_RejectsBothJustificationAndPR(t *testing.T) {
-	errs := ValidateAllowlist(makeAllowlist([]entry{
-		{File: "x.go", Line: 1, Fn: "os.Stat", Justification: "reason", PR: "PR 1"},
-	}))
-	if len(errs) == 0 {
-		t.Error("entry with both justification and pr should be rejected")
+		t.Error("entry without a justification should be rejected")
 	}
 }
 
 func TestValidateAllowlist_RejectsDuplicate(t *testing.T) {
 	errs := ValidateAllowlist(makeAllowlist([]entry{
-		{File: "x.go", Line: 7, Fn: "os.Stat", PR: "PR 99"},
-		{File: "x.go", Line: 7, Fn: "os.Stat", PR: "PR 99"},
+		{File: "x.go", Line: 7, Fn: "os.Stat", Justification: "reason"},
+		{File: "x.go", Line: 7, Fn: "os.Stat", Justification: "reason"},
 	}))
 	if len(errs) == 0 {
 		t.Error("duplicate entries should be rejected")
@@ -92,7 +75,7 @@ func TestValidateAllowlist_RejectsDuplicate(t *testing.T) {
 func TestValidateAllowlist_AcceptsValidMix(t *testing.T) {
 	errs := ValidateAllowlist(makeAllowlist([]entry{
 		{File: "a.go", Line: 1, Fn: "os.Stat", Justification: "legit"},
-		{File: "b.go", Line: 1, Fn: "os.Open", PR: "PR 3"},
+		{File: "b.go", Line: 1, Fn: "os.Open", Justification: "legit too"},
 	}))
 	if len(errs) != 0 {
 		t.Errorf("valid allowlist should be accepted: %v", errs)
@@ -101,8 +84,8 @@ func TestValidateAllowlist_AcceptsValidMix(t *testing.T) {
 
 func TestValidateAllowlist_AcceptsSameLineDifferentCol(t *testing.T) {
 	errs := ValidateAllowlist(makeAllowlist([]entry{
-		{File: "x.go", Line: 7, Col: 1, Fn: "os.Stat", PR: "PR 99"},
-		{File: "x.go", Line: 7, Col: 20, Fn: "os.Stat", PR: "PR 99"},
+		{File: "x.go", Line: 7, Col: 1, Fn: "os.Stat", Justification: "reason"},
+		{File: "x.go", Line: 7, Col: 20, Fn: "os.Stat", Justification: "reason"},
 	}))
 	if len(errs) != 0 {
 		t.Errorf("same-line different-column entries should be accepted: %v", errs)
@@ -111,11 +94,44 @@ func TestValidateAllowlist_AcceptsSameLineDifferentCol(t *testing.T) {
 
 func TestValidateAllowlist_RejectsSameLineSameCol(t *testing.T) {
 	errs := ValidateAllowlist(makeAllowlist([]entry{
-		{File: "x.go", Line: 7, Col: 20, Fn: "os.Stat", PR: "PR 99"},
-		{File: "x.go", Line: 7, Col: 20, Fn: "os.Stat", PR: "PR 99"},
+		{File: "x.go", Line: 7, Col: 20, Fn: "os.Stat", Justification: "reason"},
+		{File: "x.go", Line: 7, Col: 20, Fn: "os.Stat", Justification: "reason"},
 	}))
 	if len(errs) == 0 {
 		t.Error("same-line same-column duplicate entries should be rejected")
+	}
+}
+
+// ---------- Allowlist parsing: migration is closed ----------
+
+// The migration category is structurally closed: the schema has no migration
+// field, and the decoder rejects unknown fields, so a migration entry (or a
+// PR/notes marker) cannot be repopulated.
+func TestParseAllowlist_RejectsMigrationFields(t *testing.T) {
+	tests := []struct {
+		name, json string
+	}{
+		{"migration array", `{"permanent": [], "migration": [{"file":"x.go","line":1,"fn":"os.Stat","pr":"PR 3"}]}`},
+		{"migration object", `{"permanent": [], "migration": {}}`},
+		{"pr field on permanent entry", `{"permanent": [{"file":"x.go","line":1,"fn":"os.Stat","pr":"PR 3","justification":"x"}]}`},
+		{"notes field", `{"permanent": [{"file":"x.go","line":1,"fn":"os.Stat","notes":"later","justification":"x"}]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := parseAllowlist([]byte(tt.json)); err == nil {
+				t.Errorf("allowlist with %s should fail to parse", tt.name)
+			}
+		})
+	}
+}
+
+func TestParseAllowlist_AcceptsCurrentShape(t *testing.T) {
+	al, err := parseAllowlist([]byte(`{"permanent": [{"file":"x.go","line":1,"fn":"os.Stat","justification":"boundary"}]}`))
+	if err != nil {
+		t.Fatalf("current allowlist shape should parse: %v", err)
+	}
+	if len(al.Perm) != 1 || al.Perm[0].Justification != "boundary" {
+		t.Errorf("unexpected allowlist: %+v", al)
 	}
 }
 
@@ -130,7 +146,7 @@ import filesystem "os"
 func foo() { filesystem.RemoveAll("/tmp/x") }
 `)
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/alias.go", Line: 5, Fn: "os.RemoveAll", PR: "PR 99"},
+		{File: "internal/pkg/alias.go", Line: 5, Fn: "os.RemoveAll", Justification: "boundary exception"},
 	})
 	if errs := ValidateAllowlist(al); len(errs) > 0 {
 		t.Fatal(errs)
@@ -156,7 +172,7 @@ func foo() {
 }
 `)
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/bad.go", Line: 6, Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/bad.go", Line: 6, Fn: "os.Stat", Justification: "boundary exception"},
 	})
 	r := Audit(dir, al)
 	if r.Err != nil {
@@ -179,8 +195,8 @@ import "os"
 func foo() { os.Stat("/tmp/x") }
 `)
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/real.go", Line: 5, Fn: "os.Stat", PR: "PR 99"},
-		{File: "internal/pkg/real.go", Line: 99, Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/real.go", Line: 5, Fn: "os.Stat", Justification: "boundary exception"},
+		{File: "internal/pkg/real.go", Line: 99, Fn: "os.Stat", Justification: "boundary exception"},
 	})
 	r := Audit(dir, al)
 	if r.Err != nil {
@@ -268,7 +284,7 @@ func foo() {
 }
 `)
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/dup.go", Line: 6, Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/dup.go", Line: 6, Fn: "os.Stat", Justification: "boundary exception"},
 	})
 	r := Audit(dir, al)
 	if r.Err != nil {
@@ -307,8 +323,8 @@ func f() { os.Stat("a"); os.Stat("b") }
 		t.Fatalf("expected 2 os.Stat calls, got %d (cols=%v)", len(cols), cols)
 	}
 	al := makeAllowlist([]entry{
-		{File: "internal/pkg/same_line.go", Line: 5, Col: cols[0], Fn: "os.Stat", PR: "PR 99"},
-		{File: "internal/pkg/same_line.go", Line: 5, Col: cols[1], Fn: "os.Stat", PR: "PR 99"},
+		{File: "internal/pkg/same_line.go", Line: 5, Col: cols[0], Fn: "os.Stat", Justification: "boundary exception"},
+		{File: "internal/pkg/same_line.go", Line: 5, Col: cols[1], Fn: "os.Stat", Justification: "boundary exception"},
 	})
 	if errs := ValidateAllowlist(al); len(errs) > 0 {
 		t.Fatalf("validation failed: %v", errs)
@@ -388,6 +404,23 @@ func slicesContains(ss []string, s string) bool {
 }
 
 // ---------- Audit: os.Root type references outside rootfs ----------
+
+// os.OpenRoot is the core primitive of the boundary and must be centralized in
+// internal/rootfs; a direct call anywhere else is blocked outright.
+func TestAudit_OpenRootOutsideRootfsBlocked(t *testing.T) {
+	r := auditFixture(t, `package pkg
+
+import "os"
+
+func open() { _ = os.OpenRoot("/tmp") }
+`)
+	if r.Err != nil {
+		t.Fatal(r.Err)
+	}
+	if !blockedBy(r, "os.OpenRoot outside internal/rootfs") {
+		t.Errorf("os.OpenRoot outside internal/rootfs not blocked: %v", r.Blocked)
+	}
+}
 
 func TestAudit_NonRootfsOsRootBlocked(t *testing.T) {
 	tests := []struct {

@@ -1,5 +1,4 @@
 {
-  "description": "Direct filesystem calls in production code, classified by migration status. The fsaudit tool compiles the watched-function policy internally - this file only classifies each call, it does not control what gets scanned. migration = will be routed through rootfs in a future PR. permanent = intentional boundary exception, never to be migrated.",
   "permanent": [
     {
       "file": "internal/rootfs/rootfs.go",
