@@ -26,21 +26,6 @@ import (
 	"github.com/VrncQuentin/harness/internal/rootfs"
 )
 
-// HeadSHA returns the SHA of the current HEAD commit.
-// It returns an empty string if the repo has no commits yet.
-func (r *Repo) HeadSHA() (string, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	head, err := r.repo.Head()
-	if errors.Is(err, plumbing.ErrReferenceNotFound) {
-		return "", nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("git: head %s: %w", r.path, err)
-	}
-	return head.Hash().String(), nil
-}
-
 // CurrentBranch returns the short name of the branch HEAD points to.
 // It reads through the opened go-git handle, so it works on linked
 // worktrees where .git is a file.  Reading unresolved (resolved=false)

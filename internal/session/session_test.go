@@ -219,8 +219,8 @@ func TestManager_AppendThenSaveWritesFilesAndCommits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	if res.CommitSHA == "" {
-		t.Fatalf("expected non-empty commit sha")
+	if got := headCommitSHA(t, dir); got == "" {
+		t.Fatalf("expected a commit on HEAD after Save")
 	}
 	if res.SaveSeq != 1 {
 		t.Errorf("save_seq: want 1, got %d", res.SaveSeq)

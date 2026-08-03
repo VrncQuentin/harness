@@ -382,7 +382,8 @@ func TestUnknownApprovalID(t *testing.T) {
 
 func TestApprovalWaitTimesOut(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, EditEnabled: true}
-	engine := newTestEngine(t, cfg).WithApprovalTimeout(20 * time.Millisecond)
+	engine := newTestEngine(t, cfg)
+	engine.approvalTimeout = 20 * time.Millisecond
 	engine.infer = &mockInferClient{tokens: toolCallTokens("edit", `{"path":"/tmp/test.txt"}`)}
 
 	evch := make(chan Event, 64)
@@ -455,7 +456,8 @@ func TestStateEventWaitsForDeliveryWhenChannelIsFull(t *testing.T) {
 }
 func TestApprovalNeededDeliveryTimesOutWhenEventChannelIsFull(t *testing.T) {
 	cfg := config.LoopConfig{MaxTurns: 2, DoomThreshold: 3, EditEnabled: true}
-	engine := newTestEngine(t, cfg).WithApprovalTimeout(20 * time.Millisecond)
+	engine := newTestEngine(t, cfg)
+	engine.approvalTimeout = 20 * time.Millisecond
 	engine.infer = &mockInferClient{tokens: toolCallTokens("edit", `{"path":"/tmp/test.txt"}`)}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)

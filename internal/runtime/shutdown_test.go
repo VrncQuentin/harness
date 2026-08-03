@@ -529,7 +529,7 @@ func TestShutdown_SessionFlushBounded(t *testing.T) {
 
 	// Ownership is retained: the session manager and generation stay for a
 	// later Shutdown retry.
-	if rt.SessionManager() != mgr {
+	if rt.sessionManager() != mgr {
 		t.Fatal("session manager ownership dropped while its save was still in flight")
 	}
 	rt.mu.Lock()

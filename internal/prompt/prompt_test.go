@@ -407,7 +407,8 @@ func TestAssemble_CustomTokenizer(t *testing.T) {
 		"rules.md":                "abcd", // 4 runes, default tokenizer says 1
 		"agents/coder/persona.md": "p",
 	})
-	asm := newAssembler(t, mem, baseCfg()).WithTokenizer(func(s string) int { return len(s) })
+	asm := newAssembler(t, mem, baseCfg())
+	asm.tokenizer = func(s string) int { return len(s) }
 	_, stats, err := asm.Assemble(context.Background(), "coder", nil)
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)

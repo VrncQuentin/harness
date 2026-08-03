@@ -120,17 +120,6 @@ func NewProjectDiskAssembler(globalMem, activeMem memory.Reader, reg agent.Regis
 	}
 }
 
-// WithTokenizer returns a shallow copy with a custom token counter.
-// Passing nil restores the rune-quarter heuristic.
-func (a *DiskAssembler) WithTokenizer(f func(string) int) *DiskAssembler {
-	cp := *a
-	if f == nil {
-		f = defaultTokenize
-	}
-	cp.tokenizer = f
-	return &cp
-}
-
 // WithProjectSlug returns a shallow copy with the active project slug.
 // The assembler resolves an empty slug to the global project at load time.
 func (a *DiskAssembler) WithProjectSlug(slug string) *DiskAssembler {

@@ -97,8 +97,6 @@ type Session struct {
 type SaveResult struct {
 	ID          string
 	EpisodePath string
-	SidecarPath string
-	CommitSHA   string
 	Summary     string
 	// EpisodeBody is the exact rendered markdown written to EpisodePath.
 	// Indexing consumers hash and chunk this, not Summary, so save-time
@@ -442,7 +440,7 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 		firstLine(summary),
 	)
 	commitStart := time.Now()
-	sha, err := m.deps.Repo.Commit(commitMsg, []string{episodePath})
+	_, err = m.deps.Repo.Commit(commitMsg, []string{episodePath})
 	commitDur := time.Since(commitStart)
 	if err != nil {
 		return SaveResult{}, fmt.Errorf("session: commit %s: %w", episodePath, err)
@@ -493,8 +491,6 @@ func (m *Manager) Save(ctx context.Context, id string) (SaveResult, error) {
 	result := SaveResult{
 		ID:          snap.ID,
 		EpisodePath: episodePath,
-		SidecarPath: sidecarPath,
-		CommitSHA:   sha,
 		Summary:     summary,
 		EpisodeBody: body,
 		SavedAt:     completeRec.SavedAt,

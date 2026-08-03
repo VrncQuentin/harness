@@ -345,8 +345,8 @@ func TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange(t *testing.T
 		t.Fatal("retry did not report live apply after rebuilding missing memory services")
 	}
 	t.Cleanup(func() { rt.Stop() })
-	if rt.SessionManager() == nil || rt.taskRunner == nil || rt.assembler == nil {
-		t.Fatalf("memory/API graph was not rebuilt: session=%T task=%T assembler=%T", rt.SessionManager(), rt.taskRunner, rt.assembler)
+	if rt.sessionManager() == nil || rt.taskRunner == nil || rt.assembler == nil {
+		t.Fatalf("memory/API graph was not rebuilt: session=%T task=%T assembler=%T", rt.sessionManager(), rt.taskRunner, rt.assembler)
 	}
 	deps, release := rt.AcquireUISnapshot()
 	defer release()
@@ -437,7 +437,7 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 				t.Fatal("initial memory startup failed")
 			}
 			rt.started = true
-			oldMgr := rt.SessionManager()
+			oldMgr := rt.sessionManager()
 			if oldMgr == nil {
 				t.Fatal("old session manager absent after startup")
 			}
@@ -446,10 +446,10 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			if !result.LiveApplied {
 				t.Fatal("endpoint-only reload did not report a live apply")
 			}
-			if rt.SessionManager() == nil {
+			if rt.sessionManager() == nil {
 				t.Fatal("endpoint-only reload did not rebuild the session manager")
 			}
-			if rt.SessionManager() == oldMgr {
+			if rt.sessionManager() == oldMgr {
 				t.Fatal("session manager was not replaced by endpoint change")
 			}
 			deps, release := rt.AcquireUISnapshot()
@@ -527,7 +527,7 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 	// The pre-reload manager's generation-owned reader is closed when the
 	// rebuild retires its generation, so records are read through the manager
 	// that owns the live reader.
-	current := rt.SessionManager()
+	current := rt.sessionManager()
 	if current == nil {
 		t.Fatal("session manager absent after reload")
 	}
@@ -1889,7 +1889,7 @@ func TestStopIsIdempotent(t *testing.T) {
 	rt.setSessionManager(mgr)
 
 	rt.Stop()
-	if rt.SessionManager() != nil {
+	if rt.sessionManager() != nil {
 		t.Error("SessionManager should return nil after Stop")
 	}
 	rt.Stop()
