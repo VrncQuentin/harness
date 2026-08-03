@@ -50,18 +50,20 @@ func linkDir(t *testing.T, target, link string) {
 }
 
 // newSessionManagerForTest opens the active reader the way one runtime
-// generation does and builds a session manager wired to it. Ownership of the
-// reader transfers to Runtime via rt.globalMem/rt.activeMem; Runtime.Stop
-// closes it, so the test must not register its own cleanup (cleanup runs LIFO
-// after Stop's flush would have already used the reader).
+// generation does and builds a session manager wired to it, publishing a
+// generation that immediately owns the reader. The session manager is NOT
+// registered on the generation: only tests that exercise the shutdown flush or
+// reload quiesce wire it explicitly (rt.gen.sessionMgr = mgr), so a test that
+// just uses the manager directly never triggers a shutdown flush. Shutdown's
+// release closes the reader, so the test must not register its own cleanup
+// (cleanup runs LIFO after Shutdown's flush would have already used the
+// reader).
 func newSessionManagerForTest(t *testing.T, rt *Runtime, root string, infClient inference.Client) (*gitw.Repo, *session.Manager, *uiSessionStoreAdapter) {
 	t.Helper()
 	reader, err := memory.NewDirReader(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt.globalMem = reader
-	rt.activeMem = reader
 	repo, mgr, adapter, err := rt.buildSessionManagerWithClients(nil, projectRepoRoots{
 		globalRoot: root,
 		activeRoot: root,
@@ -70,6 +72,8 @@ func newSessionManagerForTest(t *testing.T, rt *Runtime, root string, infClient 
 	if err != nil {
 		t.Fatal(err)
 	}
+	rt.gen = &generation{globalMem: reader, activeMem: reader}
+	rt.gen.acquire()
 	return repo, mgr, adapter
 }
 
@@ -301,23 +305,21 @@ func TestApplyConfigFailedMemoryReloadRestoresExistingServices(t *testing.T) {
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
 	t.Cleanup(func() { stopRuntime(t, rt) })
 	rt.started = true
-	rt.globalMem = mem
-	rt.activeMem = mem
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
 
 	uiServer := ui.NewServer(0)
-	// The existing generation carries the published UI snapshot; a failed
-	// reload must not replace it.
-	rt.gen = &generation{uiSnap: ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem}}
+	// The existing generation carries the published UI snapshot and the
+	// readable reader; a failed reload must not replace it.
+	rt.gen = &generation{globalMem: mem, activeMem: mem, uiSnap: ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem}}
 	rt.gen.acquire()
 
 	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
 	if result.LiveApplied {
 		t.Fatal("failed memory/API reload should not report live apply")
 	}
-	if rt.globalMem != mem || rt.activeMem != mem {
+	if rt.gen == nil || rt.gen.globalMem != mem || rt.gen.activeMem != mem {
 		t.Fatal("runtime memory repos were not restored after failed reload")
 	}
 	deps, release := rt.AcquireUISnapshot()
@@ -345,8 +347,13 @@ func TestApplyConfigRetriesMissingMemoryServicesWithoutConfigChange(t *testing.T
 		t.Fatal("retry did not report live apply after rebuilding missing memory services")
 	}
 	t.Cleanup(func() { stopRuntime(t, rt) })
-	if rt.sessionManager() == nil || rt.taskRunner == nil || rt.assembler == nil {
-		t.Fatalf("memory/API graph was not rebuilt: session=%T task=%T assembler=%T", rt.sessionManager(), rt.taskRunner, rt.assembler)
+	g := rt.gen
+	if g == nil || g.sessionMgr == nil || g.taskRunner == nil || g.assembler == nil {
+		var sm, tr, asm any
+		if g != nil {
+			sm, tr, asm = g.sessionMgr, g.taskRunner, g.assembler
+		}
+		t.Fatalf("memory/API graph was not rebuilt: session=%T task=%T assembler=%T", sm, tr, asm)
 	}
 	deps, release := rt.AcquireUISnapshot()
 	defer release()
@@ -437,8 +444,8 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 				t.Fatal("initial memory startup failed")
 			}
 			rt.started = true
-			oldMgr := rt.sessionManager()
-			if oldMgr == nil {
+			oldGen := rt.gen
+			if oldGen == nil || oldGen.sessionMgr == nil {
 				t.Fatal("old session manager absent after startup")
 			}
 
@@ -446,10 +453,10 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			if !result.LiveApplied {
 				t.Fatal("endpoint-only reload did not report a live apply")
 			}
-			if rt.sessionManager() == nil {
+			if rt.gen == nil || rt.gen.sessionMgr == nil {
 				t.Fatal("endpoint-only reload did not rebuild the session manager")
 			}
-			if rt.sessionManager() == oldMgr {
+			if rt.gen.sessionMgr == oldGen.sessionMgr {
 				t.Fatal("session manager was not replaced by endpoint change")
 			}
 			deps, release := rt.AcquireUISnapshot()
@@ -485,15 +492,15 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 
 	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, client)
 	defer func() { _ = gitRepo.Close() }()
-	rt.setSessionManager(mgr)
-	rt.taskRunner = &taskRunnerAdapter{
+	rt.gen.sessionMgr = mgr
+	rt.gen.taskRunner = &taskRunnerAdapter{
 		rt:         rt,
 		registry:   tools.NewRegistry(),
 		q:          rt.reqQueue,
 		sessionMgr: mgr,
 	}
 
-	sessionID, evch, err := rt.taskRunner.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
+	sessionID, evch, err := rt.gen.taskRunner.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
 	}
@@ -527,7 +534,7 @@ func TestApplyConfigReloadCancelsTaskAndFlushesSession(t *testing.T) {
 	// The pre-reload manager's generation-owned reader is closed when the
 	// rebuild retires its generation, so records are read through the manager
 	// that owns the live reader.
-	current := rt.sessionManager()
+	current := rt.gen.sessionMgr
 	if current == nil {
 		t.Fatal("session manager absent after reload")
 	}
@@ -866,7 +873,6 @@ func TestTaskRunnerRecordsPartialTranscriptOnCancel(t *testing.T) {
 
 	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
 	defer func() { _ = gitRepo.Close() }()
-	rt.setSessionManager(mgr)
 
 	ad := &taskRunnerAdapter{rt: rt, registry: tools.NewRegistry(), q: startRuntimeTestQueue(t, rt.ensureInferenceClient()), sessionMgr: mgr}
 	id, evch, err := ad.RunTask(context.Background(), "coder", "", []ui.ChatMessage{{Role: "user", Content: "hello"}})
@@ -972,7 +978,6 @@ func TestTaskRunnerAppendsDistinctFollowUpOnResume(t *testing.T) {
 
 	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
 	defer func() { _ = gitRepo.Close() }()
-	rt.setSessionManager(mgr)
 
 	s := mgr.Start("coder")
 	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello"}); err != nil {
@@ -1167,17 +1172,14 @@ func TestTaskRunnerRoutesThroughAssemblerAndQueue(t *testing.T) {
 
 	rt := New(cfg, nil, LogRings{})
 	t.Cleanup(func() { stopRuntime(t, rt) })
-	rt.globalMem = mem
-	rt.activeMem = mem
-	rt.agentReg = reg
-	rt.assembler = prompt.NewProjectDiskAssembler(mem, mem, reg, cfg.Prompt).WithProjectSlug("global")
-	rt.gen = &generation{assembler: rt.assembler}
+	asm := prompt.NewProjectDiskAssembler(mem, mem, reg, cfg.Prompt).WithProjectSlug("global")
+	rt.gen = &generation{globalMem: mem, activeMem: mem, agentReg: reg, assembler: asm}
 	rt.gen.acquire()
 	rt.inferClient = failingInferenceClient{err: fmt.Errorf("direct inference path used")}
 
 	ad := &taskRunnerAdapter{
 		rt:       rt,
-		asm:      &staticAssembler{asm: rt.assembler, active: "coder"},
+		asm:      &staticAssembler{asm: asm, active: "coder"},
 		registry: tools.NewRegistry(),
 		q:        q,
 		slug:     "global",
@@ -1232,8 +1234,8 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = dr.Close() })
-	rt.globalMem = dr
-	rt.activeMem = rt.globalMem
+	rt.gen = &generation{globalMem: dr, activeMem: dr}
+	rt.gen.acquire()
 
 	gitRepo, mgr, adapter, err := rt.buildSessionManagerWithClients(nil, projectRepoRoots{
 		globalRoot: root,
@@ -1733,7 +1735,7 @@ func TestCandidateIdentityMismatchFailsClosed(t *testing.T) {
 	// not through the repointed alias. A read that succeeds proves the
 	// reader's retained anchor is still open and still points at the stable
 	// directory the generation was constructed on.
-	if _, err := rt.activeMem.Read("rules.md"); err != nil {
+	if _, err := rt.gen.activeMem.Read("rules.md"); err != nil {
 		t.Fatalf("installed generation reader failed after rejected reload: %v", err)
 	}
 }
@@ -1809,8 +1811,6 @@ func TestFailedReloadPreservesReadableGeneration(t *testing.T) {
 	rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
 	rt.started = true
 	t.Cleanup(func() { stopRuntime(t, rt) })
-	rt.globalMem = mem
-	rt.activeMem = mem
 	rt.projectStore = &runtimeProjectStoreStub{projects: map[string]project.Project{
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
@@ -1822,7 +1822,7 @@ func TestFailedReloadPreservesReadableGeneration(t *testing.T) {
 	uiServer := ui.NewServer(0)
 	// The existing generation owns the published snapshot and the readable
 	// reader; a failed reload must leave both untouched.
-	rt.gen = &generation{uiSnap: ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem}}
+	rt.gen = &generation{globalMem: mem, activeMem: mem, uiSnap: ui.ServiceDeps{MemoryRepoPath: root, MemoryStore: mem}}
 	rt.gen.acquire()
 
 	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
@@ -1860,15 +1860,13 @@ func TestGenerationReaderOwnershipRetiredOnStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt.globalMem = reader
-	rt.activeMem = reader
-	rt.gen = &generation{readers: []memory.Repo{reader}}
+	rt.gen = &generation{globalMem: reader, activeMem: reader}
 	rt.gen.acquire()
 
 	stopRuntime(t, rt)
 
 	if _, err := reader.Read("rules.md"); err == nil {
-		t.Error("generation reader Read should fail after Runtime.Stop closed it")
+		t.Error("generation reader Read should fail after Shutdown closed it")
 	}
 }
 
@@ -1884,13 +1882,12 @@ func TestStopIsIdempotent(t *testing.T) {
 		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
 	}}
 
-	gitRepo, mgr, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
+	gitRepo, _, _ := newSessionManagerForTest(t, rt, root, rt.ensureInferenceClient())
 	defer func() { _ = gitRepo.Close() }()
-	rt.setSessionManager(mgr)
 
 	stopRuntime(t, rt)
-	if rt.sessionManager() != nil {
-		t.Error("SessionManager should return nil after Stop")
+	if rt.gen != nil {
+		t.Error("session manager should be nil after Stop")
 	}
 	stopRuntime(t, rt)
 }

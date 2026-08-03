@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/session"
 )
 
@@ -58,8 +57,12 @@ func (rt *Runtime) Shutdown(rootCancel context.CancelFunc, drainTimeout time.Dur
 	// chat or task work that reaches the request queue is refused.
 	rt.mu.Lock()
 	q := rt.reqQueue
-	tasks := rt.taskRunner
+	g := rt.gen
 	rt.mu.Unlock()
+	var tasks *taskRunnerAdapter
+	if g != nil {
+		tasks = g.taskRunner
+	}
 	if q != nil {
 		q.CloseAdmissions()
 	}
@@ -169,7 +172,13 @@ func (rt *Runtime) emitShutdownHook(step string) {
 // whether this attempt's flush is not cleanly finished — still running past
 // the drain context or completed with an error.
 func (rt *Runtime) shutdownFlush(ctx context.Context) bool {
-	mgr := rt.sessionManager()
+	rt.mu.Lock()
+	g := rt.gen
+	rt.mu.Unlock()
+	var mgr *session.Manager
+	if g != nil {
+		mgr = g.sessionMgr
+	}
 	if mgr == nil {
 		return false
 	}
@@ -266,29 +275,20 @@ func (rt *Runtime) stopAPIServers() bool {
 
 // releaseOwnedResources drops the runtime's ownership of every resource proven
 // idle. It is called only after every drain confirmed quiescence and every
-// component reported termination, so nothing released here is still in use.
-// Caller must hold applyMu.
+// component reported termination, so nothing released here is still in use. The
+// generation owns its readers, handles, and session manager, so releasing it
+// closes the readers and handles when the publisher lease drops. Caller must
+// hold applyMu.
 func (rt *Runtime) releaseOwnedResources() {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
 	g := rt.gen
-	global := rt.globalMem
-	active := rt.activeMem
 	rt.gen = nil
-	rt.globalMem = nil
-	rt.activeMem = nil
-	rt.agentReg = nil
-	rt.assembler = nil
-	rt.taskRunner = nil
 	rt.started = false
 	rt.applied = nil
-	rt.setSessionManager(nil)
 	rt.reqQueue = nil
 	if g != nil {
-		g.readers = []memory.Repo{global, active}
 		g.release()
-	} else {
-		closeReaders(global, active)
 	}
 }

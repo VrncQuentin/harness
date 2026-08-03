@@ -54,7 +54,7 @@ func TestProjectEdit_ActiveRepoNotMovable(t *testing.T) {
 	}
 
 	// The installed generation is untouched and still serves the old repo.
-	if _, err := rt.activeMem.Read("rules.md"); err != nil {
+	if _, err := rt.gen.activeMem.Read("rules.md"); err != nil {
 		t.Fatalf("installed generation reader failed after refused move: %v", err)
 	}
 }
@@ -250,7 +250,7 @@ func TestProjectEdit_FailedReapplyRollsBack(t *testing.T) {
 	if rt.applied != oldApplied {
 		t.Fatal("failed re-apply replaced the recorded applied state")
 	}
-	if _, err := rt.activeMem.Read("rules.md"); err != nil {
+	if _, err := rt.gen.activeMem.Read("rules.md"); err != nil {
 		t.Fatalf("installed generation reader failed after rejected edit: %v", err)
 	}
 }
@@ -318,7 +318,7 @@ func TestProjectEdit_ActiveRepoIdentityCarriedThrough(t *testing.T) {
 	if rt.applied != oldApplied {
 		t.Fatal("refused edit replaced the recorded applied state")
 	}
-	if _, err := rt.activeMem.Read("rules.md"); err != nil {
+	if _, err := rt.gen.activeMem.Read("rules.md"); err != nil {
 		t.Fatalf("installed generation reader failed after refused edit: %v", err)
 	}
 }
@@ -342,7 +342,7 @@ func TestProjectEdit_InactiveRepoMoveStillWorks(t *testing.T) {
 	}
 	dst := filepath.Join(t.TempDir(), "demo-moved")
 
-	oldActiveMem := rt.activeMem
+	oldActiveMem := rt.gen.activeMem
 	if _, err := rt.EditProject(context.Background(), ui.NewServer(0), NewEventChannel(), nil, project.UpdateInput{
 		Slug:           "demo",
 		DisplayName:    "Demo",
@@ -358,10 +358,10 @@ func TestProjectEdit_InactiveRepoMoveStillWorks(t *testing.T) {
 		t.Fatalf("moved repo contents = %q, %v; want %q", b, err, "moved")
 	}
 	// The active generation still targets the global repo.
-	if rt.activeMem != oldActiveMem {
+	if rt.gen.activeMem != oldActiveMem {
 		t.Fatal("inactive edit replaced the active generation")
 	}
-	if _, err := rt.activeMem.Read("rules.md"); err != nil {
+	if _, err := rt.gen.activeMem.Read("rules.md"); err != nil {
 		t.Fatalf("active generation reader failed after inactive edit: %v", err)
 	}
 }
