@@ -58,7 +58,7 @@ func appliedRuntimeForTest(t *testing.T, cfg *config.Config, projects *runtimePr
 		BuildArgs: func() (string, []string) { return embedderArgsForConfig(rt.applied.runningEmbedder) },
 		HealthURL: embedderHealthURL(rt.applied.runningEmbedder),
 	})
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	return rt, projects
 }
 
@@ -551,7 +551,7 @@ func TestAppliedState_MissingAPIServerRebuilt(t *testing.T) {
 		t.Fatal("initial memory services failed")
 	}
 	rt.started = true
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 	oldSrv := rt.apiServer
 	if oldSrv == nil {
 		t.Fatal("initial API server missing")
@@ -602,7 +602,7 @@ func TestAppliedState_PreparedAPIServerNotServedBeforeCommit(t *testing.T) {
 		t.Fatal("initial memory services failed")
 	}
 	rt.started = true
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	prepared := make(chan struct{})
 	resume := make(chan struct{})
@@ -683,7 +683,7 @@ func TestAppliedState_TimeoutShutdownRetainsOwnership(t *testing.T) {
 	t.Cleanup(func() {
 		// Restore the real stopper so cleanup actually terminates the servers.
 		rt.stopAPIServer = func(s *api.Server) bool { return s.Stop() }
-		rt.Stop()
+		stopRuntime(t, rt)
 	})
 
 	oldSrv := rt.apiServer

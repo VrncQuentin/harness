@@ -499,7 +499,7 @@ func TestShutdown_SessionFlushBounded(t *testing.T) {
 
 	client := &hangOnceThenDoneClient{hangCh: make(chan inference.Token), started: make(chan struct{})}
 	rt, mgr, _ := newGenerationedManagerForTest(t, &cfg, client)
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	s := mgr.Start("coder")
 	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello"}); err != nil {
@@ -560,7 +560,7 @@ func TestShutdown_RetryAfterFlushFailureUsesRetainedReader(t *testing.T) {
 
 	client := &errThenDoneClient{}
 	rt, mgr, root := newGenerationedManagerForTest(t, &cfg, client)
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	s := mgr.Start("coder")
 	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello"}); err != nil {
@@ -605,7 +605,7 @@ func TestShutdown_SingleFlushAcrossRetries(t *testing.T) {
 
 	client := &blockThenDoneClient{block: make(chan struct{}), started: make(chan struct{})}
 	rt, mgr, root := newGenerationedManagerForTest(t, &cfg, client)
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	s := mgr.Start("coder")
 	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello"}); err != nil {
@@ -677,7 +677,7 @@ func TestShutdown_FlushCompletionNotMissedByRetry(t *testing.T) {
 
 	client := &capturingInferenceClient{tokens: []inference.Token{{Content: "summary"}, {Done: true}}}
 	rt, mgr, _ := newGenerationedManagerForTest(t, &cfg, client)
-	t.Cleanup(func() { rt.Stop() })
+	t.Cleanup(func() { stopRuntime(t, rt) })
 
 	s := mgr.Start("coder")
 	if err := mgr.Append(s.ID, inference.Message{Role: "user", Content: "hello"}); err != nil {

@@ -6,18 +6,23 @@ import (
 	"strconv"
 
 	"github.com/VrncQuentin/harness/internal/config"
+	"github.com/VrncQuentin/harness/internal/project"
 )
 
 func (rt *Runtime) effectiveModelFor(cfg *config.Config) config.ModelConfig {
 	if rt.projectStore == nil {
 		return cfg.Model
 	}
-	proj, err := rt.resolveProject(cfg.Project.ActiveProjectSlug)
+	slug := cfg.Project.ActiveProjectSlug
+	if slug == "" {
+		slug = project.GlobalSlug
+	}
+	proj, err := rt.projectStore.Get(slug)
 	if err != nil {
-		slog.Warn("runtime: using global model config; active project model overrides unavailable", "slug", cfg.Project.ActiveProjectSlug, "err", err)
+		slog.Warn("runtime: using global model config; active project model overrides unavailable", "slug", slug, "err", err)
 		return cfg.Model
 	}
-	return config.EffectiveModel(cfg, proj)
+	return config.EffectiveModel(cfg, &proj)
 }
 
 // promptConfigFor derives a generation's prompt config: the persisted prompt

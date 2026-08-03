@@ -94,18 +94,6 @@ func (rt *Runtime) RestartEmbedder() {
 	}
 }
 
-// Stop tears down runtime-owned services that need explicit shutdown. It is
-// retained for tests and compatibility; production shutdown goes through
-// Shutdown, which cancels the root context and owns the whole lifecycle.
-//
-// Stop performs one shutdown attempt without a root-context cancel (callers
-// own their service contexts and process managers), with each bounded wait
-// capped at defaultDrainTimeout. A second call is a no-op because the first
-// released ownership of everything proven idle.
-func (rt *Runtime) Stop() {
-	rt.Shutdown(nil, defaultDrainTimeout)
-}
-
 // startServices brings llama-server, embedder, queue, and metrics up under the
 // current rt.cfg. Caller must hold rt.mu.
 func (rt *Runtime) startServices(
