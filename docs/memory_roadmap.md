@@ -4,6 +4,12 @@ Milestone position: **this document is M12**, scheduled after M11 Pipeline DSL. 
 the evolution of Harness memory from its current shape toward measured retrieval,
 explicit content provenance, and a persistent semantic-write gate.
 
+> The **current memory system** — terminology, canonical layout, prompt read path,
+> session lifecycle, promotion, ownership, indexing and retrieval, durability, and
+> current limitations — is documented in [memory.md](memory.md). This roadmap records
+> only the remaining M12/MR work, evidence gates, acceptance criteria, and open
+> decisions.
+
 Sequencing against the other milestones:
 
 - **MR0 is the current M10.3 closure work, not M12 proper.** Trace/eval code and startup
@@ -23,55 +29,6 @@ Sequencing against the other milestones:
 
 Phases run in order; a conditional phase counts as complete when its evidence-backed skip
 decision is recorded. **No memory schema work starts before MR0 reports.**
-
----
-
-## Current state [P]
-
-**Storage:**
-- `markdown + vectors.bin + manifest.json` in per-project git repos
-- SQLite (`harness.db`): config, metrics, projects table — no memory content
-- One repo per project at `~/.harness/projects/<id>/` (M9, shipped)
-
-**Layout per repo:**
-```
-rules.md, user.md, facts.md
-agents/<name>/notes.md, agents/<name>/persona.md, agents/<name>/rules.md
-sessions.jsonl
-episodes/<agent>/<timestamp>.md
-index/_episodes/vectors.bin
-index/_episodes/manifest.json
-artifacts/
-```
-
-**Retrieval (`internal/retrieval`):**
-Two-signal weighted blend over episodes only:
-```
-score = semantic_weight * similarity + recency_weight * exp_decay(distance, n)
-```
-No FTS5, no ranked-list fusion, no RRF. `semantic_weight` and `recency_weight` are
-`PromptConfig` fields, user-tunable.
-
-**Semantic writers (no common gate):**
-1. Session lifecycle: summarize → write episode → commit (via `internal/session`)
-2. UI promotion: `PromoteFact` / `AppendAgentNote` (via `internal/memory.PromotionService`)
-
-Supporting writes are separate: session conversation sidecars and `sessions.jsonl` are
-operational/session evidence, while vector index update and rebuild are derived data.
-MR3 gates semantic memory records; it must not emit semantic decisions for these supporting
-or rebuildable writes.
-
-**Dedup:** embedding cosine similarity against existing `facts.md` lines before
-`PromoteFact` commits — no dedup on episodes or notes.
-
-**Origin classes (M10.1, shipped):** the tool layer records how a tool result was
-produced — `tools.OriginClass` with values `extraction` and `inference`. Memory hits do
-not yet carry the origin of their underlying content. `memory_query` currently returns
-one outer extraction-class result even though episode summaries are inference content;
-MR1 separates those concepts and makes origin per-hit.
-
-**What does not exist:** origin-aware retrieval records, stable memory record IDs,
-supersede chains, a persistent proposal/decision gate, FTS5, or cross-file retrieval.
 
 ---
 
