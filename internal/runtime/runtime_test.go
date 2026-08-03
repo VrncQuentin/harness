@@ -1839,10 +1839,10 @@ func TestFailedReloadPreservesReadableGeneration(t *testing.T) {
 	}
 }
 
-// TestGenerationReaderOwnershipRetiredOnStop verifies the generation-owned
+// TestGenerationReaderOwnershipRetiredOnShutdown verifies the generation-owned
 // active reader — which the session manager now reads and writes directly —
-// is closed when Runtime.Stop retires the generation.
-func TestGenerationReaderOwnershipRetiredOnStop(t *testing.T) {
+// is closed when Shutdown retires the generation.
+func TestGenerationReaderOwnershipRetiredOnShutdown(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()
 	seedRequiredConfigFiles(t, &cfg)
@@ -1855,7 +1855,7 @@ func TestGenerationReaderOwnershipRetiredOnStop(t *testing.T) {
 	}}
 
 	// A live generation owns the active reader; the session manager reads and
-	// writes it. Stop must close it when the last lease is released.
+	// writes it. Shutdown must close it when the last lease is released.
 	reader, err := memory.NewDirReader(root)
 	if err != nil {
 		t.Fatal(err)
@@ -1870,7 +1870,7 @@ func TestGenerationReaderOwnershipRetiredOnStop(t *testing.T) {
 	}
 }
 
-func TestStopIsIdempotent(t *testing.T) {
+func TestShutdownIsIdempotent(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()
 	seedRequiredConfigFiles(t, &cfg)
@@ -1887,7 +1887,7 @@ func TestStopIsIdempotent(t *testing.T) {
 
 	stopRuntime(t, rt)
 	if rt.gen != nil {
-		t.Error("session manager should be nil after Stop")
+		t.Error("session manager should be nil after Shutdown")
 	}
 	stopRuntime(t, rt)
 }
@@ -2085,9 +2085,9 @@ func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
 
 	release()
 	stopRuntime(t, rt)
-	// After release + Stop, oldRoot must be removable even on Windows.
+	// After release + Shutdown, oldRoot must be removable even on Windows.
 	if err := os.RemoveAll(oldRoot); err != nil {
-		t.Fatalf("old root not removable after release and Stop: %v", err)
+		t.Fatalf("old root not removable after release and Shutdown: %v", err)
 	}
 }
 
@@ -2096,7 +2096,7 @@ func TestGenLeasePinsOldRootUntilReleased(t *testing.T) {
 // against the original repository after the reload retires the old
 // generation. The old root stays pinned while the snapshot is held (a fatal
 // Windows assertion where handle blocking is the discriminator), retires
-// after release, and Runtime.Stop does not close resources protected by an
+// after release, and Shutdown does not close resources protected by an
 // outstanding snapshot lease. All waiting is barrier-free: the assertions are
 // synchronous and deterministic.
 func TestSnapshot_OldReferencesRemainValidAfterReload(t *testing.T) {
@@ -2149,11 +2149,11 @@ func TestSnapshot_OldReferencesRemainValidAfterReload(t *testing.T) {
 			t.Fatalf("held snapshot read = %q, %v", b, err)
 		}
 
-		// Runtime.Stop must not close resources protected by an outstanding
+		// Shutdown must not close resources protected by an outstanding
 		// snapshot lease.
 		stopRuntime(t, rt)
 		if _, err := memStore.Read("known.txt"); err != nil {
-			t.Fatalf("held snapshot read failed after Stop: %v", err)
+			t.Fatalf("held snapshot read failed after Shutdown: %v", err)
 		}
 
 		// Old handles stay pinned while the snapshot is held. The RemoveAll
@@ -2451,7 +2451,7 @@ func TestSnapshot_ActiveAgentResolvedPerAcquisition(t *testing.T) {
 	modelPort, shutdownModel, capture := startCapturingModelServer(t, "test summary")
 	// The model server must outlive the runtime's shutdown flush, or the
 	// summarizer would fail to save the task's session during cleanup. Cleanups
-	// run LIFO, so registering this first runs it after rt.Stop's cleanup.
+	// run LIFO, so registering this first runs it after shutdown cleanup.
 	t.Cleanup(shutdownModel)
 
 	root := initRuntimeProjectRepo(t)
@@ -2536,7 +2536,7 @@ func TestSnapshot_ActiveAgentResolvedPerAcquisition(t *testing.T) {
 	}
 }
 
-func TestStopWithInFlightLease(t *testing.T) {
+func TestShutdownWithInFlightLease(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 	if err := os.MkdirAll(filepath.Join(root, "agents", "coder"), 0o755); err != nil {
 		t.Fatal(err)
@@ -2566,7 +2566,7 @@ func TestStopWithInFlightLease(t *testing.T) {
 
 	asm, _, _, release := rt.AcquireRequestGeneration()
 
-	// Stop while the lease is held.
+	// Shutdown while the lease is held.
 	stopRuntime(t, rt)
 
 	// The lease protects the captured generation. Assemble must
@@ -2574,20 +2574,20 @@ func TestStopWithInFlightLease(t *testing.T) {
 	_, err := asm.Assemble(context.Background(), "coder", []inference.Message{{Role: "user", Content: "read known"}})
 	if err != nil {
 		release()
-		t.Fatalf("assemble after Stop with held lease: %v", err)
+		t.Fatalf("assemble after Shutdown with held lease: %v", err)
 	}
 
 	// The root must still be pinned on Windows.
 	if err := os.RemoveAll(root); err == nil {
 		if runtime.GOOS == "windows" {
 			release()
-			t.Fatal("root was removable despite held lease after Stop")
+			t.Fatal("root was removable despite held lease after Shutdown")
 		}
 	}
 
 	// Release drops the last lease. The old readers close.
 	release()
 
-	// Second Stop is a no-op.
+	// Second Shutdown is a no-op.
 	stopRuntime(t, rt)
 }

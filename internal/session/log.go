@@ -162,7 +162,7 @@ func ReadAll(r LogReader, relPath string) ([]Record, error) {
 // Unlike reading, appending accepts only explicit records: a recognized typed
 // state (pending or complete) with a positive attempt. Legacy state-less
 // records are only ever read, never produced — current writers must always
-// publish the explicit recovery state PR 11 exists to provide.
+// publish the explicit recovery state.
 func AppendRecord(w LogAppender, relPath string, rec Record) error {
 	if rec.ID == "" {
 		return errors.New("session: append: record has empty id")
@@ -208,8 +208,8 @@ func validRecord(r Record) bool {
 // validAppendRecord is the append-time validator. It is deliberately stricter
 // than validRecord: a record written by current code must always carry a
 // recognized typed state and a positive attempt, so a state-less record — the
-// exact shape PR 11 removes — can never be appended. Legacy records are only
-// ever read from existing logs, never produced.
+// exact shape the explicit-state format removes — can never be appended.
+// Legacy records are only ever read from existing logs, never produced.
 func validAppendRecord(r Record) bool {
 	if r.SaveSeq < 0 || r.Attempt <= 0 {
 		return false
@@ -224,10 +224,11 @@ func validAppendRecord(r Record) bool {
 
 // effectiveAttempt returns the monotonic attempt key used for recovery
 // selection. New-format records carry an explicit Attempt; legacy records —
-// those without a state field — predate PR 11 and were only ever appended
-// after a fully successful save, so they order by save_seq. Only records that
-// pass validRecord reach this function; the logs themselves are never
-// rewritten, this rule only interprets records that are already on disk.
+// those without a state field — predate the explicit-state format and were
+// only ever appended after a fully successful save, so they order by save_seq.
+// Only records that pass validRecord reach this function; the logs themselves
+// are never rewritten, this rule only interprets records that are already on
+// disk.
 func effectiveAttempt(r Record) int {
 	if r.State == "" {
 		return r.SaveSeq

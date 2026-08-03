@@ -1,12 +1,11 @@
 package session
 
-// PR 11 — explicit session recovery state. These tests pin the transaction
-// design: a save allocates a monotonic attempt, durably publishes the raw
-// sidecar, appends an explicit pending record, summarizes, publishes and
-// commits the episode, then appends an explicit complete record for the same
-// attempt. Recovery selects records by the attempt identifier and state
-// precedence, never by wall-clock timestamps, EpisodePath, or physical log
-// order.
+// Explicit session recovery state. These tests pin the transaction design: a
+// save allocates a monotonic attempt, durably publishes the raw sidecar,
+// appends an explicit pending record, summarizes, publishes and commits the
+// episode, then appends an explicit complete record for the same attempt.
+// Recovery selects records by the attempt identifier and state precedence,
+// never by wall-clock timestamps, EpisodePath, or physical log order.
 
 import (
 	"context"

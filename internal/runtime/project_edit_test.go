@@ -143,7 +143,7 @@ func TestProjectEdit_UpdateRoutesThroughTransaction(t *testing.T) {
 
 // TestProjectEdit_RetryComparesAgainstAppliedState verifies that a reload
 // triggered by a later project edit compares the newly-read store contents
-// against PR 9's recorded applied state — never against "old" values
+// against the recorded applied state — never against "old" values
 // reconstructed from the already-mutated project store.
 //
 // The store is edited to prefer model B behind the runtime's back (the state
