@@ -90,18 +90,30 @@ One canonical NDJSON file per project:
 `~/.harness/eval/retrieval/<project-slug>.ndjson`
 
 ```json
-{"version":1,"query":"the Go AST package discussion","relevant":["episodes/coder/2025-01-15T10:30:00Z.md"]}
+{"version":1,"query":"the Go AST package discussion","relevant":["episodes/coder/2026-01-15T10-30-00.000000000Z.md"]}
 ```
 
 `version` carries the labeled-query schema version independently of the trace schema's
 `Version`; the two artifacts version separately. A row whose version the evaluator does
-not recognize is not a valid row.
+not recognize is not a valid row. `relevant` paths are the project-relative episode
+filenames; the timestamp shape is the sanitized session ID format
+(`2006-01-02T15-04-05.000000000Z`), which is Windows-filename-safe — colon-bearing
+RFC3339 text is not.
 
 The binary replays each query against the selected project repo and reports Precision@3
 and Recall@3 for semantic-only, recency-only, and the configured blend. MRR may remain as
 an additional diagnostic, not as a substitute. Baseline mode rejects fewer than ten valid
 rows and writes a machine-readable result under
 `~/.harness/eval/retrieval/results/<project-slug>-<timestamp>.json`.
+
+A shareable starter label set with ten queries lives at
+`cmd/eval-retrieval/testdata/labels.global.ndjson` and is exercised by the evaluator
+tests. The recorded baseline requires a real project's episodes and labels, which are
+user-owned and machine-local: the minimal manual input is a project whose memory repo has
+episodes and a built episode index (the embedder running), a label file of at least ten
+real queries with `relevant` paths naming actual episodes, then
+`eval-retrieval -baseline -repo <project repo> -embedder <url> -queries <label file>`.
+M10.3 stays unchecked until that baseline run is observed, not merely after unit tests.
 
 **Acceptance gates for MR0:**
 - Runtime startup keeps installing the production sink, surfaces construction/emission

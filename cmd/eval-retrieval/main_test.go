@@ -559,6 +559,89 @@ func TestScoreQuery_EmptyQueryIsUnscoreable(t *testing.T) {
 	}
 }
 
+// The committed labeled-query fixture is the D3 baseline input set. It must
+// stay a valid versioned label file with at least ten rows so the recorded
+// baseline requirement is not silently weakened.
+func TestCommittedFixtureIsValidBaselineSet(t *testing.T) {
+	queries, err := loadQueries(filepath.Join("testdata", "labels.global.ndjson"))
+	if err != nil {
+		t.Fatalf("load committed fixture: %v", err)
+	}
+	if len(queries) < 10 {
+		t.Fatalf("committed baseline fixture has %d queries, want at least 10", len(queries))
+	}
+	for i, q := range queries {
+		if q.Version != LabeledQuerySchemaVersion {
+			t.Errorf("row %d: version = %d, want %d", i, q.Version, LabeledQuerySchemaVersion)
+		}
+		if strings.TrimSpace(q.Query) == "" {
+			t.Errorf("row %d: empty query", i)
+		}
+	}
+}
+
+// TestBaseline_RunsCommittedFixtureEndToEnd drives the full evaluator —
+// loadQueries on the committed fixture, then evaluate in baseline mode against
+// a synthetic project whose episodes satisfy the pinned enumeration — and
+// asserts the machine-readable baseline artifact is written to the results
+// directory. This is the D3 closure path exercised without a live embedder.
+func TestBaseline_RunsCommittedFixtureEndToEnd(t *testing.T) {
+	queries, err := loadQueries(filepath.Join("testdata", "labels.global.ndjson"))
+	if err != nil {
+		t.Fatalf("load committed fixture: %v", err)
+	}
+
+	root := t.TempDir()
+	// Create the episodes the fixture labels so the pinned walk enumerates a
+	// non-empty candidate set and scoring has paths to rank.
+	for _, q := range queries {
+		for _, rel := range q.Relevant {
+			writeFile(t, filepath.Join(root, filepath.FromSlash(rel)), "episode body\n")
+		}
+	}
+	// Ensure at least the ten distinct episodes the baseline gate expects.
+	if len(queries) < 10 {
+		t.Fatalf("fixture must have >= 10 queries")
+	}
+
+	resultsDir := t.TempDir()
+	paths, err := evaluate(root, queries, stubEmbedder{}, evalOptions{K: 3, Baseline: true, ResultsDir: resultsDir, ProjectSlug: "global"})
+	if err != nil {
+		t.Fatalf("evaluate baseline: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("evaluator enumerated no episodes")
+	}
+
+	entries, err := os.ReadDir(resultsDir)
+	if err != nil {
+		t.Fatalf("read results dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("want exactly one baseline result, got %d", len(entries))
+	}
+	body, err := os.ReadFile(filepath.Join(resultsDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	var report evalReport
+	if err := json.Unmarshal(body, &report); err != nil {
+		t.Fatalf("baseline is not valid JSON: %v", err)
+	}
+	if report.SchemaVersion != LabeledQuerySchemaVersion {
+		t.Errorf("baseline schema_version = %d, want %d", report.SchemaVersion, LabeledQuerySchemaVersion)
+	}
+	if report.QueryCount != len(queries) {
+		t.Errorf("baseline query_count = %d, want %d", report.QueryCount, len(queries))
+	}
+	// Every mode must be present with finite metrics.
+	for _, m := range []modeMetrics{report.Modes.Semantic, report.Modes.Recency, report.Modes.Blend} {
+		if math.IsNaN(m.Precision) || math.IsNaN(m.Recall) || math.IsNaN(m.MRR) {
+			t.Errorf("baseline mode metrics contain NaN: %+v", m)
+		}
+	}
+}
+
 func nearly(a, b float64) bool {
 	return math.Abs(a-b) < 0.0000001
 }
