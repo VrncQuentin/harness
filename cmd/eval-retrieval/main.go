@@ -50,10 +50,15 @@ import (
 )
 
 // LabeledQuerySchemaVersion is the schema version of the labeled-query file.
-// It is deliberately independent of retrieval.TraceSchemaVersion: the two
-// artifacts version separately, and the evaluator rejects a row whose version
-// it does not recognize.
+// It is deliberately independent of retrieval.TraceSchemaVersion and of the
+// result document's own version: the three artifacts version separately, and
+// the evaluator rejects a row whose version it does not recognize.
 const LabeledQuerySchemaVersion = 1
+
+// ResultSchemaVersion is the schema version of the machine-readable baseline
+// result document. It is independent of the labeled-query input schema so the
+// output contract can evolve on its own.
+const ResultSchemaVersion = 1
 
 // queryRecord is one versioned labeled query.
 type queryRecord struct {
@@ -86,14 +91,18 @@ type modesReport struct {
 }
 
 // evalReport is the stable machine-readable baseline artifact written in
-// baseline mode.
+// baseline mode. Its SchemaVersion is ResultSchemaVersion (independent of the
+// labeled-query input schema), and it records the configured blend weights so
+// the blend metrics are reproducible.
 type evalReport struct {
-	SchemaVersion int         `json:"schema_version"`
-	ProjectSlug   string      `json:"project_slug"`
-	GeneratedAt   time.Time   `json:"generated_at"`
-	K             int         `json:"k"`
-	QueryCount    int         `json:"query_count"`
-	Modes         modesReport `json:"modes"`
+	SchemaVersion  int         `json:"schema_version"`
+	ProjectSlug    string      `json:"project_slug"`
+	GeneratedAt    time.Time   `json:"generated_at"`
+	K              int         `json:"k"`
+	QueryCount     int         `json:"query_count"`
+	SemanticWeight float64     `json:"semantic_weight"`
+	RecencyWeight  float64     `json:"recency_weight"`
+	Modes          modesReport `json:"modes"`
 }
 
 // evalOptions carries the tunable evaluation parameters. The configured blend
@@ -219,26 +228,30 @@ func loadQueries(path string) ([]queryRecord, error) {
 	return queries, nil
 }
 
-// evaluate opens the repo through the pinned reader, enumerates episodes
-// through it, and scores every query under all three signals. It is the
-// production scoring path, split from run() so tests can drive the same code
-// with a stub embedder: reverting enumeration to pathname globs changes what
-// evaluate does. It returns the repo-relative paths it scored so a test can
-// assert exactly what was enumerated.
+// evaluate opens the repo through the pinned reader, builds the episode index,
+// enumerates episodes through the reader, and scores every query under all
+// three signals. It is the production scoring path, split from run() so tests
+// can drive the same code with a stub embedder: reverting enumeration to
+// pathname globs changes what evaluate does. It returns the repo-relative paths
+// it scored so a test can assert exactly what was enumerated.
 func evaluate(repoPath string, queries []queryRecord, emb embedder.Client, opts evalOptions) ([]string, error) {
-	if opts.Baseline && len(queries) < 10 {
-		return nil, fmt.Errorf("baseline requires at least 10 valid queries, got %d", len(queries))
+	indexDir := memoryops.EpisodeIndexDir(repoPath)
+	index, err := openEpisodeIndex(repoPath, indexDir)
+	if err != nil {
+		return nil, err
 	}
-	if opts.K <= 0 {
-		return nil, fmt.Errorf("k must be positive, got %d", opts.K)
-	}
+	defer func() { _ = index.Close() }()
+	return evaluateWithSearcher(repoPath, queries, emb, index, opts)
+}
 
+// openEpisodeIndex creates the pinned episode index for a repo and returns the
+// searcher-backed handle.
+func openEpisodeIndex(repoPath, indexDir string) (*memoryops.EpisodeIndex, error) {
 	repoDirReader, err := memory.NewDirReader(repoPath)
 	if err != nil {
 		return nil, fmt.Errorf("open repo: %w", err)
 	}
 	defer func() { _ = repoDirReader.Close() }()
-	indexDir := memoryops.EpisodeIndexDir(repoPath)
 	if err := repoDirReader.MkdirAll("index/_episodes"); err != nil {
 		return nil, fmt.Errorf("mkdir index: %w", err)
 	}
@@ -251,7 +264,22 @@ func evaluate(repoPath string, queries []queryRecord, emb embedder.Client, opts 
 		_ = indexAnchor.Close()
 		return nil, fmt.Errorf("open episode index: %w", err)
 	}
-	defer func() { _ = episodeIndex.Close() }()
+	return episodeIndex, nil
+}
+
+// evaluateWithSearcher is evaluate with an explicit searcher, so tests can
+// inject a stub that fails or returns scripted results. The caller owns the
+// searcher's lifetime.
+func evaluateWithSearcher(repoPath string, queries []queryRecord, emb embedder.Client, searcher retrieval.EpisodeSearcher, opts evalOptions) ([]string, error) {
+	if opts.K <= 0 {
+		return nil, fmt.Errorf("k must be positive, got %d", opts.K)
+	}
+
+	repoDirReader, err := memory.NewDirReader(repoPath)
+	if err != nil {
+		return nil, fmt.Errorf("open repo: %w", err)
+	}
+	defer func() { _ = repoDirReader.Close() }()
 
 	// Enumerate episode files through the pinned repo reader rather than by
 	// pathname. The walk resolves every component against the anchored handle,
@@ -269,8 +297,15 @@ func evaluate(repoPath string, queries []queryRecord, emb embedder.Client, opts 
 	var sum [3]modeMetrics
 	evaluated := 0
 	for i, q := range queries {
-		metrics, err := scoreQuery(ctx, emb, episodeIndex, q, paths, opts)
+		metrics, err := scoreQuery(ctx, emb, searcher, q, paths, opts)
 		if err != nil {
+			// Baseline mode must prove every label was genuinely evaluated: a
+			// scoring failure or an unscoreable label is an error, never a
+			// silently skipped query that still counts toward the ten-row
+			// baseline. Non-baseline mode reports and skips for diagnostics.
+			if opts.Baseline {
+				return nil, fmt.Errorf("query %d (%q): %w", i+1, q.Query, err)
+			}
 			fmt.Fprintf(os.Stderr, "query %d: score error: %v\n", i+1, err)
 			continue
 		}
@@ -289,14 +324,22 @@ func evaluate(repoPath string, queries []queryRecord, emb embedder.Client, opts 
 	if evaluated == 0 {
 		return nil, fmt.Errorf("no queries could be evaluated")
 	}
+	// The baseline gate counts genuinely evaluated queries, not input rows:
+	// a run where most labels failed to score must not write a one-query
+	// baseline.
+	if opts.Baseline && evaluated < 10 {
+		return nil, fmt.Errorf("baseline requires at least 10 genuinely evaluated queries, got %d", evaluated)
+	}
 
 	n := float64(evaluated)
 	report := evalReport{
-		SchemaVersion: LabeledQuerySchemaVersion,
-		ProjectSlug:   opts.ProjectSlug,
-		GeneratedAt:   time.Now().UTC(),
-		K:             opts.K,
-		QueryCount:    evaluated,
+		SchemaVersion:  ResultSchemaVersion,
+		ProjectSlug:    opts.ProjectSlug,
+		GeneratedAt:    time.Now().UTC(),
+		K:              opts.K,
+		QueryCount:     evaluated,
+		SemanticWeight: opts.SemanticWeight,
+		RecencyWeight:  opts.RecencyWeight,
 	}
 	report.Modes.Semantic = avgMode(sum[0], n)
 	report.Modes.Recency = avgMode(sum[1], n)
@@ -319,17 +362,19 @@ func evaluate(repoPath string, queries []queryRecord, emb embedder.Client, opts 
 // Precision@K, Recall@K, and MRR. Semantic scores come from the searcher (the
 // episode index in production, a stub in tests); recency is always derived from
 // the oldest-first episode order, so recency-only remains evaluable even when
-// the index returns no semantic hits.
+// the index returns no semantic hits. An unscoreable label (blank query or an
+// embedder that returns no vector) is reported as an error so baseline mode can
+// distinguish it from a genuinely evaluated query.
 func scoreQuery(ctx context.Context, emb retrieval.EpisodeEmbedder, searcher retrieval.EpisodeSearcher, q queryRecord, paths []string, opts evalOptions) (modesReport, error) {
 	if strings.TrimSpace(q.Query) == "" {
-		return modesReport{}, nil
+		return modesReport{}, fmt.Errorf("row has a blank query")
 	}
 	vecs, err := emb.Embed(ctx, []string{q.Query})
 	if err != nil {
 		return modesReport{}, err
 	}
 	if len(vecs) == 0 || len(vecs[0]) == 0 {
-		return modesReport{}, nil
+		return modesReport{}, fmt.Errorf("embedder returned no vector for %q", q.Query)
 	}
 	results, err := searcher.Search(vecs[0], len(paths)*2)
 	if err != nil {
@@ -386,23 +431,28 @@ func rankByScore(paths []string, scores map[string]float64) []string {
 // Precision@K is |relevant ∩ top-K| / min(K, |top-K|) so a corpus smaller than
 // K is not penalized for results it cannot produce. Recall@K is
 // |relevant ∩ top-K| / |relevant|, defined as 0 when there are no relevant
-// episodes. MRR is the reciprocal rank of the first relevant hit, 0 when none.
+// episodes. MRR examines the complete ranking (not truncated at K): it is the
+// reciprocal rank of the first relevant hit anywhere, 0 when none.
 func metricsFor(ranked []string, relevant map[string]bool, k int) modeMetrics {
 	var m modeMetrics
-	if k > len(ranked) {
-		k = len(ranked)
+	cutoff := k
+	if cutoff > len(ranked) {
+		cutoff = len(ranked)
 	}
 	found := 0
 	firstRelevant := 0
-	for i, p := range ranked[:k] {
+	for _, p := range ranked[:cutoff] {
 		if relevant[p] {
 			found++
-			if firstRelevant == 0 {
-				firstRelevant = i + 1
-			}
 		}
 	}
-	m.Precision = float64(found) / float64(k)
+	for i, p := range ranked {
+		if relevant[p] {
+			firstRelevant = i + 1
+			break
+		}
+	}
+	m.Precision = float64(found) / float64(cutoff)
 	if len(relevant) > 0 {
 		m.Recall = float64(found) / float64(len(relevant))
 	}
