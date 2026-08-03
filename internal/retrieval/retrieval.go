@@ -65,22 +65,36 @@ func BlendEpisodeScores(episodePaths []string, semantic map[string]float64, sema
 // semantic scores with recency. Scores are keyed by the original episode path.
 // The boolean reports whether scoring was applied; false means inputs were not
 // sufficient for semantic retrieval or the index returned no results.
-func ScoreEpisodePaths(ctx context.Context, embedder EpisodeEmbedder, searcher EpisodeSearcher, query string, episodePaths []string, semanticWeight, recencyWeight float64) (map[string]float64, bool, error) {
+//
+// Emission: when tracing is enabled (a sink is installed and tc carries a
+// project slug), every invocation emits exactly one call row, including blank,
+// unavailable, unscoreable, and failed outcomes, and a scored invocation emits
+// one candidate row per scored episode with its final post-sort rank, the
+// configured weights, and whether it falls within the caller's requested top-K.
+func ScoreEpisodePaths(ctx context.Context, embedder EpisodeEmbedder, searcher EpisodeSearcher, tc TraceContext, query string, episodePaths []string, semanticWeight, recencyWeight float64) (map[string]float64, bool, error) {
+	// One invocation ID per call, shared by the call row and every candidate
+	// row, so candidates are associable with their invocation.
+	invocationID := NewInvocationID()
 	if strings.TrimSpace(query) == "" || embedder == nil || searcher == nil || len(episodePaths) == 0 {
+		emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeUnscoreable)
 		return map[string]float64{}, false, nil
 	}
 	vecs, err := embedder.Embed(ctx, []string{query})
 	if err != nil {
+		emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeError)
 		return nil, false, err
 	}
 	if len(vecs) == 0 || len(vecs[0]) == 0 {
+		emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeUnscoreable)
 		return map[string]float64{}, false, nil
 	}
 	results, err := searcher.Search(vecs[0], len(episodePaths)*2)
 	if err != nil {
+		emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeError)
 		return nil, false, err
 	}
 	if len(results) == 0 {
+		emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeUnscoreable)
 		return map[string]float64{}, false, nil
 	}
 	oldestFirst := append([]string(nil), episodePaths...)
@@ -88,29 +102,79 @@ func ScoreEpisodePaths(ctx context.Context, embedder EpisodeEmbedder, searcher E
 	semanticScores := BestSemanticScores(results)
 	blended := BlendEpisodeScores(oldestFirst, semanticScores, semanticWeight, recencyWeight)
 
-	if DefaultTraceSink != nil {
-		qid := QueryID(query)
-		n := float64(len(oldestFirst))
-		now := time.Now()
-		for i, p := range oldestFirst {
-			id := EpisodeID(p)
-			sem := semanticScores[id]
-			if sem == 0 {
-				sem = semanticScores[path.Base(id)]
-			}
-			DefaultTraceSink.Emit(RetrievalTrace{
-				QueryID:       qid,
-				EpisodePath:   p,
-				SemanticScore: sem,
-				RecencyScore:  Decay(len(oldestFirst)-1-i, n),
-				BlendedScore:  blended[p],
-				Rank:          i,
-				Ts:            now,
-			})
-		}
-	}
-
+	emitCall(tc, invocationID, query, semanticWeight, recencyWeight, OutcomeScored)
+	emitCandidates(tc, invocationID, query, oldestFirst, semanticScores, blended, semanticWeight, recencyWeight)
 	return blended, true, nil
+}
+
+// emitCall writes the one call row for an invocation when tracing is enabled.
+// The outcome names the invocation's result: scored (retrieval ran, possibly
+// finding nothing), unscoreable (inputs could not produce scores), or error.
+func emitCall(tc TraceContext, invocationID, query string, semanticWeight, recencyWeight float64, outcome string) {
+	emitRow(tc, RetrievalTrace{
+		Version:        TraceSchemaVersion,
+		RecordType:     RecordTypeCall,
+		InvocationID:   invocationID,
+		ProjectSlug:    tc.ProjectSlug,
+		QueryID:        QueryID(query),
+		SemanticWeight: semanticWeight,
+		RecencyWeight:  recencyWeight,
+		Outcome:        outcome,
+		Timestamp:      time.Now(),
+	})
+}
+
+// emitCandidates writes one candidate row per scored episode, in final
+// post-sort rank order (one-based rank by blended score descending). Recency
+// is the raw exp_decay value for the episode's age, independent of rank.
+func emitCandidates(tc TraceContext, invocationID, query string, oldestFirst []string, semantic map[string]float64, blended map[string]float64, semanticWeight, recencyWeight float64) {
+	n := float64(len(oldestFirst))
+	recency := make(map[string]float64, len(oldestFirst))
+	for i, p := range oldestFirst {
+		recency[p] = Decay(len(oldestFirst)-1-i, n)
+	}
+	ranked := append([]string(nil), oldestFirst...)
+	sort.SliceStable(ranked, func(i, j int) bool { return blended[ranked[i]] > blended[ranked[j]] })
+	qid := QueryID(query)
+	now := time.Now()
+	for i, p := range ranked {
+		id := EpisodeID(p)
+		sem, ok := semantic[id]
+		if !ok {
+			// Mirror BlendEpisodeScores: the basename fallback applies only
+			// when the full-path key is absent, never when a legitimate
+			// full-path zero exists. A comma-ok lookup keeps the recorded
+			// Semantic consistent with the components used to compute Score.
+			sem = semantic[path.Base(id)]
+		}
+		rank := i + 1
+		emitRow(tc, RetrievalTrace{
+			Version:        TraceSchemaVersion,
+			RecordType:     RecordTypeCandidate,
+			InvocationID:   invocationID,
+			ProjectSlug:    tc.ProjectSlug,
+			QueryID:        qid,
+			Candidate:      p,
+			Semantic:       sem,
+			Recency:        recency[p],
+			SemanticWeight: semanticWeight,
+			RecencyWeight:  recencyWeight,
+			Score:          blended[p],
+			Rank:           rank,
+			Returned:       tc.TopK <= 0 || rank <= tc.TopK,
+			Timestamp:      now,
+		})
+	}
+}
+
+// emitRow writes one trace row when tracing is enabled. A row is emitted only
+// when a sink is installed and the invocation carries a project slug, so
+// display-only callers that pass a zero-value TraceContext emit nothing.
+func emitRow(tc TraceContext, row RetrievalTrace) {
+	if DefaultTraceSink == nil || tc.ProjectSlug == "" {
+		return
+	}
+	DefaultTraceSink.Emit(row)
 }
 
 // Decay returns an exponential recency score where distanceFromNewest=0

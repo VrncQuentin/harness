@@ -29,6 +29,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/embedder"
 	"github.com/VrncQuentin/harness/internal/memory"
 	"github.com/VrncQuentin/harness/internal/memoryops"
+	"github.com/VrncQuentin/harness/internal/retrieval"
 )
 
 type queryRecord struct {
@@ -167,7 +168,7 @@ func evaluate(repoPath string, queries []queryRecord, k int, emb embedder.Client
 	var sumMRR, sumRecall float64
 	evaluated := 0
 	for i, q := range queries {
-		scores, err := scorer.ScoreEpisodes(ctx, q.Query, paths)
+		scores, err := scorer.ScoreEpisodes(ctx, retrieval.TraceContext{}, q.Query, paths)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "query %d: score error: %v\n", i+1, err)
 			continue

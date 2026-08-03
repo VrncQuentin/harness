@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/queue"
 	"github.com/VrncQuentin/harness/internal/reqid"
+	"github.com/VrncQuentin/harness/internal/retrieval"
 	"github.com/VrncQuentin/harness/internal/session"
 	"github.com/VrncQuentin/harness/internal/tools"
 	"github.com/VrncQuentin/harness/internal/ui"
@@ -478,15 +480,20 @@ func (ad *taskRunnerAdapter) memoryQueryFn() func(context.Context, string, int) 
 		if mem == nil {
 			return nil, nil
 		}
-		// Glob all episode paths across all agents in the active project.
-		paths, err := mem.Glob("episodes/*/*.md")
+		// Enumerate every episode across all agents through the pinned walk.
+		// Glob only matches a wildcard in the final path component, so a
+		// multi-level "episodes/*/*.md" pattern would open the literal
+		// "episodes/*" directory and find nothing; the walk resolves each
+		// component against the anchored handle and returns the historical
+		// depth-two episode shape.
+		paths, err := episodePathsFrom(mem)
 		if err != nil {
-			return nil, fmt.Errorf("memory_query: glob episodes: %w", err)
+			return nil, fmt.Errorf("memory_query: enumerate episodes: %w", err)
 		}
-		if len(paths) == 0 {
-			return nil, nil
-		}
-		scores, err := ad.memScorer.ScoreEpisodes(ctx, query, paths)
+		// Reach the scorer even with an empty path set: the shared retrieval
+		// contract records an unscoreable call row for an empty project, and
+		// the scorer (with its nil index) records the unavailable outcome.
+		scores, err := ad.memScorer.ScoreEpisodes(ctx, retrieval.TraceContext{ProjectSlug: ad.slug, TopK: k}, query, paths)
 		if err != nil {
 			return nil, fmt.Errorf("memory_query: score: %w", err)
 		}
@@ -525,6 +532,30 @@ func (ad *taskRunnerAdapter) memoryQueryFn() func(context.Context, string, int) 
 		}
 		return out, nil
 	}
+}
+
+// episodePathsFrom enumerates the repo-relative forward-slash paths of every
+// episode file under a pinned repo reader, preserving the historical depth-two
+// shape episodes/<agent>/<file>.md. The walk resolves each component through
+// the anchored handle, refuses links that leave the tree, and never re-resolves
+// a pathname outside the pinned tree.
+func episodePathsFrom(mem memory.Repo) ([]string, error) {
+	entries, err := mem.Walk("episodes")
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.Dir || !strings.HasSuffix(e.Path, ".md") {
+			continue
+		}
+		if len(strings.Split(e.Path, "/")) != 3 {
+			continue
+		}
+		paths = append(paths, e.Path)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 func memExcerpt(s string, n int) string {
