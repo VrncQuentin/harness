@@ -210,7 +210,13 @@ threshold) runs before fact promotion; there is no dedup on episodes or notes.
   surfaced as a startup error, an emission failure is logged (never silently
   discarded), and the sink is closed during graceful shutdown once the runtime
   confirms shutdown completion. A timed-out shutdown retains the sink with the
-  generation it could still emit through.
+  generation it could still emit through. `cmd/eval-retrieval` is the developer
+  evaluation harness: it consumes a separate versioned labeled-query schema
+  (`{"version":1,"query":"...","relevant":[...]}`; a row with an unsupported
+  version is rejected), evaluates semantic-only, recency-only, and the
+  configured blend over the same labels with Precision@K and Recall@K, and in
+  baseline mode rejects fewer than ten rows and writes a machine-readable
+  result under `~/.harness/eval/retrieval/results/`.
 
 ## 8. Durability, recovery, and shutdown-retention invariants
 

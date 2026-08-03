@@ -110,7 +110,7 @@
     },
     {
       "file": "cmd/eval-retrieval/main.go",
-      "line": 94,
+      "line": 198,
       "fn": "os.Open",
       "justification": "eval harness reads operator-named query file; not part of the production binary"
     }
