@@ -410,7 +410,11 @@ component against that handle.
 
 Responsibilities:
 - `Root` wraps an open directory for relative access (`ReadFile`, `Lstat`,
-  `Stat`, `Readlink`, `Open`, `CreateExclusive`, `ReadDir`, `MkdirAll`).
+  `Stat`, `Readlink`, `OpenRead`, `OpenAppend`, `CreateExclusive`, `ReadDir`,
+  `MkdirAll`, `RemoveAll`, `RemoveVerified`). It never returns an `*os.File`:
+  reads come back through an opaque `ReadCloser` and appends through an opaque
+  `AppendFile`, neither of which reveals a pathname. `OpenOrCreate` pins a
+  directory, creating missing ancestors through rooted operations.
   `internal/git`'s `DiffWorktree` pins the worktree with it; `internal/memory`
   pins both ends of a project-repo copy, its scaffolding, its validation, and
   its file enumeration with it.
@@ -426,8 +430,10 @@ Responsibilities:
   publishing a candidate, so git commits, session writes, and index
   publication are bound to the same physical repository or the candidate
   fails closed.
-- `Set` is the sandbox-root list. `Set.Open` uses `OpenIdentified` on the
-  configured root, then picks the owner by containment and returns a `Target`.
+- `Set` is the sandbox-root list. `Set.Open` pins each candidate root with
+  `OpenIdentified` and resolves the caller's target alongside that pin, so the
+  containment decision and the retained handle describe the same boundary; it
+  returns a `Target` for the root that physically owns the path.
 - `Target` carries the caller's display spelling — locators and tool output stay
   in the terms the caller asked in — while `Read`, `ReadDir`, `MkdirAllParent`,
   `WriteAtomic`, and `CreateExclusive` go through the handle.
@@ -498,8 +504,10 @@ Design constraints:
   validate their working directory with `pathid` and nothing more; command
   containment is a separate problem. `go-git` likewise takes a pathname, so
   repository opening keeps the explicit identity and C2 checks around it.
-- The toolout spill directory is outside every sandbox root, so it opens its own
-  `os.Root` in `internal/tools` rather than going through `Set`.
+- The toolout spill directory is outside every sandbox root, so
+  `internal/tools` opens its own root on it through `rootfs.Open` rather than
+  going through `Set`; the read returns the bytes through the pinned handle,
+  never a pathname.
 
 ### Filesystem Threat Model
 
@@ -509,10 +517,9 @@ primitives: `internal/pathid` (physical path identity) and `internal/rootfs`
 resolve the configured directory once, bind the open handle to its physical
 identity, and perform all subsequent operations through that handle.
 
-The threat model describes the target state. Packages not yet migrated
-(`internal/retrieval`, `internal/governor`) currently operate by pathname and
-are tracked as migration entries in `cmd/fsaudit/allowlist.json`. Once migrated
-they will inherit the guarantees below.
+The threat model describes the current state. Every configured-tree operation
+in the repository operates through `internal/rootfs` pinned handles; the fsaudit
+allowlist contains no migration entries, only permanent boundary exceptions.
 
 #### Defended threats
 
@@ -563,9 +570,11 @@ Documenting the window rather than claiming it closed is deliberate.
 Production calls to the symbols in `cmd/fsaudit`'s compiled `watched` policy
 (approximately 35 symbols across `os` and `path/filepath`, including
 `MkdirTemp`, `Lchown`, `Chdir`, `CopyFS`, and `DirFS`) are inventoried in
-`cmd/fsaudit/allowlist.json`. Each call is classified as:
-- **migration** — will be routed through `rootfs` in a future PR; or
-- **permanent** — an intentional boundary exception with a justification.
+`cmd/fsaudit/allowlist.json`. The configured-tree migration is complete, so
+every inventoried call is a **permanent** boundary exception with a
+justification. There is no migration category: the JSON schema has no field
+for one, the decoder rejects unknown fields, and validation requires a
+justification on every entry, so a migration entry cannot be repopulated.
 
 The `cmd/fsaudit` tool verifies on every CI run that no new direct filesystem
 call appears without a matching entry. The audit scans all production `.go`
@@ -574,10 +583,11 @@ itself (`cmd/fsaudit/`) is exempt. The watched-function policy is compiled into
 the scanner — it is not configurable from the allowlist.
 
 The scanner also blocks capability escapes that cannot be inventoried:
-dot imports of watched packages, extracting watched functions as values, and
-`os.Root` type references outside `internal/rootfs`. Within rootfs, every
-`os.Root` reference is blocked except the single private `Root.root` backing
-field.
+dot imports of watched packages, extracting watched functions as values,
+`os.Root` type references outside `internal/rootfs`, and `os.OpenRoot` calls
+outside `internal/rootfs` — creating a root is the core primitive of the
+boundary and must be centralized there. Within rootfs, every `os.Root`
+reference is blocked except the single private `Root.root` backing field.
 
 ### Parser Front-Ends (`internal/parser`)
 Hosts the language front-ends behind the `ast_*` tools and the governor's skeletonizer (M10).
@@ -743,17 +753,33 @@ Attached code repos are indexed by git state: each attached directory gets its o
 ### Retrieval (`internal/retrieval`)
 Owns the blended semantic + recency scoring pipeline and the D3 trace layer.
 
-- `ScoreEpisodePaths` takes a query and episode paths, calls the embedder, blends cosine similarity with exponential recency, and currently returns `(map[path]score, scored, error)`.
-- `RetrievalTrace` and `NDJSONSink` exist, and startup installs `DefaultTraceSink` when construction succeeds. Production calls normally append rows without buffering, but M10.3/MR0 is not accepted: constructor failures are silently ignored, emission errors are discarded, and shutdown never closes the sink.
-- The current candidate row lacks project identity, weights, selected/top-K state, and final score rank; its `Rank` field is path-order position. Empty/unscoreable/error calls emit nothing.
-- `QueryID` is currently a SHA-256[:8] prefix. MR0 replaces it with the canonical full hash and adds project-scoped call/candidate records; prompt assembly and `memory_query` pass trace context with project slug and requested top-K.
-- `NDJSONSink` already implements date-bucketed files and 30-day pruning. MR0 preserves its startup wiring, surfaces construction/emission failures, and closes it during shutdown.
-- `EpisodeID` derives a stable, path-relative identifier for indexing and scoring across different repo roots.
+- `ScoreEpisodePaths` takes a query and episode paths, calls the embedder,
+  blends cosine similarity with exponential recency, and returns
+  `(map[path]score, scored, error)`.
+- `RetrievalTrace` and `NDJSONSink` implement the D3 trace layer.
+  `cmd/harness/main.go` installs `DefaultTraceSink` at startup when the sink
+  constructs. The sink pins its trace directory for its owned lifetime through
+  `internal/rootfs`; appends, enumeration, and retention deletion all go
+  through the pinned handle, and retention removes only the entry it actually
+  observed (`Root.RemoveVerified`), never a stranger that claims an observed
+  name. M10.3/MR0 is not accepted: constructor failures are silently ignored,
+  emission errors are discarded, and shutdown never closes the sink.
+- The current candidate row lacks project identity, weights, selected/top-K
+  state, and final score rank; its `Rank` field is path-order position.
+  Empty/unscoreable/error calls emit nothing.
+- `QueryID` is currently a SHA-256[:8] prefix. MR0 replaces it with the
+  canonical full hash and adds project-scoped call/candidate records; prompt
+  assembly and `memory_query` pass trace context with project slug and
+  requested top-K.
+- `EpisodeID` derives a stable, path-relative identifier for indexing and
+  scoring across different repo roots.
 
-`cmd/eval-retrieval` currently reads one NDJSON `query`/`relevant` file and reports MRR
-and Recall@K for the configured blend. MR0 aligns it with the runtime schema, adds
-semantic-only/recency-only/configured-blend Precision@3 and Recall@3, enforces ten real
-labels in baseline mode, and writes a machine-readable baseline before M12 begins.
+`cmd/eval-retrieval` enumerates episodes through the pinned repo reader
+(`DirReader.Walk`), producing stable repo-relative forward-slash paths, and
+reports MRR and Recall@K for the configured blend. MR0 aligns it with the
+runtime schema, adds semantic-only/recency-only/configured-blend Precision@3
+and Recall@3, enforces ten real labels in baseline mode, and writes a
+machine-readable baseline before M12 begins.
 
 ### Memory Operations (`internal/memoryops`)
 Semantic-memory operations that sit on top of the memory repo, embedder, and episode index. The runtime wires these into session saving and the UI; the domain logic lives here.

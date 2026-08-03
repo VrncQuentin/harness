@@ -1,8 +1,11 @@
 # PR #403 — Findings Inventory
 
-Each PR #403 finding is listed below with its planned replacement PR and the
-regression test or eliminated mechanism. PR #403 stays open as a reference
-until the sequence below is merged and the final audit (PR 12) passes.
+Each PR #403 finding is listed below with the regression test or eliminated
+mechanism that closed it. The sequence through PR 12 is merged and the final
+filesystem migration audit has passed; every finding below is implemented with
+an existing discriminator, eliminated with a stated replacement mechanism, or
+documented as a permanent limitation. Nothing in this file is left merely
+"planned".
 
 ## Findings mapped to replacement PRs
 
@@ -310,16 +313,28 @@ lifecycle.
 
 ### PR 12 — Final repository migration audit
 
-| # | Finding | Test |
-|---|---------|------|
-| 12.1 | Migration allowlist entries still present | `fsaudit` reports zero migration entries |
-| 12.2 | Configured-tree pathname operations outside rootfs | `fsaudit` reports only permanent exceptions |
-| 12.3 | Production `os.OpenRoot` exists outside internal/rootfs | `fsaudit` reports os.OpenRoot only in rootfs.go |
-| 12.4 | Compatibility wrappers or unused APIs remain | Manual review — removed |
-| 12.5 | `rootfs.go` is monolithic | Split into identity, read, write, walk, set/target files |
-| 12.6 | Test setup repetitive | Consolidated without removing discriminating cases |
-| 12.7 | Architecture documentation verbose | Reduced to invariants, ownership, threat boundaries, exception ledger |
-| 12.8 | All PR #403 findings mapped or eliminated | This checklist verified |
+| # | Finding | Discriminator / disposition |
+|---|---------|------------------------------|
+| 12.1 | Migration allowlist entries still present | Removed. The allowlist schema drops the migration category; the decoder rejects unknown fields and validation requires a justification, so `fsaudit` reports zero migration entries (`TestParseAllowlist_RejectsMigrationFields`) |
+| 12.2 | Configured-tree pathname operations outside rootfs | The seven remaining consumers were routed through rootfs (toolout, NDJSONSink, governor spill bootstrap, eval-retrieval). `fsaudit` reports only permanent exceptions |
+| 12.3 | Production `os.OpenRoot` exists outside internal/rootfs | Updated to require os.OpenRoot only inside `internal/rootfs`; the scanner now blocks `os.OpenRoot` calls outside rootfs outright (`TestAudit_OpenRootOutsideRootfsBlocked`), and the only permanent os.OpenRoot entry is in `internal/rootfs/identity.go` |
+| 12.4 | Compatibility wrappers or unused APIs remain | Removed `Root.Open` (the `*os.File`-returning capability, see 3.13) and the migration markers; reviewed exported APIs, dead fields, and seams — the retained surfaces all have a production or documented discriminating purpose |
+| 12.5 | `rootfs.go` is monolithic | Split into `identity.go`, `read.go`, `write.go`, `walk.go`, `set.go` with no semantic change |
+| 12.6 | Test setup repetitive | Consolidated rootfs helpers into `helpers_test.go`; discriminating cases retained, every listed boundary test still present |
+| 12.7 | Architecture documentation verbose | Reduced to current invariants, ownership protocols, threat boundaries, and the permanent exception ledger (`docs/architecture.md`) |
+| 12.8 | All PR #403 findings mapped or eliminated | This checklist is verified; see the status of every finding above |
+
+**Remaining permanent boundary exceptions (documented):** `internal/rootfs`
+security primitives (os.OpenRoot, os.SameFile, os.Stat in `identity.go`,
+`write.go`, `walk.go`); `internal/pathid` canonical resolution (os.Open for
+`GetFinalPathNameByHandle`, `filepath.EvalSymlinks`); the harness-home
+bootstrap in `internal/home` (os.MkdirAll); the single-instance tray lock
+(os.OpenFile); SQLite existence checks (`internal/db`); lexical model
+discovery (`internal/config`); model/binary path validation and project-health
+warning stats (`internal/runtime`); the go-git boundary (os.MkdirAll, identity
+and C2 checks remain around it); and the eval harness's operator-named query
+file (os.Open, not part of the production binary). Each is a narrow exception
+that cannot be routed through a pinned handle.
 
 ## Eliminated mechanisms (no test needed)
 
