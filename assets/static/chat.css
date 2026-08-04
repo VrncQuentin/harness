@@ -55,7 +55,7 @@
 .chat-msg.is-user {
   align-self: flex-end;
   background: var(--accent-soft);
-  border-color: #c7d8ff;
+  border-color: rgba(96, 165, 250, 0.4);
   color: var(--text);
 }
 .chat-msg.is-assistant {
@@ -82,7 +82,7 @@
 .chat-msg.is-approval {
   align-self: flex-start;
   border-color: var(--primary);
-  background: var(--primary-soft, #eef2ff);
+  background: var(--primary-soft);
 }
 .approval-actions {
   margin-top: 0.6rem;
@@ -94,7 +94,7 @@
   padding: 0.55rem 0.75rem;
   background: var(--err-soft);
   color: var(--err);
-  border: 1px solid #fecaca;
+  border: 1px solid rgba(248, 113, 113, 0.4);
   border-radius: 6px;
   font-size: 0.85rem;
 }

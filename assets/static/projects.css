@@ -114,7 +114,7 @@
 }
 .table th {
   color: var(--muted);
-  background: #f9fafb;
+  background: var(--bg);
   font-size: 0.72rem;
   font-weight: 600;
   text-transform: uppercase;
@@ -125,7 +125,7 @@
   border-bottom: 0;
 }
 .table tbody tr:hover {
-  background: #fcfcfd;
+  background: rgba(255, 255, 255, 0.03);
 }
 .projects-table {
   table-layout: fixed;
