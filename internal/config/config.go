@@ -100,6 +100,9 @@ type ProjectConfig struct {
 type UIConfig struct {
 	Port        int
 	OpenOnStart bool
+	// SidebarRecentSessions is how many recent saved sessions the project
+	// sidebar lists per project. 0 hides the session lists entirely.
+	SidebarRecentSessions int
 }
 
 // APIConfig holds the optional API server configuration.
@@ -296,8 +299,9 @@ func Defaults() Config {
 			Port: 8082,
 		},
 		UI: UIConfig{
-			Port:        3000,
-			OpenOnStart: true,
+			Port:                  3000,
+			OpenOnStart:           true,
+			SidebarRecentSessions: 5,
 		},
 		API: APIConfig{
 			Enabled: false,
@@ -379,6 +383,9 @@ func Validate(cfg *Config) error {
 	}
 	if err := validatePort("ui.port", cfg.UI.Port); err != nil {
 		return err
+	}
+	if cfg.UI.SidebarRecentSessions < 0 || cfg.UI.SidebarRecentSessions > 10 {
+		return fmt.Errorf("config: ui.sidebar_recent_sessions must be between 0 and 10, got %d", cfg.UI.SidebarRecentSessions)
 	}
 	if err := validatePort("api.port", cfg.API.Port); err != nil {
 		return err

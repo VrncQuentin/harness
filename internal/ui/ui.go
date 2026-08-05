@@ -735,6 +735,13 @@ type basePage struct {
 	// GlobalSlug is the reserved project slug rendered in the sidebar. Its
 	// gear links to /config instead of a per-project edit form.
 	GlobalSlug string
+	// SidebarRecentSessions is the configured number of recent sessions the
+	// sidebar lists per project (0 hides the session lists entirely).
+	SidebarRecentSessions int
+	// ProjectSessionList maps project slug to its recent saved sessions,
+	// newest-first, for the sidebar. Nil when sessions are disabled or the
+	// runtime has no per-project session reader.
+	ProjectSessionList map[string][]SessionRecord
 }
 
 func (s *Server) newBasePage(page string) basePage {
@@ -757,7 +764,38 @@ func (s *Server) newBasePage(page string) basePage {
 	if bp.ActiveProjectName == "" {
 		bp.ActiveProjectName = "Global"
 	}
+
+	bp.SidebarRecentSessions = s.sidebarRecentSessionsCount()
+	if bp.SidebarRecentSessions > 0 && len(slugs) > 0 {
+		if deps, release := s.acquireSnapshot(); deps.ProjectSessions != nil {
+			list := make(map[string][]SessionRecord, len(slugs))
+			for _, slug := range slugs {
+				if recs, err := deps.ProjectSessions.Recent(slug, bp.SidebarRecentSessions); err == nil {
+					list[slug] = recs
+				}
+			}
+			bp.ProjectSessionList = list
+			release()
+		} else {
+			release()
+		}
+	}
 	return bp
+}
+
+// sidebarRecentSessionsCount returns the configured number of recent
+// sessions per project shown in the sidebar, falling back to the default
+// when the config store is unavailable.
+func (s *Server) sidebarRecentSessionsCount() int {
+	store := s.configStore()
+	if store == nil {
+		return defaultRecentSessions
+	}
+	cfg, _, err := store.Load()
+	if err != nil || cfg == nil {
+		return defaultRecentSessions
+	}
+	return cfg.UI.SidebarRecentSessions
 }
 
 func formatUptime(d time.Duration) string {

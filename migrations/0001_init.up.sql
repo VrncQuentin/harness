@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS config (
     agent_active                     TEXT    NOT NULL,
     ui_port                          INTEGER NOT NULL,
     ui_open_on_start                 INTEGER NOT NULL,
+    ui_sidebar_recent_sessions       INTEGER NOT NULL,
     api_enabled                      INTEGER NOT NULL,
     api_port                         INTEGER NOT NULL,
     prompt_memory_token_budget       INTEGER NOT NULL,
