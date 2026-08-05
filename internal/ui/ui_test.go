@@ -83,6 +83,50 @@ func (s *countingProjectStore) ListDirectories(string) ([]project.Directory, err
 	return nil, nil
 }
 
+// stubProjectStore is a minimal in-memory ProjectStore for handlers that
+// need a working Get (countingProjectStore returns "not implemented").
+type stubProjectStore struct {
+	projects []project.Project
+}
+
+func (s *stubProjectStore) List(bool) ([]project.Project, error) {
+	return append([]project.Project(nil), s.projects...), nil
+}
+
+func (s *stubProjectStore) Get(slug string) (project.Project, error) {
+	for _, p := range s.projects {
+		if p.Slug == slug {
+			return p, nil
+		}
+	}
+	return project.Project{}, errors.New("project not found")
+}
+
+func (s *stubProjectStore) Create(project.CreateInput) (project.Project, error) {
+	return project.Project{}, errors.New("not implemented")
+}
+
+func (s *stubProjectStore) Update(project.UpdateInput) (project.Project, error) {
+	return project.Project{}, errors.New("not implemented")
+}
+
+func (s *stubProjectStore) SetHidden(string, bool) error { return nil }
+
+func (s *stubProjectStore) ListDirectories(string) ([]project.Directory, error) { return nil, nil }
+
+// stubProjectSessions returns fixed recent sessions per slug.
+type stubProjectSessions struct {
+	bySlug map[string][]SessionRecord
+}
+
+func (s *stubProjectSessions) Recent(slug string, limit int) ([]SessionRecord, error) {
+	recs := s.bySlug[slug]
+	if len(recs) > limit {
+		recs = recs[:limit]
+	}
+	return recs, nil
+}
+
 type stubConfigStore struct {
 	cfg config.Config
 }
@@ -1883,6 +1927,7 @@ func TestLayout_RendersProjectSidebar(t *testing.T) {
 	for _, want := range []string{
 		`class="sidebar-projects"`,
 		"Demo Project",
+		`href="/projects/view?slug=demo"`,
 		`href="/projects?edit=demo"`,
 		`href="/projects?edit=docs"`,
 		`class="sidebar-gear" title="Configure global settings"`,
@@ -1907,6 +1952,67 @@ func TestLayout_RendersProjectSidebar(t *testing.T) {
 	}
 	if strings.Contains(body, `class="nav"`) {
 		t.Error("top-bar nav links should be gone; all navigation moved to the sidebar")
+	}
+}
+
+func TestHandleProjectView_RendersSessions(t *testing.T) {
+	s := NewServer(3000)
+	s.SetConfigStore(&stubConfigStore{cfg: config.Defaults()})
+	s.SetProjectStore(&stubProjectStore{projects: []project.Project{
+		{Slug: project.GlobalSlug, DisplayName: "Global"},
+		{Slug: "demo", DisplayName: "Demo Project"},
+	}})
+	setSnapshotForTest(s, ServiceDeps{
+		ProjectSessions: &stubProjectSessions{bySlug: map[string][]SessionRecord{
+			"demo": {
+				{ID: "s1", Agent: "coder", SavedAt: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)},
+				{ID: "s2", Agent: "coder", SavedAt: time.Date(2026, 8, 5, 11, 0, 0, 0, time.UTC)},
+			},
+		}},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/view?slug=demo", nil)
+	rec := httptest.NewRecorder()
+	s.handleProjectView(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Demo Project", "s1", "s2", "coder"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("project view is missing %q", want)
+		}
+	}
+	if strings.Contains(body, "No saved sessions") {
+		t.Error("expected sessions to render, got the empty state")
+	}
+}
+
+func TestHandleProjectView_UnknownProject(t *testing.T) {
+	s := NewServer(3000)
+	s.SetConfigStore(&stubConfigStore{cfg: config.Defaults()})
+	s.SetProjectStore(&stubProjectStore{projects: []project.Project{
+		{Slug: project.GlobalSlug, DisplayName: "Global"},
+	}})
+
+	req := httptest.NewRequest(http.MethodGet, "/projects/view?slug=missing", nil)
+	rec := httptest.NewRecorder()
+	s.handleProjectView(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown project, got %d", rec.Code)
+	}
+}
+
+func TestHandleProjectView_RejectsNonGET(t *testing.T) {
+	s := NewServer(3000)
+	req := httptest.NewRequest(http.MethodPost, "/projects/view?slug=demo", nil)
+	rec := httptest.NewRecorder()
+	s.handleProjectView(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rec.Code)
 	}
 }
 

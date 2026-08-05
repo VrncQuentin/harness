@@ -47,6 +47,14 @@ type SessionRecord struct {
 	SaveSeq int       `json:"save_seq"`
 }
 
+// ProjectSessions lists saved sessions for a project, newest-first. It is
+// project-scoped (the runtime opens the target project's memory repo on
+// demand), unlike SessionStore which is bound to the active project's
+// manager.
+type ProjectSessions interface {
+	Recent(slug string, limit int) ([]SessionRecord, error)
+}
+
 // chatSaveView is the template data for the chat-save-fragment partial.
 type chatSaveView struct {
 	SessionID string
