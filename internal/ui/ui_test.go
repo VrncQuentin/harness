@@ -1888,6 +1888,8 @@ func TestLayout_RendersProjectSidebar(t *testing.T) {
 		`class="sidebar-gear" title="Configure global settings"`,
 		`class="sidebar-project active"`,
 		`class="sidebar-add" title="Add project"`,
+		`id="sidebar-toggle"`,
+		`aria-controls="project-sidebar"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered layout is missing sidebar element %q", want)
