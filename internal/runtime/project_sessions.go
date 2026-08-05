@@ -42,7 +42,7 @@ func (s *projectSessionsStore) Recent(slug string, limit int) ([]ui.SessionRecor
 		}
 		return nil, fmt.Errorf("project sessions %s: %w", slug, err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	records, err := session.ReadAll(reader, session.SessionsLogRel)
 	if err != nil {
