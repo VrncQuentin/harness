@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -534,6 +535,41 @@ func TestHandleMemorySave_TooLargeRejected(t *testing.T) {
 	}
 	if store.lastWritePath != "" {
 		t.Error("oversize submit should not have called Write")
+	}
+}
+
+func TestBuildMemoryTree_HidesGitkeep(t *testing.T) {
+	store := newStubMemoryStore(map[string]string{
+		"rules.md":                 "x",
+		"episodes/.gitkeep":        "",
+		"agents/global/.gitkeep":   "",
+		"agents/global/persona.md": "y",
+	})
+	tree, _, err := buildMemoryTree(store)
+	if err != nil {
+		t.Fatalf("buildMemoryTree: %v", err)
+	}
+	var collect func(*memoryTreeNode, *[]string)
+	collect = func(n *memoryTreeNode, out *[]string) {
+		*out = append(*out, n.Path)
+		for _, c := range n.Children {
+			collect(c, out)
+		}
+	}
+	var paths []string
+	for _, n := range tree {
+		collect(n, &paths)
+	}
+	for _, p := range paths {
+		if strings.HasSuffix(p, gitkeepName) {
+			t.Errorf("expected .gitkeep to be hidden, found %q in tree", p)
+		}
+	}
+	if !slices.Contains(paths, "episodes") {
+		t.Error("expected episodes/ directory itself to remain in the tree")
+	}
+	if !slices.Contains(paths, "agents/global/persona.md") {
+		t.Error("expected non-gitkeep files to remain in the tree")
 	}
 }
 

@@ -22,6 +22,11 @@ import (
 // the user gets a clear error instead of a silent truncation later.
 const maxMemoryFileBytes = 1 << 20 // 1 MiB
 
+// gitkeepName is the placeholder file the scaffolding writes into empty
+// layout directories. It is pure scaffolding noise in the browser, so the
+// memory page tree hides it.
+const gitkeepName = ".gitkeep"
+
 // agentsDirName is the top-level directory under the memory repo that
 // holds per-agent files (persona, rules, notes, episodes). The /memory
 // page treats it specially when totalling tokens: at most one agent's
@@ -679,6 +684,9 @@ func buildMemoryTree(store MemoryStore) ([]*memoryTreeNode, int, error) {
 	var roots []*memoryTreeNode
 
 	for _, e := range entries {
+		if !e.Dir && path.Base(e.Path) == gitkeepName {
+			continue
+		}
 		node := &memoryTreeNode{
 			Name: path.Base(e.Path),
 			Path: e.Path,
