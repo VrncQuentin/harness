@@ -45,9 +45,31 @@
   </div>
 </header>
 
-<main class="wrap main">
-{{template "content" .}}
-</main>
+<div class="app-layout">
+  <aside class="sidebar">
+    <div class="sidebar-block">
+      <div class="sidebar-title">Projects</div>
+      <ul class="sidebar-projects">
+        {{range .ProjectSlugs}}
+        <li class="sidebar-project {{if eq . $.ActiveProjectSlug}}active{{end}}">
+          <form method="post" action="/projects/activate" class="sidebar-activate">
+            <input type="hidden" name="slug" value="{{.}}">
+            <button type="submit" class="sidebar-project-name" title="{{index $.ProjectNames .}}">{{index $.ProjectNames .}}</button>
+          </form>
+          {{if eq . $.GlobalSlug}}
+          <a href="/config" class="sidebar-gear" title="Configure global settings" aria-label="Configure global settings">&#9881;</a>
+          {{else}}
+          <a href="/projects?edit={{.}}" class="sidebar-gear" title="Configure {{index $.ProjectNames .}}" aria-label="Configure {{index $.ProjectNames .}}">&#9881;</a>
+          {{end}}
+        </li>
+        {{end}}
+      </ul>
+    </div>
+  </aside>
+  <main class="main">
+    {{template "content" .}}
+  </main>
+</div>
 
 <footer class="footer">
   <div class="wrap">

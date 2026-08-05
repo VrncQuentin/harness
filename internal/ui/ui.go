@@ -709,6 +709,9 @@ type basePage struct {
 	ActiveProjectName string
 	ProjectSlugs      []string
 	ProjectNames      map[string]string
+	// GlobalSlug is the reserved project slug rendered in the sidebar. Its
+	// gear links to /config instead of a per-project edit form.
+	GlobalSlug string
 }
 
 func (s *Server) newBasePage(page string) basePage {
@@ -720,6 +723,7 @@ func (s *Server) newBasePage(page string) basePage {
 		ActiveProjectSlug: snap.ProjectSlug,
 		ProjectSlugs:      slugs,
 		ProjectNames:      names,
+		GlobalSlug:        project.GlobalSlug,
 	}
 	if bp.ActiveProjectSlug == "" {
 		bp.ActiveProjectSlug = "global"

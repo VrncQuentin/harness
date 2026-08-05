@@ -145,7 +145,25 @@ func (s *Server) handleProjectActivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.refreshProjectNav()
-	http.Redirect(w, r, "/projects?flash="+url.QueryEscape(fmt.Sprintf("Activated project %q. The harness is reloading.", slug)), http.StatusSeeOther)
+	http.Redirect(w, r, projectActivateReturn(r, slug), http.StatusSeeOther)
+}
+
+// projectActivateReturn picks where to send the user after an activation.
+// The top-bar switcher and the sidebar activate forms post from any page,
+// so bounce back to the originating same-origin page rather than dumping
+// the user on /projects; forms posted from /projects keep the old behavior.
+// Falls back to /projects with the flash when there is no usable referrer.
+func projectActivateReturn(r *http.Request, slug string) string {
+	const flashFmt = "Activated project %q. The harness is reloading."
+	if ref := r.Referer(); ref != "" {
+		if u, err := url.Parse(ref); err == nil && u.IsAbs() && strings.EqualFold(u.Host, r.Host) {
+			q := u.Query()
+			q.Set("flash", fmt.Sprintf(flashFmt, slug))
+			u.RawQuery = q.Encode()
+			return u.String()
+		}
+	}
+	return "/projects?flash=" + url.QueryEscape(fmt.Sprintf(flashFmt, slug))
 }
 
 func (s *Server) handleProjectHide(w http.ResponseWriter, r *http.Request) {
