@@ -61,7 +61,7 @@
     <div class="sidebar-block">
       <div class="sidebar-title">
         <span>Projects</span>
-        <a href="/projects" class="sidebar-add" title="Add project" aria-label="Add project">+</a>
+        <button type="button" class="sidebar-add" title="Add project" aria-label="Add project" onclick="document.getElementById('project-create-modal').showModal()">+</button>
       </div>
       <ul class="sidebar-projects">
         {{range .ProjectSlugs}}
@@ -133,6 +133,8 @@
     </footer>
   </div>
 </div>
+
+{{template "projects.create_form" .}}
 
 <script src="/static/htmx.min.js"></script>
 <script src="/static/htmx-ext-sse.js"></script>

@@ -202,6 +202,10 @@ a:hover { text-decoration: underline; }
   padding: 0.1rem 0.4rem;
   border-radius: 4px;
   text-decoration: none;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
 }
 .sidebar-add:hover {
   color: var(--text);
@@ -592,6 +596,53 @@ a:hover { text-decoration: underline; }
   justify-content: flex-end;
   gap: 0.5rem;
   margin-top: 0.4rem;
+}
+
+/* Form field used by the shared project-create modal (and the project edit
+   form). Lives in app.css because the modal renders on every page. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 0.75rem;
+  min-width: 0;
+}
+.field > span {
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+.field input[type="text"],
+.field input[type="number"],
+.field textarea {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.825rem;
+  line-height: 1.4;
+}
+.field textarea {
+  resize: vertical;
+  min-height: 5rem;
+}
+.field input:focus,
+.field textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.field input::placeholder,
+.field textarea::placeholder { color: #9ca3af; }
+.field .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  color: var(--text);
+  font-size: 0.85rem;
 }
 
 /* Config form */
