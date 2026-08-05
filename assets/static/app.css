@@ -144,7 +144,10 @@ a:hover { text-decoration: underline; }
   height: 100vh;
   background: var(--surface);
   border-right: 1px solid var(--border);
-  padding: 1.5rem 0.75rem 1rem;
+  padding: 0.75rem 0.75rem 1rem;
+  display: flex;
+  flex-direction: column;
+  transition: flex-basis 0.15s ease;
 }
 .content-col {
   flex: 1;
@@ -153,11 +156,22 @@ a:hover { text-decoration: underline; }
   display: flex;
   flex-direction: column;
 }
-/* Collapsed sidebar: hide the panel so the content column takes the full
-   width. The toggle button lives in the topbar (inside the content column),
-   so it stays reachable. */
+.sidebar-header {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.5rem;
+}
+/* Collapsed sidebar: shrink to a narrow rail that keeps the toggle button
+   reachable, hiding the project list. The button lives in the sidebar
+   header, so a display:none collapse would orphan it. */
 .sidebar-collapsed .sidebar {
+  flex-basis: 2.75rem;
+}
+.sidebar-collapsed .sidebar-block {
   display: none;
+}
+.sidebar-collapsed .sidebar-header {
+  justify-content: center;
 }
 .sidebar-toggle {
   padding: 0.25rem 0.45rem;
