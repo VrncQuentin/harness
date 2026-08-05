@@ -233,7 +233,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		ModelGPULayers: optionalInt(r.FormValue("model_gpu_layers")),
 		ModelNParallel: optionalInt(r.FormValue("model_n_parallel")),
 		Directories:    dirs,
-		MemoryRepoPath: strings.TrimSpace(r.FormValue("memory_repo_path")),
+		MemoryRepoPath: trimPathField(r.FormValue("memory_repo_path")),
 	}
 
 	workflow := project.NewWorkflow(store, memory.ProjectRepoManager{})
@@ -266,7 +266,7 @@ func (s *Server) handleProjectEdit(w http.ResponseWriter, r *http.Request) {
 	input := project.UpdateInput{
 		Slug:           slug,
 		DisplayName:    strings.TrimSpace(r.FormValue("display_name")),
-		MemoryRepoPath: strings.TrimSpace(r.FormValue("memory_repo_path")),
+		MemoryRepoPath: trimPathField(r.FormValue("memory_repo_path")),
 		ModelBinary:    optionalString(r.FormValue("model_binary")),
 		ModelPath:      optionalString(r.FormValue("model_path")),
 		ModelCtxSize:   optionalInt(r.FormValue("model_ctx_size")),
@@ -402,7 +402,7 @@ func slugFromName(name string) string {
 }
 
 func optionalString(v string) *string {
-	v = strings.TrimSpace(v)
+	v = trimPathField(v)
 	if v == "" {
 		return nil
 	}
@@ -427,7 +427,7 @@ func parseDirectories(raw string) []string {
 	}
 	var dirs []string
 	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
+		line = trimPathField(line)
 		if line == "" {
 			continue
 		}

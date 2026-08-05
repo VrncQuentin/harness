@@ -917,6 +917,76 @@ func TestHandleConfig_POSTClearsVerboseWhenUnchecked(t *testing.T) {
 	}
 }
 
+// Windows "Copy as path" wraps the path in double quotes; users paste that
+// verbatim. The form parser must strip the surrounding quotes so the stored
+// value is the raw path.
+func TestHandleConfig_POSTStripsQuotedPaths(t *testing.T) {
+	s, store := newServerWithStore(t)
+	s.SetRetry(func() ApplyResult { return ApplyResult{} })
+
+	form := url.Values{}
+	form.Set("model_binary", `"C:\llama.exe"`)
+	form.Set("model_path", `"C:\m.gguf"`)
+	form.Set("model_port", "8081")
+	form.Set("embed_binary", `'C:\embed.exe'`)
+	form.Set("embed_path", `'C:\e.gguf'`)
+	form.Set("embed_port", "8082")
+	form.Set("ui_port", "3000")
+
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d (body: %s)", rec.Code, rec.Body.String())
+	}
+
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for name, got := range map[string]string{
+		"Model.Binary":       loaded.Model.Binary,
+		"Model.ModelPath":    loaded.Model.ModelPath,
+		"Embedder.Binary":    loaded.Embedder.Binary,
+		"Embedder.ModelPath": loaded.Embedder.ModelPath,
+	} {
+		if strings.HasPrefix(got, `"`) || strings.HasPrefix(got, "'") {
+			t.Errorf("%s: expected unquoted path, got %q", name, got)
+		}
+	}
+	if loaded.Model.Binary != `C:\llama.exe` {
+		t.Errorf("Model.Binary = %q, want C:\\llama.exe", loaded.Model.Binary)
+	}
+	if loaded.Model.ModelPath != `C:\m.gguf` {
+		t.Errorf("Model.ModelPath = %q, want C:\\m.gguf", loaded.Model.ModelPath)
+	}
+	if loaded.Embedder.Binary != `C:\embed.exe` {
+		t.Errorf("Embedder.Binary = %q, want C:\\embed.exe", loaded.Embedder.Binary)
+	}
+	if loaded.Embedder.ModelPath != `C:\e.gguf` {
+		t.Errorf("Embedder.ModelPath = %q, want C:\\e.gguf", loaded.Embedder.ModelPath)
+	}
+}
+
+func TestTrimPathField(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`"D:\tmp\models\foo.gguf"`, `D:\tmp\models\foo.gguf`},
+		{`'D:\tmp\models\foo.gguf'`, `D:\tmp\models\foo.gguf`},
+		{`  "D:\foo.gguf"  `, `D:\foo.gguf`},
+		{`C:\foo.gguf`, `C:\foo.gguf`},
+		{`"C:\foo"bar`, `"C:\foo"bar`},
+		{`"`, `"`},
+		{``, ``},
+	}
+	for _, c := range cases {
+		if got := trimPathField(c.in); got != c.want {
+			t.Errorf("trimPathField(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 func TestHandleConfig_POSTIncludesApplyResultInRedirect(t *testing.T) {
 	s, _ := newServerWithStore(t)
 	s.SetRetry(func() ApplyResult {
