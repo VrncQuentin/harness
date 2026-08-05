@@ -1887,6 +1887,7 @@ func TestLayout_RendersProjectSidebar(t *testing.T) {
 		`href="/projects?edit=docs"`,
 		`class="sidebar-gear" title="Configure global settings"`,
 		`class="sidebar-project active"`,
+		`class="sidebar-add" title="Add project"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered layout is missing sidebar element %q", want)

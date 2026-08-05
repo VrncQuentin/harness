@@ -13,42 +13,13 @@
 {{end}}
 </head>
 <body>
-<header class="topbar">
-  <div class="wrap">
-    <div class="brand">
-      <span class="brand-mark"></span>
-      <span class="brand-name">Harness</span>
-    </div>
-    <nav class="nav">
-      <a href="/" class="nav-link {{if eq .Page "status"}}active{{end}}">Status</a>
-      <a href="/agents" class="nav-link {{if eq .Page "agents"}}active{{end}}">Agents</a>
-      <a href="/memory" class="nav-link {{if eq .Page "memory"}}active{{end}}">Memory</a>
-      <a href="/config" class="nav-link {{if eq .Page "config"}}active{{end}}">Config</a>
-    </nav>
-    <div class="topbar-actions">
-      <form method="post" action="/projects/activate" class="project-switcher-form">
-        <select class="select project-switcher" name="slug">
-          {{range .ProjectSlugs}}
-          <option value="{{.}}" {{if eq . $.ActiveProjectSlug}}selected{{end}}>{{index $.ProjectNames .}}</option>
-          {{end}}
-        </select>
-        <button type="submit" class="btn btn-ghost btn-sm">Switch</button>
-      </form>
-      <details class="inline-confirm-panel shutdown-confirm-panel">
-        <summary class="btn btn-danger btn-sm">Shut down</summary>
-        <form method="post" action="/shutdown" class="inline-confirm-form shutdown-confirm-form">
-          <p>Stops services, drains the queue, and exits the harness.</p>
-          <button type="submit" class="btn btn-danger btn-sm">Confirm shutdown</button>
-        </form>
-      </details>
-    </div>
-  </div>
-</header>
-
 <div class="app-layout">
   <aside class="sidebar">
     <div class="sidebar-block">
-      <div class="sidebar-title">Projects</div>
+      <div class="sidebar-title">
+        <span>Projects</span>
+        <a href="/projects" class="sidebar-add" title="Add project" aria-label="Add project">+</a>
+      </div>
       <ul class="sidebar-projects">
         {{range .ProjectSlugs}}
         <li class="sidebar-project {{if eq . $.ActiveProjectSlug}}active{{end}}">
@@ -66,25 +37,59 @@
       </ul>
     </div>
   </aside>
-  <main class="main">
-    {{template "content" .}}
-  </main>
-</div>
+  <div class="content-col">
+    <header class="topbar">
+      <div class="wrap">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <span class="brand-name">Harness</span>
+        </div>
+        <nav class="nav">
+          <a href="/" class="nav-link {{if eq .Page "status"}}active{{end}}">Status</a>
+          <a href="/agents" class="nav-link {{if eq .Page "agents"}}active{{end}}">Agents</a>
+          <a href="/memory" class="nav-link {{if eq .Page "memory"}}active{{end}}">Memory</a>
+          <a href="/config" class="nav-link {{if eq .Page "config"}}active{{end}}">Config</a>
+        </nav>
+        <div class="topbar-actions">
+          <form method="post" action="/projects/activate" class="project-switcher-form">
+            <select class="select project-switcher" name="slug">
+              {{range .ProjectSlugs}}
+              <option value="{{.}}" {{if eq . $.ActiveProjectSlug}}selected{{end}}>{{index $.ProjectNames .}}</option>
+              {{end}}
+            </select>
+            <button type="submit" class="btn btn-ghost btn-sm">Switch</button>
+          </form>
+          <details class="inline-confirm-panel shutdown-confirm-panel">
+            <summary class="btn btn-danger btn-sm">Shut down</summary>
+            <form method="post" action="/shutdown" class="inline-confirm-form shutdown-confirm-form">
+              <p>Stops services, drains the queue, and exits the harness.</p>
+              <button type="submit" class="btn btn-danger btn-sm">Confirm shutdown</button>
+            </form>
+          </details>
+        </div>
+      </div>
+    </header>
 
-<footer class="footer">
-  <div class="wrap">
-    <span>Local AI inference harness</span>
-    {{/* AGPL-3.0 sections 5(d) and 13: an interactive interface must carry the
-         legal notice, and users interacting over a network must be offered the
-         Corresponding Source. Keep both links reachable from every page. */}}
-    <span class="footer-legal">
-      <a href="https://www.gnu.org/licenses/agpl-3.0.html" rel="license noopener" target="_blank">AGPL-3.0</a>
-      &middot;
-      <a href="https://github.com/VrncQuentin/harness" rel="noopener" target="_blank">Source</a>
-    </span>
-    <span class="mono">uptime <span id="uptime">{{.UptimeText}}</span></span>
+    <main class="main">
+      {{template "content" .}}
+    </main>
+
+    <footer class="footer">
+      <div class="wrap">
+        <span>Local AI inference harness</span>
+        {{/* AGPL-3.0 sections 5(d) and 13: an interactive interface must carry the
+             legal notice, and users interacting over a network must be offered the
+             Corresponding Source. Keep both links reachable from every page. */}}
+        <span class="footer-legal">
+          <a href="https://www.gnu.org/licenses/agpl-3.0.html" rel="license noopener" target="_blank">AGPL-3.0</a>
+          &middot;
+          <a href="https://github.com/VrncQuentin/harness" rel="noopener" target="_blank">Source</a>
+        </span>
+        <span class="mono">uptime <span id="uptime">{{.UptimeText}}</span></span>
+      </div>
+    </footer>
   </div>
-</footer>
+</div>
 
 <script src="/static/htmx.min.js"></script>
 <script src="/static/htmx-ext-sse.js"></script>
