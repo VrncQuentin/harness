@@ -53,6 +53,11 @@
 <body>
 <div class="app-layout">
   <aside class="sidebar" id="project-sidebar">
+    <div class="sidebar-header">
+      <button type="button" id="sidebar-toggle" class="btn btn-ghost btn-sm sidebar-toggle" title="Toggle project sidebar" aria-label="Toggle project sidebar" aria-expanded="true" aria-controls="project-sidebar">
+        <span class="sidebar-toggle-icon">&#9664;</span>
+      </button>
+    </div>
     <div class="sidebar-block">
       <div class="sidebar-title">
         <span>Projects</span>
@@ -78,9 +83,6 @@
   <div class="content-col">
     <header class="topbar">
       <div class="wrap">
-        <button type="button" id="sidebar-toggle" class="btn btn-ghost btn-sm sidebar-toggle" title="Toggle project sidebar" aria-label="Toggle project sidebar" aria-expanded="true" aria-controls="project-sidebar">
-          <span class="sidebar-toggle-icon">&#9664;</span>
-        </button>
         <div class="brand">
           <span class="brand-mark"></span>
           <span class="brand-name">Harness</span>
