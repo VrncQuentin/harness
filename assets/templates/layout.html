@@ -13,10 +13,41 @@
 {{end}}
 <script>
 // Restore the persisted sidebar state before first paint so a collapsed
-// sidebar does not flash open on navigation.
-if (localStorage.getItem("harness.sidebarCollapsed") === "1") {
-  document.documentElement.classList.add("sidebar-collapsed");
-}
+// sidebar does not flash open on navigation, and wire the toggle button.
+// Kept inline: the repo deliberately has no custom JS bundle (UI behavior
+// is server-rendered htmx/SSE), and this is pure viewport chrome.
+(function () {
+  var KEY = "harness.sidebarCollapsed";
+  var root = document.documentElement;
+  if (localStorage.getItem(KEY) === "1") {
+    root.classList.add("sidebar-collapsed");
+  }
+  document.addEventListener("DOMContentLoaded", function () {
+    var toggle = document.getElementById("sidebar-toggle");
+    if (!toggle) {
+      return;
+    }
+    var icon = toggle.querySelector(".sidebar-toggle-icon");
+    function sync() {
+      var collapsed = root.classList.contains("sidebar-collapsed");
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      if (icon) {
+        icon.textContent = collapsed ? "\u25B6" : "\u25C0";
+      }
+    }
+    toggle.addEventListener("click", function () {
+      var collapsed = root.classList.toggle("sidebar-collapsed");
+      try {
+        localStorage.setItem(KEY, collapsed ? "1" : "0");
+      } catch (e) {
+        // Private browsing or storage disabled - the toggle still works for
+        // this page; it just won't persist.
+      }
+      sync();
+    });
+    sync();
+  });
+})();
 </script>
 </head>
 <body>
@@ -103,6 +134,5 @@ if (localStorage.getItem("harness.sidebarCollapsed") === "1") {
 
 <script src="/static/htmx.min.js"></script>
 <script src="/static/htmx-ext-sse.js"></script>
-<script src="/static/app.js"></script>
 </body>
 </html>{{end}}
