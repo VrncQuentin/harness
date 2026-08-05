@@ -62,10 +62,10 @@ func (s *Server) handleProjectView(w http.ResponseWriter, r *http.Request) {
 	data := projectViewData{
 		basePage:    s.newBasePage("projects"),
 		Project:     &row,
-		RecentLimit: defaultRecentSessions,
+		RecentLimit: s.sidebarRecentSessionsCount(),
 	}
-	if ps := snap.ProjectSessions; ps != nil {
-		recs, err := ps.Recent(slug, defaultRecentSessions)
+	if ps := snap.ProjectSessions; ps != nil && data.RecentLimit > 0 {
+		recs, err := ps.Recent(slug, data.RecentLimit)
 		if err != nil {
 			data.SessionsErr = err.Error()
 		} else {

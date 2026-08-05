@@ -2016,6 +2016,65 @@ func TestHandleProjectView_RejectsNonGET(t *testing.T) {
 	}
 }
 
+func TestLayout_RendersSidebarSessionsPerProject(t *testing.T) {
+	s := NewServer(3000)
+	s.SetConfigStore(&stubConfigStore{cfg: config.Defaults()})
+	s.SetProjectStore(&stubProjectStore{projects: []project.Project{
+		{Slug: project.GlobalSlug, DisplayName: "Global"},
+		{Slug: "demo", DisplayName: "Demo Project"},
+	}})
+	setSnapshotForTest(s, ServiceDeps{
+		ProjectSessions: &stubProjectSessions{bySlug: map[string][]SessionRecord{
+			"demo": {
+				{ID: "s1", Agent: "coder", SavedAt: time.Date(2026, 8, 5, 12, 0, 0, 0, time.UTC)},
+				{ID: "s2", Agent: "coder", SavedAt: time.Date(2026, 8, 5, 11, 0, 0, 0, time.UTC)},
+			},
+		}},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="sidebar-sessions"`,
+		`class="sidebar-sessions-toggle">Sessions (2)`,
+		"coder",
+		"sidebar-session",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("sidebar is missing %q", want)
+		}
+	}
+}
+
+func TestLayout_HidesSidebarSessionsWhenCountZero(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.UI.SidebarRecentSessions = 0
+	s := NewServer(3000)
+	s.SetConfigStore(&stubConfigStore{cfg: cfg})
+	s.SetProjectStore(&stubProjectStore{projects: []project.Project{
+		{Slug: "demo", DisplayName: "Demo Project"},
+	}})
+	setSnapshotForTest(s, ServiceDeps{
+		ProjectSessions: &stubProjectSessions{bySlug: map[string][]SessionRecord{
+			"demo": {{ID: "s1", Agent: "coder", SavedAt: time.Now()}},
+		}},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	if strings.Contains(rec.Body.String(), `class="sidebar-sessions"`) {
+		t.Error("sidebar sessions should be hidden when SidebarRecentSessions is 0")
+	}
+}
+
 // AGPL-3.0 5(d) requires an interactive interface to carry the legal notice,
 // and 13 requires users interacting over a network to be offered the
 // Corresponding Source. The footer is in the shared layout, so losing it would

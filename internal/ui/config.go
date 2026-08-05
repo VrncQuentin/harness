@@ -165,6 +165,7 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	cfg.Embedder.Verbose = r.FormValue("embed_verbose") == "on"
 	cfg.UI.Port = atoiField(r, "ui_port", "UI port", cfg.UI.Port, &parseErrs)
 	cfg.UI.OpenOnStart = r.FormValue("ui_open_on_start") == "on"
+	cfg.UI.SidebarRecentSessions = atoiField(r, "ui_sidebar_recent_sessions", "UI recent sessions per project", cfg.UI.SidebarRecentSessions, &parseErrs)
 
 	cfg.API.Enabled = r.FormValue("api_enabled") == "on"
 	cfg.API.Port = atoiField(r, "api_port", "API port", cfg.API.Port, &parseErrs)

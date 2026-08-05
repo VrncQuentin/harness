@@ -358,6 +358,7 @@ func TestConfigStore_RoundTripsAllConfigFields(t *testing.T) {
 	cfg.Project.LlamaOnSwitch = "keep"
 	cfg.UI.Port = 13000
 	cfg.UI.OpenOnStart = false
+	cfg.UI.SidebarRecentSessions = 7
 	cfg.API.Enabled = true
 	cfg.API.Port = 18080
 	cfg.Prompt.MemoryTokenBudget = 3456

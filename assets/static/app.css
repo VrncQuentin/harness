@@ -214,7 +214,8 @@ a:hover { text-decoration: underline; }
 }
 .sidebar-project {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   border-radius: 6px;
 }
 .sidebar-project:hover {
@@ -222,6 +223,10 @@ a:hover { text-decoration: underline; }
 }
 .sidebar-project.active {
   background: var(--accent-soft);
+}
+.sidebar-project-row {
+  display: flex;
+  align-items: center;
 }
 .sidebar-project-name {
   flex: 1;
@@ -252,6 +257,49 @@ a:hover { text-decoration: underline; }
 .sidebar-gear:hover {
   color: var(--text);
   text-decoration: none;
+}
+/* Collapsible per-project recent sessions list in the sidebar. */
+.sidebar-sessions {
+  margin: 0 0.25rem 0.25rem;
+}
+.sidebar-sessions-toggle {
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.15rem 0.6rem;
+}
+.sidebar-sessions-toggle::-webkit-details-marker {
+  display: none;
+}
+.sidebar-sessions-toggle:hover {
+  color: var(--text);
+}
+.sidebar-sessions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.sidebar-session {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.4rem;
+  padding: 0.15rem 0.6rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  border-radius: 4px;
+}
+.sidebar-session:hover {
+  background: var(--bg);
+}
+.sidebar-session-empty {
+  font-style: italic;
 }
 /* Bottom of the sidebar: Status / Config links and the shutdown control.
    margin-top:auto pins it to the bottom of the full-height rail. */

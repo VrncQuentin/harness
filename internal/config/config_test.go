@@ -39,6 +39,9 @@ func TestDefaults(t *testing.T) {
 	if d.Project.LlamaOnSwitch != "reload" {
 		t.Errorf("expected default Project.LlamaOnSwitch reload, got %q", d.Project.LlamaOnSwitch)
 	}
+	if d.UI.SidebarRecentSessions != 5 {
+		t.Errorf("expected default UI.SidebarRecentSessions 5, got %d", d.UI.SidebarRecentSessions)
+	}
 	for _, desc := range tools.BuiltinDescriptors() {
 		if got := d.Loop.ToolEnabled(desc.ID); got != desc.DefaultEnabled {
 			t.Errorf("default Loop.ToolEnabled(%q) = %v, want descriptor default %v", desc.ID, got, desc.DefaultEnabled)
@@ -120,6 +123,15 @@ func TestValidate(t *testing.T) {
 			name:    "ui port zero",
 			mutate:  func(c *Config) { c.UI.Port = 0 },
 			wantErr: "ui.port must be between 1 and 65535",
+		},
+		{
+			name:    "sidebar recent sessions out of range",
+			mutate:  func(c *Config) { c.UI.SidebarRecentSessions = 11 },
+			wantErr: "ui.sidebar_recent_sessions must be between 0 and 10",
+		},
+		{
+			name:   "sidebar recent sessions zero disables",
+			mutate: func(c *Config) { c.UI.SidebarRecentSessions = 0 },
 		},
 		{
 			name:    "api port zero",

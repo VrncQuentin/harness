@@ -66,11 +66,29 @@
       <ul class="sidebar-projects">
         {{range .ProjectSlugs}}
         <li class="sidebar-project {{if eq . $.ActiveProjectSlug}}active{{end}}">
-          <a href="/projects/view?slug={{.}}" class="sidebar-project-name" title="{{index $.ProjectNames .}}">{{index $.ProjectNames .}}</a>
-          {{if eq . $.GlobalSlug}}
-          <a href="/config" class="sidebar-gear" title="Configure global settings" aria-label="Configure global settings">&#9881;</a>
-          {{else}}
-          <a href="/projects?edit={{.}}" class="sidebar-gear" title="Configure {{index $.ProjectNames .}}" aria-label="Configure {{index $.ProjectNames .}}">&#9881;</a>
+          <div class="sidebar-project-row">
+            <a href="/projects/view?slug={{.}}" class="sidebar-project-name" title="{{index $.ProjectNames .}}">{{index $.ProjectNames .}}</a>
+            {{if eq . $.GlobalSlug}}
+            <a href="/config" class="sidebar-gear" title="Configure global settings" aria-label="Configure global settings">&#9881;</a>
+            {{else}}
+            <a href="/projects?edit={{.}}" class="sidebar-gear" title="Configure {{index $.ProjectNames .}}" aria-label="Configure {{index $.ProjectNames .}}">&#9881;</a>
+            {{end}}
+          </div>
+          {{if $.SidebarRecentSessions}}
+          {{$sessions := index $.ProjectSessionList .}}
+          <details class="sidebar-sessions" {{if eq . $.ActiveProjectSlug}}open{{end}}>
+            <summary class="sidebar-sessions-toggle">Sessions{{if $sessions}} ({{len $sessions}}){{end}}</summary>
+            <ul class="sidebar-sessions-list">
+              {{range $sessions}}
+              <li class="sidebar-session">
+                <span class="sidebar-session-agent">{{.Agent}}</span>
+                <span class="sidebar-session-time">{{.SavedAt.Format "01-02 15:04"}}</span>
+              </li>
+              {{else}}
+              <li class="sidebar-session sidebar-session-empty">No sessions yet</li>
+              {{end}}
+            </ul>
+          </details>
           {{end}}
         </li>
         {{end}}

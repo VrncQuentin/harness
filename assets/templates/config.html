@@ -149,6 +149,11 @@
           <span>Open browser on start</span>
         </label>
       </div>
+      <div class="fg">
+        <label for="ui_sidebar_recent_sessions">Recent sessions per project</label>
+        <input type="number" id="ui_sidebar_recent_sessions" name="ui_sidebar_recent_sessions" value="{{.Config.UI.SidebarRecentSessions}}" min="0" max="10">
+        <p class="fg-hint">How many recent sessions the project sidebar lists per project (0 hides them).</p>
+      </div>
     </div>
   </fieldset>
 
