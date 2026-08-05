@@ -153,6 +153,19 @@ a:hover { text-decoration: underline; }
   display: flex;
   flex-direction: column;
 }
+/* Collapsed sidebar: hide the panel so the content column takes the full
+   width. The toggle button lives in the topbar (inside the content column),
+   so it stays reachable. */
+.sidebar-collapsed .sidebar {
+  display: none;
+}
+.sidebar-toggle {
+  padding: 0.25rem 0.45rem;
+  line-height: 1;
+}
+.sidebar-toggle-icon {
+  font-size: 0.7rem;
+}
 .sidebar-block {
   margin-bottom: 1.5rem;
 }

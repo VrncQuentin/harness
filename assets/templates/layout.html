@@ -11,10 +11,17 @@
 {{else}}
 <link rel="stylesheet" href="/static/{{.Page}}.css">
 {{end}}
+<script>
+// Restore the persisted sidebar state before first paint so a collapsed
+// sidebar does not flash open on navigation.
+if (localStorage.getItem("harness.sidebarCollapsed") === "1") {
+  document.documentElement.classList.add("sidebar-collapsed");
+}
+</script>
 </head>
 <body>
 <div class="app-layout">
-  <aside class="sidebar">
+  <aside class="sidebar" id="project-sidebar">
     <div class="sidebar-block">
       <div class="sidebar-title">
         <span>Projects</span>
@@ -40,6 +47,9 @@
   <div class="content-col">
     <header class="topbar">
       <div class="wrap">
+        <button type="button" id="sidebar-toggle" class="btn btn-ghost btn-sm sidebar-toggle" title="Toggle project sidebar" aria-label="Toggle project sidebar" aria-expanded="true" aria-controls="project-sidebar">
+          <span class="sidebar-toggle-icon">&#9664;</span>
+        </button>
         <div class="brand">
           <span class="brand-mark"></span>
           <span class="brand-name">Harness</span>
@@ -93,5 +103,6 @@
 
 <script src="/static/htmx.min.js"></script>
 <script src="/static/htmx-ext-sse.js"></script>
+<script src="/static/app.js"></script>
 </body>
 </html>{{end}}
