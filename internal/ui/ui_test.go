@@ -1282,8 +1282,13 @@ func TestHandleConfig_GETPreFillsDetectedLlamaBinary(t *testing.T) {
 	s.handleConfig(rec, req)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, want) {
-		t.Errorf("expected detected llama-server %q to appear in rendered form", want)
+	if !strings.Contains(body, `name="model_binary" value="`+want+`"`) {
+		t.Errorf("expected detected llama-server %q to pre-fill model_binary", want)
+	}
+	// The embedder runs the same llama-server binary in --embedding mode, so
+	// it defaults to the same resolved path when left blank.
+	if !strings.Contains(body, `name="embed_binary" value="`+want+`"`) {
+		t.Errorf("expected detected llama-server %q to pre-fill embed_binary", want)
 	}
 }
 
