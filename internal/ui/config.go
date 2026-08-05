@@ -145,8 +145,8 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	cfg := *base
 	var parseErrs []string
 
-	cfg.Model.Binary = strings.TrimSpace(r.FormValue("model_binary"))
-	cfg.Model.ModelPath = strings.TrimSpace(r.FormValue("model_path"))
+	cfg.Model.Binary = trimPathField(r.FormValue("model_binary"))
+	cfg.Model.ModelPath = trimPathField(r.FormValue("model_path"))
 	cfg.Model.CtxSize = atoiField(r, "model_ctx_size", "Model context size", cfg.Model.CtxSize, &parseErrs)
 	cfg.Model.GPULayers = atoiField(r, "model_gpu_layers", "Model GPU layers", cfg.Model.GPULayers, &parseErrs)
 	cfg.Model.NParallel = atoiField(r, "model_n_parallel", "Model parallelism", cfg.Model.NParallel, &parseErrs)
@@ -159,8 +159,8 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 		cfg.Model.CacheTypeV = v
 	}
 
-	cfg.Embedder.Binary = strings.TrimSpace(r.FormValue("embed_binary"))
-	cfg.Embedder.ModelPath = strings.TrimSpace(r.FormValue("embed_path"))
+	cfg.Embedder.Binary = trimPathField(r.FormValue("embed_binary"))
+	cfg.Embedder.ModelPath = trimPathField(r.FormValue("embed_path"))
 	cfg.Embedder.Port = atoiField(r, "embed_port", "Embedder port", cfg.Embedder.Port, &parseErrs)
 	cfg.Embedder.Verbose = r.FormValue("embed_verbose") == "on"
 	cfg.UI.Port = atoiField(r, "ui_port", "UI port", cfg.UI.Port, &parseErrs)
@@ -212,6 +212,20 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	cfg.Log.ProcMaxLines = atoiField(r, "log_proc_max_lines", "Process log lines", cfg.Log.ProcMaxLines, &parseErrs)
 
 	return &cfg, parseErrs
+}
+
+// trimPathField normalizes a filesystem path pasted into the form. Windows'
+// "Copy as path" action wraps the path in double quotes and users often paste
+// that verbatim; strip surrounding matching quotes (and surrounding
+// whitespace) so the stored value is the raw path. A quote embedded mid-path
+// is never valid on Windows and a leading/trailing quote is never part of a
+// real path, so stripping is always safe.
+func trimPathField(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) >= 2 && v[0] == v[len(v)-1] && (v[0] == '"' || v[0] == '\'') {
+		v = strings.TrimSpace(v[1 : len(v)-1])
+	}
+	return v
 }
 
 func atoiField(r *http.Request, name, label string, fallback int, errs *[]string) int {
