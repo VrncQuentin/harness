@@ -93,11 +93,6 @@ a:hover { text-decoration: underline; }
   align-items: center;
   gap: 0.4rem;
 }
-.project-switcher-form {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
 
 .inline-confirm-panel {
   position: relative;
