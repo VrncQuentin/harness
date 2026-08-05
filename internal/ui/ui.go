@@ -243,34 +243,42 @@ func NewServer(port int) *Server {
 		"status": {
 			"templates/layout.html",
 			"templates/status.html",
+			"templates/projects_create_form.html",
 		},
 		"config": {
 			"templates/layout.html",
 			"templates/config.html",
+			"templates/projects_create_form.html",
 		},
 		"agents": {
 			"templates/layout.html",
 			"templates/agents.html",
+			"templates/projects_create_form.html",
 		},
 		"chat": {
 			"templates/layout.html",
 			"templates/chat.html",
+			"templates/projects_create_form.html",
 		},
 		"memory": {
 			"templates/layout.html",
 			"templates/memory.html",
+			"templates/projects_create_form.html",
 		},
 		"memory_edit": {
 			"templates/layout.html",
 			"templates/memory_edit.html",
+			"templates/projects_create_form.html",
 		},
 		"memory_episodes": {
 			"templates/layout.html",
 			"templates/memory_episodes.html",
+			"templates/projects_create_form.html",
 		},
 		"memory_episode_view": {
 			"templates/layout.html",
 			"templates/memory_episode_view.html",
+			"templates/projects_create_form.html",
 		},
 		"projects": {
 			"templates/layout.html",
@@ -282,6 +290,7 @@ func NewServer(port int) *Server {
 		"task": {
 			"templates/layout.html",
 			"templates/task.html",
+			"templates/projects_create_form.html",
 		},
 		"shutdown": {
 			"templates/shutdown.html",

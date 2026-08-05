@@ -8,6 +8,7 @@
       <p class="section-sub">Manage project memory repos, attached code directories, and per-project model overrides.</p>
     </div>
     <div class="section-actions">
+      <button type="button" class="btn btn-primary" onclick="document.getElementById('project-create-modal').showModal()">New project</button>
       {{if .ShowHidden}}
       <a href="/projects" class="btn btn-ghost">Hide hidden</a>
       {{else}}
@@ -23,8 +24,6 @@
   {{if .Flash}}
   <div class="alert alert-ok"><p>{{.Flash}}</p></div>
   {{end}}
-
-  {{template "projects.create_form" .}}
 
   {{if .Projects}}
   {{template "projects.table" .Projects}}

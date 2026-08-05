@@ -1888,6 +1888,8 @@ func TestLayout_RendersProjectSidebar(t *testing.T) {
 		`class="sidebar-gear" title="Configure global settings"`,
 		`class="sidebar-project active"`,
 		`class="sidebar-add" title="Add project"`,
+		`onclick="document.getElementById('project-create-modal').showModal()"`,
+		`id="project-create-modal"`,
 		`id="sidebar-toggle"`,
 		`aria-controls="project-sidebar"`,
 	} {
