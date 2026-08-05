@@ -79,6 +79,17 @@
         {{end}}
       </ul>
     </div>
+    <div class="sidebar-bottom">
+      <a href="/" class="sidebar-bottom-link {{if eq .Page "status"}}active{{end}}">Status</a>
+      <a href="/config" class="sidebar-bottom-link {{if eq .Page "config"}}active{{end}}">Config</a>
+      <details class="inline-confirm-panel sidebar-shutdown shutdown-confirm-panel">
+        <summary class="btn btn-danger btn-sm">Shut down</summary>
+        <form method="post" action="/shutdown" class="inline-confirm-form shutdown-confirm-form">
+          <p>Stops services, drains the queue, and exits the harness.</p>
+          <button type="submit" class="btn btn-danger btn-sm">Confirm shutdown</button>
+        </form>
+      </details>
+    </div>
   </aside>
   <div class="content-col">
     <header class="topbar">
@@ -88,20 +99,9 @@
           <span class="brand-name">Harness</span>
         </div>
         <nav class="nav">
-          <a href="/" class="nav-link {{if eq .Page "status"}}active{{end}}">Status</a>
           <a href="/agents" class="nav-link {{if eq .Page "agents"}}active{{end}}">Agents</a>
           <a href="/memory" class="nav-link {{if eq .Page "memory"}}active{{end}}">Memory</a>
-          <a href="/config" class="nav-link {{if eq .Page "config"}}active{{end}}">Config</a>
         </nav>
-        <div class="topbar-actions">
-          <details class="inline-confirm-panel shutdown-confirm-panel">
-            <summary class="btn btn-danger btn-sm">Shut down</summary>
-            <form method="post" action="/shutdown" class="inline-confirm-form shutdown-confirm-form">
-              <p>Stops services, drains the queue, and exits the harness.</p>
-              <button type="submit" class="btn btn-danger btn-sm">Confirm shutdown</button>
-            </form>
-          </details>
-        </div>
       </div>
     </header>
 

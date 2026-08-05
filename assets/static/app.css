@@ -87,12 +87,6 @@ a:hover { text-decoration: underline; }
 }
 .nav-link:hover { color: var(--text); background: var(--bg); text-decoration: none; }
 .nav-link.active { color: var(--accent); background: var(--accent-soft); }
-.topbar-actions {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-}
 
 .inline-confirm-panel {
   position: relative;
@@ -263,6 +257,46 @@ a:hover { text-decoration: underline; }
 .sidebar-gear:hover {
   color: var(--text);
   text-decoration: none;
+}
+/* Bottom of the sidebar: Status / Config links and the shutdown control.
+   margin-top:auto pins it to the bottom of the full-height rail. */
+.sidebar-bottom {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border);
+}
+.sidebar-bottom-link {
+  color: var(--muted);
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+.sidebar-bottom-link:hover {
+  color: var(--text);
+  background: var(--bg);
+  text-decoration: none;
+}
+.sidebar-bottom-link.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.sidebar-shutdown {
+  margin-top: 0.25rem;
+  display: flex;
+}
+.sidebar-shutdown > summary {
+  flex: 1;
+  justify-content: center;
+}
+/* The shutdown confirm popup opens upward from the bottom of the rail. */
+.sidebar-shutdown .inline-confirm-form {
+  top: auto;
+  bottom: calc(100% + 0.4rem);
 }
 
 .main {
