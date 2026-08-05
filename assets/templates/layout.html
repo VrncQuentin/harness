@@ -94,14 +94,6 @@
           <a href="/config" class="nav-link {{if eq .Page "config"}}active{{end}}">Config</a>
         </nav>
         <div class="topbar-actions">
-          <form method="post" action="/projects/activate" class="project-switcher-form">
-            <select class="select project-switcher" name="slug">
-              {{range .ProjectSlugs}}
-              <option value="{{.}}" {{if eq . $.ActiveProjectSlug}}selected{{end}}>{{index $.ProjectNames .}}</option>
-              {{end}}
-            </select>
-            <button type="submit" class="btn btn-ghost btn-sm">Switch</button>
-          </form>
           <details class="inline-confirm-panel shutdown-confirm-panel">
             <summary class="btn btn-danger btn-sm">Shut down</summary>
             <form method="post" action="/shutdown" class="inline-confirm-form shutdown-confirm-form">

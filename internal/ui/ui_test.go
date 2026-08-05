@@ -1897,6 +1897,9 @@ func TestLayout_RendersProjectSidebar(t *testing.T) {
 			t.Errorf("rendered layout is missing sidebar element %q", want)
 		}
 	}
+	if strings.Contains(body, `class="project-switcher-form"`) {
+		t.Error("top-bar project switcher should be gone; activation happens via the sidebar")
+	}
 }
 
 // AGPL-3.0 5(d) requires an interactive interface to carry the legal notice,
