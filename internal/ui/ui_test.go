@@ -1892,6 +1892,8 @@ func TestLayout_RendersProjectSidebar(t *testing.T) {
 		`id="project-create-modal"`,
 		`id="sidebar-toggle"`,
 		`aria-controls="project-sidebar"`,
+		`class="sidebar-bottom-link`,
+		`class="inline-confirm-panel sidebar-shutdown shutdown-confirm-panel"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered layout is missing sidebar element %q", want)
@@ -1899,6 +1901,9 @@ func TestLayout_RendersProjectSidebar(t *testing.T) {
 	}
 	if strings.Contains(body, `class="project-switcher-form"`) {
 		t.Error("top-bar project switcher should be gone; activation happens via the sidebar")
+	}
+	if strings.Contains(body, `class="topbar-actions"`) {
+		t.Error("top bar should no longer carry actions (Status/Config/shutdown moved to the sidebar)")
 	}
 }
 
