@@ -66,10 +66,7 @@
       <ul class="sidebar-projects">
         {{range .ProjectSlugs}}
         <li class="sidebar-project {{if eq . $.ActiveProjectSlug}}active{{end}}">
-          <form method="post" action="/projects/activate" class="sidebar-activate">
-            <input type="hidden" name="slug" value="{{.}}">
-            <button type="submit" class="sidebar-project-name" title="{{index $.ProjectNames .}}">{{index $.ProjectNames .}}</button>
-          </form>
+          <a href="/projects/view?slug={{.}}" class="sidebar-project-name" title="{{index $.ProjectNames .}}">{{index $.ProjectNames .}}</a>
           {{if eq . $.GlobalSlug}}
           <a href="/config" class="sidebar-gear" title="Configure global settings" aria-label="Configure global settings">&#9881;</a>
           {{else}}

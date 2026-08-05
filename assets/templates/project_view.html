@@ -1,0 +1,60 @@
+{{define "title"}}{{.Project.DisplayName}}{{end}}
+
+{{define "content"}}
+<section class="projects-page">
+  <div class="section-head projects-head">
+    <div>
+      <h1 class="page-title">{{.Project.DisplayName}}</h1>
+      <p class="section-sub"><code>{{.Project.Slug}}</code>{{if .Project.IsActive}} <span class="badge badge-ok">Active</span>{{end}}</p>
+    </div>
+    <div class="section-actions">
+      {{if not .Project.IsActive}}
+      <form method="post" action="/projects/activate" class="inline-form">
+        <input type="hidden" name="slug" value="{{.Project.Slug}}">
+        <button type="submit" class="btn btn-sm">Activate</button>
+      </form>
+      {{end}}
+      {{if .Project.IsGlobal}}
+      <a href="/config" class="btn btn-ghost btn-sm">Config</a>
+      {{else}}
+      <a href="/projects?edit={{.Project.Slug}}" class="btn btn-ghost btn-sm">Config</a>
+      {{end}}
+      <a href="/projects" class="btn btn-ghost btn-sm">All projects</a>
+    </div>
+  </div>
+
+  {{if .SessionsErr}}
+  <div class="alert alert-err"><p>{{.SessionsErr}}</p></div>
+  {{end}}
+
+  <div class="card">
+    <div class="card-head">
+      <h3>Recent sessions</h3>
+    </div>
+    {{if .RecentSessions}}
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Saved</th>
+            <th>ID</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .RecentSessions}}
+          <tr>
+            <td>{{.Agent}}</td>
+            <td>{{.SavedAt.Format "2006-01-02 15:04"}}</td>
+            <td><code class="project-slug">{{.ID}}</code></td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <p class="empty">No saved sessions for this project yet.</p>
+    {{end}}
+  </div>
+</section>
+{{end}}

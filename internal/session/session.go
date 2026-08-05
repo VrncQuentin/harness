@@ -43,6 +43,9 @@ const (
 	episodesRootRel = "episodes"
 	// sessionsLogRel is the repo-relative append-only session log path.
 	sessionsLogRel = "sessions.jsonl"
+	// SessionsLogRel is the exported alias used by packages that read the
+	// log without going through a Manager (e.g. per-project session listing).
+	SessionsLogRel = sessionsLogRel
 	// episodeFileSuffix is the extension used for episode markdown files.
 	episodeFileSuffix = ".md"
 	// episodeSidecarSuffix is the extension used for raw conversation sidecars.

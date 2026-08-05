@@ -45,6 +45,12 @@ type ServiceDeps struct {
 	AgentRegistry AgentRegistry
 	MemoryStore   MemoryStore
 	SessionStore  SessionStore
+	// ProjectSessions lists saved sessions for an arbitrary project,
+	// newest-first. Unlike SessionStore (which is bound to the active
+	// project's session manager), it opens the target project's memory
+	// repo on demand so the sidebar and project pages can show any
+	// project's history. Nil when the runtime has not wired memory.
+	ProjectSessions ProjectSessions
 
 	Committer Committer
 	Dedup     DedupChecker
@@ -203,6 +209,7 @@ type Server struct {
 	memoryEpisodesTmpl    *template.Template
 	memoryEpisodeViewTmpl *template.Template
 	projectsTmpl          *template.Template
+	projectViewTmpl       *template.Template
 	taskTmpl              *template.Template
 	// shutdownTmpl is intentionally standalone (no layout.html) so the
 	// rendered page does not load /static/* — by the time the browser
@@ -287,6 +294,11 @@ func NewServer(port int) *Server {
 			"templates/projects_edit_form.html",
 			"templates/projects_table.html",
 		},
+		"project_view": {
+			"templates/layout.html",
+			"templates/project_view.html",
+			"templates/projects_create_form.html",
+		},
 		"task": {
 			"templates/layout.html",
 			"templates/task.html",
@@ -305,6 +317,7 @@ func NewServer(port int) *Server {
 	s.memoryEpisodesTmpl = templates["memory_episodes"]
 	s.memoryEpisodeViewTmpl = templates["memory_episode_view"]
 	s.projectsTmpl = templates["projects"]
+	s.projectViewTmpl = templates["project_view"]
 	s.taskTmpl = templates["task"]
 	s.shutdownTmpl = templates["shutdown"]
 	return s
@@ -651,6 +664,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/memory/promote", s.handlePromoteFact)
 	mux.HandleFunc("/memory/note", s.handleAppendNote)
 	mux.HandleFunc("/projects", s.handleProjects)
+	mux.HandleFunc("/projects/view", s.handleProjectView)
 	mux.HandleFunc("/projects/activate", s.handleProjectActivate)
 	mux.HandleFunc("/projects/hide", s.handleProjectHide)
 	mux.HandleFunc("/projects/unhide", s.handleProjectUnhide)

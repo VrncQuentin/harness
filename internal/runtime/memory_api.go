@@ -523,6 +523,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 		Index:    episodeIndex,
 	}}
 	svcDeps.MemoryStore = activeMem
+	svcDeps.ProjectSessions = &projectSessionsStore{rt: rt}
 	svcDeps.AgentRegistry = &uiAgentRegistryAdapter{reg: agentReg, globalMem: globalMem, activeMem: activeMem, slug: cfg.Project.ActiveProjectSlug, setActive: rt.setActiveAgent}
 	if sessionAdapter != nil {
 		svcDeps.SessionStore = sessionAdapter
