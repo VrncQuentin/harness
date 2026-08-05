@@ -41,7 +41,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 .wrap {
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 0 1.25rem;
 }
@@ -131,7 +131,94 @@ a:hover { text-decoration: underline; }
   min-width: 18rem;
 }
 
+/* Main content layout with the project sidebar */
+.app-layout {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 2rem;
+}
+.sidebar {
+  flex: 0 0 14rem;
+  position: sticky;
+  top: 0;
+  padding-top: 2rem;
+}
+.sidebar-block {
+  margin-bottom: 1.5rem;
+}
+.sidebar-title {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+  padding: 0 0.5rem;
+}
+.sidebar-projects {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sidebar-project {
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+}
+.sidebar-project:hover {
+  background: var(--accent-soft);
+}
+.sidebar-project.active {
+  background: var(--accent-soft);
+}
+.sidebar-activate {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  display: flex;
+}
+.sidebar-project-name {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sidebar-project-name:hover {
+  color: var(--text);
+}
+.sidebar-project.active .sidebar-project-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+.sidebar-gear {
+  flex: 0 0 auto;
+  color: var(--muted);
+  padding: 0.3rem 0.55rem;
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+.sidebar-gear:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
 .main {
+  flex: 1;
+  min-width: 0;
   padding-top: 2rem;
   padding-bottom: 3rem;
 }

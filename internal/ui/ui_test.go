@@ -349,6 +349,57 @@ func TestHandleProjectActivatePOST(t *testing.T) {
 	}
 }
 
+// The sidebar posts from any page, so after activation the user should be
+// bounced back to the originating same-origin page instead of dumped on
+// /projects. A foreign referrer must not be followed.
+func TestHandleProjectActivateRedirectsToReferrer(t *testing.T) {
+	s := NewServer(3000)
+	cfgStore := &stubConfigStore{cfg: config.Defaults()}
+	s.SetConfigStore(cfgStore)
+	s.SetProjectStore(&countingProjectStore{projects: []project.Project{
+		{Slug: project.GlobalSlug, DisplayName: "Global"},
+		{Slug: "demo", DisplayName: "Demo Project"},
+	}})
+
+	form := url.Values{"slug": {"demo"}}
+	req := httptest.NewRequest(http.MethodPost, "/projects/activate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Host = "127.0.0.1:3000"
+	req.Header.Set("Referer", "http://127.0.0.1:3000/status?q=1")
+	rec := httptest.NewRecorder()
+	s.handleProjectActivate(rec, req)
+
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "http://127.0.0.1:3000/status") {
+		t.Fatalf("Location = %q, want bounce back to referrer", loc)
+	}
+	if !strings.Contains(loc, "flash=") {
+		t.Errorf("expected flash to be appended to the referrer redirect, got %q", loc)
+	}
+}
+
+func TestHandleProjectActivateRejectsForeignReferrer(t *testing.T) {
+	s := NewServer(3000)
+	cfgStore := &stubConfigStore{cfg: config.Defaults()}
+	s.SetConfigStore(cfgStore)
+	s.SetProjectStore(&countingProjectStore{projects: []project.Project{
+		{Slug: project.GlobalSlug, DisplayName: "Global"},
+		{Slug: "demo", DisplayName: "Demo Project"},
+	}})
+
+	form := url.Values{"slug": {"demo"}}
+	req := httptest.NewRequest(http.MethodPost, "/projects/activate", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Referer", "https://evil.example/")
+	rec := httptest.NewRecorder()
+	s.handleProjectActivate(rec, req)
+
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/projects?flash=") {
+		t.Fatalf("Location = %q, want fallback to /projects", loc)
+	}
+}
+
 func TestHandleProjectActionsRequirePOST(t *testing.T) {
 	s := NewServer(3000)
 
@@ -1809,6 +1860,38 @@ func nonLoopbackIPv4(t *testing.T) []string {
 		t.Skip("no routable IPv4 interface available")
 	}
 	return out
+}
+
+// The layout carries a persistent left sidebar listing every project. Each
+// row has an activate button and a gear linking to that project's config
+// (the per-project edit form, or /config for the reserved global project).
+func TestLayout_RendersProjectSidebar(t *testing.T) {
+	s := NewServer(3000)
+	cfgStore := &stubConfigStore{cfg: config.Defaults()}
+	s.SetConfigStore(cfgStore)
+	s.SetProjectStore(&countingProjectStore{projects: []project.Project{
+		{Slug: project.GlobalSlug, DisplayName: "Global"},
+		{Slug: "demo", DisplayName: "Demo Project"},
+		{Slug: "docs", DisplayName: "Docs"},
+	}})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`class="sidebar-projects"`,
+		"Demo Project",
+		`href="/projects?edit=demo"`,
+		`href="/projects?edit=docs"`,
+		`class="sidebar-gear" title="Configure global settings"`,
+		`class="sidebar-project active"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered layout is missing sidebar element %q", want)
+		}
+	}
 }
 
 // AGPL-3.0 5(d) requires an interactive interface to carry the legal notice,
