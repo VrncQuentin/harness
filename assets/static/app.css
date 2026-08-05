@@ -159,6 +159,9 @@ a:hover { text-decoration: underline; }
 .sidebar-collapsed .sidebar-block {
   display: none;
 }
+.sidebar-collapsed .sidebar-bottom {
+  display: none;
+}
 .sidebar-collapsed .sidebar-header {
   justify-content: center;
 }

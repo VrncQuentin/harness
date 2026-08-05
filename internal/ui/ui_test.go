@@ -1905,6 +1905,9 @@ func TestLayout_RendersProjectSidebar(t *testing.T) {
 	if strings.Contains(body, `class="topbar-actions"`) {
 		t.Error("top bar should no longer carry actions (Status/Config/shutdown moved to the sidebar)")
 	}
+	if strings.Contains(body, `class="nav"`) {
+		t.Error("top-bar nav links should be gone; all navigation moved to the sidebar")
+	}
 }
 
 // AGPL-3.0 5(d) requires an interactive interface to carry the legal notice,
