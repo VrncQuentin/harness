@@ -72,10 +72,17 @@ func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay co
 	data.Suggestions = config.Detect(s.getBinDir())
 	data.CacheTypes = config.ValidCacheTypes
 	// On a fresh GET render, pre-fill model_binary with the first detected
-	// llama-server if the user has not entered one yet. We do not pre-fill
-	// anything else - datalists let the user pick without us guessing.
-	if !skipStoreLoad && data.Config != nil && data.Config.Model.Binary == "" && len(data.Suggestions.LlamaBinary) > 0 {
-		data.Config.Model.Binary = data.Suggestions.LlamaBinary[0]
+	// llama-server if the user has not entered one yet. The embedder runs
+	// the same binary in --embedding mode, so it defaults to the same
+	// resolved path. We do not pre-fill anything else - datalists let the
+	// user pick without us guessing.
+	if !skipStoreLoad && data.Config != nil && len(data.Suggestions.LlamaBinary) > 0 {
+		if data.Config.Model.Binary == "" {
+			data.Config.Model.Binary = data.Suggestions.LlamaBinary[0]
+		}
+		if data.Config.Embedder.Binary == "" {
+			data.Config.Embedder.Binary = data.Suggestions.LlamaBinary[0]
+		}
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
