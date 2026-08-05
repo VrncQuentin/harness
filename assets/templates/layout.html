@@ -80,6 +80,8 @@
       </ul>
     </div>
     <div class="sidebar-bottom">
+      <a href="/agents" class="sidebar-bottom-link {{if eq .Page "agents"}}active{{end}}">Agents</a>
+      <a href="/memory" class="sidebar-bottom-link {{if eq .Page "memory"}}active{{end}}">Memory</a>
       <a href="/" class="sidebar-bottom-link {{if eq .Page "status"}}active{{end}}">Status</a>
       <a href="/config" class="sidebar-bottom-link {{if eq .Page "config"}}active{{end}}">Config</a>
       <details class="inline-confirm-panel sidebar-shutdown shutdown-confirm-panel">
@@ -98,10 +100,6 @@
           <span class="brand-mark"></span>
           <span class="brand-name">Harness</span>
         </div>
-        <nav class="nav">
-          <a href="/agents" class="nav-link {{if eq .Page "agents"}}active{{end}}">Agents</a>
-          <a href="/memory" class="nav-link {{if eq .Page "memory"}}active{{end}}">Memory</a>
-        </nav>
       </div>
     </header>
 
