@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/VrncQuentin/harness/internal/project"
 	"github.com/VrncQuentin/harness/internal/tools"
 )
 
@@ -27,11 +28,17 @@ func TestDefaults(t *testing.T) {
 	if d.Log.ProcMaxLines != 64 {
 		t.Errorf("expected default Log.ProcMaxLines 64, got %d", d.Log.ProcMaxLines)
 	}
-	if d.Model.CacheTypeK != "q8_0" {
-		t.Errorf("expected default Model.CacheTypeK q8_0, got %q", d.Model.CacheTypeK)
+	if d.Endpoints.List[0].CacheTypeK != "q8_0" {
+		t.Errorf("expected default local endpoint CacheTypeK q8_0, got %q", d.Endpoints.List[0].CacheTypeK)
 	}
-	if d.Model.CacheTypeV != "q8_0" {
-		t.Errorf("expected default Model.CacheTypeV q8_0, got %q", d.Model.CacheTypeV)
+	if d.Endpoints.List[0].CacheTypeV != "q8_0" {
+		t.Errorf("expected default local endpoint CacheTypeV q8_0, got %q", d.Endpoints.List[0].CacheTypeV)
+	}
+	if d.Endpoints.Active != "local" {
+		t.Errorf("expected default active endpoint local, got %q", d.Endpoints.Active)
+	}
+	if len(d.Endpoints.List) != 1 {
+		t.Errorf("expected one default endpoint, got %d", len(d.Endpoints.List))
 	}
 	if d.Project.ActiveProjectSlug != "global" {
 		t.Errorf("expected default Project.ActiveProjectSlug global, got %q", d.Project.ActiveProjectSlug)
@@ -53,10 +60,32 @@ func TestDefaults(t *testing.T) {
 // table entries to mutate a single field into an error state.
 func validCfg() Config {
 	c := Defaults()
-	c.Model.Binary = "/llama-server"
-	c.Model.ModelPath = "/models/model.gguf"
+	c.Endpoints.List[0].Binary = "/llama-server"
+	c.Endpoints.List[0].ModelPath = "/models/model.gguf"
 	c.Embedder.Binary = "/embedder"
 	c.Embedder.ModelPath = "/models/nomic.gguf"
+	return c
+}
+
+// externalCfg returns a Config whose active endpoint is a valid external
+// OpenAI-compatible backend, as a starting point for external-endpoint cases.
+func externalCfg() Config {
+	c := validCfg()
+	c.Endpoints = EndpointsConfig{
+		Active:      "remote",
+		ActiveModel: "llama3.2",
+		List: []Endpoint{{
+			ID:      "remote",
+			Kind:    EndpointKindOpenAI,
+			Name:    "Remote",
+			BaseURL: "https://api.example.com/v1",
+			APIKey:  "sk-test",
+			Models: []EndpointModel{
+				{ID: "llama3.2", Name: "Llama 3.2", CtxSize: 32768},
+				{ID: "qwen", Name: "Qwen", CtxSize: 32768},
+			},
+		}},
+	}
 	return c
 }
 
@@ -74,17 +103,17 @@ func TestValidate(t *testing.T) {
 		// Required strings.
 		{
 			name:    "missing model binary",
-			mutate:  func(c *Config) { c.Model.Binary = "" },
+			mutate:  func(c *Config) { c.Endpoints.List[0].Binary = "" },
 			wantErr: "model.binary is required",
 		},
 		{
 			name:    "whitespace-only model binary",
-			mutate:  func(c *Config) { c.Model.Binary = "   " },
+			mutate:  func(c *Config) { c.Endpoints.List[0].Binary = "   " },
 			wantErr: "model.binary is required",
 		},
 		{
 			name:    "missing model path",
-			mutate:  func(c *Config) { c.Model.ModelPath = "" },
+			mutate:  func(c *Config) { c.Endpoints.List[0].ModelPath = "" },
 			wantErr: "model.model_path is required",
 		},
 		{
@@ -98,20 +127,49 @@ func TestValidate(t *testing.T) {
 			wantErr: "embedder.model_path is required",
 		},
 
+		// Endpoint list shape.
+		{
+			name:    "no endpoints",
+			mutate:  func(c *Config) { c.Endpoints.List = nil },
+			wantErr: "at least one model endpoint is required",
+		},
+		{
+			name:    "endpoint id empty",
+			mutate:  func(c *Config) { c.Endpoints.List[0].ID = "" },
+			wantErr: "endpoint id is required",
+		},
+		{
+			name: "duplicate endpoint id",
+			mutate: func(c *Config) {
+				c.Endpoints.List = append(c.Endpoints.List, c.Endpoints.List[0])
+			},
+			wantErr: "duplicate endpoint id",
+		},
+		{
+			name:    "invalid endpoint kind",
+			mutate:  func(c *Config) { c.Endpoints.List[0].Kind = "grpc" },
+			wantErr: "endpoint kind must be local or openai",
+		},
+		{
+			name:    "unknown active endpoint",
+			mutate:  func(c *Config) { c.Endpoints.Active = "nope" },
+			wantErr: "active endpoint \"nope\" does not exist",
+		},
+
 		// Port ranges.
 		{
 			name:    "model port zero",
-			mutate:  func(c *Config) { c.Model.Port = 0 },
+			mutate:  func(c *Config) { c.Endpoints.List[0].Port = 0 },
 			wantErr: "model.port must be between 1 and 65535",
 		},
 		{
 			name:    "model port negative",
-			mutate:  func(c *Config) { c.Model.Port = -1 },
+			mutate:  func(c *Config) { c.Endpoints.List[0].Port = -1 },
 			wantErr: "model.port must be between 1 and 65535",
 		},
 		{
 			name:    "model port too high",
-			mutate:  func(c *Config) { c.Model.Port = 70000 },
+			mutate:  func(c *Config) { c.Endpoints.List[0].Port = 70000 },
 			wantErr: "model.port must be between 1 and 65535",
 		},
 		{
@@ -142,7 +200,7 @@ func TestValidate(t *testing.T) {
 		// Port collisions.
 		{
 			name:    "model and embedder collide",
-			mutate:  func(c *Config) { c.Embedder.Port = c.Model.Port },
+			mutate:  func(c *Config) { c.Embedder.Port = c.Endpoints.List[0].Port },
 			wantErr: "both use port",
 		},
 		{
@@ -158,42 +216,102 @@ func TestValidate(t *testing.T) {
 			},
 			wantErr: "both use port",
 		},
+		{
+			name: "two local endpoints collide",
+			mutate: func(c *Config) {
+				other := c.Endpoints.List[0]
+				other.ID = "local2"
+				c.Endpoints.List = append(c.Endpoints.List, other)
+			},
+			wantErr: "both use port",
+		},
 
 		// Model numeric bounds.
 		{
 			name:    "negative ctx size",
-			mutate:  func(c *Config) { c.Model.CtxSize = -1 },
+			mutate:  func(c *Config) { c.Endpoints.List[0].CtxSize = -1 },
 			wantErr: "model.ctx_size must be >= 0",
 		},
 		{
 			name:   "gpu layers -1 is allowed",
-			mutate: func(c *Config) { c.Model.GPULayers = -1 },
+			mutate: func(c *Config) { c.Endpoints.List[0].GPULayers = -1 },
 		},
 		{
 			name:    "gpu layers below -1",
-			mutate:  func(c *Config) { c.Model.GPULayers = -2 },
+			mutate:  func(c *Config) { c.Endpoints.List[0].GPULayers = -2 },
 			wantErr: "model.gpu_layers must be >= -1",
 		},
 		{
 			name:    "n_parallel zero",
-			mutate:  func(c *Config) { c.Model.NParallel = 0 },
+			mutate:  func(c *Config) { c.Endpoints.List[0].NParallel = 0 },
 			wantErr: "model.n_parallel must be >= 1",
 		},
 
 		// KV cache types.
 		{
 			name:    "empty cache_type_k",
-			mutate:  func(c *Config) { c.Model.CacheTypeK = "" },
+			mutate:  func(c *Config) { c.Endpoints.List[0].CacheTypeK = "" },
 			wantErr: "model.cache_type_k must be one of",
 		},
 		{
 			name:    "unknown cache_type_v",
-			mutate:  func(c *Config) { c.Model.CacheTypeV = "q3_k" },
+			mutate:  func(c *Config) { c.Endpoints.List[0].CacheTypeV = "q3_k" },
 			wantErr: "model.cache_type_v must be one of",
 		},
 		{
 			name:   "f16 cache types accepted",
-			mutate: func(c *Config) { c.Model.CacheTypeK = "f16"; c.Model.CacheTypeV = "f16" },
+			mutate: func(c *Config) { c.Endpoints.List[0].CacheTypeK = "f16"; c.Endpoints.List[0].CacheTypeV = "f16" },
+		},
+
+		// External endpoints.
+		{
+			name:   "valid external endpoint",
+			mutate: func(c *Config) { c.Endpoints = externalCfg().Endpoints },
+		},
+		{
+			name:    "external missing base url",
+			mutate:  func(c *Config) { c.Endpoints = externalCfg().Endpoints; c.Endpoints.List[0].BaseURL = "" },
+			wantErr: "base_url is required",
+		},
+		{
+			name:    "external invalid base url scheme",
+			mutate:  func(c *Config) { c.Endpoints = externalCfg().Endpoints; c.Endpoints.List[0].BaseURL = "ftp://nope" },
+			wantErr: "base_url must be an http(s) URL",
+		},
+		{
+			name:    "external invalid base url garbage",
+			mutate:  func(c *Config) { c.Endpoints = externalCfg().Endpoints; c.Endpoints.List[0].BaseURL = "not a url" },
+			wantErr: "base_url must be an http(s) URL",
+		},
+		{
+			name:    "external no models",
+			mutate:  func(c *Config) { c.Endpoints = externalCfg().Endpoints; c.Endpoints.List[0].Models = nil },
+			wantErr: "at least one model",
+		},
+		{
+			name:    "external empty model id",
+			mutate:  func(c *Config) { c.Endpoints = externalCfg().Endpoints; c.Endpoints.List[0].Models[0].ID = "" },
+			wantErr: "model id is required",
+		},
+		{
+			name:    "external duplicate model id",
+			mutate:  func(c *Config) { c.Endpoints = externalCfg().Endpoints; c.Endpoints.List[0].Models[1].ID = "llama3.2" },
+			wantErr: "duplicate model id",
+		},
+		{
+			name:    "external negative model ctx",
+			mutate:  func(c *Config) { c.Endpoints = externalCfg().Endpoints; c.Endpoints.List[0].Models[0].CtxSize = -5 },
+			wantErr: "ctx_size must be >= 0",
+		},
+		{
+			name:    "external active model unknown",
+			mutate:  func(c *Config) { c.Endpoints = externalCfg().Endpoints; c.Endpoints.ActiveModel = "ghost" },
+			wantErr: "active model \"ghost\" does not exist",
+		},
+		{
+			name:    "external base url with api key",
+			mutate:  func(c *Config) { c.Endpoints = externalCfg().Endpoints },
+			wantErr: "",
 		},
 
 		// Prompt bounds + budget sum.
@@ -210,7 +328,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "budget plus reserve exceeds ctx",
 			mutate: func(c *Config) {
-				c.Model.CtxSize = 4096
+				c.Endpoints.List[0].CtxSize = 4096
 				c.Prompt.MemoryTokenBudget = 3000
 				c.Prompt.ConversationReserve = 2000
 			},
@@ -219,7 +337,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "budget plus reserve equals ctx is fine",
 			mutate: func(c *Config) {
-				c.Model.CtxSize = 8192
+				c.Endpoints.List[0].CtxSize = 8192
 				c.Prompt.MemoryTokenBudget = 4096
 				c.Prompt.ConversationReserve = 4096
 			},
@@ -227,10 +345,20 @@ func TestValidate(t *testing.T) {
 		{
 			name: "model ctx size zero skips budget check",
 			mutate: func(c *Config) {
-				c.Model.CtxSize = 0
+				c.Endpoints.List[0].CtxSize = 0
 				c.Prompt.MemoryTokenBudget = 1000
 				c.Prompt.ConversationReserve = 1000
 			},
+		},
+		{
+			name: "external model ctx bounds the budget",
+			mutate: func(c *Config) {
+				c.Endpoints = externalCfg().Endpoints
+				c.Endpoints.List[0].Models[0].CtxSize = 2048
+				c.Prompt.MemoryTokenBudget = 3000
+				c.Prompt.ConversationReserve = 0
+			},
+			wantErr: "exceed model.ctx_size",
 		},
 
 		// Queue + metrics.
@@ -307,5 +435,149 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %q", tc.wantErr, err.Error())
 			}
 		})
+	}
+}
+
+func TestActiveModelConfig(t *testing.T) {
+	t.Run("local", func(t *testing.T) {
+		c := validCfg()
+		c.Endpoints.List[0].Binary = "/bin/llama-server"
+		c.Endpoints.List[0].ModelPath = "/models/m.gguf"
+		c.Endpoints.List[0].CtxSize = 16384
+		c.Endpoints.List[0].Port = 9123
+		m := c.ActiveModelConfig()
+		if m.Kind != EndpointKindLocal {
+			t.Fatalf("Kind = %q, want local", m.Kind)
+		}
+		if m.Binary != "/bin/llama-server" || m.ModelPath != "/models/m.gguf" {
+			t.Errorf("local fields not projected: %+v", m)
+		}
+		if m.CtxSize != 16384 || m.Port != 9123 {
+			t.Errorf("local ctx/port not projected: %+v", m)
+		}
+		if m.BaseURL != "" {
+			t.Errorf("local endpoint must not project a BaseURL, got %q", m.BaseURL)
+		}
+	})
+
+	t.Run("external picks active model", func(t *testing.T) {
+		c := externalCfg()
+		m := c.ActiveModelConfig()
+		if m.Kind != EndpointKindOpenAI {
+			t.Fatalf("Kind = %q, want openai", m.Kind)
+		}
+		if m.BaseURL != "https://api.example.com/v1" || m.APIKey != "sk-test" {
+			t.Errorf("external url/key not projected: %+v", m)
+		}
+		if m.ModelID != "llama3.2" {
+			t.Errorf("ModelID = %q, want llama3.2", m.ModelID)
+		}
+		if m.CtxSize != 32768 {
+			t.Errorf("CtxSize = %d, want 32768", m.CtxSize)
+		}
+		if m.Binary != "" {
+			t.Errorf("external endpoint must not project a Binary, got %q", m.Binary)
+		}
+	})
+
+	t.Run("external falls back to first model", func(t *testing.T) {
+		c := externalCfg()
+		c.Endpoints.ActiveModel = ""
+		m := c.ActiveModelConfig()
+		if m.ModelID != "llama3.2" {
+			t.Errorf("ModelID = %q, want first model llama3.2", m.ModelID)
+		}
+	})
+
+	t.Run("external zero ctx uses default", func(t *testing.T) {
+		c := externalCfg()
+		c.Endpoints.List[0].Models[0].CtxSize = 0
+		m := c.ActiveModelConfig()
+		if m.CtxSize != defaultExternalCtxSize {
+			t.Errorf("CtxSize = %d, want default %d", m.CtxSize, defaultExternalCtxSize)
+		}
+	})
+
+	t.Run("unknown active endpoint yields zero value", func(t *testing.T) {
+		c := validCfg()
+		c.Endpoints.Active = "missing"
+		m := c.ActiveModelConfig()
+		if m.Kind != "" || m.Port != 0 {
+			t.Errorf("expected zero ModelConfig, got %+v", m)
+		}
+	})
+}
+
+func TestEffectiveModelProjectOverridesOnlyApplyLocally(t *testing.T) {
+	projBinary := "proj-llama"
+	projCtx := 12345
+	proj := &project.Project{}
+	proj.ModelBinary = &projBinary
+	proj.ModelCtxSize = &projCtx
+
+	t.Run("local applies overrides", func(t *testing.T) {
+		c := validCfg()
+		m := EffectiveModel(&c, proj)
+		if m.Binary != projBinary || m.CtxSize != projCtx {
+			t.Errorf("project overrides not applied: %+v", m)
+		}
+		if m.Kind != EndpointKindLocal {
+			t.Errorf("Kind = %q, want local", m.Kind)
+		}
+	})
+
+	t.Run("external ignores overrides", func(t *testing.T) {
+		c := externalCfg()
+		m := EffectiveModel(&c, proj)
+		if m.Binary != "" || m.ModelPath != "" {
+			t.Errorf("external endpoint must ignore local overrides: %+v", m)
+		}
+		if m.BaseURL == "" || m.ModelID == "" {
+			t.Errorf("external fields lost: %+v", m)
+		}
+	})
+}
+
+func TestModelConfigEqualKindAware(t *testing.T) {
+	baseCfg := validCfg()
+	base := baseCfg.ActiveModelConfig()
+	// Local: Port and Verbose excluded.
+	a := base
+	a.Port = 8081
+	b := base
+	b.Port = 9999
+	if !ModelConfigEqual(a, b) {
+		t.Error("local configs differing only in Port should be equal")
+	}
+	a.Verbose = true
+	b.Verbose = false
+	if !ModelConfigEqual(a, b) {
+		t.Error("local configs differing only in Verbose should be equal")
+	}
+	b.ModelPath = "/other.gguf"
+	if ModelConfigEqual(a, b) {
+		t.Error("local configs differing in ModelPath should not be equal")
+	}
+
+	// External: BaseURL / ModelID / CtxSize / APIKey matter.
+	extCfg := externalCfg()
+	ea := extCfg.ActiveModelConfig()
+	eb := ea
+	if !ModelConfigEqual(ea, eb) {
+		t.Error("identical external configs should be equal")
+	}
+	eb.ModelID = "qwen"
+	if ModelConfigEqual(ea, eb) {
+		t.Error("external configs differing in ModelID should not be equal")
+	}
+	eb = ea
+	eb.APIKey = "other"
+	if ModelConfigEqual(ea, eb) {
+		t.Error("external configs differing in APIKey should not be equal")
+	}
+	eb = ea
+	eb.Kind = EndpointKindLocal
+	if ModelConfigEqual(ea, eb) {
+		t.Error("configs of different kinds should not be equal")
 	}
 }

@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -21,28 +22,71 @@ var (
 	ErrEmbedderPathRequired      = errors.New("config: embedder.model_path is required")
 	ErrActiveProjectSlugRequired = errors.New("config: project.active_project_slug is required")
 	ErrInvalidLlamaOnSwitch      = errors.New("config: project.llama_on_switch must be keep or reload")
+	ErrNoEndpoints               = errors.New("config: at least one model endpoint is required")
+	ErrEndpointIDRequired        = errors.New("config: endpoint id is required")
+	ErrInvalidEndpointKind       = errors.New("config: endpoint kind must be local or openai")
+	ErrBaseURLRequired           = errors.New("config: endpoint base_url is required")
+	ErrInvalidBaseURL            = errors.New("config: endpoint base_url must be an http(s) URL")
+	ErrEndpointModelRequired     = errors.New("config: endpoint needs at least one model")
+	ErrActiveEndpointUnknown     = errors.New("config: active endpoint does not exist")
+	ErrActiveModelUnknown        = errors.New("config: active model does not exist in the active endpoint")
 )
+
+// Endpoint kinds. A "local" endpoint is the llama-server the harness spawns
+// itself; an "openai" endpoint is any external OpenAI-compatible HTTP backend
+// (another llama-server already running, Ollama, a hosted API).
+const (
+	EndpointKindLocal = "local"
+	EndpointKindOpenAI = "openai"
+)
+
+// ValidEndpointKinds lists the endpoint kinds Validate accepts.
+var ValidEndpointKinds = []string{EndpointKindLocal, EndpointKindOpenAI}
+
+// defaultExternalCtxSize is the context-size ceiling assumed for an external
+// model that does not declare one. It feeds prompt-budget arithmetic only and
+// never configures a process.
+const defaultExternalCtxSize = 32768
 
 // ValidLlamaOnSwitch values for ProjectConfig.LlamaOnSwitch.
 var ValidLlamaOnSwitch = []string{"keep", "reload"}
 
 // Config is the top-level configuration structure for the harness.
 type Config struct {
-	Model    ModelConfig
-	Embedder EmbedderConfig
-	Agent    AgentConfig
-	Project  ProjectConfig
-	UI       UIConfig
-	API      APIConfig
-	Prompt   PromptConfig
-	Queue    QueueConfig
-	Metrics  MetricsConfig
-	Log      LogConfig
-	Loop     LoopConfig
+	Endpoints EndpointsConfig
+	Embedder  EmbedderConfig
+	Agent     AgentConfig
+	Project   ProjectConfig
+	UI        UIConfig
+	API       APIConfig
+	Prompt    PromptConfig
+	Queue     QueueConfig
+	Metrics   MetricsConfig
+	Log       LogConfig
+	Loop      LoopConfig
 }
 
-// ModelConfig holds llama-server configuration.
-type ModelConfig struct {
+// EndpointsConfig is the ordered list of model endpoints and the active
+// selection. The active endpoint drives every completion request; a local
+// endpoint also owns the llama-server process the harness spawns.
+type EndpointsConfig struct {
+	// Active is the id of the endpoint used for text completion.
+	Active string
+	// ActiveModel is the model id selected within the active endpoint. It is
+	// empty for a local endpoint, whose loaded model is the only model.
+	ActiveModel string
+	// List holds every configured endpoint, in display order.
+	List []Endpoint
+}
+
+// Endpoint is one model backend.
+type Endpoint struct {
+	ID   string
+	Kind string // EndpointKindLocal or EndpointKindOpenAI
+	// Name is the display name; empty falls back to ID.
+	Name string
+
+	// Local llama-server fields (Kind == EndpointKindLocal).
 	Binary    string
 	ModelPath string
 	CtxSize   int
@@ -59,6 +103,129 @@ type ModelConfig struct {
 	// in llama-server; we expose that as a separate knob if/when needed.
 	CacheTypeK string
 	CacheTypeV string
+
+	// External OpenAI-compatible fields (Kind == EndpointKindOpenAI).
+	BaseURL string
+	APIKey  string
+	// Models lists the model ids this endpoint can serve. A hosted API or an
+	// Ollama instance typically advertises several.
+	Models []EndpointModel
+}
+
+// EndpointModel is one model id served by an OpenAI-compatible endpoint.
+type EndpointModel struct {
+	ID   string
+	Name string
+	// CtxSize is the context-size ceiling used for prompt-budget arithmetic.
+	// 0 falls back to the external default.
+	CtxSize int
+}
+
+// ModelConfig is the resolved active model a generation talks to. It is a
+// projection of the active endpoint plus the selected model, not a stored
+// section: local endpoints contribute llama-server fields, external endpoints
+// contribute the base URL, optional API key, and model id.
+type ModelConfig struct {
+	// Kind is EndpointKindLocal or EndpointKindOpenAI.
+	Kind string
+	// EndpointID and EndpointName identify the source endpoint.
+	EndpointID   string
+	EndpointName string
+	// ModelID and ModelName identify the selected model on an external
+	// endpoint; they are empty for a local endpoint.
+	ModelID   string
+	ModelName string
+
+	// Local llama-server fields (Kind == EndpointKindLocal).
+	Binary    string
+	ModelPath string
+	CtxSize   int
+	GPULayers int
+	NParallel int
+	Port      int
+	Verbose   bool
+	CacheTypeK string
+	CacheTypeV string
+
+	// External endpoint fields (Kind == EndpointKindOpenAI).
+	BaseURL string
+	APIKey  string
+}
+
+// ActiveEndpoint returns the active endpoint, or nil when the selection does
+// not reference a configured endpoint.
+func (c *Config) ActiveEndpoint() *Endpoint {
+	return c.Endpoint(c.Endpoints.Active)
+}
+
+// Endpoint returns the endpoint with the given id, or nil.
+func (c *Config) Endpoint(id string) *Endpoint {
+	for i := range c.Endpoints.List {
+		if c.Endpoints.List[i].ID == id {
+			return &c.Endpoints.List[i]
+		}
+	}
+	return nil
+}
+
+// Model returns the model with the given id on this endpoint, or nil.
+func (e *Endpoint) Model(id string) *EndpointModel {
+	for i := range e.Models {
+		if e.Models[i].ID == id {
+			return &e.Models[i]
+		}
+	}
+	return nil
+}
+
+// ActiveModelConfig resolves the active endpoint and its selected model into a
+// concrete ModelConfig. A zero value is returned when no active endpoint
+// resolves. For an external endpoint the selected model is used, falling back
+// to the first declared model when ActiveModel does not match.
+func (c *Config) ActiveModelConfig() ModelConfig {
+	e := c.ActiveEndpoint()
+	if e == nil {
+		return ModelConfig{}
+	}
+	m := ModelConfig{
+		Kind:         e.Kind,
+		EndpointID:   e.ID,
+		EndpointName: e.Name,
+	}
+	if e.Kind == EndpointKindOpenAI {
+		m.BaseURL = e.BaseURL
+		m.APIKey = e.APIKey
+		mm := e.Model(c.Endpoints.ActiveModel)
+		if mm == nil && len(e.Models) > 0 {
+			mm = &e.Models[0]
+		}
+		if mm != nil {
+			m.ModelID = mm.ID
+			m.ModelName = mm.Name
+			m.CtxSize = mm.CtxSize
+		}
+		if m.CtxSize <= 0 {
+			m.CtxSize = defaultExternalCtxSize
+		}
+		return m
+	}
+	m.Binary = e.Binary
+	m.ModelPath = e.ModelPath
+	m.CtxSize = e.CtxSize
+	m.GPULayers = e.GPULayers
+	m.NParallel = e.NParallel
+	m.Port = e.Port
+	m.Verbose = e.Verbose
+	m.CacheTypeK = e.CacheTypeK
+	m.CacheTypeV = e.CacheTypeV
+	return m
+}
+
+// IsExternalModel reports whether the active endpoint is an external
+// OpenAI-compatible backend rather than a harness-spawned llama-server.
+func (c *Config) IsExternalModel() bool {
+	e := c.ActiveEndpoint()
+	return e != nil && e.Kind == EndpointKindOpenAI
 }
 
 // ValidCacheTypes lists the KV cache dtypes llama-server accepts. Used by
@@ -286,14 +453,21 @@ type Store interface {
 // single source of truth for initial values; the db package seeds every
 // column from these on first run.
 func Defaults() Config {
+	const localID = "local"
 	return Config{
-		Model: ModelConfig{
-			CtxSize:    32768,
-			GPULayers:  -1,
-			NParallel:  1,
-			Port:       8081,
-			CacheTypeK: "q8_0",
-			CacheTypeV: "q8_0",
+		Endpoints: EndpointsConfig{
+			Active: localID,
+			List: []Endpoint{{
+				ID:         localID,
+				Kind:       EndpointKindLocal,
+				Name:       "Local llama-server",
+				CtxSize:    32768,
+				GPULayers:  -1,
+				NParallel:  1,
+				Port:       8081,
+				CacheTypeK: "q8_0",
+				CacheTypeV: "q8_0",
+			}},
 		},
 		Embedder: EmbedderConfig{
 			Port: 8082,
@@ -362,12 +536,50 @@ func Defaults() Config {
 // UI trims form values before calling this, but Validate re-checks trimmed
 // length so direct callers (tests, future API callers) can't bypass it.
 func Validate(cfg *Config) error {
-	if strings.TrimSpace(cfg.Model.Binary) == "" {
-		return ErrModelBinaryRequired
+	if len(cfg.Endpoints.List) == 0 {
+		return ErrNoEndpoints
 	}
-	if strings.TrimSpace(cfg.Model.ModelPath) == "" {
-		return ErrModelPathRequired
+
+	seen := make(map[string]bool, len(cfg.Endpoints.List))
+	localPorts := make(map[int]string)
+	for i := range cfg.Endpoints.List {
+		e := &cfg.Endpoints.List[i]
+		id := strings.TrimSpace(e.ID)
+		if id == "" {
+			return ErrEndpointIDRequired
+		}
+		e.ID = id
+		if seen[id] {
+			return fmt.Errorf("config: duplicate endpoint id %q", id)
+		}
+		seen[id] = true
+
+		switch e.Kind {
+		case EndpointKindLocal:
+			if err := validateLocalEndpoint(e); err != nil {
+				return err
+			}
+			if other, ok := localPorts[e.Port]; ok {
+				return fmt.Errorf("config: endpoints %q and %q both use port %d", other, e.ID, e.Port)
+			}
+			localPorts[e.Port] = e.ID
+		case EndpointKindOpenAI:
+			if err := validateOpenAIEndpoint(e); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("%s, got %q", ErrInvalidEndpointKind, e.Kind)
+		}
 	}
+
+	active := cfg.ActiveEndpoint()
+	if active == nil {
+		return fmt.Errorf("config: active endpoint %q does not exist", cfg.Endpoints.Active)
+	}
+	if active.Kind == EndpointKindOpenAI && active.Model(cfg.Endpoints.ActiveModel) == nil {
+		return fmt.Errorf("config: active model %q does not exist in endpoint %q", cfg.Endpoints.ActiveModel, active.ID)
+	}
+
 	if strings.TrimSpace(cfg.Embedder.Binary) == "" {
 		return ErrEmbedderBinaryRequired
 	}
@@ -375,9 +587,6 @@ func Validate(cfg *Config) error {
 		return ErrEmbedderPathRequired
 	}
 
-	if err := validatePort("model.port", cfg.Model.Port); err != nil {
-		return err
-	}
 	if err := validatePort("embedder.port", cfg.Embedder.Port); err != nil {
 		return err
 	}
@@ -391,38 +600,28 @@ func Validate(cfg *Config) error {
 		return err
 	}
 
-	// Port collisions: check all four regardless of API.Enabled so flipping
-	// the flag on later can't silently introduce a conflict.
-	seen := make(map[int]string, 4)
+	// Port collisions: check all local-endpoint ports against each other and
+	// against the fixed embedder/ui/api ports regardless of API.Enabled so
+	// flipping the flag on later can't silently introduce a conflict.
+	used := make(map[int]string, 4+len(localPorts))
 	for _, p := range []struct {
 		name string
 		val  int
 	}{
-		{"model.port", cfg.Model.Port},
 		{"embedder.port", cfg.Embedder.Port},
 		{"ui.port", cfg.UI.Port},
 		{"api.port", cfg.API.Port},
 	} {
-		if other, ok := seen[p.val]; ok {
+		if other, ok := used[p.val]; ok {
 			return fmt.Errorf("config: %s and %s both use port %d", other, p.name, p.val)
 		}
-		seen[p.val] = p.name
+		used[p.val] = p.name
 	}
-
-	if cfg.Model.CtxSize < 0 {
-		return fmt.Errorf("config: model.ctx_size must be >= 0, got %d", cfg.Model.CtxSize)
-	}
-	if cfg.Model.GPULayers < -1 {
-		return fmt.Errorf("config: model.gpu_layers must be >= -1 (-1 offloads all), got %d", cfg.Model.GPULayers)
-	}
-	if cfg.Model.NParallel < 1 {
-		return fmt.Errorf("config: model.n_parallel must be >= 1, got %d", cfg.Model.NParallel)
-	}
-	if err := validateCacheType("model.cache_type_k", cfg.Model.CacheTypeK); err != nil {
-		return err
-	}
-	if err := validateCacheType("model.cache_type_v", cfg.Model.CacheTypeV); err != nil {
-		return err
+	for port, id := range localPorts {
+		if other, ok := used[port]; ok {
+			return fmt.Errorf("config: endpoint %q and %s both use port %d", id, other, port)
+		}
+		used[port] = "endpoint " + id
 	}
 
 	if cfg.Prompt.MemoryTokenBudget < 0 {
@@ -431,9 +630,10 @@ func Validate(cfg *Config) error {
 	if cfg.Prompt.ConversationReserve < 0 {
 		return fmt.Errorf("config: prompt.conversation_reserve must be >= 0, got %d", cfg.Prompt.ConversationReserve)
 	}
-	if cfg.Model.CtxSize > 0 && cfg.Prompt.MemoryTokenBudget+cfg.Prompt.ConversationReserve > cfg.Model.CtxSize {
+	activeCtx := cfg.ActiveModelConfig().CtxSize
+	if activeCtx > 0 && cfg.Prompt.MemoryTokenBudget+cfg.Prompt.ConversationReserve > activeCtx {
 		return fmt.Errorf("config: prompt.memory_token_budget (%d) + prompt.conversation_reserve (%d) exceed model.ctx_size (%d)",
-			cfg.Prompt.MemoryTokenBudget, cfg.Prompt.ConversationReserve, cfg.Model.CtxSize)
+			cfg.Prompt.MemoryTokenBudget, cfg.Prompt.ConversationReserve, activeCtx)
 	}
 	if cfg.Prompt.RecencyN < 0 {
 		return fmt.Errorf("config: prompt.recency_n must be >= 0 (0 means unlimited), got %d", cfg.Prompt.RecencyN)
@@ -473,6 +673,64 @@ func Validate(cfg *Config) error {
 	return nil
 }
 
+func validateLocalEndpoint(e *Endpoint) error {
+	if strings.TrimSpace(e.Binary) == "" {
+		return ErrModelBinaryRequired
+	}
+	if strings.TrimSpace(e.ModelPath) == "" {
+		return ErrModelPathRequired
+	}
+	if err := validatePort("model.port", e.Port); err != nil {
+		return err
+	}
+	if e.CtxSize < 0 {
+		return fmt.Errorf("config: model.ctx_size must be >= 0, got %d", e.CtxSize)
+	}
+	if e.GPULayers < -1 {
+		return fmt.Errorf("config: model.gpu_layers must be >= -1 (-1 offloads all), got %d", e.GPULayers)
+	}
+	if e.NParallel < 1 {
+		return fmt.Errorf("config: model.n_parallel must be >= 1, got %d", e.NParallel)
+	}
+	if err := validateCacheType("model.cache_type_k", e.CacheTypeK); err != nil {
+		return err
+	}
+	if err := validateCacheType("model.cache_type_v", e.CacheTypeV); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateOpenAIEndpoint(e *Endpoint) error {
+	base := strings.TrimSpace(e.BaseURL)
+	if base == "" {
+		return ErrBaseURLRequired
+	}
+	u, err := url.Parse(base)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ErrInvalidBaseURL
+	}
+	if len(e.Models) == 0 {
+		return ErrEndpointModelRequired
+	}
+	seen := make(map[string]bool, len(e.Models))
+	for i := range e.Models {
+		id := strings.TrimSpace(e.Models[i].ID)
+		if id == "" {
+			return fmt.Errorf("config: endpoint %q model id is required", e.ID)
+		}
+		e.Models[i].ID = id
+		if seen[id] {
+			return fmt.Errorf("config: endpoint %q duplicate model id %q", e.ID, id)
+		}
+		seen[id] = true
+		if e.Models[i].CtxSize < 0 {
+			return fmt.Errorf("config: endpoint %q model %q ctx_size must be >= 0", e.ID, id)
+		}
+	}
+	return nil
+}
+
 func validatePort(name string, port int) error {
 	if port < 1 || port > 65535 {
 		return fmt.Errorf("config: %s must be between 1 and 65535, got %d", name, port)
@@ -488,11 +746,13 @@ func validateCacheType(name, value string) error {
 }
 
 // EffectiveModel returns the effective model config for the given project.
-// Per-project overrides take precedence; nil values fall back to the global
-// defaults in cfg.
+// Per-project overrides take precedence over the active local endpoint; nil
+// values fall back to the endpoint's fields. Overrides apply only to a local
+// endpoint — an external backend's base URL and model selection are never
+// overridden per project.
 func EffectiveModel(cfg *Config, proj *project.Project) ModelConfig {
-	m := cfg.Model
-	if proj == nil {
+	m := cfg.ActiveModelConfig()
+	if m.Kind != EndpointKindLocal || proj == nil {
 		return m
 	}
 	if proj.ModelBinary != nil {
@@ -514,12 +774,20 @@ func EffectiveModel(cfg *Config, proj *project.Project) ModelConfig {
 }
 
 // ModelConfigEqual returns true when a and b are identical model
-// configurations. Port and Verbose are deliberately excluded — they are
-// process-level flags, not model identity fields. Two projects that differ
-// only in Port cannot share a llama-server, but since the harness runs
-// exactly one llama-server whose Port comes from the global config (never
-// project overrides), comparing other fields suffices.
+// configurations. Comparison is kind-aware: local endpoints compare llama-server
+// identity fields (Port and Verbose are deliberately excluded — they are
+// process-level flags, not model identity), external endpoints compare the base
+// URL, API key, model id, and context size.
 func ModelConfigEqual(a, b ModelConfig) bool {
+	if a.Kind != b.Kind {
+		return false
+	}
+	if a.Kind == EndpointKindOpenAI {
+		return a.BaseURL == b.BaseURL &&
+			a.APIKey == b.APIKey &&
+			a.ModelID == b.ModelID &&
+			a.CtxSize == b.CtxSize
+	}
 	return a.Binary == b.Binary &&
 		a.ModelPath == b.ModelPath &&
 		a.CtxSize == b.CtxSize &&
