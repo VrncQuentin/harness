@@ -49,16 +49,24 @@ func EnsureProjectMemoryRepo(uiServer *ui.Server, store project.Store, slug stri
 
 // ValidatePaths checks startup-critical paths referenced by cfg and surfaces
 // invalid entries as startup errors. It returns true when all checks passed.
+// Local model files are validated only when the active endpoint is a local
+// llama-server; an external backend has no local model or binary to check.
 func ValidatePaths(uiServer *ui.Server, cfg *config.Config) bool {
-	ok := true
-	checks := []struct {
+	type pathCheck struct {
 		label string
 		path  string
-	}{
-		{"model file", cfg.Model.ModelPath},
-		{"llama-server binary", cfg.Model.Binary},
+	}
+	ok := true
+	checks := []pathCheck{
 		{"embedder binary", cfg.Embedder.Binary},
 		{"embedder model file", cfg.Embedder.ModelPath},
+	}
+	if !cfg.IsExternalModel() {
+		active := cfg.ActiveModelConfig()
+		checks = append(checks,
+			pathCheck{"model file", active.ModelPath},
+			pathCheck{"llama-server binary", active.Binary},
+		)
 	}
 	for _, c := range checks {
 		if c.path == "" {

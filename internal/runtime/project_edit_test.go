@@ -112,7 +112,7 @@ func TestProjectEdit_UpdateRoutesThroughTransaction(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 
 	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
-	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Model.ModelPath {
+	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Endpoints.List[0].ModelPath {
 		t.Fatalf("initial applied running model = %+v, want model A", rt.applied)
 	}
 	root := projects.projects[project.GlobalSlug].MemoryRepoPath
@@ -158,7 +158,7 @@ func TestProjectEdit_RetryComparesAgainstAppliedState(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 
 	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
-	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Model.ModelPath {
+	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Endpoints.List[0].ModelPath {
 		t.Fatalf("initial applied running model = %+v, want model A", rt.applied)
 	}
 	root := projects.projects[project.GlobalSlug].MemoryRepoPath

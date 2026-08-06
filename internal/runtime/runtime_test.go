@@ -99,14 +99,14 @@ func TestNewEventChannelUsesRuntimeBuffer(t *testing.T) {
 
 func TestEffectiveModelForUsesActiveProjectOverrides(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Model.Binary = "global-llama"
-	cfg.Model.ModelPath = "global.gguf"
-	cfg.Model.CtxSize = 2048
-	cfg.Model.GPULayers = 1
-	cfg.Model.NParallel = 1
-	cfg.Model.Port = 12345
-	cfg.Model.CacheTypeK = "q8_0"
-	cfg.Model.CacheTypeV = "q8_0"
+	cfg.Endpoints.List[0].Binary = "global-llama"
+	cfg.Endpoints.List[0].ModelPath = "global.gguf"
+	cfg.Endpoints.List[0].CtxSize = 2048
+	cfg.Endpoints.List[0].GPULayers = 1
+	cfg.Endpoints.List[0].NParallel = 1
+	cfg.Endpoints.List[0].Port = 12345
+	cfg.Endpoints.List[0].CacheTypeK = "q8_0"
+	cfg.Endpoints.List[0].CacheTypeV = "q8_0"
 	cfg.Project.ActiveProjectSlug = "demo"
 
 	projectBinary := "project-llama"
@@ -136,14 +136,14 @@ func TestEffectiveModelForUsesActiveProjectOverrides(t *testing.T) {
 	if model.CtxSize != projectCtx || model.GPULayers != projectGPU || model.NParallel != projectParallel {
 		t.Fatalf("effective numeric overrides = ctx %d gpu %d parallel %d", model.CtxSize, model.GPULayers, model.NParallel)
 	}
-	if model.Port != cfg.Model.Port || model.CacheTypeK != cfg.Model.CacheTypeK || model.CacheTypeV != cfg.Model.CacheTypeV {
+	if model.Port != cfg.Endpoints.List[0].Port || model.CacheTypeK != cfg.Endpoints.List[0].CacheTypeK || model.CacheTypeV != cfg.Endpoints.List[0].CacheTypeV {
 		t.Fatalf("effective global-only fields changed unexpectedly: %+v", model)
 	}
 }
 
 func TestPromptConfigForUsesRunningModelCtx(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Model.CtxSize = 2048
+	cfg.Endpoints.List[0].CtxSize = 2048
 	cfg.Prompt.CtxSize = 9999
 	cfg.Project.ActiveProjectSlug = "demo"
 
@@ -174,7 +174,8 @@ func TestPromptConfigForUsesRunningModelCtx(t *testing.T) {
 	}
 }
 func TestLlamaArgsForModelUsesEffectiveModelFields(t *testing.T) {
-	model := config.Defaults().Model
+	defCfg := config.Defaults()
+	model := defCfg.ActiveModelConfig()
 	model.Binary = "llama-bin"
 	model.ModelPath = "project.gguf"
 	model.CtxSize = 4096
@@ -223,7 +224,8 @@ func TestEmbedderArgsForConfig(t *testing.T) {
 }
 
 func TestModelProcessArgBuildersKeepCacheAndVerbosity(t *testing.T) {
-	model := config.Defaults().Model
+	defCfg := config.Defaults()
+	model := defCfg.ActiveModelConfig()
 	model.Binary = "llama-bin"
 	model.ModelPath = "project.gguf"
 	model.CtxSize = 4096
@@ -406,7 +408,7 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 		{
 			name: "model port",
 			mutate: func(c *config.Config) {
-				c.Model.Port = 19081
+				c.Endpoints.List[0].Port = 19081
 			},
 		},
 		{
@@ -424,6 +426,10 @@ func TestApplyConfigEndpointChangeRebuildsMemoryServices(t *testing.T) {
 			seedRequiredConfigFiles(t, &cfg)
 			cfg.Project.ActiveProjectSlug = project.GlobalSlug
 			loaded := cfg
+			// The endpoints list is a slice: a shallow copy shares its backing
+			// array, so mutating loaded's endpoint would leak into cfg. Clone it
+			// to give loaded a genuinely independent endpoint list.
+			loaded.Endpoints.List = append([]config.Endpoint(nil), cfg.Endpoints.List...)
 			tc.mutate(&loaded)
 
 			rt := New(cfg, &runtimeConfigStore{cfg: &loaded, saved: true}, LogRings{})
@@ -1224,7 +1230,7 @@ func TestBuildSessionManagerUsesPhysicalProjectRepoPaths(t *testing.T) {
 	root := initRuntimeProjectRepo(t)
 	cfg := config.Defaults()
 	cfg.Project.ActiveProjectSlug = "global"
-	cfg.Model.Port = modelPort
+	cfg.Endpoints.List[0].Port = modelPort
 	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, nil, LogRings{})
@@ -1474,14 +1480,23 @@ func (s *runtimeConfigStore) Save(cfg *config.Config) error {
 func seedRequiredConfigFiles(t *testing.T, cfg *config.Config) {
 	t.Helper()
 	dir := t.TempDir()
-	paths := []*string{&cfg.Model.Binary, &cfg.Model.ModelPath, &cfg.Embedder.Binary, &cfg.Embedder.ModelPath}
-	for i, target := range paths {
-		path := filepath.Join(dir, fmt.Sprintf("required-%d", i))
+	n := 0
+	write := func(target *string) {
+		path := filepath.Join(dir, fmt.Sprintf("required-%d", n))
+		n++
 		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		*target = path
 	}
+	for i := range cfg.Endpoints.List {
+		if cfg.Endpoints.List[i].Kind == config.EndpointKindLocal {
+			write(&cfg.Endpoints.List[i].Binary)
+			write(&cfg.Endpoints.List[i].ModelPath)
+		}
+	}
+	write(&cfg.Embedder.Binary)
+	write(&cfg.Embedder.ModelPath)
 }
 
 type runtimeProjectStoreStub struct {
@@ -1979,7 +1994,7 @@ func TestGenLeaseKeepsRecordingInOriginalProject(t *testing.T) {
 	cfg := config.Defaults()
 	seedRequiredConfigFiles(t, &cfg)
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
-	cfg.Model.Port = modelPort
+	cfg.Endpoints.List[0].Port = modelPort
 	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
@@ -2332,7 +2347,7 @@ func TestSnapshot_RunnerReadsAndRecordsInOriginalProject(t *testing.T) {
 	seedRequiredConfigFiles(t, &cfg)
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 	cfg.Agent.Active = "coder"
-	cfg.Model.Port = modelPort
+	cfg.Endpoints.List[0].Port = modelPort
 	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
@@ -2466,7 +2481,7 @@ func TestSnapshot_ActiveAgentResolvedPerAcquisition(t *testing.T) {
 	seedRequiredConfigFiles(t, &cfg)
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 	cfg.Agent.Active = "" // no active agent at startup
-	cfg.Model.Port = modelPort
+	cfg.Endpoints.List[0].Port = modelPort
 	cfg.Embedder.Port = freeTCPPort(t)
 
 	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})

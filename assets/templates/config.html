@@ -48,62 +48,54 @@
 
 <form method="post" action="/config" class="cfg-form" autocomplete="off">
   <fieldset class="cfg-section">
-    <legend>Model (llama-server)</legend>
+    <legend>Model endpoints</legend>
     <div class="fg">
-      <label for="model_binary">Binary path <span class="req">*</span></label>
-      <input type="text" id="model_binary" name="model_binary" value="{{.Config.Model.Binary}}" placeholder="C:\path\to\llama-server.exe" list="model_binary_options" required>
-      <datalist id="model_binary_options">
-        {{range .Suggestions.LlamaBinary}}<option value="{{.}}">{{end}}
-      </datalist>
-      {{if .Suggestions.LlamaBinary}}<p class="fg-hint">Detected {{len .Suggestions.LlamaBinary}} llama-server candidate{{if gt (len .Suggestions.LlamaBinary) 1}}s{{end}} on this machine.</p>{{end}}
-    </div>
-    <div class="fg">
-      <label for="model_path">Model file <span class="req">*</span></label>
-      <input type="text" id="model_path" name="model_path" value="{{.Config.Model.ModelPath}}" placeholder="C:\path\to\model.gguf" list="model_path_options" required>
-      <datalist id="model_path_options">
-        {{range .Suggestions.MainModel}}<option value="{{.}}">{{end}}
-      </datalist>
-      {{if .Suggestions.MainModel}}<p class="fg-hint">{{len .Suggestions.MainModel}} .gguf file{{if gt (len .Suggestions.MainModel) 1}}s{{end}} found in <code>models/</code>.</p>{{end}}
+      <label for="endpoints_json">Endpoints <span class="req">*</span></label>
+      <textarea id="endpoints_json" name="endpoints_json" rows="14" spellcheck="false">{{.EndpointsJSON}}</textarea>
+      <p class="fg-hint">Each endpoint is either <code>local</code> (a llama-server the harness spawns) or <code>openai</code> (any external OpenAI-compatible backend: another llama-server already running, Ollama, a hosted API). An external endpoint takes a base URL, an optional API key, and one or more model ids.</p>
+      <pre class="cfg-example">[
+  {
+    "id": "local",
+    "kind": "local",
+    "name": "Local llama-server",
+    "binary": "C:\\path\\llama-server.exe",
+    "model_path": "C:\\models\\model.gguf",
+    "ctx_size": 32768,
+    "gpu_layers": -1,
+    "n_parallel": 1,
+    "port": 8081,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0"
+  },
+  {
+    "id": "ollama",
+    "kind": "openai",
+    "name": "Ollama",
+    "base_url": "http://localhost:11434/v1",
+    "api_key": "",
+    "models": [
+      {"id": "llama3.2", "name": "Llama 3.2", "ctx_size": 32768}
+    ]
+  }
+]</pre>
+      <p class="fg-hint">The active endpoint's <code>kind</code> decides whether the harness spawns llama-server. Switching between a local and an external backend requires a harness restart; switching between two external endpoints applies live.</p>
     </div>
     <div class="fg-row">
       <div class="fg">
-        <label for="model_ctx_size">Context size</label>
-        <input type="number" id="model_ctx_size" name="model_ctx_size" value="{{.Config.Model.CtxSize}}" min="512">
-      </div>
-      <div class="fg">
-        <label for="model_gpu_layers">GPU layers</label>
-        <input type="number" id="model_gpu_layers" name="model_gpu_layers" value="{{.Config.Model.GPULayers}}" min="-1">
-      </div>
-      <div class="fg">
-        <label for="model_n_parallel">Parallel</label>
-        <input type="number" id="model_n_parallel" name="model_n_parallel" value="{{.Config.Model.NParallel}}" min="1">
-      </div>
-      <div class="fg">
-        <label for="model_port">Port</label>
-        <input type="number" id="model_port" name="model_port" value="{{.Config.Model.Port}}" min="1" max="65535">
-      </div>
-    </div>
-    <div class="fg-row">
-      <div class="fg">
-        <label for="model_cache_type_k">KV cache type (K)</label>
-        <select id="model_cache_type_k" name="model_cache_type_k">
-          {{range .CacheTypes}}<option value="{{.}}" {{if eq . $.Config.Model.CacheTypeK}}selected{{end}}>{{.}}</option>{{end}}
+        <label for="active_endpoint">Active endpoint</label>
+        <select id="active_endpoint" name="active_endpoint">
+          {{range .Config.Endpoints.List}}<option value="{{.ID}}" {{if eq .ID $.Config.Endpoints.Active}}selected{{end}}>{{.ID}}{{if .Name}} — {{.Name}}{{end}}</option>{{end}}
         </select>
+        <p class="fg-hint">The endpoint every completion request is sent to.</p>
       </div>
       <div class="fg">
-        <label for="model_cache_type_v">KV cache type (V)</label>
-        <select id="model_cache_type_v" name="model_cache_type_v">
-          {{range .CacheTypes}}<option value="{{.}}" {{if eq . $.Config.Model.CacheTypeV}}selected{{end}}>{{.}}</option>{{end}}
+        <label for="active_model">Active model</label>
+        {{$active := .Config.ActiveEndpoint}}
+        <select id="active_model" name="active_model">
+          {{if $active}}{{range $active.Models}}<option value="{{.ID}}" {{if eq .ID $.Config.Endpoints.ActiveModel}}selected{{end}}>{{.ID}}{{if .Name}} — {{.Name}}{{end}}</option>{{end}}{{end}}
         </select>
-        <p class="fg-hint">Quantizing the V cache below f16 typically requires <code>--flash-attn</code> in llama-server.</p>
+        <p class="fg-hint">Only applies to an external (<code>openai</code>) endpoint. A local endpoint serves its loaded model file.</p>
       </div>
-    </div>
-    <div class="fg">
-      <label class="checkbox">
-        <input type="checkbox" id="model_verbose" name="model_verbose" {{if .Config.Model.Verbose}}checked{{end}}>
-        <span>Verbose logging (pass <code>--verbose</code> to llama-server)</span>
-      </label>
-      <p class="fg-hint">Turn on when diagnosing silent crashes. Noisy in normal operation.</p>
     </div>
   </fieldset>
 
@@ -421,6 +413,6 @@
     <button type="submit" class="btn btn-primary">Save config</button>
     <a href="/" class="btn btn-ghost">Cancel</a>
   </div>
-  <p class="cfg-note">Required fields are marked <span class="req">*</span>. Model, embedder, and log buffer changes are applied live. UI port and queue depth still require a harness restart.</p>
+  <p class="cfg-note">Required fields are marked <span class="req">*</span>. Embedder, log-buffer, and external-endpoint changes apply live. Switching between a local and an external model backend, changing the UI port, or changing the queue depth still requires a harness restart.</p>
 </form>
 {{end}}

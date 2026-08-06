@@ -75,7 +75,7 @@ func TestAppliedState_OldModelNotReconstructedFromStore(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 
 	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
-	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Model.ModelPath {
+	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Endpoints.List[0].ModelPath {
 		t.Fatalf("initial applied running model = %+v, want model A", rt.applied)
 	}
 
@@ -347,7 +347,7 @@ func TestAppliedState_RollbackUsesRecordedState(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 
 	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
-	modelA := cfg.Model
+	modelA := cfg.ActiveModelConfig()
 	if rt.applied == nil || rt.applied.runningModel != modelA {
 		t.Fatalf("initial applied running model = %+v, want model A", rt.applied)
 	}
@@ -781,15 +781,15 @@ func TestAppliedState_ProjectOverrideDeletion(t *testing.T) {
 		t.Fatal("override deletion should apply live")
 	}
 
-	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Model.ModelPath {
+	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Endpoints.List[0].ModelPath {
 		t.Fatalf("applied running model = %+v, want the global model after override deletion", rt.applied)
 	}
 	bin, args, _ := rt.llamaMgr.Args()
 	if strings.Contains(strings.Join(args, " "), modelB) {
 		t.Fatalf("llama still references deleted override model %q: %v", modelB, args)
 	}
-	if bin != cfg.Model.Binary {
-		t.Fatalf("llama binary = %q, want global %q", bin, cfg.Model.Binary)
+	if bin != cfg.Endpoints.List[0].Binary {
+		t.Fatalf("llama binary = %q, want global %q", bin, cfg.Endpoints.List[0].Binary)
 	}
 	// The override deletion is a process-only change: no generation rebuild.
 	if rt.gen.sessionMgr != oldMgr {
@@ -806,10 +806,13 @@ func TestAppliedState_GlobalPortChanges(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 
 	rt, _ := appliedRuntimeForTest(t, &cfg, nil)
-	newPort := cfg.Model.Port + 1
+	newPort := cfg.Endpoints.List[0].Port + 1
 	newEmbedPort := cfg.Embedder.Port + 1
 	loaded := cfg
-	loaded.Model.Port = newPort
+	// Clone the endpoints slice: a shallow copy shares its backing array, so
+	// mutating loaded's endpoint would leak into cfg and corrupt the old state.
+	loaded.Endpoints.List = append([]config.Endpoint(nil), cfg.Endpoints.List...)
+	loaded.Endpoints.List[0].Port = newPort
 	loaded.Embedder.Port = newEmbedPort
 	rt.cfgStore = &runtimeConfigStore{cfg: &loaded, saved: true}
 
@@ -848,7 +851,7 @@ func TestAppliedState_LlamaOnSwitchKeep(t *testing.T) {
 	cfg.Project.LlamaOnSwitch = "keep"
 
 	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
-	modelA := cfg.Model
+	modelA := cfg.ActiveModelConfig()
 
 	// The active project now prefers model B, but keep must leave the running
 	// model alone.

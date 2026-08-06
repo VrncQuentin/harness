@@ -232,7 +232,7 @@ func loadInitialConfig(uiServer *ui.Server, cfgStore config.Store) (config.Confi
 	}
 	uiServer.SetFirstRun(!configured)
 	if configured {
-		slog.Info("config loaded", "model_port", cfg.Model.Port, "embed_port", cfg.Embedder.Port)
+		slog.Info("config loaded", "active_endpoint", cfg.Endpoints.Active, "active_model", cfg.Endpoints.ActiveModel, "model_port", cfg.ActiveModelConfig().Port, "embed_port", cfg.Embedder.Port)
 	} else {
 		slog.Info("first run: waiting for config")
 	}
