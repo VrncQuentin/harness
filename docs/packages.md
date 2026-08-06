@@ -120,6 +120,13 @@ package, the small package dissolves rather than absorbing features.
   the single source of truth for what a config row is. No SQL.
 - **Does not own:** persistence (`db` owns the SQLite `config` table) or any
   live service-graph state.
+- **Endpoint model:** the chat backend is an ordered list of endpoints
+  (`Config.Endpoints`). Each endpoint is either `local` — the llama-server the
+  harness spawns — or `openai` — any external OpenAI-compatible base URL with
+  an optional API key and one or more model ids. `ActiveModelConfig()`
+  projects the active endpoint plus selected model into the runtime
+  `ModelConfig` shape; `EffectiveModel` overlays per-project overrides onto a
+  local endpoint only.
 - **Dependency direction:** depends on `pathid` (model-discovery path
   canonicalization), `project`, `summarizerprompt`, and `tools` —
   tool-enablement defaults come from `tools.BuiltinDefaultEnabled`, so config
@@ -260,11 +267,16 @@ package, the small package dissolves rather than absorbing features.
   `embedder` — the embedding-sidecar client.
 - **Does not own:** process lifecycle (`proc`), request serialization (`queue`),
   or any prompt/memory logic.
+- **Backend selection:** the inference client targets the active endpoint's
+  base URL — `http://127.0.0.1:<port>` for a local llama-server, or the
+  endpoint's own base URL for an external backend. `NewClientForBackend`
+  injects the selected model id into requests that omit one and sends an
+  optional `Authorization: Bearer` key; both are empty for local backends.
 - **Dependency direction:** both depend on `httpclient`. `inference` is
   consumed by `queue`, `session`, `prompt`, `api`, `agentloop`, and `runtime`;
   `embedder` by `prompt`, `memoryops`, `runtime`, and `cmd/eval-retrieval`.
-- **Why the boundary exists:** swapping llama-server for another backend
-  touches `inference` only.
+- **Why the boundary exists:** swapping the model backend touches `inference`
+  only.
 
 ### queue
 

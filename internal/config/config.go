@@ -36,7 +36,7 @@ var (
 // itself; an "openai" endpoint is any external OpenAI-compatible HTTP backend
 // (another llama-server already running, Ollama, a hosted API).
 const (
-	EndpointKindLocal = "local"
+	EndpointKindLocal  = "local"
 	EndpointKindOpenAI = "openai"
 )
 
@@ -137,13 +137,13 @@ type ModelConfig struct {
 	ModelName string
 
 	// Local llama-server fields (Kind == EndpointKindLocal).
-	Binary    string
-	ModelPath string
-	CtxSize   int
-	GPULayers int
-	NParallel int
-	Port      int
-	Verbose   bool
+	Binary     string
+	ModelPath  string
+	CtxSize    int
+	GPULayers  int
+	NParallel  int
+	Port       int
+	Verbose    bool
 	CacheTypeK string
 	CacheTypeV string
 

@@ -45,7 +45,7 @@ internal/
   agentloop/        ← native agent turn loop (tool calls, approvals, doom detection)
   api/              ← optional OpenAI-compatible HTTP server
   approvals/        ← layered permission evaluator + destructive-command classifier
-  config/           ← config schema, defaults, validation (no SQL)
+  config/           ← config schema, defaults, validation (no SQL); endpoint list
   db/               ← SQLite persistence: config, metrics, projects, migrations
   embedder/         ← embedding sidecar client
   git/              ← go-git wrapper (memory repos)
@@ -53,7 +53,7 @@ internal/
   home/             ← harness home (~/.harness) resolution
   httpclient/       ← shared HTTP client construction
   index/            ← flat vector index (vectors.bin + manifest.json)
-  inference/        ← OpenAI-compatible HTTP client for llama-server
+  inference/        ← OpenAI-compatible HTTP client for the active model backend
   logbuf/           ← in-memory log rings for the UI
   memory/           ← memory repo access + project repo scaffolding
   memoryops/        ← semantic-memory operations (embed-on-save, rebuild, dedup, scoring)

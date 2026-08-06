@@ -173,7 +173,8 @@ func (s *Server) backendView() backendView {
 	}
 }
 
-func (s *Server) latestMetricsView() []metricView {	store := s.getMetricsStore()
+func (s *Server) latestMetricsView() []metricView {
+	store := s.getMetricsStore()
 	if store == nil {
 		return nil
 	}

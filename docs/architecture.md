@@ -18,8 +18,12 @@ browser UI is the only user-facing surface — all errors (unconfigured on first
 run, missing model, llama-server failures, missing memory repo) are surfaced
 there, not in a terminal.
 
-The binary targets llama-server as the inference backend and uses a separate
-embedding sidecar for semantic memory.
+The binary targets llama-server as the default inference backend and uses a
+separate embedding sidecar for semantic memory. The chat backend is an
+endpoint list: any configured endpoint may be a harness-spawned llama-server
+(`local`) or an external OpenAI-compatible backend (`openai`) with a base URL,
+optional API key, and one or more model ids. The embedder remains a locally
+spawned sidecar.
 
 ## Documentation map
 
@@ -89,9 +93,11 @@ detail lives in [packages.md](packages.md).
 │  └──────┬───────┘                                     │
 └─────────┼───────────────────────────────────────────────┘
           │ HTTP (OpenAI-compatible)
-┌─────────▼────────────┐
-│   llama-server       │  ← harness spawns, monitors, restarts
-└──────────────────────┘
+┌─────────▼────────────────────────────┐
+│  Model backend                       │  ← local: harness spawns, monitors,
+│   local llama-server OR              │     restarts a llama-server; external:
+│   external OpenAI-compatible         │     direct HTTP, no child process
+└──────────────────────────────────────┘
 ```
 
 The browser UI is the primary chat/task surface. The optional OpenAI-compatible
@@ -113,7 +119,7 @@ Retry button that re-runs the sequence without restarting the binary.
 3. Open harness.db → surface error in UI if the database cannot be opened or migrated
 4. Load config row → if the user has never saved, show the first-run CTA and stop here
 5. Validate project memory repos → surface error in UI if missing or not a git repo
-6. Start llama-server process → surface error in UI if binary missing or startup fails
+6. If the active endpoint is local, start llama-server → surface error in UI if binary missing or startup fails. An external endpoint skips this step entirely
 7. Start embedder sidecar → surface error in UI if binary missing or startup fails
 8. Begin health check loops for llama-server and embedder
 9. Start API server if enabled in config
@@ -208,7 +214,9 @@ dependency directions are in [packages.md](packages.md).
 ### Execution
 
 - **`internal/inference`** and **`internal/embedder`** — OpenAI-compatible HTTP
-  clients for llama-server and the embedding sidecar.
+  clients for the model backend and the embedding sidecar. The inference client
+  targets whichever endpoint is active: the spawned llama-server's port for a
+  local endpoint, or the endpoint's base URL for an external backend.
 - **`internal/queue`** — bounded in-process request queue.
 - **`internal/proc`** — spawn/monitor/restart of the child processes.
 - **`internal/prompt`** — layered prompt assembly.
@@ -254,6 +262,18 @@ subprocess.
 reuses the same process-management pattern as the chat model — uniform failure
 handling, restart logic, and health checking — and keeps the harness free of
 Python dependencies.
+
+**Chat backend as an endpoint list.** The model the harness talks to is one of
+a configured list of endpoints, not a single process. A `local` endpoint is a
+llama-server the harness spawns, monitors, and restarts (the original behavior).
+An `openai` endpoint is any external OpenAI-compatible HTTP backend — another
+llama-server already running, Ollama, or a hosted API — addressed by base URL
+with an optional API key and one or more model ids. Only the local endpoint
+creates a child process; external backends route completions directly to their
+base URL with the selected model id. Switching between two external endpoints
+applies live; switching between a local and an external backend is a
+restart-required change because the llama-server process cannot be spawned or
+torn down mid-run. The embedder is always local.
 
 **Single SQLite file for operational state.** Config (single-row typed table),
 metrics, project identity, and runtime control state share `harness.db` under

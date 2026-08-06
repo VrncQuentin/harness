@@ -58,10 +58,10 @@ func TestNewInferenceClientForModelExternal(t *testing.T) {
 
 	rt := New(config.Defaults(), nil, LogRings{})
 	model := config.ModelConfig{
-		Kind:     config.EndpointKindOpenAI,
-		BaseURL:  srv.URL,
-		APIKey:   "sk-secret",
-		ModelID:  "qwen2.5",
+		Kind:       config.EndpointKindOpenAI,
+		BaseURL:    srv.URL,
+		APIKey:     "sk-secret",
+		ModelID:    "qwen2.5",
 		EndpointID: "remote",
 	}
 	client := rt.newInferenceClientForModel(model)

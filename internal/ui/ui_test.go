@@ -56,13 +56,13 @@ func endpointJSON(eps ...config.Endpoint) string {
 }
 
 // localEndpoint returns a valid local endpoint for form POSTs.
-func localEndpoint(binary, modelPath string) config.Endpoint {
+func localEndpoint() config.Endpoint {
 	return config.Endpoint{
 		ID:         "local",
 		Kind:       config.EndpointKindLocal,
 		Name:       "Local llama-server",
-		Binary:     binary,
-		ModelPath:  modelPath,
+		Binary:     "C:\\llama.exe",
+		ModelPath:  "C:\\m.gguf",
 		CtxSize:    32768,
 		GPULayers:  -1,
 		NParallel:  1,
@@ -894,7 +894,7 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	s.SetRetry(func() ApplyResult { atomic.AddInt32(&retryCalls, 1); return ApplyResult{} })
 
 	form := url.Values{}
-	ep := localEndpoint("C:\\llama.exe", "C:\\m.gguf")
+	ep := localEndpoint()
 	ep.CtxSize = 8192
 	ep.GPULayers = 20
 	ep.Verbose = true
@@ -1009,7 +1009,7 @@ func TestHandleConfig_POSTClearsVerboseWhenUnchecked(t *testing.T) {
 	}
 
 	form := url.Values{}
-	form.Set("endpoints_json", endpointJSON(localEndpoint("C:\\llama.exe", "C:\\m.gguf")))
+	form.Set("endpoints_json", endpointJSON(localEndpoint()))
 	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", "C:\\embed.exe")
 	form.Set("embed_path", "C:\\e.gguf")
@@ -1047,7 +1047,7 @@ func TestHandleConfig_POSTStripsQuotedPaths(t *testing.T) {
 	s.SetRetry(func() ApplyResult { return ApplyResult{} })
 
 	form := url.Values{}
-	form.Set("endpoints_json", endpointJSON(localEndpoint(`C:\llama.exe`, `C:\m.gguf`)))
+	form.Set("endpoints_json", endpointJSON(localEndpoint()))
 	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", `'C:\embed.exe'`)
 	form.Set("embed_path", `'C:\e.gguf'`)
@@ -1113,7 +1113,7 @@ func TestHandleConfig_POSTIncludesApplyResultInRedirect(t *testing.T) {
 	})
 
 	form := url.Values{}
-	form.Set("endpoints_json", endpointJSON(localEndpoint("C:\\llama.exe", "C:\\m.gguf")))
+	form.Set("endpoints_json", endpointJSON(localEndpoint()))
 	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", "C:\\embed.exe")
 	form.Set("embed_path", "C:\\e.gguf")
@@ -1255,7 +1255,7 @@ func TestHandleConfig_POSTPersistsLogBufferFields(t *testing.T) {
 	s.SetRetry(func() ApplyResult { return ApplyResult{} })
 
 	form := url.Values{}
-	form.Set("endpoints_json", endpointJSON(localEndpoint("C:\\llama.exe", "C:\\m.gguf")))
+	form.Set("endpoints_json", endpointJSON(localEndpoint()))
 	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", "C:\\embed.exe")
 	form.Set("embed_path", "C:\\e.gguf")
@@ -1352,7 +1352,7 @@ func TestHandleConfig_POSTPersistsCacheTypes(t *testing.T) {
 	s, store := newServerWithStore(t)
 	s.SetRetry(func() ApplyResult { return ApplyResult{} })
 
-	ep := localEndpoint("C:\\llama.exe", "C:\\m.gguf")
+	ep := localEndpoint()
 	ep.CacheTypeK = "q4_0"
 	ep.CacheTypeV = "f16"
 
@@ -1385,7 +1385,7 @@ func TestHandleConfig_POSTPersistsCacheTypes(t *testing.T) {
 func TestHandleConfig_POSTRejectsUnknownCacheType(t *testing.T) {
 	s, _ := newServerWithStore(t)
 
-	ep := localEndpoint("C:\\llama.exe", "C:\\m.gguf")
+	ep := localEndpoint()
 	ep.CacheTypeK = "q3_k"
 
 	form := url.Values{}

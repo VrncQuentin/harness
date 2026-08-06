@@ -75,7 +75,7 @@ func (s *ConfigStore) seed() error {
 		?, ?, ?, ?,
 		?, ?, ?, ?,
 		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-	)`,		string(endpointsJSON), d.Endpoints.Active, d.Endpoints.ActiveModel,
+	)`, string(endpointsJSON), d.Endpoints.Active, d.Endpoints.ActiveModel,
 		d.Embedder.Binary, d.Embedder.ModelPath, d.Embedder.Port, boolInt(d.Embedder.Verbose),
 		d.Agent.Active,
 		d.UI.Port, boolInt(d.UI.OpenOnStart), d.UI.SidebarRecentSessions,
@@ -117,32 +117,32 @@ func (s *ConfigStore) seed() error {
 // it at least once. A fresh install returns (Defaults(), false, nil).
 func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	var (
-		cfg             config.Config
-		endpointsJSON   string
-		embedderVerbose int
-		openOnStart     int
-		apiEnabled      int
-		savedAt         sql.NullInt64
-		readEnabled     int
-		fileList        int
-		astMap          int
-		astFind         int
-		gitStatus       int
-		gitDiff         int
-		gitLog          int
-		editEnabled     int
-		execEnabled     int
-		goTest          int
-		goLint          int
-		gitCommit       int
-		gitBranch       int
-		gitCheckout     int
-		webSearch       int
-		memoryQuery     int
-		gitPush         int
-		ghPRCreate      int
-		ghPRMerge       int
-		ghPRWait        int
+		cfg               config.Config
+		endpointsJSON     string
+		embedderVerbose   int
+		openOnStart       int
+		apiEnabled        int
+		savedAt           sql.NullInt64
+		readEnabled       int
+		fileList          int
+		astMap            int
+		astFind           int
+		gitStatus         int
+		gitDiff           int
+		gitLog            int
+		editEnabled       int
+		execEnabled       int
+		goTest            int
+		goLint            int
+		gitCommit         int
+		gitBranch         int
+		gitCheckout       int
+		webSearch         int
+		memoryQuery       int
+		gitPush           int
+		ghPRCreate        int
+		ghPRMerge         int
+		ghPRWait          int
 		prometheusEnabled int
 	)
 	row := s.db.QueryRow(`
