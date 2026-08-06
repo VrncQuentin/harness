@@ -2,6 +2,7 @@ package ui
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/VrncQuentin/harness/internal/project"
@@ -77,4 +78,40 @@ func (s *Server) handleProjectView(w http.ResponseWriter, r *http.Request) {
 	if err := s.projectViewTmpl.ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+// handleProjectChat starts a new session for a project from its view page.
+// Chat runs against the active project's context, so this activates the
+// project first (the session's project becomes the active one), then hands
+// the user off to /chat with their opening message prefilled. The session
+// itself is created by the chat page on the first send.
+func (s *Server) handleProjectChat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOrigin(r) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	slug := strings.TrimSpace(r.FormValue("slug"))
+	if err := project.ValidateSlug(slug); err != nil {
+		http.Error(w, "invalid project", http.StatusBadRequest)
+		return
+	}
+	if err := s.activateProject(slug); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.refreshProjectNav()
+
+	target := "/chat"
+	if msg := strings.TrimSpace(r.FormValue("message")); msg != "" {
+		target += "?message=" + url.QueryEscape(msg)
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }

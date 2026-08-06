@@ -29,6 +29,22 @@
 
   <div class="card">
     <div class="card-head">
+      <h3>Start a session</h3>
+    </div>
+    <form method="post" action="/projects/chat" class="project-chat-form">
+      <input type="hidden" name="slug" value="{{.Project.Slug}}">
+      <label class="field">
+        <span>New session in {{.Project.DisplayName}}</span>
+        <textarea name="message" rows="2" placeholder="Type a message to start a new session in this project..." required></textarea>
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn btn-primary">Start session</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
       <h3>Recent sessions</h3>
     </div>
     {{if .RecentSessions}}

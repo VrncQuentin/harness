@@ -148,6 +148,27 @@ func TestHandleChat_GETHappyPathRendersForm(t *testing.T) {
 	}
 }
 
+// TestHandleChat_PrefillsInitialMessage: the project view page hands off to
+// /chat?message=... so the new session opens with the user's opening line
+// already in the textarea.
+func TestHandleChat_PrefillsInitialMessage(t *testing.T) {
+	s := NewServer(3000)
+	setChatRunnerForTest(s, &stubChatRunner{})
+	setAgentRegistryForTest(s, newStubRegistry("coder",
+		AgentInfo{Name: "coder"},
+	))
+
+	rec := httptest.NewRecorder()
+	s.handleChat(rec, httptest.NewRequest(http.MethodGet, "/chat?message=hello+world", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), ">hello world</textarea>") {
+		t.Error("expected the initial message to prefill the chat textarea")
+	}
+}
+
 // TestHandleChat_RejectsNonGET ensures POST/PUT/etc. on /chat return 405
 // instead of accidentally re-rendering or mutating anything.
 func TestHandleChat_RejectsNonGET(t *testing.T) {

@@ -2016,6 +2016,44 @@ func TestHandleProjectView_RejectsNonGET(t *testing.T) {
 	}
 }
 
+func TestHandleProjectChat_ActivatesAndRedirectsToChat(t *testing.T) {
+	s := NewServer(3000)
+	cfgStore := &stubConfigStore{cfg: config.Defaults()}
+	s.SetConfigStore(cfgStore)
+	s.SetProjectStore(&stubProjectStore{projects: []project.Project{
+		{Slug: project.GlobalSlug, DisplayName: "Global"},
+		{Slug: "demo", DisplayName: "Demo Project"},
+	}})
+
+	form := url.Values{"slug": {"demo"}, "message": {"hello there"}}
+	req := httptest.NewRequest(http.MethodPost, "/projects/chat", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleProjectChat(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rec.Code)
+	}
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/chat?message=hello+there") {
+		t.Fatalf("Location = %q, want /chat with the message", loc)
+	}
+	if cfgStore.cfg.Project.ActiveProjectSlug != "demo" {
+		t.Errorf("active project = %q, want demo (session's project becomes active)", cfgStore.cfg.Project.ActiveProjectSlug)
+	}
+}
+
+func TestHandleProjectChat_RejectsNonPOST(t *testing.T) {
+	s := NewServer(3000)
+	req := httptest.NewRequest(http.MethodGet, "/projects/chat", nil)
+	rec := httptest.NewRecorder()
+	s.handleProjectChat(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
 func TestLayout_RendersSidebarSessionsPerProject(t *testing.T) {
 	s := NewServer(3000)
 	s.SetConfigStore(&stubConfigStore{cfg: config.Defaults()})

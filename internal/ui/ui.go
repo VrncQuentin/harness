@@ -665,6 +665,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/memory/note", s.handleAppendNote)
 	mux.HandleFunc("/projects", s.handleProjects)
 	mux.HandleFunc("/projects/view", s.handleProjectView)
+	mux.HandleFunc("/projects/chat", s.handleProjectChat)
 	mux.HandleFunc("/projects/activate", s.handleProjectActivate)
 	mux.HandleFunc("/projects/hide", s.handleProjectHide)
 	mux.HandleFunc("/projects/unhide", s.handleProjectUnhide)
