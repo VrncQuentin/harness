@@ -142,6 +142,66 @@ func TestStartServicesSkipsLlamaForExternalEndpoint(t *testing.T) {
 	}
 }
 
+// TestStart_PushesExternalBackendToStatusUI covers the production cold-boot
+// path: cmd/harness/main.go calls Start, not ApplyConfig, so an external
+// endpoint configured before launch must reach the status page from Start too.
+// Without it the page renders a llama-server process card for a backend that
+// has no process until the first config save or retry.
+func TestStart_PushesExternalBackendToStatusUI(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Endpoints = externalEndpoints()
+	cfg.Embedder.Binary = "embed-bin"
+	cfg.Embedder.ModelPath = "embed.gguf"
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	root := initRuntimeProjectRepo(t)
+	projects := &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.projectStore = projects
+	t.Cleanup(func() { stopRuntime(t, rt) })
+
+	uiServer := ui.NewServer(0)
+	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
+
+	if rt.llamaMgr != nil {
+		t.Error("expected no llama-server manager for an external endpoint")
+	}
+	got := uiServer.Backend()
+	if !got.External {
+		t.Fatalf("status UI backend = %+v, want an external backend after cold boot", got)
+	}
+	if got.Endpoint != "remote" || got.Model != "qwen" {
+		t.Errorf("status UI backend = %+v, want endpoint remote / model qwen", got)
+	}
+}
+
+// TestStart_LocalBackendLeavesStatusUIOnLlamaCard is the companion: a local
+// endpoint must leave the status page on the llama-server process card.
+func TestStart_LocalBackendLeavesStatusUIOnLlamaCard(t *testing.T) {
+	cfg := config.Defaults()
+	seedRequiredConfigFiles(t, &cfg)
+	cfg.Project.ActiveProjectSlug = project.GlobalSlug
+
+	root := initRuntimeProjectRepo(t)
+	projects := &runtimeProjectStoreStub{projects: map[string]project.Project{
+		project.GlobalSlug: {Slug: project.GlobalSlug, DisplayName: "Global", MemoryRepoPath: root},
+	}}
+
+	rt := New(cfg, &runtimeConfigStore{cfg: &cfg, saved: true}, LogRings{})
+	rt.projectStore = projects
+	t.Cleanup(func() { stopRuntime(t, rt) })
+
+	uiServer := ui.NewServer(0)
+	rt.Start(context.Background(), uiServer, NewEventChannel(), nil)
+
+	if got := uiServer.Backend(); got.External {
+		t.Fatalf("status UI backend = %+v, want a local backend", got)
+	}
+}
+
 // TestApplyConfig_KindSwitchRequiresRestart verifies that switching between a
 // local and an external backend is a restart-required change: the config is
 // persisted (the caller saves it), the live applied state and process stay on

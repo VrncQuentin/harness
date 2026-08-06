@@ -25,11 +25,19 @@ func (rt *Runtime) Start(
 	metricsStore metrics.Store,
 ) {
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
 	uiServer.SetSnapshotProvider(rt)
 	rt.refreshProjectDirectoryWarnings(uiServer)
 	rt.startServices(ctx, uiServer, events, metricsStore)
 	rt.startMemoryAndAPI(ctx, uiServer, metricsStore, &rt.cfg)
+	applied := rt.applied
+	rt.mu.Unlock()
+
+	// The status page learns the live model backend here as well as from an
+	// apply: production cold-boots through Start, not ApplyConfig, so without
+	// this an external endpoint configured before launch would render the
+	// llama-server process card for a backend that has no process until the
+	// first config save or retry. Pushed outside rt.mu, mirroring ApplyConfig.
+	rt.pushBackend(uiServer, applied)
 }
 
 // Managers returns the process managers currently owned by the runtime.

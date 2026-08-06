@@ -79,7 +79,6 @@ type EndpointsConfig struct {
 	List []Endpoint
 }
 
-// Endpoint is one model backend.
 // Endpoint is one model backend. The JSON tags pin the on-disk
 // endpoints_json format (and the shape the /config editor documents) to
 // snake_case; Go identifiers are not a persistence format.
