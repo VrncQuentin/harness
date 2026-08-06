@@ -67,6 +67,10 @@ type chatView struct {
 	RecentSessions []chatResumeRow
 	ResumeErr      string
 	StreamID       string
+	// InitialMessage prefills the chat input. The project view page passes
+	// its chatbox message through ?message= so a new session opens with the
+	// user's opening line already in the box.
+	InitialMessage string
 }
 
 type chatResumeRow struct {
@@ -90,6 +94,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	data := chatView{basePage: s.newBasePage("chat"), StreamID: newEventStreamID()}
+	data.InitialMessage = strings.TrimSpace(r.URL.Query().Get("message"))
 	data.Configured = snap.ChatRunner != nil
 	// Use the acquisition-scoped active agent rather than re-reading the
 	// registry's live selection, so the rendered agent matches the generation

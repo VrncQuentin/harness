@@ -86,7 +86,7 @@
     <input type="hidden" name="stream_id" id="chat-stream-input" value="{{.StreamID}}">
     <input type="hidden" name="session_id" id="chat-session-input" value="">
     <div class="chat-input-wrap">
-      <textarea id="chat-input" name="message" rows="3" placeholder="Type a message. Enter sends, Shift+Enter inserts a newline." required></textarea>
+      <textarea id="chat-input" name="message" rows="3" placeholder="Type a message. Enter sends, Shift+Enter inserts a newline." required>{{.InitialMessage}}</textarea>
     </div>
     <div class="chat-actions">
       <button type="submit" class="btn btn-primary" id="chat-send">Send</button>
