@@ -92,7 +92,7 @@
     },
     {
       "file": "internal/runtime/setup.go",
-      "line": 76,
+      "line": 84,
       "fn": "os.Stat",
       "justification": "model/binary path validation for os/exec; subprocess containment is a separate problem"
     },

@@ -1514,9 +1514,12 @@ func TestHandleConfig_GETPreFillsDetectedLlamaBinary(t *testing.T) {
 	if !strings.Contains(body, `name="embed_binary" value="`+want+`"`) {
 		t.Errorf("expected detected llama-server %q to pre-fill embed_binary", want)
 	}
+	// Scoped to the textarea: the suggestion datalists also list the detected
+	// binary, so a whole-body search would pass even if the endpoint pre-fill
+	// never happened.
 	escaped := strings.ReplaceAll(want, `\`, `\\`)
-	if !strings.Contains(body, escaped) {
-		t.Errorf("expected detected llama-server %q to pre-fill the local endpoint in the endpoints JSON", want)
+	if endpoints := textareaBody(body, "endpoints_json"); !strings.Contains(endpoints, escaped) {
+		t.Errorf("expected detected llama-server %q to pre-fill the local endpoint in the endpoints JSON, got %s", want, endpoints)
 	}
 }
 
@@ -1572,9 +1575,36 @@ func TestHandleConfig_POSTErrorDoesNotPreFillBinary(t *testing.T) {
 		t.Fatalf("expected 200 re-render, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, strings.ReplaceAll(detected, `\`, `\\`)) {
-		t.Error("POST error re-render should not overwrite the user's submitted value with detected path")
+	// Only the two places the pre-fill actually writes are checked: the
+	// endpoints JSON (where a local endpoint's binary would be injected) and
+	// the embedder binary input. The suggestion datalists legitimately list
+	// every detected candidate, so a whole-body search would match those and
+	// assert the opposite of what this test is about.
+	if endpoints := textareaBody(body, "endpoints_json"); strings.Contains(endpoints, strings.ReplaceAll(detected, `\`, `\\`)) {
+		t.Error("POST error re-render should not inject the detected binary into the endpoints JSON")
 	}
+	if strings.Contains(body, `name="embed_binary" value="`+detected+`"`) {
+		t.Error("POST error re-render should not overwrite the user's submitted embedder binary with the detected path")
+	}
+}
+
+// textareaBody returns the contents of the named <textarea>, or "" when the
+// element is absent.
+func textareaBody(body, name string) string {
+	open := strings.Index(body, `<textarea id="`+name+`"`)
+	if open < 0 {
+		return ""
+	}
+	start := strings.Index(body[open:], ">")
+	if start < 0 {
+		return ""
+	}
+	start += open + 1
+	end := strings.Index(body[start:], "</textarea>")
+	if end < 0 {
+		return ""
+	}
+	return body[start : start+end]
 }
 
 func TestHandleRetry_CallsCallback(t *testing.T) {
