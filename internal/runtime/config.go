@@ -134,6 +134,22 @@ func (rt *Runtime) applyConfigLocked(
 	// a process reconfiguration. Local↔local changes are process reconfigures.
 	backendChanged := oldApplied != nil && !kindSwitched && needsClientRepoint(oldApplied.runningModel, runningModel)
 
+	// A local↔external kind switch has no live path: the llama-server process
+	// cannot be spawned or torn down mid-run, and the inference client cannot
+	// be repointed without leaving the recorded applied state out of step with
+	// the live process. The config is already persisted by the caller, so the
+	// switch takes effect on the next harness restart. The live applied state,
+	// processes, and client are left untouched.
+	if kindSwitched {
+		slog.Info("model backend switch requires a restart",
+			"old_kind", oldApplied.runningModel.Kind, "new_kind", runningModel.Kind,
+			"new_endpoint", runningModel.EndpointID, "new_model", runningModel.ModelID)
+		result := ui.ApplyResult{RestartNeeded: []string{"model backend"}}
+		rt.finishResult(&result, oldCfg, loaded)
+		rt.mu.Unlock()
+		return result
+	}
+
 	rebuild := rt.memoryAPIUnavailable()
 	if oldApplied != nil {
 		rebuild = rebuild ||
@@ -164,9 +180,6 @@ func (rt *Runtime) applyConfigLocked(
 			result.LiveApplied = true
 		} else {
 			result.Err = errors.New("memory/API services failed to start")
-		}
-		if kindSwitched {
-			result.RestartNeeded = append(result.RestartNeeded, "model backend")
 		}
 		rt.finishResult(&result, oldCfg, loaded)
 		rt.mu.Unlock()
@@ -220,9 +233,6 @@ func (rt *Runtime) applyConfigLocked(
 
 	rt.mu.Lock()
 	result := rt.commitApply(candidate, &newApplied, oldApplied, modelChanged, embedderChanged, backendChanged, apiPortChanged, oldCfg, uiServer)
-	if kindSwitched {
-		result.RestartNeeded = append(result.RestartNeeded, "model backend")
-	}
 	rt.mu.Unlock()
 
 	// Retirement of the previous API server runs outside rt.mu: Stop can wait

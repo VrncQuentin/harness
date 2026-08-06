@@ -1674,6 +1674,71 @@ func TestHandleStatus_HidesRestartFormWhenNotFailed(t *testing.T) {
 	}
 }
 
+func TestHandleStatus_RendersExternalBackendCard(t *testing.T) {
+	s, store := newServerWithStore(t)
+
+	cfg := config.Defaults()
+	cfg.Endpoints = config.EndpointsConfig{
+		Active:      "ollama",
+		ActiveModel: "llama3.2",
+		List: []config.Endpoint{{
+			ID:      "ollama",
+			Kind:    config.EndpointKindOpenAI,
+			Name:    "Ollama",
+			BaseURL: "http://localhost:11434/v1",
+			Models:  []config.EndpointModel{{ID: "llama3.2", Name: "Llama 3.2", CtxSize: 32768}},
+		}},
+	}
+	cfg.Embedder.Binary = "C:\\embed.exe"
+	cfg.Embedder.ModelPath = "C:\\e.gguf"
+	if err := store.Save(&cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Model backend",
+		"External",
+		"ollama",
+		"llama3.2",
+		"http://localhost:11434/v1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected status page to include %q for an external backend", want)
+		}
+	}
+	// No llama-server process card when the backend is external.
+	if strings.Contains(body, `id="llama-status-panel"`) {
+		t.Error("status page should not render the llama-server process card for an external backend")
+	}
+}
+
+func TestHandleStatus_LocalBackendShowsLlamaCard(t *testing.T) {
+	s, store := newServerWithStore(t)
+	cfg := config.Defaults()
+	cfg.Embedder.Binary = "C:\\embed.exe"
+	cfg.Embedder.ModelPath = "C:\\e.gguf"
+	if err := store.Save(&cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="llama-status-panel"`) {
+		t.Error("expected the llama-server process card for a local backend")
+	}
+	if strings.Contains(body, "Model backend") {
+		t.Error("status page should not show an external backend card for a local endpoint")
+	}
+}
+
 func TestHandleStatus_RendersRecentLogs(t *testing.T) {
 	s := NewServer(3000)
 	ring := logbuf.New(10)

@@ -35,10 +35,21 @@ type statusPageData struct {
 	ScaffoldCreated int
 	LlamaPanel      procStatusPanelData
 	EmbedPanel      procStatusPanelData
+	Backend         backendView
 	HarnessLog      logboxData
 	Metrics         []metricView
 	LlamaLog        logboxData
 	EmbedLog        logboxData
+}
+
+// backendView renders the active model backend on the status page. It shows
+// only for an external OpenAI-compatible endpoint, which has no llama-server
+// process card.
+type backendView struct {
+	Show     bool
+	Endpoint string
+	Model    string
+	BaseURL  string
 }
 
 type metricView struct {
@@ -129,6 +140,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ScaffoldCreated: scaffoldCreated,
 		LlamaPanel:      llamaPanelFromSnapshot(snap),
 		EmbedPanel:      embedPanelFromSnapshot(snap),
+		Backend:         s.backendView(),
 		HarnessLog:      logboxData{BodyID: "harness-log", EventName: "harness-log", Entries: recentEntries(s.getLogRing(), statusLogTail)},
 		Metrics:         s.latestMetricsView(),
 		LlamaLog:        logboxData{BodyID: "llama-log", EventName: "llama-log", Entries: recentEntries(s.getLlamaRing(), procLogTail)},
@@ -140,8 +152,28 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) latestMetricsView() []metricView {
-	store := s.getMetricsStore()
+// backendView reports the active model backend for the status page. It is
+// populated only for an external OpenAI-compatible endpoint: a local endpoint
+// is represented by the llama-server process card instead.
+func (s *Server) backendView() backendView {
+	store := s.configStore()
+	if store == nil {
+		return backendView{}
+	}
+	cfg, _, err := store.Load()
+	if err != nil || !cfg.IsExternalModel() {
+		return backendView{}
+	}
+	m := cfg.ActiveModelConfig()
+	return backendView{
+		Show:     true,
+		Endpoint: m.EndpointID,
+		Model:    m.ModelID,
+		BaseURL:  m.BaseURL,
+	}
+}
+
+func (s *Server) latestMetricsView() []metricView {	store := s.getMetricsStore()
 	if store == nil {
 		return nil
 	}
