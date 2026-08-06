@@ -145,7 +145,9 @@ func TestStartServicesSkipsLlamaForExternalEndpoint(t *testing.T) {
 // TestApplyConfig_KindSwitchRequiresRestart verifies that switching between a
 // local and an external backend is a restart-required change: the config is
 // persisted (the caller saves it), the live applied state and process stay on
-// the old backend, and the result reports "model backend".
+// the old backend, and the result reports "model backend". Even when the same
+// save changes a live-readable field (metrics retention), the result must not
+// claim a live apply it did not perform.
 func TestApplyConfig_KindSwitchRequiresRestart(t *testing.T) {
 	cfg := config.Defaults()
 	seedRequiredConfigFiles(t, &cfg)
@@ -158,16 +160,31 @@ func TestApplyConfig_KindSwitchRequiresRestart(t *testing.T) {
 
 	external := cfg
 	external.Endpoints = externalEndpoints()
+	external.Metrics.RetentionDays++
 	rt.cfgStore = &runtimeConfigStore{cfg: &external, saved: true}
+
+	// enterApply/leaveApply are paired seams; the kind-switch early return must
+	// still run leaveApply like every other ApplyConfig exit.
+	var applySeqs []string
+	rt.enterApply = func() { applySeqs = append(applySeqs, "enter") }
+	rt.leaveApply = func() { applySeqs = append(applySeqs, "leave") }
 
 	uiServer := ui.NewServer(0)
 	result := rt.ApplyConfig(context.Background(), uiServer, NewEventChannel(), nil)
 
 	if result.LiveApplied {
-		t.Fatal("a backend kind switch must not live-apply")
+		t.Fatal("a backend kind switch must not live-apply, even for a metrics-retention change on the same save")
 	}
 	if !slices.Contains(result.RestartNeeded, "model backend") {
 		t.Fatalf("RestartNeeded = %v, want it to include model backend", result.RestartNeeded)
+	}
+	if len(applySeqs) != 2 || applySeqs[0] != "enter" || applySeqs[1] != "leave" {
+		t.Fatalf("apply seams = %v, want [enter leave]", applySeqs)
+	}
+	// The status UI must keep reflecting the live local backend, not the saved
+	// external one (the restart-pending window).
+	if uiServer.Backend().External {
+		t.Fatalf("status UI must not report an external backend that is pending a restart: %+v", uiServer.Backend())
 	}
 	// The recorded applied state must still describe the live (local) backend.
 	if rt.applied == nil || rt.applied.runningModel.Kind != config.EndpointKindLocal {
@@ -206,5 +223,9 @@ func TestApplyConfig_ExternalIdentityChangeAppliesLive(t *testing.T) {
 	}
 	if rt.applied == nil || rt.applied.runningModel.ModelID != "llama" {
 		t.Fatalf("applied running model = %+v, want ModelID llama", rt.applied)
+	}
+	b := uiServer.Backend()
+	if !b.External || b.Endpoint != "remote" || b.Model != "llama" {
+		t.Fatalf("status UI backend = %+v, want external endpoint remote model llama", b)
 	}
 }

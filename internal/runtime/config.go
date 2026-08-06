@@ -146,7 +146,16 @@ func (rt *Runtime) applyConfigLocked(
 			"new_endpoint", runningModel.EndpointID, "new_model", runningModel.ModelID)
 		result := ui.ApplyResult{RestartNeeded: []string{"model backend"}}
 		rt.finishResult(&result, oldCfg, loaded)
+		// finishResult marks a metrics-retention change as live-applied on the
+		// assumption rt.cfg is committed; on this path it is not, so the claim
+		// would be false. The status page also keeps reflecting the old
+		// (still live) backend.
+		result.LiveApplied = false
 		rt.mu.Unlock()
+		rt.pushBackend(uiServer, oldApplied)
+		if rt.leaveApply != nil {
+			rt.leaveApply()
+		}
 		return result
 	}
 
@@ -184,6 +193,7 @@ func (rt *Runtime) applyConfigLocked(
 		rt.finishResult(&result, oldCfg, loaded)
 		rt.mu.Unlock()
 		rt.drainPendingRetired()
+		rt.pushBackend(uiServer, rt.applied)
 		rt.setModelMismatch(uiServer, rt.applied)
 		if rt.leaveApply != nil {
 			rt.leaveApply()
@@ -243,6 +253,7 @@ func (rt *Runtime) applyConfigLocked(
 	if rt.leaveApply != nil {
 		rt.leaveApply()
 	}
+	rt.pushBackend(uiServer, &newApplied)
 	rt.setModelMismatch(uiServer, &newApplied)
 	return result
 }
@@ -317,6 +328,27 @@ func needsClientRepoint(old, new config.ModelConfig) bool {
 	return old.BaseURL != new.BaseURL ||
 		old.APIKey != new.APIKey ||
 		old.ModelID != new.ModelID
+}
+
+// pushBackend reflects the recorded applied model backend on the status UI. It
+// is fed from the applied state — never the config store — so the status page
+// cannot claim an external backend while the local llama-server is still the
+// live backend during the restart-pending window of a kind switch.
+func (rt *Runtime) pushBackend(uiServer *ui.Server, applied *appliedState) {
+	if uiServer == nil || applied == nil {
+		return
+	}
+	m := applied.runningModel
+	info := ui.BackendInfo{}
+	if m.Kind == config.EndpointKindOpenAI {
+		info = ui.BackendInfo{
+			External: true,
+			Endpoint: m.EndpointID,
+			Model:    m.ModelID,
+			BaseURL:  m.BaseURL,
+		}
+	}
+	uiServer.SetExternalBackend(info)
 }
 
 // setModelMismatch reflects the recorded running-versus-preferred model on the

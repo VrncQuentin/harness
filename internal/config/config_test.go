@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -153,7 +155,7 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "unknown active endpoint",
 			mutate:  func(c *Config) { c.Endpoints.Active = "nope" },
-			wantErr: "active endpoint \"nope\" does not exist",
+			wantErr: "active endpoint does not exist",
 		},
 
 		// Port ranges.
@@ -306,7 +308,7 @@ func TestValidate(t *testing.T) {
 		{
 			name:    "external active model unknown",
 			mutate:  func(c *Config) { c.Endpoints = externalCfg().Endpoints; c.Endpoints.ActiveModel = "ghost" },
-			wantErr: "active model \"ghost\" does not exist",
+			wantErr: "active model does not exist",
 		},
 		{
 			name:    "external base url with api key",
@@ -579,5 +581,142 @@ func TestModelConfigEqualKindAware(t *testing.T) {
 	eb.Kind = EndpointKindLocal
 	if ModelConfigEqual(ea, eb) {
 		t.Error("configs of different kinds should not be equal")
+	}
+}
+
+// TestExampleEndpointsJSONParses unmarshals the literal copy-me example that
+// the /config editor renders. The endpoint JSON tags must round-trip the
+// documented snake_case keys; this test is the guard that keeps the two from
+// drifting (the UI test helper marshals the Go struct and could never catch a
+// tag/example mismatch).
+func TestExampleEndpointsJSONParses(t *testing.T) {
+	var list []Endpoint
+	if err := json.Unmarshal([]byte(ExampleEndpointsJSON), &list); err != nil {
+		t.Fatalf("unmarshal example endpoints JSON: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("len(list) = %d, want 2", len(list))
+	}
+
+	local := list[0]
+	if local.Kind != EndpointKindLocal || local.ID != "local" {
+		t.Errorf("local endpoint identity = %+v", local)
+	}
+	if local.Binary != `C:\path\llama-server.exe` || local.ModelPath != `C:\models\model.gguf` {
+		t.Errorf("local binary/model_path not parsed: binary=%q model_path=%q", local.Binary, local.ModelPath)
+	}
+	if local.CtxSize != 32768 || local.GPULayers != -1 || local.NParallel != 1 || local.Port != 8081 {
+		t.Errorf("local numerics not parsed: %+v", local)
+	}
+	if local.CacheTypeK != "q8_0" || local.CacheTypeV != "q8_0" {
+		t.Errorf("local cache types not parsed: %+v", local)
+	}
+
+	external := list[1]
+	if external.Kind != EndpointKindOpenAI || external.ID != "ollama" {
+		t.Errorf("external endpoint identity = %+v", external)
+	}
+	if external.BaseURL != "http://localhost:11434/v1" {
+		t.Errorf("base_url not parsed: %q", external.BaseURL)
+	}
+	if len(external.Models) != 1 || external.Models[0].ID != "llama3.2" || external.Models[0].CtxSize != 32768 {
+		t.Errorf("models not parsed: %+v", external.Models)
+	}
+
+	// A full config built from the example must pass Validate when active is
+	// the external endpoint and the embedder is filled in.
+	cfg := Defaults()
+	cfg.Endpoints = EndpointsConfig{
+		Active:      "ollama",
+		ActiveModel: "llama3.2",
+		List:        list,
+	}
+	cfg.Embedder.Binary = "/embedder"
+	cfg.Embedder.ModelPath = "/models/nomic.gguf"
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("config built from the documented example must validate: %v", err)
+	}
+	m := cfg.ActiveModelConfig()
+	if m.Kind != EndpointKindOpenAI || m.BaseURL != "http://localhost:11434/v1" || m.ModelID != "llama3.2" {
+		t.Errorf("ActiveModelConfig from example = %+v", m)
+	}
+}
+
+// TestEndpointJSONRoundTripsSnakeCase verifies marshaling uses the snake_case
+// keys so the on-disk endpoints_json format is deliberate and stable.
+// TestValidate_InactiveLocalEndpointMaySkipPaths verifies a pure-external setup
+// is not forced to fill in binary/model paths for the seeded local endpoint it
+// never activates: only the active local endpoint requires them.
+func TestValidate_InactiveLocalEndpointMaySkipPaths(t *testing.T) {
+	cfg := validCfg()
+	cfg.Endpoints = EndpointsConfig{
+		Active:      "remote",
+		ActiveModel: "llama3.2",
+		List: []Endpoint{
+			{ID: "local", Kind: EndpointKindLocal, Name: "seeded but unused", Port: 8081, CtxSize: 32768, GPULayers: -1, NParallel: 1, CacheTypeK: "q8_0", CacheTypeV: "q8_0"},
+			{ID: "remote", Kind: EndpointKindOpenAI, Name: "Remote", BaseURL: "https://api.example.com/v1", Models: []EndpointModel{{ID: "llama3.2", CtxSize: 32768}}},
+		},
+	}
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("inactive local endpoint with empty paths must validate when active is external: %v", err)
+	}
+
+	// The same local endpoint as the ACTIVE one must require paths.
+	cfg.Endpoints.Active = "local"
+	if err := Validate(&cfg); err == nil || !strings.Contains(err.Error(), `endpoint "local"`) {
+		t.Fatalf("expected a local-endpoint error naming the endpoint, got %v", err)
+	}
+}
+
+// TestValidate_ErrorsNameTheEndpoint verifies endpoint validation errors carry
+// the failing endpoint's id so the user can find it in the list.
+func TestValidate_ErrorsNameTheEndpoint(t *testing.T) {
+	cfg := validCfg()
+	cfg.Endpoints.Active = "remote"
+	cfg.Endpoints.List[0].ID = "broken"
+	cfg.Endpoints.List[0].Kind = EndpointKindOpenAI
+	cfg.Endpoints.List[0].BaseURL = ""
+	cfg.Endpoints.List[0].Models = nil
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected validation to fail")
+	}
+	for _, want := range []string{`endpoint "broken"`, "base_url is required"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestEndpointJSONRoundTripsSnakeCase(t *testing.T) {
+	ep := Endpoint{
+		ID:         "remote",
+		Kind:       EndpointKindOpenAI,
+		Name:       "Remote",
+		BaseURL:    "https://api.example.com/v1",
+		APIKey:     "sk",
+		ModelPath:  "x",
+		CtxSize:    42,
+		CacheTypeK: "q4_0",
+		Models:     []EndpointModel{{ID: "m1", Name: "M1", CtxSize: 1024}},
+	}
+	b, err := json.Marshal(ep)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"base_url", "api_key", "model_path", "ctx_size", "cache_type_k"} {
+		if !strings.Contains(string(b), `"`+key+`"`) {
+			t.Errorf("marshaled JSON missing snake_case key %q: %s", key, b)
+		}
+	}
+	if strings.Contains(string(b), `"BaseURL"`) || strings.Contains(string(b), `"APIKey"`) {
+		t.Errorf("marshaled JSON contains Go field names: %s", b)
+	}
+	var back Endpoint
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal round trip: %v", err)
+	}
+	if !reflect.DeepEqual(back, ep) {
+		t.Errorf("round trip mismatch:\n want %+v\n got  %+v", ep, back)
 	}
 }

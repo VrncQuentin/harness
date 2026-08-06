@@ -112,6 +112,17 @@ type ProjectDirectoryWarning struct {
 	Problem string `json:"problem"`
 }
 
+// BackendInfo describes the active model backend the runtime is actually
+// serving. It is pushed from the runtime's recorded applied state — never read
+// from the config store — so the status page cannot misrepresent the live
+// system during the restart-pending window of a local↔external backend switch.
+type BackendInfo struct {
+	External bool
+	Endpoint string
+	Model    string
+	BaseURL  string
+}
+
 // stateSnapshot holds the copyable fields of State (no mutex).
 type stateSnapshot struct {
 	LlamaStatus              ProcessStatus
@@ -126,6 +137,7 @@ type stateSnapshot struct {
 	ModelMismatch            bool
 	LoadedModel              string
 	PreferredModel           string
+	Backend                  BackendInfo
 }
 
 // State is the protected mutable state of the UI server.
@@ -583,6 +595,23 @@ func (s *Server) SetModelMismatch(mismatch bool, loaded, preferred string) {
 	s.state.data.PreferredModel = preferred
 	s.state.mu.Unlock()
 	s.broadcastState()
+}
+
+// SetExternalBackend records the active model backend the runtime is actually
+// serving, derived from its recorded applied state. An External=false value
+// (zero BackendInfo) means a local llama-server is the live backend.
+func (s *Server) SetExternalBackend(b BackendInfo) {
+	s.state.mu.Lock()
+	s.state.data.Backend = b
+	s.state.mu.Unlock()
+	s.broadcastState()
+}
+
+// Backend returns the live model backend indicator last pushed by the runtime.
+// Tests use it to assert the status UI reflects the applied state, not the
+// persisted config.
+func (s *Server) Backend() BackendInfo {
+	return s.state.snapshot().Backend
 }
 
 // AddStartupError appends a startup error.

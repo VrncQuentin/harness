@@ -40,6 +40,20 @@
       </form>
     </div>
 {{end}}
+{{define "backend_card"}}
+    <div id="backend-card">
+      <header class="card-head">
+        <h3>Model backend</h3>
+        <span class="badge badge-ok">External</span>
+      </header>
+      <dl class="stats">
+        <div><dt>Endpoint</dt><dd>{{.Endpoint}}</dd></div>
+        <div><dt>Model</dt><dd>{{.Model}}</dd></div>
+        <div><dt>Base URL</dt><dd><code>{{.BaseURL}}</code></dd></div>
+      </dl>
+      <p class="card-meta">No llama-server is running; completions are sent to this external endpoint.</p>
+    </div>
+{{end}}
 {{define "content"}}
 <div hx-ext="sse" sse-connect="/events">
 <span sse-swap="state" hidden></span>
@@ -134,18 +148,7 @@
 
 <section class="grid">
   {{if .Backend.Show}}
-  <div class="card">
-    <header class="card-head">
-      <h3>Model backend</h3>
-      <span class="badge badge-ok">External</span>
-    </header>
-    <dl class="stats">
-      <div><dt>Endpoint</dt><dd>{{.Backend.Endpoint}}</dd></div>
-      <div><dt>Model</dt><dd>{{.Backend.Model}}</dd></div>
-      <div><dt>Base URL</dt><dd><code>{{.Backend.BaseURL}}</code></dd></div>
-    </dl>
-    <p class="card-meta">No llama-server is running; completions are sent to this external endpoint.</p>
-  </div>
+  {{template "backend_card" .Backend}}
   {{else}}
   <div class="card">
     {{template "proc_status_panel" .LlamaPanel}}

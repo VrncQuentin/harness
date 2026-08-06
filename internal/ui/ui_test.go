@@ -1163,6 +1163,36 @@ func TestHandleConfig_GETParsesApplyResultFromQuery(t *testing.T) {
 	}
 }
 
+func TestHandleConfig_POSTClearsActiveModelWhenActiveIsLocal(t *testing.T) {
+	s, store := newServerWithStore(t)
+	s.SetRetry(func() ApplyResult { return ApplyResult{} })
+
+	// Switch active endpoint back to local while a stale external model id is
+	// posted; the persisted config must clear it.
+	form := url.Values{}
+	form.Set("endpoints_json", endpointJSON(localEndpoint()))
+	form.Set("active_endpoint", "local")
+	form.Set("active_model", "llama3.2")
+	form.Set("embed_binary", "C:\\embed.exe")
+	form.Set("embed_path", "C:\\e.gguf")
+
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Endpoints.ActiveModel != "" {
+		t.Errorf("ActiveModel = %q, want empty for a local active endpoint", loaded.Endpoints.ActiveModel)
+	}
+}
+
 func TestHandleConfig_POSTRejectsInvalidNumericInput(t *testing.T) {
 	s, store := newServerWithStore(t)
 
@@ -1339,8 +1369,13 @@ func TestHandleConfig_GETRendersCacheTypeSelects(t *testing.T) {
 		`name="endpoints_json"`,
 		`name="active_endpoint"`,
 		`name="active_model"`,
-		`"cache_type_k": "q8_0"`,
-		`"cache_type_v": "q8_0"`,
+		// The copy-me example renders from config.ExampleEndpointsJSON.
+		`ollama`,
+		`http://localhost:11434/v1`,
+		// The endpoints JSON is serialized with snake_case keys; html/template
+		// escapes quotes in the textarea, so the raw key appears escaped.
+		`&#34;cache_type_k&#34;`,
+		`&#34;cache_type_v&#34;`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected config form to include %q", want)
@@ -1674,26 +1709,40 @@ func TestHandleStatus_HidesRestartFormWhenNotFailed(t *testing.T) {
 	}
 }
 
-func TestHandleStatus_RendersExternalBackendCard(t *testing.T) {
-	s, store := newServerWithStore(t)
+// TestStateFragments_SwapsBackendCard verifies the SSE stream swaps in the
+// model-backend card when the live backend is external and the llama-server
+// process panel when it is local — not both, and not a dead swap on a card
+// that is absent from the DOM.
+func TestStateFragments_SwapsBackendCard(t *testing.T) {
+	s := NewServer(3000)
 
-	cfg := config.Defaults()
-	cfg.Endpoints = config.EndpointsConfig{
-		Active:      "ollama",
-		ActiveModel: "llama3.2",
-		List: []config.Endpoint{{
-			ID:      "ollama",
-			Kind:    config.EndpointKindOpenAI,
-			Name:    "Ollama",
-			BaseURL: "http://localhost:11434/v1",
-			Models:  []config.EndpointModel{{ID: "llama3.2", Name: "Llama 3.2", CtxSize: 32768}},
-		}},
+	ext := stateSnapshot{Backend: BackendInfo{External: true, Endpoint: "ollama", Model: "llama3.2", BaseURL: "http://localhost:11434/v1"}}
+	msg := s.stateFragments(ext)
+	if !strings.Contains(msg, `id="backend-card" hx-swap-oob="true"`) {
+		t.Error("expected backend-card OOB fragment for an external backend")
 	}
-	cfg.Embedder.Binary = "C:\\embed.exe"
-	cfg.Embedder.ModelPath = "C:\\e.gguf"
-	if err := store.Save(&cfg); err != nil {
-		t.Fatalf("save: %v", err)
+	if strings.Contains(msg, "llama-status-panel") {
+		t.Error("must not render the llama process panel for an external backend")
 	}
+
+	local := stateSnapshot{}
+	msg = s.stateFragments(local)
+	if !strings.Contains(msg, `id="llama-status-panel" hx-swap-oob="true"`) {
+		t.Error("expected llama-status-panel OOB fragment for a local backend")
+	}
+	if strings.Contains(msg, "backend-card") {
+		t.Error("must not render the backend card for a local backend")
+	}
+}
+
+func TestHandleStatus_RendersExternalBackendCard(t *testing.T) {
+	s, _ := newServerWithStore(t)
+	s.SetExternalBackend(BackendInfo{
+		External: true,
+		Endpoint: "ollama",
+		Model:    "llama3.2",
+		BaseURL:  "http://localhost:11434/v1",
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -1718,13 +1767,8 @@ func TestHandleStatus_RendersExternalBackendCard(t *testing.T) {
 }
 
 func TestHandleStatus_LocalBackendShowsLlamaCard(t *testing.T) {
-	s, store := newServerWithStore(t)
-	cfg := config.Defaults()
-	cfg.Embedder.Binary = "C:\\embed.exe"
-	cfg.Embedder.ModelPath = "C:\\e.gguf"
-	if err := store.Save(&cfg); err != nil {
-		t.Fatalf("save: %v", err)
-	}
+	s, _ := newServerWithStore(t)
+	s.SetExternalBackend(BackendInfo{}) // local llama-server is the live backend
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -1736,6 +1780,50 @@ func TestHandleStatus_LocalBackendShowsLlamaCard(t *testing.T) {
 	}
 	if strings.Contains(body, "Model backend") {
 		t.Error("status page should not show an external backend card for a local endpoint")
+	}
+}
+
+// TestHandleStatus_ExternalConfigNotLiveYetStillShowsLlama verifies the status
+// page is driven by the runtime's applied state, not the persisted config: a
+// saved external endpoint that has not been applied live (the restart-pending
+// window of a local→external switch) must keep showing the running local
+// llama-server rather than claiming an external backend.
+func TestHandleStatus_ExternalConfigNotLiveYetStillShowsLlama(t *testing.T) {
+	s, store := newServerWithStore(t)
+
+	// The config store already names an external endpoint...
+	cfg := config.Defaults()
+	cfg.Endpoints = config.EndpointsConfig{
+		Active:      "ollama",
+		ActiveModel: "llama3.2",
+		List: []config.Endpoint{{
+			ID:      "ollama",
+			Kind:    config.EndpointKindOpenAI,
+			Name:    "Ollama",
+			BaseURL: "http://localhost:11434/v1",
+			Models:  []config.EndpointModel{{ID: "llama3.2", Name: "Llama 3.2", CtxSize: 32768}},
+		}},
+	}
+	cfg.Embedder.Binary = "C:\\embed.exe"
+	cfg.Embedder.ModelPath = "C:\\e.gguf"
+	if err := store.Save(&cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// ...but the runtime has not pushed an external backend: it is still
+	// serving the local llama-server until the harness restarts.
+	s.SetExternalBackend(BackendInfo{External: false})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="llama-status-panel"`) {
+		t.Error("status page must keep showing the llama-server card while the external switch is pending a restart")
+	}
+	if strings.Contains(body, "Model backend") {
+		t.Error("status page must not claim an external backend that is not live yet")
 	}
 }
 

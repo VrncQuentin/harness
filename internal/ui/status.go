@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -153,24 +154,30 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // backendView reports the active model backend for the status page. It is
-// populated only for an external OpenAI-compatible endpoint: a local endpoint
-// is represented by the llama-server process card instead.
+// derived from the runtime-pushed BackendInfo (itself from the recorded applied
+// state), not the config store: during the restart-pending window of a
+// local↔external switch the store already names the new endpoint while the
+// live backend is still the old one, and the page must show the live one.
 func (s *Server) backendView() backendView {
-	store := s.configStore()
-	if store == nil {
+	return backendViewFromSnapshot(s.state.snapshot())
+}
+
+func backendViewFromSnapshot(snap stateSnapshot) backendView {
+	b := snap.Backend
+	if !b.External {
 		return backendView{}
 	}
-	cfg, _, err := store.Load()
-	if err != nil || !cfg.IsExternalModel() {
-		return backendView{}
+	return backendView{Show: true, Endpoint: b.Endpoint, Model: b.Model, BaseURL: b.BaseURL}
+}
+
+// renderBackendCard renders the model-backend card as a standalone fragment so
+// the SSE stream can swap it in and out live.
+func (s *Server) renderBackendCard(snap stateSnapshot) string {
+	var buf bytes.Buffer
+	if err := s.statusTmpl.ExecuteTemplate(&buf, "backend_card", backendViewFromSnapshot(snap)); err != nil {
+		return ""
 	}
-	m := cfg.ActiveModelConfig()
-	return backendView{
-		Show:     true,
-		Endpoint: m.EndpointID,
-		Model:    m.ModelID,
-		BaseURL:  m.BaseURL,
-	}
+	return buf.String()
 }
 
 func (s *Server) latestMetricsView() []metricView {

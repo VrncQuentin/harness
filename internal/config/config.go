@@ -80,46 +80,79 @@ type EndpointsConfig struct {
 }
 
 // Endpoint is one model backend.
+// Endpoint is one model backend. The JSON tags pin the on-disk
+// endpoints_json format (and the shape the /config editor documents) to
+// snake_case; Go identifiers are not a persistence format.
 type Endpoint struct {
-	ID   string
-	Kind string // EndpointKindLocal or EndpointKindOpenAI
+	ID   string `json:"id"`
+	Kind string `json:"kind"` // EndpointKindLocal or EndpointKindOpenAI
 	// Name is the display name; empty falls back to ID.
-	Name string
+	Name string `json:"name,omitempty"`
 
 	// Local llama-server fields (Kind == EndpointKindLocal).
-	Binary    string
-	ModelPath string
-	CtxSize   int
-	GPULayers int
-	NParallel int
-	Port      int
+	Binary    string `json:"binary,omitempty"`
+	ModelPath string `json:"model_path,omitempty"`
+	CtxSize   int    `json:"ctx_size,omitempty"`
+	GPULayers int    `json:"gpu_layers,omitempty"`
+	NParallel int    `json:"n_parallel,omitempty"`
+	Port      int    `json:"port,omitempty"`
 	// Verbose toggles llama-server's --verbose flag. Off by default because
 	// it's chatty; turn it on when diagnosing silent startup crashes.
-	Verbose bool
+	Verbose bool `json:"verbose,omitempty"`
 	// CacheTypeK and CacheTypeV select the on-GPU dtype for the KV cache,
 	// passed through as llama-server's --cache-type-k / --cache-type-v.
 	// Default q8_0 cuts KV memory roughly in half versus f16 with negligible
 	// quality loss. Quantizing the V cache typically requires --flash-attn
 	// in llama-server; we expose that as a separate knob if/when needed.
-	CacheTypeK string
-	CacheTypeV string
+	CacheTypeK string `json:"cache_type_k,omitempty"`
+	CacheTypeV string `json:"cache_type_v,omitempty"`
 
 	// External OpenAI-compatible fields (Kind == EndpointKindOpenAI).
-	BaseURL string
-	APIKey  string
+	BaseURL string `json:"base_url,omitempty"`
+	APIKey  string `json:"api_key,omitempty"`
 	// Models lists the model ids this endpoint can serve. A hosted API or an
 	// Ollama instance typically advertises several.
-	Models []EndpointModel
+	Models []EndpointModel `json:"models,omitempty"`
 }
 
 // EndpointModel is one model id served by an OpenAI-compatible endpoint.
 type EndpointModel struct {
-	ID   string
-	Name string
+	ID   string `json:"id"`
+	Name string `json:"name,omitempty"`
 	// CtxSize is the context-size ceiling used for prompt-budget arithmetic.
 	// 0 falls back to the external default.
-	CtxSize int
+	CtxSize int `json:"ctx_size,omitempty"`
 }
+
+// ExampleEndpointsJSON is the copy-me JSON shown in the /config endpoints
+// editor. It lives here — and is tested here — so the documented shape can
+// never drift from what json.Unmarshal + Validate actually accept. Keep the
+// keys in sync with the Endpoint/EndpointModel JSON tags.
+const ExampleEndpointsJSON = `[
+  {
+    "id": "local",
+    "kind": "local",
+    "name": "Local llama-server",
+    "binary": "C:\\path\\llama-server.exe",
+    "model_path": "C:\\models\\model.gguf",
+    "ctx_size": 32768,
+    "gpu_layers": -1,
+    "n_parallel": 1,
+    "port": 8081,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0"
+  },
+  {
+    "id": "ollama",
+    "kind": "openai",
+    "name": "Ollama",
+    "base_url": "http://localhost:11434/v1",
+    "api_key": "",
+    "models": [
+      {"id": "llama3.2", "name": "Llama 3.2", "ctx_size": 32768}
+    ]
+  }
+]`
 
 // ModelConfig is the resolved active model a generation talks to. It is a
 // projection of the active endpoint plus the selected model, not a stored
@@ -556,7 +589,14 @@ func Validate(cfg *Config) error {
 
 		switch e.Kind {
 		case EndpointKindLocal:
-			if err := validateLocalEndpoint(e); err != nil {
+			// Binary/model paths are required only for the active local
+			// endpoint: an inactive one (e.g. the seeded "local" endpoint in a
+			// pure-external setup) is never spawned, so it must not force the
+			// user to invent paths for a process that will not run. Its numeric
+			// fields and port are still validated so activating it later cannot
+			// surprise.
+			active := e.ID == cfg.Endpoints.Active
+			if err := validateLocalEndpoint(e, active); err != nil {
 				return err
 			}
 			if other, ok := localPorts[e.Port]; ok {
@@ -568,16 +608,16 @@ func Validate(cfg *Config) error {
 				return err
 			}
 		default:
-			return fmt.Errorf("%s, got %q", ErrInvalidEndpointKind, e.Kind)
+			return fmt.Errorf("%w, got %q", ErrInvalidEndpointKind, e.Kind)
 		}
 	}
 
 	active := cfg.ActiveEndpoint()
 	if active == nil {
-		return fmt.Errorf("config: active endpoint %q does not exist", cfg.Endpoints.Active)
+		return fmt.Errorf("%w: %q", ErrActiveEndpointUnknown, cfg.Endpoints.Active)
 	}
 	if active.Kind == EndpointKindOpenAI && active.Model(cfg.Endpoints.ActiveModel) == nil {
-		return fmt.Errorf("config: active model %q does not exist in endpoint %q", cfg.Endpoints.ActiveModel, active.ID)
+		return fmt.Errorf("%w: %q in endpoint %q", ErrActiveModelUnknown, cfg.Endpoints.ActiveModel, active.ID)
 	}
 
 	if strings.TrimSpace(cfg.Embedder.Binary) == "" {
@@ -673,30 +713,32 @@ func Validate(cfg *Config) error {
 	return nil
 }
 
-func validateLocalEndpoint(e *Endpoint) error {
-	if strings.TrimSpace(e.Binary) == "" {
-		return ErrModelBinaryRequired
-	}
-	if strings.TrimSpace(e.ModelPath) == "" {
-		return ErrModelPathRequired
+func validateLocalEndpoint(e *Endpoint, active bool) error {
+	if active {
+		if strings.TrimSpace(e.Binary) == "" {
+			return fmt.Errorf("config: endpoint %q: %w", e.ID, ErrModelBinaryRequired)
+		}
+		if strings.TrimSpace(e.ModelPath) == "" {
+			return fmt.Errorf("config: endpoint %q: %w", e.ID, ErrModelPathRequired)
+		}
 	}
 	if err := validatePort("model.port", e.Port); err != nil {
-		return err
+		return fmt.Errorf("config: endpoint %q: %w", e.ID, err)
 	}
 	if e.CtxSize < 0 {
-		return fmt.Errorf("config: model.ctx_size must be >= 0, got %d", e.CtxSize)
+		return fmt.Errorf("config: endpoint %q model.ctx_size must be >= 0, got %d", e.ID, e.CtxSize)
 	}
 	if e.GPULayers < -1 {
-		return fmt.Errorf("config: model.gpu_layers must be >= -1 (-1 offloads all), got %d", e.GPULayers)
+		return fmt.Errorf("config: endpoint %q model.gpu_layers must be >= -1 (-1 offloads all), got %d", e.ID, e.GPULayers)
 	}
 	if e.NParallel < 1 {
-		return fmt.Errorf("config: model.n_parallel must be >= 1, got %d", e.NParallel)
+		return fmt.Errorf("config: endpoint %q model.n_parallel must be >= 1, got %d", e.ID, e.NParallel)
 	}
 	if err := validateCacheType("model.cache_type_k", e.CacheTypeK); err != nil {
-		return err
+		return fmt.Errorf("config: endpoint %q: %w", e.ID, err)
 	}
 	if err := validateCacheType("model.cache_type_v", e.CacheTypeV); err != nil {
-		return err
+		return fmt.Errorf("config: endpoint %q: %w", e.ID, err)
 	}
 	return nil
 }
@@ -704,14 +746,14 @@ func validateLocalEndpoint(e *Endpoint) error {
 func validateOpenAIEndpoint(e *Endpoint) error {
 	base := strings.TrimSpace(e.BaseURL)
 	if base == "" {
-		return ErrBaseURLRequired
+		return fmt.Errorf("config: endpoint %q: %w", e.ID, ErrBaseURLRequired)
 	}
 	u, err := url.Parse(base)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return ErrInvalidBaseURL
+		return fmt.Errorf("config: endpoint %q: %w", e.ID, ErrInvalidBaseURL)
 	}
 	if len(e.Models) == 0 {
-		return ErrEndpointModelRequired
+		return fmt.Errorf("config: endpoint %q: %w", e.ID, ErrEndpointModelRequired)
 	}
 	seen := make(map[string]bool, len(e.Models))
 	for i := range e.Models {

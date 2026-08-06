@@ -13,15 +13,16 @@ import (
 // configPageData is the template context for the config editor.
 type configPageData struct {
 	basePage
-	Config         *config.Config
-	Suggestions    config.Suggestions
-	EndpointsJSON  string
-	FirstRun       bool
-	Saved          bool
-	LiveApplied    bool
-	RestartReasons []string
-	ValidationErr  string
-	SaveErr        string
+	Config               *config.Config
+	Suggestions          config.Suggestions
+	EndpointsJSON        string
+	ExampleEndpointsJSON string
+	FirstRun             bool
+	Saved                bool
+	LiveApplied          bool
+	RestartReasons       []string
+	ValidationErr        string
+	SaveErr              string
 }
 
 // handleConfig serves GET (render form) and POST (save + re-validate).
@@ -71,6 +72,7 @@ func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay co
 	}
 
 	data.Suggestions = config.Detect(s.getBinDir())
+	data.ExampleEndpointsJSON = config.ExampleEndpointsJSON
 	// On a fresh GET render, pre-fill a local endpoint's binary with the first
 	// detected llama-server if the user has not entered one yet. The embedder
 	// runs the same binary in --embedding mode, so it defaults to the same
@@ -169,6 +171,11 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	}
 	if v := strings.TrimSpace(r.FormValue("active_model")); v != "" {
 		cfg.Endpoints.ActiveModel = v
+	}
+	// A local endpoint serves its loaded model file; it has no model id, so a
+	// stale external selection must not survive a switch back to local.
+	if active := cfg.ActiveEndpoint(); active != nil && active.Kind == config.EndpointKindLocal {
+		cfg.Endpoints.ActiveModel = ""
 	}
 
 	cfg.Embedder.Binary = trimPathField(r.FormValue("embed_binary"))

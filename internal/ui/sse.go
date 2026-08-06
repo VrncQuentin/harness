@@ -220,15 +220,22 @@ func (s *Server) sendState(ch chan string) {
 }
 
 // stateFragments renders the live-updated page elements as OOB HTML fragments
-// joined with newlines and formatted as multi-line SSE data.
+// joined with newlines and formatted as multi-line SSE data. The model backend
+// card swaps in and out with the backend; the llama process panel only swaps
+// when a local llama-server is the live backend.
 func (s *Server) stateFragments(snap stateSnapshot) string {
-	llamaHTML := injectOOB(s.renderProcStatusPanel(llamaPanelFromSnapshot(snap)), "llama-status-panel")
-	embedHTML := injectOOB(s.renderProcStatusPanel(embedPanelFromSnapshot(snap)), "embed-status-panel")
-	queueHTML := injectOOB(s.renderQueueCard(snap), "queue-card")
-	uptimeHTML := fmt.Sprintf(`<span id="uptime" hx-swap-oob="true">%s</span>`, formatUptime(time.Since(snap.StartTime)))
-
-	joined := strings.Join([]string{llamaHTML, embedHTML, queueHTML, uptimeHTML}, "\n")
-	return sseData(joined)
+	var parts []string
+	if snap.Backend.External {
+		parts = append(parts, injectOOB(s.renderBackendCard(snap), "backend-card"))
+	} else {
+		parts = append(parts, injectOOB(s.renderProcStatusPanel(llamaPanelFromSnapshot(snap)), "llama-status-panel"))
+	}
+	parts = append(parts,
+		injectOOB(s.renderProcStatusPanel(embedPanelFromSnapshot(snap)), "embed-status-panel"),
+		injectOOB(s.renderQueueCard(snap), "queue-card"),
+		fmt.Sprintf(`<span id="uptime" hx-swap-oob="true">%s</span>`, formatUptime(time.Since(snap.StartTime))),
+	)
+	return sseData(strings.Join(parts, "\n"))
 }
 
 // injectOOB adds hx-swap-oob="true" to the root element's id attribute so

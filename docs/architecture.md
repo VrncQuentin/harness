@@ -275,6 +275,15 @@ applies live; switching between a local and an external backend is a
 restart-required change because the llama-server process cannot be spawned or
 torn down mid-run. The embedder is always local.
 
+**External API keys are stored in plaintext.** An `openai` endpoint's API key is
+persisted as-is in `endpoints_json` inside `harness.db` under the harness home,
+and is echoed back into the `/config` editor on every render. That is a
+deliberate trade-off for a loopback-only, single-user, no-telemetry tool: both
+HTTP servers bind `127.0.0.1`, there is no authentication layer, and the key is
+only ever transmitted to the endpoint the user configured. It is the first real
+credential the harness holds, so this decision is recorded here rather than
+left implicit.
+
 **Single SQLite file for operational state.** Config (single-row typed table),
 metrics, project identity, and runtime control state share `harness.db` under
 the harness home, separate from project memory repos. One `*sql.DB` handle is
