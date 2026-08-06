@@ -15,7 +15,6 @@ type configPageData struct {
 	basePage
 	Config         *config.Config
 	Suggestions    config.Suggestions
-	CacheTypes     []string
 	EndpointsJSON  string
 	FirstRun       bool
 	Saved          bool
@@ -72,7 +71,6 @@ func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay co
 	}
 
 	data.Suggestions = config.Detect(s.getBinDir())
-	data.CacheTypes = config.ValidCacheTypes
 	// On a fresh GET render, pre-fill a local endpoint's binary with the first
 	// detected llama-server if the user has not entered one yet. The embedder
 	// runs the same binary in --embedding mode, so it defaults to the same

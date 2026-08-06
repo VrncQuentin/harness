@@ -23,8 +23,8 @@ import (
 
 // appliedRuntimeForTest builds a runtime with a live generation over a seeded
 // project repo and the given config, records its applied state, installs llama
-// and embedder managers configured for cfg.Model, and returns the runtime plus
-// the project store. The store initially holds cfg.
+// and embedder managers configured for the recorded running model, and returns
+// the runtime plus the project store. The store initially holds cfg.
 func appliedRuntimeForTest(t *testing.T, cfg *config.Config, projects *runtimeProjectStoreStub) (*Runtime, *runtimeProjectStoreStub) {
 	t.Helper()
 	root := initRuntimeProjectRepo(t)
@@ -43,10 +43,10 @@ func appliedRuntimeForTest(t *testing.T, cfg *config.Config, projects *runtimePr
 	}
 	rt.started = true
 	// The fake managers are configured from the recorded running model, not
-	// the global cfg.Model: when the store supplies a project override the
-	// helper must pretend the process already runs that override, or tests
-	// that assert a reconfiguration would be proving a transition that never
-	// happened.
+	// from the global config's local endpoint: when the store supplies a
+	// project override the helper must pretend the process already runs that
+	// override, or tests that assert a reconfiguration would be proving a
+	// transition that never happened.
 	runningModel := rt.applied.runningModel
 	rt.llamaMgr = proc.NewManager(proc.ManagerConfig{
 		Name:      "llama-server",
