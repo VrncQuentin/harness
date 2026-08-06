@@ -258,8 +258,8 @@ func TestPeekUIPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	cfg.Model.Binary = "C:\\llama.exe"
-	cfg.Model.ModelPath = "C:\\model.gguf"
+	cfg.Endpoints.List[0].Binary = "C:\\llama.exe"
+	cfg.Endpoints.List[0].ModelPath = "C:\\model.gguf"
 	cfg.Embedder.Binary = "C:\\embed.exe"
 	cfg.Embedder.ModelPath = "C:\\embed.gguf"
 	cfg.UI.Port = 31337
@@ -287,11 +287,17 @@ func TestConfigStore_LoadFreshReturnsDefaultsAndNotConfigured(t *testing.T) {
 	}
 
 	defaults := config.Defaults()
-	if cfg.Model.CtxSize != defaults.Model.CtxSize {
-		t.Errorf("Model.CtxSize: got %d, want %d", cfg.Model.CtxSize, defaults.Model.CtxSize)
+	if cfg.Endpoints.Active != defaults.Endpoints.Active {
+		t.Errorf("Endpoints.Active: got %q, want %q", cfg.Endpoints.Active, defaults.Endpoints.Active)
 	}
-	if cfg.Model.Port != defaults.Model.Port {
-		t.Errorf("Model.Port: got %d, want %d", cfg.Model.Port, defaults.Model.Port)
+	if !reflect.DeepEqual(cfg.Endpoints.List, defaults.Endpoints.List) {
+		t.Errorf("Endpoints.List: got %+v, want %+v", cfg.Endpoints.List, defaults.Endpoints.List)
+	}
+	if cfg.Endpoints.List[0].CtxSize != defaults.Endpoints.List[0].CtxSize {
+		t.Errorf("local endpoint CtxSize: got %d, want %d", cfg.Endpoints.List[0].CtxSize, defaults.Endpoints.List[0].CtxSize)
+	}
+	if cfg.Endpoints.List[0].Port != defaults.Endpoints.List[0].Port {
+		t.Errorf("local endpoint Port: got %d, want %d", cfg.Endpoints.List[0].Port, defaults.Endpoints.List[0].Port)
 	}
 	if cfg.UI.Port != defaults.UI.Port {
 		t.Errorf("UI.Port: got %d, want %d", cfg.UI.Port, defaults.UI.Port)
@@ -323,11 +329,11 @@ func TestConfigStore_LoadFreshReturnsDefaultsAndNotConfigured(t *testing.T) {
 	if cfg.Prompt.SummarizerPrompt == "" {
 		t.Error("Prompt.SummarizerPrompt default must not be empty")
 	}
-	if cfg.Model.CacheTypeK != defaults.Model.CacheTypeK {
-		t.Errorf("Model.CacheTypeK default: got %q, want %q", cfg.Model.CacheTypeK, defaults.Model.CacheTypeK)
+	if cfg.Endpoints.List[0].CacheTypeK != defaults.Endpoints.List[0].CacheTypeK {
+		t.Errorf("local endpoint CacheTypeK default: got %q, want %q", cfg.Endpoints.List[0].CacheTypeK, defaults.Endpoints.List[0].CacheTypeK)
 	}
-	if cfg.Model.CacheTypeV != defaults.Model.CacheTypeV {
-		t.Errorf("Model.CacheTypeV default: got %q, want %q", cfg.Model.CacheTypeV, defaults.Model.CacheTypeV)
+	if cfg.Endpoints.List[0].CacheTypeV != defaults.Endpoints.List[0].CacheTypeV {
+		t.Errorf("local endpoint CacheTypeV default: got %q, want %q", cfg.Endpoints.List[0].CacheTypeV, defaults.Endpoints.List[0].CacheTypeV)
 	}
 	if cfg.Project.ActiveProjectSlug != defaults.Project.ActiveProjectSlug {
 		t.Errorf("Project.ActiveProjectSlug default: got %q, want %q", cfg.Project.ActiveProjectSlug, defaults.Project.ActiveProjectSlug)
@@ -340,15 +346,16 @@ func TestConfigStore_LoadFreshReturnsDefaultsAndNotConfigured(t *testing.T) {
 func TestConfigStore_RoundTripsAllConfigFields(t *testing.T) {
 	d := newTestDB(t)
 	cfg := config.Defaults()
-	cfg.Model.Binary = "llama-custom"
-	cfg.Model.ModelPath = "model-custom.gguf"
-	cfg.Model.CtxSize = 12345
-	cfg.Model.GPULayers = 12
-	cfg.Model.NParallel = 3
-	cfg.Model.Port = 18081
-	cfg.Model.Verbose = true
-	cfg.Model.CacheTypeK = "q4_0"
-	cfg.Model.CacheTypeV = "q4_1"
+	cfg.Endpoints.List[0].Binary = "llama-custom"
+	cfg.Endpoints.List[0].ModelPath = "model-custom.gguf"
+	cfg.Endpoints.List[0].CtxSize = 12345
+	cfg.Endpoints.List[0].GPULayers = 12
+	cfg.Endpoints.List[0].NParallel = 3
+	cfg.Endpoints.List[0].Port = 18081
+	cfg.Endpoints.List[0].Verbose = true
+	cfg.Endpoints.List[0].CacheTypeK = "q4_0"
+	cfg.Endpoints.List[0].CacheTypeV = "q4_1"
+	cfg.Endpoints.ActiveModel = ""
 	cfg.Embedder.Binary = "embed-custom"
 	cfg.Embedder.ModelPath = "embed-custom.gguf"
 	cfg.Embedder.Port = 18082
@@ -400,12 +407,12 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	store := d.Config()
 
 	cfg := config.Defaults()
-	cfg.Model.Binary = "C:\\llama.exe"
-	cfg.Model.ModelPath = "C:\\m.gguf"
-	cfg.Model.CtxSize = 4096
-	cfg.Model.Verbose = true
-	cfg.Model.CacheTypeK = "q4_0"
-	cfg.Model.CacheTypeV = "f16"
+	cfg.Endpoints.List[0].Binary = "C:\\llama.exe"
+	cfg.Endpoints.List[0].ModelPath = "C:\\m.gguf"
+	cfg.Endpoints.List[0].CtxSize = 4096
+	cfg.Endpoints.List[0].Verbose = true
+	cfg.Endpoints.List[0].CacheTypeK = "q4_0"
+	cfg.Endpoints.List[0].CacheTypeV = "f16"
 	cfg.Embedder.Binary = "C:\\embed.exe"
 	cfg.Embedder.ModelPath = "C:\\e.gguf"
 	cfg.Embedder.Verbose = true
@@ -440,11 +447,11 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	if !configured {
 		t.Error("expected configured=true after Save")
 	}
-	if loaded.Model.Binary != cfg.Model.Binary {
-		t.Errorf("Model.Binary roundtrip: got %q, want %q", loaded.Model.Binary, cfg.Model.Binary)
+	if loaded.Endpoints.List[0].Binary != cfg.Endpoints.List[0].Binary {
+		t.Errorf("local endpoint Binary roundtrip: got %q, want %q", loaded.Endpoints.List[0].Binary, cfg.Endpoints.List[0].Binary)
 	}
-	if loaded.Model.CtxSize != 4096 {
-		t.Errorf("Model.CtxSize roundtrip: got %d, want 4096", loaded.Model.CtxSize)
+	if loaded.Endpoints.List[0].CtxSize != 4096 {
+		t.Errorf("local endpoint CtxSize roundtrip: got %d, want 4096", loaded.Endpoints.List[0].CtxSize)
 	}
 	if loaded.UI.OpenOnStart {
 		t.Errorf("UI.OpenOnStart roundtrip: got true, want false")
@@ -470,17 +477,17 @@ func TestConfigStore_SaveMarksConfiguredAndRoundTrips(t *testing.T) {
 	if loaded.Log.ProcMaxLines != 99 {
 		t.Errorf("Log.ProcMaxLines roundtrip: got %d, want 99", loaded.Log.ProcMaxLines)
 	}
-	if !loaded.Model.Verbose {
-		t.Errorf("Model.Verbose roundtrip: got false, want true")
+	if !loaded.Endpoints.List[0].Verbose {
+		t.Errorf("local endpoint Verbose roundtrip: got false, want true")
 	}
 	if !loaded.Embedder.Verbose {
 		t.Errorf("Embedder.Verbose roundtrip: got false, want true")
 	}
-	if loaded.Model.CacheTypeK != "q4_0" {
-		t.Errorf("Model.CacheTypeK roundtrip: got %q, want %q", loaded.Model.CacheTypeK, "q4_0")
+	if loaded.Endpoints.List[0].CacheTypeK != "q4_0" {
+		t.Errorf("local endpoint CacheTypeK roundtrip: got %q, want %q", loaded.Endpoints.List[0].CacheTypeK, "q4_0")
 	}
-	if loaded.Model.CacheTypeV != "f16" {
-		t.Errorf("Model.CacheTypeV roundtrip: got %q, want %q", loaded.Model.CacheTypeV, "f16")
+	if loaded.Endpoints.List[0].CacheTypeV != "f16" {
+		t.Errorf("local endpoint CacheTypeV roundtrip: got %q, want %q", loaded.Endpoints.List[0].CacheTypeV, "f16")
 	}
 	if loaded.Project.ActiveProjectSlug != "dt" {
 		t.Errorf("Project.ActiveProjectSlug roundtrip: got %q, want %q", loaded.Project.ActiveProjectSlug, "dt")
@@ -494,6 +501,50 @@ func TestConfigStore_SaveNilRejected(t *testing.T) {
 	d := newTestDB(t)
 	if err := d.Config().Save(nil); err == nil {
 		t.Fatal("expected error for nil config, got nil")
+	}
+}
+
+func TestConfigStore_ExternalEndpointRoundTrips(t *testing.T) {
+	d := newTestDB(t)
+	store := d.Config()
+
+	cfg := config.Defaults()
+	cfg.Endpoints = config.EndpointsConfig{
+		Active:      "ollama",
+		ActiveModel: "qwen2.5",
+		List: []config.Endpoint{
+			{
+				ID:      "ollama",
+				Kind:    config.EndpointKindOpenAI,
+				Name:    "Ollama",
+				BaseURL: "http://localhost:11434/v1",
+				APIKey:  "sk-secret",
+				Models: []config.EndpointModel{
+					{ID: "llama3.2", Name: "Llama 3.2", CtxSize: 8192},
+					{ID: "qwen2.5", Name: "Qwen 2.5", CtxSize: 16384},
+				},
+			},
+		},
+	}
+	cfg.Embedder.Binary = "C:\\embed.exe"
+	cfg.Embedder.ModelPath = "C:\\e.gguf"
+
+	if err := store.Save(&cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !reflect.DeepEqual(loaded.Endpoints, cfg.Endpoints) {
+		t.Fatalf("endpoints mismatch:\nwant: %+v\n got: %+v", cfg.Endpoints, loaded.Endpoints)
+	}
+	m := loaded.ActiveModelConfig()
+	if m.Kind != config.EndpointKindOpenAI || m.BaseURL != "http://localhost:11434/v1" || m.APIKey != "sk-secret" || m.ModelID != "qwen2.5" {
+		t.Errorf("ActiveModelConfig after round-trip = %+v", m)
+	}
+	if m.CtxSize != 16384 {
+		t.Errorf("CtxSize = %d, want 16384", m.CtxSize)
 	}
 }
 

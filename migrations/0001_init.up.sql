@@ -21,15 +21,9 @@ CREATE TABLE IF NOT EXISTS project_directories (
 
 CREATE TABLE IF NOT EXISTS config (
     id                               INTEGER PRIMARY KEY CHECK (id = 1),
-    model_binary                     TEXT    NOT NULL,
-    model_path                       TEXT    NOT NULL,
-    model_ctx_size                   INTEGER NOT NULL,
-    model_gpu_layers                 INTEGER NOT NULL,
-    model_n_parallel                 INTEGER NOT NULL,
-    model_port                       INTEGER NOT NULL,
-    model_verbose                    INTEGER NOT NULL,
-    model_cache_type_k               TEXT    NOT NULL,
-    model_cache_type_v               TEXT    NOT NULL,
+    endpoints_json                   TEXT    NOT NULL,
+    active_endpoint                  TEXT    NOT NULL,
+    active_model                     TEXT    NOT NULL,
     embedder_binary                  TEXT    NOT NULL,
     embedder_model_path              TEXT    NOT NULL,
     embedder_port                    INTEGER NOT NULL,
