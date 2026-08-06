@@ -292,7 +292,7 @@ func (rt *Runtime) drainRetiredAPI() bool {
 // server is retired under the timeout ownership protocol. candidate is nil when
 // no memory/API rebuild is needed. The commit is structured to be infallible so
 // the installed applied state is always coherent with the live processes.
-func (rt *Runtime) commitApply(candidate *memoryCandidate, newApplied *appliedState, oldApplied *appliedState, modelChanged, embedderChanged, endpointChanged, apiPortChanged bool, oldCfg config.Config, uiServer *ui.Server) ui.ApplyResult {
+func (rt *Runtime) commitApply(candidate *memoryCandidate, newApplied *appliedState, oldApplied *appliedState, modelChanged, embedderChanged, backendChanged, apiPortChanged bool, oldCfg config.Config, uiServer *ui.Server) ui.ApplyResult {
 	var result ui.ApplyResult
 
 	if candidate != nil {
@@ -312,10 +312,11 @@ func (rt *Runtime) commitApply(candidate *memoryCandidate, newApplied *appliedSt
 		rt.embedMgr.Reconfigure(func() (string, []string) { return embedderArgsForConfig(newApplied.runningEmbedder) }, embedderHealthURL(newApplied.runningEmbedder))
 		result.LiveApplied = true
 	}
-	if endpointChanged && rt.reqQueue != nil {
-		client := rt.newInferenceClientForPort(newApplied.runningModel.Port)
+	if backendChanged && rt.reqQueue != nil {
+		client := rt.newInferenceClientForModel(newApplied.runningModel)
 		rt.inferClient = client
 		rt.reqQueue.SetClient(client)
+		slog.Info("repointed inference client", "kind", newApplied.runningModel.Kind, "endpoint", newApplied.runningModel.EndpointID, "model", newApplied.runningModel.ModelID)
 	}
 
 	rt.cfg = newApplied.cfg
@@ -401,7 +402,7 @@ func (rt *Runtime) buildCandidate(uiServer *ui.Server, metricsStore metrics.Stor
 	embedClient := rt.newEmbedderClientFor(cfg)
 	assembler = assembler.WithBlendedRetrieval(episodeIndex, embedClient)
 
-	infClient := rt.newInferenceClientForPort(runningModel.Port)
+	infClient := rt.newInferenceClientForModel(runningModel)
 	gitRepo, sessionMgr, sessionAdapter, err := rt.buildSessionManagerWithClients(metricsStore, roots, infClient, embedClient, episodeIndex, activeMem, cfg.Project.ActiveProjectSlug)
 	cand.addHandle(gitRepo)
 	if err != nil {

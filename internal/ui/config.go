@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -12,15 +13,16 @@ import (
 // configPageData is the template context for the config editor.
 type configPageData struct {
 	basePage
-	Config         *config.Config
-	Suggestions    config.Suggestions
-	CacheTypes     []string
-	FirstRun       bool
-	Saved          bool
-	LiveApplied    bool
-	RestartReasons []string
-	ValidationErr  string
-	SaveErr        string
+	Config               *config.Config
+	Suggestions          config.Suggestions
+	EndpointsJSON        string
+	ExampleEndpointsJSON string
+	FirstRun             bool
+	Saved                bool
+	LiveApplied          bool
+	RestartReasons       []string
+	ValidationErr        string
+	SaveErr              string
 }
 
 // handleConfig serves GET (render form) and POST (save + re-validate).
@@ -70,18 +72,26 @@ func (s *Server) renderConfig(w http.ResponseWriter, r *http.Request, overlay co
 	}
 
 	data.Suggestions = config.Detect(s.getBinDir())
-	data.CacheTypes = config.ValidCacheTypes
-	// On a fresh GET render, pre-fill model_binary with the first detected
-	// llama-server if the user has not entered one yet. The embedder runs
-	// the same binary in --embedding mode, so it defaults to the same
+	data.ExampleEndpointsJSON = config.ExampleEndpointsJSON
+	// On a fresh GET render, pre-fill a local endpoint's binary with the first
+	// detected llama-server if the user has not entered one yet. The embedder
+	// runs the same binary in --embedding mode, so it defaults to the same
 	// resolved path. We do not pre-fill anything else - datalists let the
 	// user pick without us guessing.
 	if !skipStoreLoad && data.Config != nil && len(data.Suggestions.LlamaBinary) > 0 {
-		if data.Config.Model.Binary == "" {
-			data.Config.Model.Binary = data.Suggestions.LlamaBinary[0]
-		}
 		if data.Config.Embedder.Binary == "" {
 			data.Config.Embedder.Binary = data.Suggestions.LlamaBinary[0]
+		}
+		for i := range data.Config.Endpoints.List {
+			e := &data.Config.Endpoints.List[i]
+			if e.Kind == config.EndpointKindLocal && e.Binary == "" {
+				e.Binary = data.Suggestions.LlamaBinary[0]
+			}
+		}
+	}
+	if data.Config != nil {
+		if b, err := json.MarshalIndent(data.Config.Endpoints.List, "", "  "); err == nil {
+			data.EndpointsJSON = string(b)
 		}
 	}
 
@@ -145,18 +155,27 @@ func parseConfigForm(r *http.Request, base *config.Config) (*config.Config, []st
 	cfg := *base
 	var parseErrs []string
 
-	cfg.Model.Binary = trimPathField(r.FormValue("model_binary"))
-	cfg.Model.ModelPath = trimPathField(r.FormValue("model_path"))
-	cfg.Model.CtxSize = atoiField(r, "model_ctx_size", "Model context size", cfg.Model.CtxSize, &parseErrs)
-	cfg.Model.GPULayers = atoiField(r, "model_gpu_layers", "Model GPU layers", cfg.Model.GPULayers, &parseErrs)
-	cfg.Model.NParallel = atoiField(r, "model_n_parallel", "Model parallelism", cfg.Model.NParallel, &parseErrs)
-	cfg.Model.Port = atoiField(r, "model_port", "Model port", cfg.Model.Port, &parseErrs)
-	cfg.Model.Verbose = r.FormValue("model_verbose") == "on"
-	if v := strings.TrimSpace(r.FormValue("model_cache_type_k")); v != "" {
-		cfg.Model.CacheTypeK = v
+	// The endpoints list is edited as JSON in the config form. A malformed blob
+	// is reported as a parse error so the form never silently drops endpoints;
+	// the active endpoint/model selectors are ordinary fields.
+	if v := strings.TrimSpace(r.FormValue("endpoints_json")); v != "" {
+		var list []config.Endpoint
+		if err := json.Unmarshal([]byte(v), &list); err != nil {
+			parseErrs = append(parseErrs, "Endpoints JSON is invalid: "+err.Error())
+		} else {
+			cfg.Endpoints.List = list
+		}
 	}
-	if v := strings.TrimSpace(r.FormValue("model_cache_type_v")); v != "" {
-		cfg.Model.CacheTypeV = v
+	if v := strings.TrimSpace(r.FormValue("active_endpoint")); v != "" {
+		cfg.Endpoints.Active = v
+	}
+	if v := strings.TrimSpace(r.FormValue("active_model")); v != "" {
+		cfg.Endpoints.ActiveModel = v
+	}
+	// A local endpoint serves its loaded model file; it has no model id, so a
+	// stale external selection must not survive a switch back to local.
+	if active := cfg.ActiveEndpoint(); active != nil && active.Kind == config.EndpointKindLocal {
+		cfg.Endpoints.ActiveModel = ""
 	}
 
 	cfg.Embedder.Binary = trimPathField(r.FormValue("embed_binary"))

@@ -137,3 +137,116 @@ func TestComplete_ContextCancellation(t *testing.T) {
 		t.Fatal("expected error for cancelled context")
 	}
 }
+
+func TestComplete_DefaultModelInjected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Model != "qwen2.5" {
+			t.Fatalf("Model = %q, want injected default qwen2.5", req.Model)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	c := NewClientForBackend(srv.URL, "", "qwen2.5", nil)
+	ch, err := c.Complete(context.Background(), CompletionRequest{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Stream:   true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for tok := range ch {
+		if tok.Err != nil {
+			t.Fatalf("token error: %v", tok.Err)
+		}
+	}
+}
+
+func TestComplete_ExplicitModelWinsOverDefault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req CompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Model != "llama3.2" {
+			t.Fatalf("Model = %q, want explicit llama3.2", req.Model)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	c := NewClientForBackend(srv.URL, "", "qwen2.5", nil)
+	ch, err := c.Complete(context.Background(), CompletionRequest{
+		Model:    "llama3.2",
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Stream:   true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for tok := range ch {
+		if tok.Err != nil {
+			t.Fatalf("token error: %v", tok.Err)
+		}
+	}
+}
+
+func TestComplete_SendsBearerAPIKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-secret" {
+			t.Fatalf("Authorization = %q, want Bearer sk-secret", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	c := NewClientForBackend(srv.URL, "sk-secret", "", nil)
+	ch, err := c.Complete(context.Background(), CompletionRequest{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Stream:   true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for tok := range ch {
+		if tok.Err != nil {
+			t.Fatalf("token error: %v", tok.Err)
+		}
+	}
+}
+
+func TestComplete_NoAuthorizationWhenKeyEmpty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("Authorization = %q, want empty", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n")) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL, nil)
+	ch, err := c.Complete(context.Background(), CompletionRequest{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+		Stream:   true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for tok := range ch {
+		if tok.Err != nil {
+			t.Fatalf("token error: %v", tok.Err)
+		}
+	}
+}

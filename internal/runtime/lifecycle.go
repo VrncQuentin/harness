@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/VrncQuentin/harness/internal/config"
@@ -24,11 +25,19 @@ func (rt *Runtime) Start(
 	metricsStore metrics.Store,
 ) {
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
 	uiServer.SetSnapshotProvider(rt)
 	rt.refreshProjectDirectoryWarnings(uiServer)
 	rt.startServices(ctx, uiServer, events, metricsStore)
 	rt.startMemoryAndAPI(ctx, uiServer, metricsStore, &rt.cfg)
+	applied := rt.applied
+	rt.mu.Unlock()
+
+	// The status page learns the live model backend here as well as from an
+	// apply: production cold-boots through Start, not ApplyConfig, so without
+	// this an external endpoint configured before launch would render the
+	// llama-server process card for a backend that has no process until the
+	// first config save or retry. Pushed outside rt.mu, mirroring ApplyConfig.
+	rt.pushBackend(uiServer, applied)
 }
 
 // Managers returns the process managers currently owned by the runtime.
@@ -52,11 +61,22 @@ func (rt *Runtime) QueueStats() (int, int) {
 
 func (rt *Runtime) newInferenceClient() inference.Client {
 	model := rt.effectiveModelFor(&rt.cfg)
+	return rt.newInferenceClientForModel(model)
+}
+
+// newInferenceClientForModel builds an inference client for the resolved
+// active model. A local endpoint talks to the llama-server it spawns on the
+// model port; an external endpoint talks to its base URL with the selected
+// model id and optional API key.
+func (rt *Runtime) newInferenceClientForModel(model config.ModelConfig) inference.Client {
+	if model.Kind == config.EndpointKindOpenAI {
+		return inference.NewClientForBackend(model.BaseURL, model.APIKey, model.ModelID, httpclient.NewStreaming())
+	}
 	return rt.newInferenceClientForPort(model.Port)
 }
 
-// newInferenceClientForPort builds an inference client for a concrete port.
-// The port always comes from the running model, never the preferred one:
+// newInferenceClientForPort builds an inference client for a concrete local
+// port. The port always comes from the running model, never the preferred one:
 // under llama_on_switch=keep the harness keeps talking to wherever llama-server
 // actually runs.
 func (rt *Runtime) newInferenceClientForPort(port int) inference.Client {
@@ -105,16 +125,25 @@ func (rt *Runtime) startServices(
 	cfg := &rt.cfg
 	model := rt.effectiveModelFor(cfg)
 
-	rt.llamaMgr = proc.NewManager(proc.ManagerConfig{
-		Name:        "llama-server",
-		BuildArgs:   func() (string, []string) { return llamaArgsForModel(model) },
-		HealthURL:   llamaHealthURL(model),
-		Events:      events,
-		CheckPeriod: 5 * time.Second,
-		HTTPClient:  httpclient.New(),
-		Output:      rt.logRings.Llama,
-	})
-	go rt.llamaMgr.Run(ctx)
+	// A local endpoint owns the llama-server process the harness spawns. An
+	// external endpoint has no process: the harness talks to the endpoint's
+	// base URL directly, so no llama-server manager is created.
+	rt.llamaMgr = nil
+	if model.Kind == config.EndpointKindLocal {
+		rt.llamaMgr = proc.NewManager(proc.ManagerConfig{
+			Name:        "llama-server",
+			BuildArgs:   func() (string, []string) { return llamaArgsForModel(model) },
+			HealthURL:   llamaHealthURL(model),
+			Events:      events,
+			CheckPeriod: 5 * time.Second,
+			HTTPClient:  httpclient.New(),
+			Output:      rt.logRings.Llama,
+		})
+		go rt.llamaMgr.Run(ctx)
+	} else {
+		slog.Info("external model backend active; not spawning llama-server",
+			"endpoint", model.EndpointID, "model", model.ModelID, "base_url", model.BaseURL)
+	}
 
 	embedCfg := cfg.Embedder
 	rt.embedMgr = proc.NewManager(proc.ManagerConfig{

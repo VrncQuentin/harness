@@ -11,7 +11,7 @@ import (
 
 func (rt *Runtime) effectiveModelFor(cfg *config.Config) config.ModelConfig {
 	if rt.projectStore == nil {
-		return cfg.Model
+		return cfg.ActiveModelConfig()
 	}
 	slug := cfg.Project.ActiveProjectSlug
 	if slug == "" {
@@ -19,8 +19,8 @@ func (rt *Runtime) effectiveModelFor(cfg *config.Config) config.ModelConfig {
 	}
 	proj, err := rt.projectStore.Get(slug)
 	if err != nil {
-		slog.Warn("runtime: using global model config; active project model overrides unavailable", "slug", slug, "err", err)
-		return cfg.Model
+		slog.Warn("runtime: using active endpoint model; active project model overrides unavailable", "slug", slug, "err", err)
+		return cfg.ActiveModelConfig()
 	}
 	return config.EffectiveModel(cfg, &proj)
 }

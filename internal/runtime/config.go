@@ -101,22 +101,63 @@ func (rt *Runtime) applyConfigLocked(
 	newModel := rt.effectiveModelFor(loaded)
 	newEmbedder := loaded.Embedder
 
-	// The model that will actually run. llama_on_switch=keep means the
-	// previously running model stays across config applies and project
-	// switches; reload retargets it to the new preferred model. runningModel
-	// is recorded separately from model so the status UI can represent a
-	// mismatch honestly.
+	// The model that will actually run. llama_on_switch=keep means a previously
+	// running *local* llama-server stays across config applies and project
+	// switches; reload retargets it to the new preferred model. The keep
+	// semantics apply only when both sides are local — an external endpoint has
+	// no process to keep, so the new effective model always becomes the running
+	// one. runningModel is recorded separately from model so the status UI can
+	// represent a mismatch honestly.
 	runningModel := newModel
-	if oldApplied != nil && loaded.Project.LlamaOnSwitch == "keep" {
+	if oldApplied != nil && loaded.Project.LlamaOnSwitch == "keep" &&
+		oldApplied.runningModel.Kind == config.EndpointKindLocal &&
+		newModel.Kind == config.EndpointKindLocal {
 		runningModel = oldApplied.runningModel
 	}
 	newApplied := newAppliedState(loaded, newModel, runningModel)
 
 	projectSwitched := oldApplied != nil &&
 		oldApplied.cfg.Project.ActiveProjectSlug != loaded.Project.ActiveProjectSlug
+	// modelChanged compares the full running model struct (including Port, which
+	// drives the inference client and the llama-server bind): a port change is a
+	// process reconfiguration as well as a client repoint. ModelConfigEqual is
+	// deliberately not used here — it excludes Port and Verbose for mismatch
+	// display, not for apply detection.
 	modelChanged := oldApplied != nil && oldApplied.runningModel != runningModel
 	embedderChanged := oldApplied != nil && oldApplied.runningEmbedder != newEmbedder
-	endpointChanged := oldApplied != nil && oldApplied.runningModel.Port != runningModel.Port
+	// kindSwitched marks a local↔external transition. There is no live path for
+	// spawning or tearing down the llama-server process mid-run, so a kind
+	// switch is recorded but surfaced as a restart-required change.
+	kindSwitched := oldApplied != nil && oldApplied.runningModel.Kind != runningModel.Kind
+	// backendChanged marks an external-endpoint identity change (base url, api
+	// key, or model id) that needs a live inference-client repoint rather than
+	// a process reconfiguration. Local↔local changes are process reconfigures.
+	backendChanged := oldApplied != nil && !kindSwitched && needsClientRepoint(oldApplied.runningModel, runningModel)
+
+	// A local↔external kind switch has no live path: the llama-server process
+	// cannot be spawned or torn down mid-run, and the inference client cannot
+	// be repointed without leaving the recorded applied state out of step with
+	// the live process. The config is already persisted by the caller, so the
+	// switch takes effect on the next harness restart. The live applied state,
+	// processes, and client are left untouched.
+	if kindSwitched {
+		slog.Info("model backend switch requires a restart",
+			"old_kind", oldApplied.runningModel.Kind, "new_kind", runningModel.Kind,
+			"new_endpoint", runningModel.EndpointID, "new_model", runningModel.ModelID)
+		result := ui.ApplyResult{RestartNeeded: []string{"model backend"}}
+		rt.finishResult(&result, oldCfg, loaded)
+		// finishResult marks a metrics-retention change as live-applied on the
+		// assumption rt.cfg is committed; on this path it is not, so the claim
+		// would be false. The status page also keeps reflecting the old
+		// (still live) backend.
+		result.LiveApplied = false
+		rt.mu.Unlock()
+		rt.pushBackend(uiServer, oldApplied)
+		if rt.leaveApply != nil {
+			rt.leaveApply()
+		}
+		return result
+	}
 
 	rebuild := rt.memoryAPIUnavailable()
 	if oldApplied != nil {
@@ -126,7 +167,7 @@ func (rt *Runtime) applyConfigLocked(
 			oldApplied.cfg.Loop != loaded.Loop ||
 			oldApplied.cfg.Agent.Active != loaded.Agent.Active ||
 			projectSwitched ||
-			endpointChanged ||
+			backendChanged ||
 			oldApplied.runningModel.CtxSize != runningModel.CtxSize ||
 			oldApplied.embedder.Port != newEmbedder.Port
 	}
@@ -138,7 +179,7 @@ func (rt *Runtime) applyConfigLocked(
 	buildAPI := apiServerNeedsBuild(oldApplied, loaded, rt.apiServer != nil)
 
 	if !started {
-		slog.Info("starting services", "model_port", newModel.Port, "embed_port", newEmbedder.Port)
+		slog.Info("starting services", "model_kind", newModel.Kind, "endpoint", newModel.EndpointID, "model", newModel.ModelID, "model_port", newModel.Port, "embed_port", newEmbedder.Port)
 		rt.cfg = *loaded
 		rt.refreshProjectDirectoryWarnings(uiServer)
 		rt.startServices(ctx, uiServer, events, metricsStore)
@@ -152,6 +193,7 @@ func (rt *Runtime) applyConfigLocked(
 		rt.finishResult(&result, oldCfg, loaded)
 		rt.mu.Unlock()
 		rt.drainPendingRetired()
+		rt.pushBackend(uiServer, rt.applied)
 		rt.setModelMismatch(uiServer, rt.applied)
 		if rt.leaveApply != nil {
 			rt.leaveApply()
@@ -200,7 +242,7 @@ func (rt *Runtime) applyConfigLocked(
 	}
 
 	rt.mu.Lock()
-	result := rt.commitApply(candidate, &newApplied, oldApplied, modelChanged, embedderChanged, endpointChanged, apiPortChanged, oldCfg, uiServer)
+	result := rt.commitApply(candidate, &newApplied, oldApplied, modelChanged, embedderChanged, backendChanged, apiPortChanged, oldCfg, uiServer)
 	rt.mu.Unlock()
 
 	// Retirement of the previous API server runs outside rt.mu: Stop can wait
@@ -211,6 +253,7 @@ func (rt *Runtime) applyConfigLocked(
 	if rt.leaveApply != nil {
 		rt.leaveApply()
 	}
+	rt.pushBackend(uiServer, &newApplied)
 	rt.setModelMismatch(uiServer, &newApplied)
 	return result
 }
@@ -270,11 +313,56 @@ func (rt *Runtime) finishResult(result *ui.ApplyResult, oldCfg config.Config, ne
 	}
 }
 
+// needsClientRepoint reports whether applying the new running model requires
+// repointing the inference client rather than reconfiguring the llama-server
+// process. Local↔local changes are process reconfigures, except a port change
+// which also moves the client's base URL; a local↔external kind switch is
+// handled as a restart-required change elsewhere, not a live repoint.
+func needsClientRepoint(old, new config.ModelConfig) bool {
+	if old.Kind == config.EndpointKindLocal && new.Kind == config.EndpointKindLocal {
+		return old.Port != new.Port
+	}
+	if old.Kind != new.Kind {
+		return false
+	}
+	return old.BaseURL != new.BaseURL ||
+		old.APIKey != new.APIKey ||
+		old.ModelID != new.ModelID
+}
+
+// pushBackend reflects the recorded applied model backend on the status UI. It
+// is fed from the applied state — never the config store — so the status page
+// cannot claim an external backend while the local llama-server is still the
+// live backend during the restart-pending window of a kind switch.
+func (rt *Runtime) pushBackend(uiServer *ui.Server, applied *appliedState) {
+	if uiServer == nil || applied == nil {
+		return
+	}
+	m := applied.runningModel
+	info := ui.BackendInfo{}
+	if m.Kind == config.EndpointKindOpenAI {
+		info = ui.BackendInfo{
+			External: true,
+			Endpoint: m.EndpointID,
+			Model:    m.ModelID,
+			BaseURL:  m.BaseURL,
+		}
+	}
+	uiServer.SetExternalBackend(info)
+}
+
 // setModelMismatch reflects the recorded running-versus-preferred model on the
 // status UI. The two are recorded separately (see appliedState) so the UI can
-// represent llama_on_switch=keep honestly.
+// represent llama_on_switch=keep honestly. Mismatch only applies to a local
+// llama-server: an external endpoint has no process to lag, so it always reads
+// as consistent.
 func (rt *Runtime) setModelMismatch(uiServer *ui.Server, applied *appliedState) {
 	if uiServer == nil || applied == nil {
+		return
+	}
+	if applied.runningModel.Kind == config.EndpointKindOpenAI ||
+		applied.model.Kind == config.EndpointKindOpenAI {
+		uiServer.SetModelMismatch(false, "", "")
 		return
 	}
 	if !config.ModelConfigEqual(applied.runningModel, applied.model) {

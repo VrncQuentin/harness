@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +46,30 @@ func newServerWithStore(t *testing.T) (*Server, config.Store) {
 	s := NewServer(3000)
 	s.SetConfigStore(store)
 	return s, store
+}
+
+// endpointJSON marshals the given endpoints for the config form's
+// endpoints_json field.
+func endpointJSON(eps ...config.Endpoint) string {
+	b, _ := json.Marshal(eps)
+	return string(b)
+}
+
+// localEndpoint returns a valid local endpoint for form POSTs.
+func localEndpoint() config.Endpoint {
+	return config.Endpoint{
+		ID:         "local",
+		Kind:       config.EndpointKindLocal,
+		Name:       "Local llama-server",
+		Binary:     "C:\\llama.exe",
+		ModelPath:  "C:\\m.gguf",
+		CtxSize:    32768,
+		GPULayers:  -1,
+		NParallel:  1,
+		Port:       8081,
+		CacheTypeK: "q8_0",
+		CacheTypeV: "q8_0",
+	}
 }
 
 type countingProjectStore struct {
@@ -833,8 +858,11 @@ func TestHandleConfig_GETRendersFormWithDefaults(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `name="model_binary"`) {
-		t.Error("expected form field for model binary")
+	if !strings.Contains(body, `name="endpoints_json"`) {
+		t.Error("expected endpoints JSON editor on config page")
+	}
+	if !strings.Contains(body, `name="active_endpoint"`) {
+		t.Error("expected active endpoint selector on config page")
 	}
 	if strings.Contains(body, "`r`n") {
 		t.Error("config page must not render a literal escaped newline")
@@ -866,13 +894,12 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	s.SetRetry(func() ApplyResult { atomic.AddInt32(&retryCalls, 1); return ApplyResult{} })
 
 	form := url.Values{}
-	form.Set("model_binary", "C:\\llama.exe")
-	form.Set("model_path", "C:\\m.gguf")
-	form.Set("model_ctx_size", "8192")
-	form.Set("model_gpu_layers", "20")
-	form.Set("model_n_parallel", "1")
-	form.Set("model_port", "8081")
-	form.Set("model_verbose", "on")
+	ep := localEndpoint()
+	ep.CtxSize = 8192
+	ep.GPULayers = 20
+	ep.Verbose = true
+	form.Set("endpoints_json", endpointJSON(ep))
+	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", "C:\\embed.exe")
 	form.Set("embed_path", "C:\\e.gguf")
 	form.Set("embed_port", "8082")
@@ -915,11 +942,11 @@ func TestHandleConfig_POSTSavesAndRedirects(t *testing.T) {
 	if !configured {
 		t.Error("expected configured=true after POST")
 	}
-	if loaded.Model.Binary != "C:\\llama.exe" {
-		t.Errorf("model binary not persisted: got %q", loaded.Model.Binary)
+	if loaded.Endpoints.List[0].Binary != "C:\\llama.exe" {
+		t.Errorf("local endpoint binary not persisted: got %q", loaded.Endpoints.List[0].Binary)
 	}
-	if !loaded.Model.Verbose {
-		t.Error("expected Model.Verbose=true after POST with model_verbose=on")
+	if !loaded.Endpoints.List[0].Verbose {
+		t.Error("expected local endpoint Verbose=true after POST")
 	}
 	if !loaded.Embedder.Verbose {
 		t.Error("expected Embedder.Verbose=true after POST with embed_verbose=on")
@@ -971,9 +998,9 @@ func TestHandleConfig_POSTClearsVerboseWhenUnchecked(t *testing.T) {
 
 	// Seed with verbose=true.
 	seed := config.Defaults()
-	seed.Model.Binary = "C:\\llama.exe"
-	seed.Model.ModelPath = "C:\\m.gguf"
-	seed.Model.Verbose = true
+	seed.Endpoints.List[0].Binary = "C:\\llama.exe"
+	seed.Endpoints.List[0].ModelPath = "C:\\m.gguf"
+	seed.Endpoints.List[0].Verbose = true
 	seed.Embedder.Binary = "C:\\embed.exe"
 	seed.Embedder.ModelPath = "C:\\e.gguf"
 	seed.Embedder.Verbose = true
@@ -982,14 +1009,14 @@ func TestHandleConfig_POSTClearsVerboseWhenUnchecked(t *testing.T) {
 	}
 
 	form := url.Values{}
-	form.Set("model_binary", "C:\\llama.exe")
-	form.Set("model_path", "C:\\m.gguf")
-	form.Set("model_port", "8081")
+	form.Set("endpoints_json", endpointJSON(localEndpoint()))
+	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", "C:\\embed.exe")
 	form.Set("embed_path", "C:\\e.gguf")
 	form.Set("embed_port", "8082")
 	form.Set("ui_port", "3000")
-	// Deliberately omit model_verbose and embed_verbose.
+	// Deliberately omit embed_verbose. Verbose lives inside the endpoints JSON,
+	// so omitting it from the JSON clears it too.
 
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1004,8 +1031,8 @@ func TestHandleConfig_POSTClearsVerboseWhenUnchecked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if loaded.Model.Verbose {
-		t.Error("expected Model.Verbose=false when form omitted the checkbox")
+	if loaded.Endpoints.List[0].Verbose {
+		t.Error("expected local endpoint Verbose=false when the JSON omitted it")
 	}
 	if loaded.Embedder.Verbose {
 		t.Error("expected Embedder.Verbose=false when form omitted the checkbox")
@@ -1020,9 +1047,8 @@ func TestHandleConfig_POSTStripsQuotedPaths(t *testing.T) {
 	s.SetRetry(func() ApplyResult { return ApplyResult{} })
 
 	form := url.Values{}
-	form.Set("model_binary", `"C:\llama.exe"`)
-	form.Set("model_path", `"C:\m.gguf"`)
-	form.Set("model_port", "8081")
+	form.Set("endpoints_json", endpointJSON(localEndpoint()))
+	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", `'C:\embed.exe'`)
 	form.Set("embed_path", `'C:\e.gguf'`)
 	form.Set("embed_port", "8082")
@@ -1042,8 +1068,6 @@ func TestHandleConfig_POSTStripsQuotedPaths(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	for name, got := range map[string]string{
-		"Model.Binary":       loaded.Model.Binary,
-		"Model.ModelPath":    loaded.Model.ModelPath,
 		"Embedder.Binary":    loaded.Embedder.Binary,
 		"Embedder.ModelPath": loaded.Embedder.ModelPath,
 	} {
@@ -1051,17 +1075,14 @@ func TestHandleConfig_POSTStripsQuotedPaths(t *testing.T) {
 			t.Errorf("%s: expected unquoted path, got %q", name, got)
 		}
 	}
-	if loaded.Model.Binary != `C:\llama.exe` {
-		t.Errorf("Model.Binary = %q, want C:\\llama.exe", loaded.Model.Binary)
-	}
-	if loaded.Model.ModelPath != `C:\m.gguf` {
-		t.Errorf("Model.ModelPath = %q, want C:\\m.gguf", loaded.Model.ModelPath)
-	}
 	if loaded.Embedder.Binary != `C:\embed.exe` {
 		t.Errorf("Embedder.Binary = %q, want C:\\embed.exe", loaded.Embedder.Binary)
 	}
 	if loaded.Embedder.ModelPath != `C:\e.gguf` {
 		t.Errorf("Embedder.ModelPath = %q, want C:\\e.gguf", loaded.Embedder.ModelPath)
+	}
+	if loaded.Endpoints.List[0].Binary != `C:\llama.exe` {
+		t.Errorf("local endpoint Binary = %q, want C:\\llama.exe", loaded.Endpoints.List[0].Binary)
 	}
 }
 
@@ -1092,9 +1113,8 @@ func TestHandleConfig_POSTIncludesApplyResultInRedirect(t *testing.T) {
 	})
 
 	form := url.Values{}
-	form.Set("model_binary", "C:\\llama.exe")
-	form.Set("model_path", "C:\\m.gguf")
-	form.Set("model_port", "8081")
+	form.Set("endpoints_json", endpointJSON(localEndpoint()))
+	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", "C:\\embed.exe")
 	form.Set("embed_path", "C:\\e.gguf")
 	form.Set("embed_port", "8082")
@@ -1118,11 +1138,17 @@ func TestHandleConfig_POSTIncludesApplyResultInRedirect(t *testing.T) {
 func TestHandleConfig_GETParsesApplyResultFromQuery(t *testing.T) {
 	s, store := newServerWithStore(t)
 	// Pre-seed so renderConfig has something to render.
-	_ = store.Save(&config.Config{
-		Model:    config.ModelConfig{Binary: "x", ModelPath: "y", Port: 1},
-		Embedder: config.EmbedderConfig{Binary: "x", ModelPath: "y", Port: 2},
-		UI:       config.UIConfig{Port: 3},
-	})
+	seed := config.Defaults()
+	seed.Endpoints.List[0].Binary = "x"
+	seed.Endpoints.List[0].ModelPath = "y"
+	seed.Endpoints.List[0].Port = 1
+	seed.Embedder.Binary = "x"
+	seed.Embedder.ModelPath = "y"
+	seed.Embedder.Port = 2
+	seed.UI.Port = 3
+	if err := store.Save(&seed); err != nil {
+		t.Fatalf("seed save: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/config?saved=1&applied=1&restart=UI+port%7Cqueue+max+depth", nil)
 	rec := httptest.NewRecorder()
@@ -1137,25 +1163,54 @@ func TestHandleConfig_GETParsesApplyResultFromQuery(t *testing.T) {
 	}
 }
 
+func TestHandleConfig_POSTClearsActiveModelWhenActiveIsLocal(t *testing.T) {
+	s, store := newServerWithStore(t)
+	s.SetRetry(func() ApplyResult { return ApplyResult{} })
+
+	// Switch active endpoint back to local while a stale external model id is
+	// posted; the persisted config must clear it.
+	form := url.Values{}
+	form.Set("endpoints_json", endpointJSON(localEndpoint()))
+	form.Set("active_endpoint", "local")
+	form.Set("active_model", "llama3.2")
+	form.Set("embed_binary", "C:\\embed.exe")
+	form.Set("embed_path", "C:\\e.gguf")
+
+	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	s.handleConfig(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d: %s", rec.Code, rec.Body.String())
+	}
+	loaded, _, err := store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Endpoints.ActiveModel != "" {
+		t.Errorf("ActiveModel = %q, want empty for a local active endpoint", loaded.Endpoints.ActiveModel)
+	}
+}
+
 func TestHandleConfig_POSTRejectsInvalidNumericInput(t *testing.T) {
 	s, store := newServerWithStore(t)
 
 	existing := config.Defaults()
-	existing.Model.Binary = "C:\\existing.exe"
-	existing.Model.ModelPath = "C:\\existing.gguf"
+	existing.Endpoints.List[0].Binary = "C:\\existing.exe"
+	existing.Endpoints.List[0].ModelPath = "C:\\existing.gguf"
+	existing.Endpoints.List[0].CtxSize = 11111
 	existing.Embedder.Binary = "C:\\embed.exe"
 	existing.Embedder.ModelPath = "C:\\embed.gguf"
-	existing.Model.CtxSize = 11111
 	if err := store.Save(&existing); err != nil {
 		t.Fatalf("seed save: %v", err)
 	}
 
+	// A malformed endpoints blob is a parse error and must not reach the store.
 	form := url.Values{}
-	form.Set("model_binary", existing.Model.Binary)
-	form.Set("model_path", existing.Model.ModelPath)
+	form.Set("endpoints_json", `[{"id":"local","kind":"local","port":"not-a-number"}]`)
 	form.Set("embed_binary", existing.Embedder.Binary)
 	form.Set("embed_path", existing.Embedder.ModelPath)
-	form.Set("model_ctx_size", "not-a-number")
 
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1165,15 +1220,15 @@ func TestHandleConfig_POSTRejectsInvalidNumericInput(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected form re-render 200, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Model context size must be an integer") {
-		t.Fatalf("expected field parse error, got body:\n%s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "Endpoints JSON is invalid") {
+		t.Fatalf("expected JSON parse error, got body:\n%s", rec.Body.String())
 	}
 	loaded, _, err := store.Load()
 	if err != nil {
 		t.Fatalf("load after rejected save: %v", err)
 	}
-	if loaded.Model.CtxSize != 11111 {
-		t.Fatalf("invalid numeric input was saved: ctx size = %d", loaded.Model.CtxSize)
+	if loaded.Endpoints.List[0].CtxSize != 11111 {
+		t.Fatalf("invalid endpoints JSON was saved: ctx size = %d", loaded.Endpoints.List[0].CtxSize)
 	}
 }
 func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
@@ -1181,10 +1236,10 @@ func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 
 	// Seed store with a config whose numeric values diverge from Defaults.
 	existing := config.Defaults()
-	existing.Model.Binary = "C:\\existing.exe"
-	existing.Model.ModelPath = "C:\\existing.gguf"
-	existing.Model.CtxSize = 20000
-	existing.Model.GPULayers = 42
+	existing.Endpoints.List[0].Binary = "C:\\existing.exe"
+	existing.Endpoints.List[0].ModelPath = "C:\\existing.gguf"
+	existing.Endpoints.List[0].CtxSize = 20000
+	existing.Endpoints.List[0].GPULayers = 42
 	existing.Embedder.Binary = "C:\\eb.exe"
 	existing.Embedder.ModelPath = "C:\\eb.gguf"
 	existing.Prompt.MemoryTokenBudget = 9999
@@ -1193,9 +1248,8 @@ func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 	}
 
 	form := url.Values{}
-	// Update only the string fields; leave every numeric field blank.
-	form.Set("model_binary", "C:\\new.exe")
-	form.Set("model_path", "C:\\new.gguf")
+	// Update only the string fields; leave the endpoints JSON blank so the
+	// seeded endpoint (and its numerics) survive untouched.
 	form.Set("embed_binary", "C:\\eb.exe")
 	form.Set("embed_path", "C:\\eb.gguf")
 
@@ -1212,17 +1266,17 @@ func TestHandleConfig_POSTPreservesExistingNumericsWhenBlank(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load after save: %v", err)
 	}
-	if loaded.Model.CtxSize != 20000 {
-		t.Errorf("expected Model.CtxSize preserved (20000), got %d", loaded.Model.CtxSize)
+	if loaded.Endpoints.List[0].CtxSize != 20000 {
+		t.Errorf("expected local endpoint CtxSize preserved (20000), got %d", loaded.Endpoints.List[0].CtxSize)
 	}
-	if loaded.Model.GPULayers != 42 {
-		t.Errorf("expected Model.GPULayers preserved (42), got %d", loaded.Model.GPULayers)
+	if loaded.Endpoints.List[0].GPULayers != 42 {
+		t.Errorf("expected local endpoint GPULayers preserved (42), got %d", loaded.Endpoints.List[0].GPULayers)
 	}
 	if loaded.Prompt.MemoryTokenBudget != 9999 {
 		t.Errorf("expected Prompt.MemoryTokenBudget preserved (9999), got %d", loaded.Prompt.MemoryTokenBudget)
 	}
-	if loaded.Model.Binary != "C:\\new.exe" {
-		t.Errorf("expected Model.Binary updated, got %q", loaded.Model.Binary)
+	if loaded.Endpoints.List[0].Binary != "C:\\existing.exe" {
+		t.Errorf("expected local endpoint Binary preserved, got %q", loaded.Endpoints.List[0].Binary)
 	}
 }
 
@@ -1231,8 +1285,8 @@ func TestHandleConfig_POSTPersistsLogBufferFields(t *testing.T) {
 	s.SetRetry(func() ApplyResult { return ApplyResult{} })
 
 	form := url.Values{}
-	form.Set("model_binary", "C:\\llama.exe")
-	form.Set("model_path", "C:\\m.gguf")
+	form.Set("endpoints_json", endpointJSON(localEndpoint()))
+	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", "C:\\embed.exe")
 	form.Set("embed_path", "C:\\e.gguf")
 	form.Set("log_ring_max_entries", "1500")
@@ -1312,10 +1366,16 @@ func TestHandleConfig_GETRendersCacheTypeSelects(t *testing.T) {
 
 	body := rec.Body.String()
 	for _, want := range []string{
-		`name="model_cache_type_k"`,
-		`name="model_cache_type_v"`,
-		`<option value="q8_0" selected>q8_0</option>`,
-		`<option value="f16"`,
+		`name="endpoints_json"`,
+		`name="active_endpoint"`,
+		`name="active_model"`,
+		// The copy-me example renders from config.ExampleEndpointsJSON.
+		`ollama`,
+		`http://localhost:11434/v1`,
+		// The endpoints JSON is serialized with snake_case keys; html/template
+		// escapes quotes in the textarea, so the raw key appears escaped.
+		`&#34;cache_type_k&#34;`,
+		`&#34;cache_type_v&#34;`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected config form to include %q", want)
@@ -1327,13 +1387,15 @@ func TestHandleConfig_POSTPersistsCacheTypes(t *testing.T) {
 	s, store := newServerWithStore(t)
 	s.SetRetry(func() ApplyResult { return ApplyResult{} })
 
+	ep := localEndpoint()
+	ep.CacheTypeK = "q4_0"
+	ep.CacheTypeV = "f16"
+
 	form := url.Values{}
-	form.Set("model_binary", "C:\\llama.exe")
-	form.Set("model_path", "C:\\m.gguf")
+	form.Set("endpoints_json", endpointJSON(ep))
+	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", "C:\\embed.exe")
 	form.Set("embed_path", "C:\\e.gguf")
-	form.Set("model_cache_type_k", "q4_0")
-	form.Set("model_cache_type_v", "f16")
 
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1347,23 +1409,25 @@ func TestHandleConfig_POSTPersistsCacheTypes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if loaded.Model.CacheTypeK != "q4_0" {
-		t.Errorf("CacheTypeK: got %q, want q4_0", loaded.Model.CacheTypeK)
+	if loaded.Endpoints.List[0].CacheTypeK != "q4_0" {
+		t.Errorf("CacheTypeK: got %q, want q4_0", loaded.Endpoints.List[0].CacheTypeK)
 	}
-	if loaded.Model.CacheTypeV != "f16" {
-		t.Errorf("CacheTypeV: got %q, want f16", loaded.Model.CacheTypeV)
+	if loaded.Endpoints.List[0].CacheTypeV != "f16" {
+		t.Errorf("CacheTypeV: got %q, want f16", loaded.Endpoints.List[0].CacheTypeV)
 	}
 }
 
 func TestHandleConfig_POSTRejectsUnknownCacheType(t *testing.T) {
 	s, _ := newServerWithStore(t)
 
+	ep := localEndpoint()
+	ep.CacheTypeK = "q3_k"
+
 	form := url.Values{}
-	form.Set("model_binary", "C:\\llama.exe")
-	form.Set("model_path", "C:\\m.gguf")
+	form.Set("endpoints_json", endpointJSON(ep))
+	form.Set("active_endpoint", "local")
 	form.Set("embed_binary", "C:\\embed.exe")
 	form.Set("embed_path", "C:\\e.gguf")
-	form.Set("model_cache_type_k", "q3_k")
 
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1382,9 +1446,9 @@ func TestHandleConfig_POSTInvalidShowsValidationError(t *testing.T) {
 	s, store := newServerWithStore(t)
 
 	form := url.Values{}
-	// Deliberately omit model_binary, model_path, embed_binary, embed_path.
+	// Deliberately omit endpoints_json, embed_binary, and embed_path so the
+	// required local endpoint and embedder fields stay empty and Validate fails.
 	form.Set("ui_port", "3000")
-	form.Set("model_port", "8081")
 	form.Set("embed_port", "8082")
 
 	req := httptest.NewRequest(http.MethodPost, "/config", strings.NewReader(form.Encode()))
@@ -1417,8 +1481,6 @@ func TestHandleConfig_GETRendersDatalistAnchors(t *testing.T) {
 
 	body := rec.Body.String()
 	for _, id := range []string{
-		"model_binary_options",
-		"model_path_options",
 		"embed_binary_options",
 		"embed_path_options",
 	} {
@@ -1447,13 +1509,17 @@ func TestHandleConfig_GETPreFillsDetectedLlamaBinary(t *testing.T) {
 	s.handleConfig(rec, req)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, `name="model_binary" value="`+want+`"`) {
-		t.Errorf("expected detected llama-server %q to pre-fill model_binary", want)
-	}
-	// The embedder runs the same llama-server binary in --embedding mode, so
-	// it defaults to the same resolved path when left blank.
+	// The detected binary pre-fills the embedder field and the local endpoint
+	// inside the endpoints JSON editor.
 	if !strings.Contains(body, `name="embed_binary" value="`+want+`"`) {
 		t.Errorf("expected detected llama-server %q to pre-fill embed_binary", want)
+	}
+	// Scoped to the textarea: the suggestion datalists also list the detected
+	// binary, so a whole-body search would pass even if the endpoint pre-fill
+	// never happened.
+	escaped := strings.ReplaceAll(want, `\`, `\\`)
+	if endpoints := textareaBody(body, "endpoints_json"); !strings.Contains(endpoints, escaped) {
+		t.Errorf("expected detected llama-server %q to pre-fill the local endpoint in the endpoints JSON, got %s", want, endpoints)
 	}
 }
 
@@ -1465,12 +1531,9 @@ func TestHandleConfig_GETOffersModelSuggestionsInDatalist(t *testing.T) {
 	if err := os.Mkdir(modelsDir, 0o755); err != nil {
 		t.Fatalf("mkdir models: %v", err)
 	}
-	main := filepath.Join(modelsDir, "Qwen3-35B.gguf")
 	embed := filepath.Join(modelsDir, "nomic-embed-v2.gguf")
-	for _, p := range []string{main, embed} {
-		if err := os.WriteFile(p, nil, 0o644); err != nil {
-			t.Fatalf("write %s: %v", p, err)
-		}
+	if err := os.WriteFile(embed, nil, 0o644); err != nil {
+		t.Fatalf("write %s: %v", embed, err)
 	}
 	s.SetBinDir(dir)
 
@@ -1479,9 +1542,6 @@ func TestHandleConfig_GETOffersModelSuggestionsInDatalist(t *testing.T) {
 	s.handleConfig(rec, req)
 
 	body := rec.Body.String()
-	if !strings.Contains(body, `value="`+main+`"`) {
-		t.Errorf("expected main model option for %s in rendered body", main)
-	}
 	if !strings.Contains(body, `value="`+embed+`"`) {
 		t.Errorf("expected embedder model option for %s in rendered body", embed)
 	}
@@ -1515,9 +1575,36 @@ func TestHandleConfig_POSTErrorDoesNotPreFillBinary(t *testing.T) {
 		t.Fatalf("expected 200 re-render, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	if strings.Contains(body, `name="model_binary" value="`+detected+`"`) {
-		t.Error("POST error re-render should not overwrite the user's submitted value with detected path")
+	// Only the two places the pre-fill actually writes are checked: the
+	// endpoints JSON (where a local endpoint's binary would be injected) and
+	// the embedder binary input. The suggestion datalists legitimately list
+	// every detected candidate, so a whole-body search would match those and
+	// assert the opposite of what this test is about.
+	if endpoints := textareaBody(body, "endpoints_json"); strings.Contains(endpoints, strings.ReplaceAll(detected, `\`, `\\`)) {
+		t.Error("POST error re-render should not inject the detected binary into the endpoints JSON")
 	}
+	if strings.Contains(body, `name="embed_binary" value="`+detected+`"`) {
+		t.Error("POST error re-render should not overwrite the user's submitted embedder binary with the detected path")
+	}
+}
+
+// textareaBody returns the contents of the named <textarea>, or "" when the
+// element is absent.
+func textareaBody(body, name string) string {
+	open := strings.Index(body, `<textarea id="`+name+`"`)
+	if open < 0 {
+		return ""
+	}
+	start := strings.Index(body[open:], ">")
+	if start < 0 {
+		return ""
+	}
+	start += open + 1
+	end := strings.Index(body[start:], "</textarea>")
+	if end < 0 {
+		return ""
+	}
+	return body[start : start+end]
 }
 
 func TestHandleRetry_CallsCallback(t *testing.T) {
@@ -1649,6 +1736,124 @@ func TestHandleStatus_HidesRestartFormWhenNotFailed(t *testing.T) {
 	}
 	if !strings.Contains(body, `hidden`) {
 		t.Error("llama restart form should be hidden when not Failed")
+	}
+}
+
+// TestStateFragments_SwapsBackendCard verifies the SSE stream swaps in the
+// model-backend card when the live backend is external and the llama-server
+// process panel when it is local — not both, and not a dead swap on a card
+// that is absent from the DOM.
+func TestStateFragments_SwapsBackendCard(t *testing.T) {
+	s := NewServer(3000)
+
+	ext := stateSnapshot{Backend: BackendInfo{External: true, Endpoint: "ollama", Model: "llama3.2", BaseURL: "http://localhost:11434/v1"}}
+	msg := s.stateFragments(ext)
+	if !strings.Contains(msg, `id="backend-card" hx-swap-oob="true"`) {
+		t.Error("expected backend-card OOB fragment for an external backend")
+	}
+	if strings.Contains(msg, "llama-status-panel") {
+		t.Error("must not render the llama process panel for an external backend")
+	}
+
+	local := stateSnapshot{}
+	msg = s.stateFragments(local)
+	if !strings.Contains(msg, `id="llama-status-panel" hx-swap-oob="true"`) {
+		t.Error("expected llama-status-panel OOB fragment for a local backend")
+	}
+	if strings.Contains(msg, "backend-card") {
+		t.Error("must not render the backend card for a local backend")
+	}
+}
+
+func TestHandleStatus_RendersExternalBackendCard(t *testing.T) {
+	s, _ := newServerWithStore(t)
+	s.SetExternalBackend(BackendInfo{
+		External: true,
+		Endpoint: "ollama",
+		Model:    "llama3.2",
+		BaseURL:  "http://localhost:11434/v1",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Model backend",
+		"External",
+		"ollama",
+		"llama3.2",
+		"http://localhost:11434/v1",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("expected status page to include %q for an external backend", want)
+		}
+	}
+	// No llama-server process card when the backend is external.
+	if strings.Contains(body, `id="llama-status-panel"`) {
+		t.Error("status page should not render the llama-server process card for an external backend")
+	}
+}
+
+func TestHandleStatus_LocalBackendShowsLlamaCard(t *testing.T) {
+	s, _ := newServerWithStore(t)
+	s.SetExternalBackend(BackendInfo{}) // local llama-server is the live backend
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="llama-status-panel"`) {
+		t.Error("expected the llama-server process card for a local backend")
+	}
+	if strings.Contains(body, "Model backend") {
+		t.Error("status page should not show an external backend card for a local endpoint")
+	}
+}
+
+// TestHandleStatus_ExternalConfigNotLiveYetStillShowsLlama verifies the status
+// page is driven by the runtime's applied state, not the persisted config: a
+// saved external endpoint that has not been applied live (the restart-pending
+// window of a local→external switch) must keep showing the running local
+// llama-server rather than claiming an external backend.
+func TestHandleStatus_ExternalConfigNotLiveYetStillShowsLlama(t *testing.T) {
+	s, store := newServerWithStore(t)
+
+	// The config store already names an external endpoint...
+	cfg := config.Defaults()
+	cfg.Endpoints = config.EndpointsConfig{
+		Active:      "ollama",
+		ActiveModel: "llama3.2",
+		List: []config.Endpoint{{
+			ID:      "ollama",
+			Kind:    config.EndpointKindOpenAI,
+			Name:    "Ollama",
+			BaseURL: "http://localhost:11434/v1",
+			Models:  []config.EndpointModel{{ID: "llama3.2", Name: "Llama 3.2", CtxSize: 32768}},
+		}},
+	}
+	cfg.Embedder.Binary = "C:\\embed.exe"
+	cfg.Embedder.ModelPath = "C:\\e.gguf"
+	if err := store.Save(&cfg); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// ...but the runtime has not pushed an external backend: it is still
+	// serving the local llama-server until the harness restarts.
+	s.SetExternalBackend(BackendInfo{External: false})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	s.handleStatus(rec, req)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="llama-status-panel"`) {
+		t.Error("status page must keep showing the llama-server card while the external switch is pending a restart")
+	}
+	if strings.Contains(body, "Model backend") {
+		t.Error("status page must not claim an external backend that is not live yet")
 	}
 }
 

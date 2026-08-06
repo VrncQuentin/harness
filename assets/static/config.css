@@ -1,1 +1,21 @@
 /* Page-specific styles live here when needed. */
+
+.cfg-example {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  background: var(--surface-1, #11151c);
+  color: var(--text-1, #d7dce4);
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+#endpoints_json {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  tab-size: 2;
+}
+

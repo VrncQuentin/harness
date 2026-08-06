@@ -105,7 +105,14 @@ type sseChunk struct {
 
 // implClient implements Client against a base URL.
 type implClient struct {
-	baseURL    string
+	baseURL string
+	// defaultModel is injected into requests that do not set a Model. It lets
+	// the harness pin the active endpoint model without every caller having to
+	// know it; local llama-server backends leave it empty.
+	defaultModel string
+	// apiKey, when set, is sent as a Bearer token. External hosted endpoints
+	// require it; llama-server and most local servers ignore it.
+	apiKey     string
 	httpClient *http.Client
 }
 
@@ -113,12 +120,22 @@ type implClient struct {
 // (e.g. "http://127.0.0.1:8081"). Pass nil for hc to use the default
 // streaming-optimised client from internal/httpclient.
 func NewClient(baseURL string, hc *http.Client) Client {
+	return NewClientForBackend(baseURL, "", "", hc)
+}
+
+// NewClientForBackend creates an inference client targeting baseURL with an
+// optional default model and bearer API key. A non-empty defaultModel is
+// injected into every request whose Model field is empty; a non-empty apiKey
+// is sent as an Authorization: Bearer header.
+func NewClientForBackend(baseURL, apiKey, defaultModel string, hc *http.Client) Client {
 	if hc == nil {
 		hc = httpclient.NewStreaming()
 	}
 	return &implClient{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		httpClient: hc,
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		defaultModel: defaultModel,
+		apiKey:       apiKey,
+		httpClient:   hc,
 	}
 }
 
@@ -126,6 +143,9 @@ func NewClient(baseURL string, hc *http.Client) Client {
 // tokens. Cancelling ctx stops the request.
 func (c *implClient) Complete(ctx context.Context, req CompletionRequest) (<-chan Token, error) {
 	req.Stream = true
+	if req.Model == "" {
+		req.Model = c.defaultModel
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("inference: marshal request: %w", err)
@@ -138,6 +158,9 @@ func (c *implClient) Complete(ctx context.Context, req CompletionRequest) (<-cha
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	if c.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

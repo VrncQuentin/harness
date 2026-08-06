@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -35,10 +36,21 @@ type statusPageData struct {
 	ScaffoldCreated int
 	LlamaPanel      procStatusPanelData
 	EmbedPanel      procStatusPanelData
+	Backend         backendView
 	HarnessLog      logboxData
 	Metrics         []metricView
 	LlamaLog        logboxData
 	EmbedLog        logboxData
+}
+
+// backendView renders the active model backend on the status page. It shows
+// only for an external OpenAI-compatible endpoint, which has no llama-server
+// process card.
+type backendView struct {
+	Show     bool
+	Endpoint string
+	Model    string
+	BaseURL  string
 }
 
 type metricView struct {
@@ -129,6 +141,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		ScaffoldCreated: scaffoldCreated,
 		LlamaPanel:      llamaPanelFromSnapshot(snap),
 		EmbedPanel:      embedPanelFromSnapshot(snap),
+		Backend:         s.backendView(),
 		HarnessLog:      logboxData{BodyID: "harness-log", EventName: "harness-log", Entries: recentEntries(s.getLogRing(), statusLogTail)},
 		Metrics:         s.latestMetricsView(),
 		LlamaLog:        logboxData{BodyID: "llama-log", EventName: "llama-log", Entries: recentEntries(s.getLlamaRing(), procLogTail)},
@@ -138,6 +151,33 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if err := s.statusTmpl.ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+// backendView reports the active model backend for the status page. It is
+// derived from the runtime-pushed BackendInfo (itself from the recorded applied
+// state), not the config store: during the restart-pending window of a
+// local↔external switch the store already names the new endpoint while the
+// live backend is still the old one, and the page must show the live one.
+func (s *Server) backendView() backendView {
+	return backendViewFromSnapshot(s.state.snapshot())
+}
+
+func backendViewFromSnapshot(snap stateSnapshot) backendView {
+	b := snap.Backend
+	if !b.External {
+		return backendView{}
+	}
+	return backendView{Show: true, Endpoint: b.Endpoint, Model: b.Model, BaseURL: b.BaseURL}
+}
+
+// renderBackendCard renders the model-backend card as a standalone fragment so
+// the SSE stream can swap it in and out live.
+func (s *Server) renderBackendCard(snap stateSnapshot) string {
+	var buf bytes.Buffer
+	if err := s.statusTmpl.ExecuteTemplate(&buf, "backend_card", backendViewFromSnapshot(snap)); err != nil {
+		return ""
+	}
+	return buf.String()
 }
 
 func (s *Server) latestMetricsView() []metricView {

@@ -23,8 +23,8 @@ import (
 
 // appliedRuntimeForTest builds a runtime with a live generation over a seeded
 // project repo and the given config, records its applied state, installs llama
-// and embedder managers configured for cfg.Model, and returns the runtime plus
-// the project store. The store initially holds cfg.
+// and embedder managers configured for the recorded running model, and returns
+// the runtime plus the project store. The store initially holds cfg.
 func appliedRuntimeForTest(t *testing.T, cfg *config.Config, projects *runtimeProjectStoreStub) (*Runtime, *runtimeProjectStoreStub) {
 	t.Helper()
 	root := initRuntimeProjectRepo(t)
@@ -43,10 +43,10 @@ func appliedRuntimeForTest(t *testing.T, cfg *config.Config, projects *runtimePr
 	}
 	rt.started = true
 	// The fake managers are configured from the recorded running model, not
-	// the global cfg.Model: when the store supplies a project override the
-	// helper must pretend the process already runs that override, or tests
-	// that assert a reconfiguration would be proving a transition that never
-	// happened.
+	// from the global config's local endpoint: when the store supplies a
+	// project override the helper must pretend the process already runs that
+	// override, or tests that assert a reconfiguration would be proving a
+	// transition that never happened.
 	runningModel := rt.applied.runningModel
 	rt.llamaMgr = proc.NewManager(proc.ManagerConfig{
 		Name:      "llama-server",
@@ -75,7 +75,7 @@ func TestAppliedState_OldModelNotReconstructedFromStore(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 
 	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
-	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Model.ModelPath {
+	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Endpoints.List[0].ModelPath {
 		t.Fatalf("initial applied running model = %+v, want model A", rt.applied)
 	}
 
@@ -347,7 +347,7 @@ func TestAppliedState_RollbackUsesRecordedState(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 
 	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
-	modelA := cfg.Model
+	modelA := cfg.ActiveModelConfig()
 	if rt.applied == nil || rt.applied.runningModel != modelA {
 		t.Fatalf("initial applied running model = %+v, want model A", rt.applied)
 	}
@@ -781,15 +781,15 @@ func TestAppliedState_ProjectOverrideDeletion(t *testing.T) {
 		t.Fatal("override deletion should apply live")
 	}
 
-	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Model.ModelPath {
+	if rt.applied == nil || rt.applied.runningModel.ModelPath != cfg.Endpoints.List[0].ModelPath {
 		t.Fatalf("applied running model = %+v, want the global model after override deletion", rt.applied)
 	}
 	bin, args, _ := rt.llamaMgr.Args()
 	if strings.Contains(strings.Join(args, " "), modelB) {
 		t.Fatalf("llama still references deleted override model %q: %v", modelB, args)
 	}
-	if bin != cfg.Model.Binary {
-		t.Fatalf("llama binary = %q, want global %q", bin, cfg.Model.Binary)
+	if bin != cfg.Endpoints.List[0].Binary {
+		t.Fatalf("llama binary = %q, want global %q", bin, cfg.Endpoints.List[0].Binary)
 	}
 	// The override deletion is a process-only change: no generation rebuild.
 	if rt.gen.sessionMgr != oldMgr {
@@ -806,10 +806,13 @@ func TestAppliedState_GlobalPortChanges(t *testing.T) {
 	cfg.Project.ActiveProjectSlug = project.GlobalSlug
 
 	rt, _ := appliedRuntimeForTest(t, &cfg, nil)
-	newPort := cfg.Model.Port + 1
+	newPort := cfg.Endpoints.List[0].Port + 1
 	newEmbedPort := cfg.Embedder.Port + 1
 	loaded := cfg
-	loaded.Model.Port = newPort
+	// Clone the endpoints slice: a shallow copy shares its backing array, so
+	// mutating loaded's endpoint would leak into cfg and corrupt the old state.
+	loaded.Endpoints.List = append([]config.Endpoint(nil), cfg.Endpoints.List...)
+	loaded.Endpoints.List[0].Port = newPort
 	loaded.Embedder.Port = newEmbedPort
 	rt.cfgStore = &runtimeConfigStore{cfg: &loaded, saved: true}
 
@@ -848,7 +851,7 @@ func TestAppliedState_LlamaOnSwitchKeep(t *testing.T) {
 	cfg.Project.LlamaOnSwitch = "keep"
 
 	rt, projects := appliedRuntimeForTest(t, &cfg, nil)
-	modelA := cfg.Model
+	modelA := cfg.ActiveModelConfig()
 
 	// The active project now prefers model B, but keep must leave the running
 	// model alone.

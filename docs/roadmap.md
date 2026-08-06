@@ -356,3 +356,22 @@ Depends on M11 under the repository's one-milestone-at-a-time policy and on M10.
 - [ ] MR2 — conditional FTS5 signal: project-scoped rebuildable index, normalized score, `fts_weight = 0` default; skip unless MR0 proves an unresolved keyword-miss cohort
 - [ ] MR3 — persistent semantic-write gate: stable proposal/record/event IDs, immutable payloads, append-only `memory_events.jsonl`, atomic decisions/target commits, `memory_propose`, and record markers for aggregate facts/notes
 - [ ] MR4 — supersede-aware reads + possible-conflict review: default live-record filtering in prompt/tool paths, inspector toggle, similarity as hold evidence rather than contradiction proof, and expanded D3 validation
+
+---
+
+## Landed capabilities outside milestone scope
+
+The following shipped capability is implemented but is not a milestone of its
+own; it does not unlock the next milestone and does not change the
+one-milestone-at-a-time ordering.
+
+### External model endpoints
+
+The chat backend is an ordered list of endpoints, each either a harness-spawned
+`local` llama-server or an external `openai` OpenAI-compatible backend (base
+URL, optional API key, multiple model ids). The active endpoint + active model
+drive every completion request. Only a local endpoint creates a child process;
+external backends route directly to their base URL. Switching between external
+endpoints applies live; a local↔external switch requires a harness restart. The
+embedder remains a locally spawned sidecar. See
+[architecture.md](architecture.md) for the design decision.

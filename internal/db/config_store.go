@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -25,12 +26,14 @@ var _ config.Store = (*ConfigStore)(nil)
 // column defaults of its own.
 func (s *ConfigStore) seed() error {
 	d := config.Defaults()
-	_, err := s.db.Exec(`
+	endpointsJSON, err := json.Marshal(d.Endpoints.List)
+	if err != nil {
+		return fmt.Errorf("db: seed config: marshal endpoints: %w", err)
+	}
+	_, err = s.db.Exec(`
 		INSERT OR IGNORE INTO config (
 			id,
-			model_binary, model_path, model_ctx_size, model_gpu_layers,
-			model_n_parallel, model_port, model_verbose,
-			model_cache_type_k, model_cache_type_v,
+			endpoints_json, active_endpoint, active_model,
 			embedder_binary, embedder_model_path, embedder_port, embedder_verbose,
 			agent_active,
 			ui_port, ui_open_on_start, ui_sidebar_recent_sessions,
@@ -63,6 +66,7 @@ func (s *ConfigStore) seed() error {
 			loop_gh_pr_wait_enabled
 	) VALUES (
 		1,
+		?, ?, ?,
 		?, ?, ?, ?,
 		?, ?, ?, ?,
 		?, ?, ?, ?,
@@ -70,13 +74,8 @@ func (s *ConfigStore) seed() error {
 		?, ?, ?, ?,
 		?, ?, ?, ?,
 		?, ?, ?, ?,
-		?, ?, ?, ?,
-		?, ?, ?, ?,
-		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-	)`,
-		d.Model.Binary, d.Model.ModelPath, d.Model.CtxSize, d.Model.GPULayers,
-		d.Model.NParallel, d.Model.Port, boolInt(d.Model.Verbose),
-		d.Model.CacheTypeK, d.Model.CacheTypeV,
+		?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+	)`, string(endpointsJSON), d.Endpoints.Active, d.Endpoints.ActiveModel,
 		d.Embedder.Binary, d.Embedder.ModelPath, d.Embedder.Port, boolInt(d.Embedder.Verbose),
 		d.Agent.Active,
 		d.UI.Port, boolInt(d.UI.OpenOnStart), d.UI.SidebarRecentSessions,
@@ -117,11 +116,38 @@ func (s *ConfigStore) seed() error {
 // Load returns the current config and whether the user has explicitly saved
 // it at least once. A fresh install returns (Defaults(), false, nil).
 func (s *ConfigStore) Load() (*config.Config, bool, error) {
+	var (
+		cfg               config.Config
+		endpointsJSON     string
+		embedderVerbose   int
+		openOnStart       int
+		apiEnabled        int
+		savedAt           sql.NullInt64
+		readEnabled       int
+		fileList          int
+		astMap            int
+		astFind           int
+		gitStatus         int
+		gitDiff           int
+		gitLog            int
+		editEnabled       int
+		execEnabled       int
+		goTest            int
+		goLint            int
+		gitCommit         int
+		gitBranch         int
+		gitCheckout       int
+		webSearch         int
+		memoryQuery       int
+		gitPush           int
+		ghPRCreate        int
+		ghPRMerge         int
+		ghPRWait          int
+		prometheusEnabled int
+	)
 	row := s.db.QueryRow(`
 		SELECT
-			model_binary, model_path, model_ctx_size, model_gpu_layers,
-			model_n_parallel, model_port, model_verbose,
-			model_cache_type_k, model_cache_type_v,
+			endpoints_json, active_endpoint, active_model,
 			embedder_binary, embedder_model_path, embedder_port, embedder_verbose,
 			agent_active,
 			ui_port, ui_open_on_start, ui_sidebar_recent_sessions,
@@ -155,39 +181,8 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 			saved_at
 		FROM config WHERE id = 1`)
 
-	var (
-		cfg               config.Config
-		modelVerbose      int
-		embedderVerbose   int
-		openOnStart       int
-		apiEnabled        int
-		savedAt           sql.NullInt64
-		readEnabled       int
-		fileList          int
-		astMap            int
-		astFind           int
-		gitStatus         int
-		gitDiff           int
-		gitLog            int
-		editEnabled       int
-		execEnabled       int
-		goTest            int
-		goLint            int
-		gitCommit         int
-		gitBranch         int
-		gitCheckout       int
-		webSearch         int
-		memoryQuery       int
-		gitPush           int
-		ghPRCreate        int
-		ghPRMerge         int
-		ghPRWait          int
-		prometheusEnabled int
-	)
 	err := row.Scan(
-		&cfg.Model.Binary, &cfg.Model.ModelPath, &cfg.Model.CtxSize, &cfg.Model.GPULayers,
-		&cfg.Model.NParallel, &cfg.Model.Port, &modelVerbose,
-		&cfg.Model.CacheTypeK, &cfg.Model.CacheTypeV,
+		&endpointsJSON, &cfg.Endpoints.Active, &cfg.Endpoints.ActiveModel,
 		&cfg.Embedder.Binary, &cfg.Embedder.ModelPath, &cfg.Embedder.Port, &embedderVerbose,
 		&cfg.Agent.Active,
 		&cfg.UI.Port, &openOnStart, &cfg.UI.SidebarRecentSessions,
@@ -213,7 +208,9 @@ func (s *ConfigStore) Load() (*config.Config, bool, error) {
 	if err != nil {
 		return nil, false, fmt.Errorf("db: load config: %w", err)
 	}
-	cfg.Model.Verbose = modelVerbose != 0
+	if err := json.Unmarshal([]byte(endpointsJSON), &cfg.Endpoints.List); err != nil {
+		return nil, false, fmt.Errorf("db: load config: parse endpoints: %w", err)
+	}
 	cfg.Embedder.Verbose = embedderVerbose != 0
 	cfg.UI.OpenOnStart = openOnStart != 0
 	cfg.API.Enabled = apiEnabled != 0
@@ -246,11 +243,13 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 	if cfg == nil {
 		return ErrNilConfig
 	}
-	_, err := s.db.Exec(`
+	endpointsJSON, err := json.Marshal(cfg.Endpoints.List)
+	if err != nil {
+		return fmt.Errorf("db: save config: marshal endpoints: %w", err)
+	}
+	_, err = s.db.Exec(`
 		UPDATE config SET
-			model_binary = ?, model_path = ?, model_ctx_size = ?, model_gpu_layers = ?,
-			model_n_parallel = ?, model_port = ?, model_verbose = ?,
-			model_cache_type_k = ?, model_cache_type_v = ?,
+			endpoints_json = ?, active_endpoint = ?, active_model = ?,
 			embedder_binary = ?, embedder_model_path = ?, embedder_port = ?, embedder_verbose = ?,
 			agent_active = ?,
 			ui_port = ?, ui_open_on_start = ?, ui_sidebar_recent_sessions = ?,
@@ -283,9 +282,7 @@ func (s *ConfigStore) Save(cfg *config.Config) error {
 			loop_gh_pr_wait_enabled = ?,
 			saved_at = ?
 		WHERE id = 1`,
-		cfg.Model.Binary, cfg.Model.ModelPath, cfg.Model.CtxSize, cfg.Model.GPULayers,
-		cfg.Model.NParallel, cfg.Model.Port, boolInt(cfg.Model.Verbose),
-		cfg.Model.CacheTypeK, cfg.Model.CacheTypeV,
+		string(endpointsJSON), cfg.Endpoints.Active, cfg.Endpoints.ActiveModel,
 		cfg.Embedder.Binary, cfg.Embedder.ModelPath, cfg.Embedder.Port, boolInt(cfg.Embedder.Verbose),
 		cfg.Agent.Active,
 		cfg.UI.Port, boolInt(cfg.UI.OpenOnStart), cfg.UI.SidebarRecentSessions,

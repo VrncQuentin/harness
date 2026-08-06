@@ -41,8 +41,8 @@ func TestHandleMetrics_DisabledReturnsNotFound(t *testing.T) {
 func TestHandleMetrics_ExportsLatestPrometheusSamples(t *testing.T) {
 	s, d := newServerWithMetricsStore(t)
 	cfg := config.Defaults()
-	cfg.Model.Binary = "C:\\llama.exe"
-	cfg.Model.ModelPath = "C:\\model.gguf"
+	cfg.Endpoints.List[0].Binary = "C:\\llama.exe"
+	cfg.Endpoints.List[0].ModelPath = "C:\\model.gguf"
 	cfg.Embedder.Binary = "C:\\embed.exe"
 	cfg.Embedder.ModelPath = "C:\\embed.gguf"
 	cfg.Metrics.PrometheusEnabled = true

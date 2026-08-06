@@ -110,7 +110,12 @@ The applied state distinguishes the **preferred** model from the
 reconfigured during a config apply or project switch; the prompt context
 ceiling and the inference client track the running model's port/ctx, and the
 status UI renders the running-versus-preferred mismatch honestly from the two
-recorded values.
+recorded values. Keep semantics apply only when both the old and new running
+models are local endpoints — an external backend has no process to keep, so the
+new effective model always becomes the running one. A local↔external kind
+switch is not applied live at all: the config is persisted and the apply
+reports `model backend` as restart-required, leaving the recorded applied state
+and the live process on the old backend until the harness restarts.
 
 ## 6. The ApplyConfig transaction
 
